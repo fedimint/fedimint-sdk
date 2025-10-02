@@ -83,10 +83,21 @@ export class LightningService {
     )
   }
 
-  private async _getDefaultGatewayInfo() {
+  async getAvailableGateway(gateway?: LightningGateway, invoice?: string) {
+    return await this.client.rpcSingle<LightningGateway | null>(
+      'ln',
+      'select_available_gateway',
+      {
+        maybe_gateway: gateway ?? null,
+        maybe_invoice: invoice ?? null,
+      },
+    )
+  }
+
+  private async _getDefaultGatewayInfo(invoice?: string) {
     await this.updateGatewayCache()
-    const gateways = await this.listGateways()
-    return gateways[0]?.info
+    const gateway = await this.getAvailableGateway(undefined, invoice)
+    return gateway?.info ?? null
   }
 
   /** https://sdk.fedimint.org/core/FedimintWallet/LightningService/payInvoice#lightning-payinvoice-invoice-string */
@@ -95,7 +106,7 @@ export class LightningService {
     gatewayInfo?: GatewayInfo,
     extraMeta?: JSONObject,
   ) {
-    const gateway = gatewayInfo ?? (await this._getDefaultGatewayInfo())
+    const gateway = gatewayInfo ?? (await this._getDefaultGatewayInfo(invoice))
     return await this.client.rpcSingle<OutgoingLightningPayment>(
       'ln',
       'pay_bolt11_invoice',
