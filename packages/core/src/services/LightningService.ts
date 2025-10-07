@@ -2,6 +2,7 @@ import { TransportClient } from '../transport'
 import type {
   CreateBolt11Response,
   GatewayInfo,
+  GetAvailableGatewayParams,
   JSONObject,
   LightningGateway,
   LnInternalPayState,
@@ -83,7 +84,10 @@ export class LightningService {
     )
   }
 
-  async getAvailableGateway(gateway?: LightningGateway, invoice?: string) {
+  async getAvailableGateway({
+    gateway,
+    invoice,
+  }: GetAvailableGatewayParams | undefined = {}) {
     return await this.client.rpcSingle<LightningGateway | null>(
       'ln',
       'select_available_gateway',
@@ -91,12 +95,13 @@ export class LightningService {
         maybe_gateway: gateway ?? null,
         maybe_invoice: invoice ?? null,
       },
+      this.clientName,
     )
   }
 
   private async _getDefaultGatewayInfo(invoice?: string) {
     await this.updateGatewayCache()
-    const gateway = await this.getAvailableGateway(undefined, invoice)
+    const gateway = await this.getAvailableGateway({ invoice })
     return gateway?.info ?? null
   }
 

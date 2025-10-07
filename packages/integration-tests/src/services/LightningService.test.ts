@@ -1,6 +1,7 @@
 import { expect } from 'vitest'
 import { keyPair } from '../test/crypto'
 import { walletTest } from '../test/fixtures'
+import { LightningGateway } from '@fedimint/core'
 
 walletTest(
   'createInvoice should create a bolt11 invoice',
@@ -262,5 +263,21 @@ walletTest(
         )
       })
     }
+  },
+)
+
+walletTest(
+  'getAvailableGateway should return a gateway',
+  async ({ wallet }) => {
+    expect(wallet).toBeDefined()
+    expect(wallet.isOpen()).toBe(true)
+
+    const gateway = await wallet.lightning.getAvailableGateway()
+    expect(gateway).toBeDefined()
+    expect(gateway).toMatchObject({
+      info: expect.any(Object),
+      vetted: expect.any(Boolean),
+      ttl: expect.any(Object),
+    } satisfies LightningGateway)
   },
 )
