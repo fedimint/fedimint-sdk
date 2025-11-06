@@ -89,13 +89,11 @@ export class FederationService {
         const variant = meta.variant
         return (
           (operation_module_kind === 'ln' &&
-            ((variant as LnVariant).pay || (variant as LnVariant).receive)) ||
+            ('pay' in variant || 'receive' in variant)) ||
           (operation_module_kind === 'mint' &&
-            ((variant as MintVariant).spend_o_o_b ||
-              (variant as MintVariant).reissuance)) ||
+            ('spend_o_o_b' in variant || 'reissuance' in variant)) ||
           (operation_module_kind === 'wallet' &&
-            ((variant as WalletVariant).deposit ||
-              (variant as WalletVariant).withdraw))
+            ('deposit' in variant || 'withdraw' in variant))
         )
       })
       .map(([key, op]) => {
@@ -106,70 +104,24 @@ export class FederationService {
             )
           : 0
         const operationId = key.operation_id
-        const kind = op.operation_module_kind as 'ln' | 'mint' | 'wallet'
+        const kind = op.operation_module_kind
         const meta = op.meta
         const variant = meta.variant
+        let type, amount
 
-        let outcome: string | undefined
-        if (op.outcome && op.outcome.outcome) {
-          if (typeof op.outcome.outcome === 'string') {
-            outcome = op.outcome.outcome
-          } else if (
-            typeof op.outcome.outcome === 'object' &&
-            op.outcome.outcome !== null
-          ) {
-            if ('success' in op.outcome.outcome) outcome = 'success'
-            else if ('canceled' in op.outcome.outcome) outcome = 'canceled'
-            else if ('claimed' in op.outcome.outcome) outcome = 'claimed'
-            else if ('funded' in op.outcome.outcome) outcome = 'funded'
-            else if ('awaiting_funds' in op.outcome.outcome)
-              outcome = 'awaiting_funds'
-            else if ('unexpected_error' in op.outcome.outcome)
-              outcome = 'unexpected_error'
-            else if ('created' in op.outcome.outcome) outcome = 'created'
-            else if ('waiting_for_refund' in op.outcome.outcome)
-              outcome = 'canceled'
-            else if ('awaiting_change' in op.outcome.outcome)
-              outcome = 'pending'
-            else if ('refunded' in op.outcome.outcome) outcome = 'refunded'
-            else if ('waiting_for_payment' in op.outcome.outcome)
-              outcome = 'awaiting_funds'
-            else if ('Created' in op.outcome.outcome) outcome = 'Created'
-            else if ('Success' in op.outcome.outcome) outcome = 'Success'
-            else if ('Refunded' in op.outcome.outcome) outcome = 'Refunded'
-            else if ('UserCanceledProcessing' in op.outcome.outcome)
-              outcome = 'UserCanceledProcessing'
-            else if ('UserCanceledSuccess' in op.outcome.outcome)
-              outcome = 'UserCanceledSuccess'
-            else if ('UserCanceledFailure' in op.outcome.outcome)
-              outcome = 'UserCanceledFailure'
-            else if ('WaitingForTransaction' in op.outcome.outcome)
-              outcome = 'pending'
-            else if ('WaitingForConfirmation' in op.outcome.outcome)
-              outcome = 'pending'
-            else if ('Confirmed' in op.outcome.outcome) outcome = 'Confirmed'
-            else if ('Claimed' in op.outcome.outcome) outcome = 'Claimed'
-            else if ('Failed' in op.outcome.outcome) outcome = 'Failed'
-          }
-        }
+        const outcome = determineOutcome(op.outcome)
 
         if (kind === 'ln') {
-          const isPay = !!(variant as LnVariant).pay
+          type = 'pay' in variant ? 'pay' : 'receive'
+          const payData = 'pay' in variant ? variant.pay : undefined
+          const receiveData = 'receive' in variant ? variant.receive : undefined
+          const isPay = !!('pay' in variant)
           const txId =
-            (variant as LnVariant).pay?.out_point.txid ||
-            (variant as LnVariant).receive?.out_point.txid ||
-            ''
-          const type = (variant as LnVariant).pay ? 'send' : 'receive'
-          const invoice =
-            (variant as LnVariant).pay?.invoice ||
-            (variant as LnVariant).receive?.invoice ||
-            ''
-          const gateway =
-            (variant as LnVariant).pay?.gateway_id ||
-            (variant as LnVariant).receive?.gateway_id ||
-            ''
-          const fee = (variant as LnVariant).pay?.fee
-          const internalPay = (variant as LnVariant).pay?.is_internal_payment
+            payData?.out_point.txid || receiveData?.out_point.txid || ''
+          const invoice = payData?.invoice || receiveData?.invoice || ''
+          const gateway = payData?.gateway_id || receiveData?.gateway_id || ''
+          const fee = payData?.fee
+          const internalPay = payData?.is_internal_payment
           const preimage =
             isPay &&
             op.outcome?.outcome &&
@@ -191,12 +143,14 @@ export class FederationService {
             outcome: outcome as LightningTransaction['outcome'],
           } as LightningTransaction
         } else if (kind === 'mint') {
-          const txId = (variant as MintVariant).reissuance?.txid
-          const type = (variant as MintVariant).reissuance
-            ? 'reissue'
-            : 'spend_oob'
-          const amountMsats = meta.amount
-          const notes = (variant as MintVariant).spend_o_o_b?.oob_notes
+          const reissuanceData =
+            'reissuance' in variant ? variant.reissuance : undefined
+          const spendData =
+            'spend_o_o_b' in variant ? variant.spend_o_o_b : undefined
+          const txId = reissuanceData?.txid
+          type = reissuanceData ? 'reissue' : 'spend_oob'
+          amount = meta.amount
+          const notes = spendData?.oob_notes
 
           return {
             timestamp,
@@ -204,31 +158,27 @@ export class FederationService {
             txId,
             outcome: outcome as EcashTransaction['outcome'],
             operationId,
-            amountMsats,
+            amountMsats: amount,
             notes,
             kind,
           } as EcashTransaction
         } else if (kind === 'wallet') {
-          const type = (variant as WalletVariant).deposit
-            ? 'deposit'
-            : 'withdraw'
-          const address =
-            (variant as WalletVariant).deposit?.address ||
-            (variant as WalletVariant).withdraw?.address ||
-            ''
+          const depositData = 'deposit' in variant ? variant.deposit : undefined
+          const withdrawData =
+            'withdraw' in variant ? variant.withdraw : undefined
+          const type = depositData ? 'deposit' : 'withdraw'
+          const address = depositData?.address || withdrawData?.address || ''
           const feeRate =
-            (((variant as WalletVariant).withdraw?.fee?.total_weight ?? 0) /
-              1000) *
-            ((variant as WalletVariant).withdraw?.fee?.fee_rate?.sats_per_kvb ??
-              0)
-          const amountMsats = (variant as WalletVariant).withdraw?.amount || 0
+            ((withdrawData?.fee?.total_weight ?? 0) / 1000) *
+            (withdrawData?.fee?.fee_rate?.sats_per_kvb ?? 0)
+          const amount = withdrawData?.amount || 0
 
           return {
             timestamp,
             type,
             onchainAddress: address,
             fee: feeRate || 0,
-            amountMsats,
+            amountSats: amount,
             outcome,
             kind,
             operationId,
@@ -239,4 +189,53 @@ export class FederationService {
         (transaction): transaction is Transactions => transaction !== undefined,
       )
   }
+}
+
+function determineOutcome(outcome: unknown): string | undefined {
+  if (!outcome || typeof outcome !== 'object' || !('outcome' in outcome)) {
+    return undefined
+  }
+
+  const operationOutcome = (outcome as { outcome: unknown }).outcome
+
+  if (typeof operationOutcome === 'string') {
+    return operationOutcome
+  }
+
+  if (typeof operationOutcome !== 'object' || operationOutcome === null) {
+    return undefined
+  }
+
+  const outcomeMap: Record<string, string> = {
+    success: 'success',
+    canceled: 'canceled',
+    claimed: 'claimed',
+    funded: 'funded',
+    awaiting_funds: 'awaiting_funds',
+    unexpected_error: 'unexpected_error',
+    created: 'created',
+    waiting_for_refund: 'canceled',
+    awaiting_change: 'pending',
+    refunded: 'refunded',
+    waiting_for_payment: 'awaiting_funds',
+    Created: 'Created',
+    Success: 'Success',
+    Refunded: 'Refunded',
+    UserCanceledProcessing: 'UserCanceledProcessing',
+    UserCanceledSuccess: 'UserCanceledSuccess',
+    UserCanceledFailure: 'UserCanceledFailure',
+    WaitingForTransaction: 'pending',
+    WaitingForConfirmation: 'pending',
+    Confirmed: 'Confirmed',
+    Claimed: 'Claimed',
+    Failed: 'Failed',
+  }
+
+  for (const [key, value] of Object.entries(outcomeMap)) {
+    if (key in operationOutcome) {
+      return value
+    }
+  }
+
+  return undefined
 }

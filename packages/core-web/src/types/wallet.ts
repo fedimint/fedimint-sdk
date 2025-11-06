@@ -216,7 +216,7 @@ type BaseTransactions = {
 }
 
 type LightningTransaction = BaseTransactions & {
-  type: 'send' | 'receive'
+  type: 'pay' | 'receive'
   invoice: string
   outcome:
     | 'created'
@@ -245,7 +245,7 @@ type EcashTransaction = BaseTransactions & {
 type WalletTransaction = BaseTransactions & {
   type: 'withdraw' | 'deposit'
   onchainAddress: string
-  amountMsats: number
+  amountSats: number
   fee: number
   outcome?:
     | 'WaitingForTransaction'
