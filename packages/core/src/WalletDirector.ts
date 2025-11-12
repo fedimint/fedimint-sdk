@@ -83,7 +83,7 @@ export class WalletDirector {
       type: string
       data: JSONValue
       requestId: number
-    }>('parse_invite_code', { inviteCode })
+    }>('parse_invite_code', { invite_code: inviteCode })
     return response
   }
 
@@ -113,7 +113,7 @@ export class WalletDirector {
       type: string
       data: JSONValue
       requestId: number
-    }>('parse_bolt11_invoice', { invoiceStr })
+    }>('parse_bolt11_invoice', { invoice: invoiceStr })
     return response
   }
 
