@@ -41,4 +41,13 @@ export class RecoveryService {
       onError,
     )
   }
+
+  async backupToFederation(metadata?: JSONValue): Promise<void> {
+    await this.client.rpcSingle(
+      '',
+      'backup_to_federation',
+      { metadata: metadata ?? {} },
+      this.clientName,
+    )
+  }
 }

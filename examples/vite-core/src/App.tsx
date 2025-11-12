@@ -87,6 +87,7 @@ const App = () => {
         <ParseLightningInvoice />
         <Deposit />
         <SendOnchain />
+        <BackupToFederation />
       </main>
     </>
   )
@@ -819,6 +820,57 @@ const SendOnchain = () => {
         </div>
       )}
       {withdrawalError && <div className="error">{withdrawalError}</div>}
+    </div>
+  )
+}
+
+const BackupToFederation = () => {
+  const [backupStatus, setBackupStatus] = useState(false)
+  const [backupResult, setBackupResult] = useState('')
+  const [backupError, setBackupError] = useState('')
+  const [metadata, setMetadata] = useState('')
+
+  const handleBackup = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBackupStatus(true)
+    setBackupResult('')
+    setBackupError('')
+
+    try {
+      if (!wallet) throw new Error('Wallet unavailable')
+
+      const metadataObj = metadata.trim() ? JSON.parse(metadata) : undefined
+      await wallet.recovery.backupToFederation(metadataObj)
+
+      console.log('Backup successful')
+      setBackupResult('Backup to federation successful!')
+    } catch (error: any) {
+      console.error('Error backing up to federation:', error)
+      setBackupError(error.message || 'Backup failed')
+    } finally {
+      setBackupStatus(false)
+    }
+  }
+
+  return (
+    <div className="section">
+      <h3>Backup to Federation</h3>
+      <form onSubmit={handleBackup} className="row">
+        <input
+          placeholder="Metadata (optional JSON)"
+          value={metadata}
+          onChange={(e) => setMetadata(e.target.value)}
+        />
+        <button type="submit" disabled={backupStatus}>
+          {backupStatus ? 'Backing up...' : 'Backup'}
+        </button>
+      </form>
+      {backupResult && (
+        <div className="success">
+          <p>{backupResult}</p>
+        </div>
+      )}
+      {backupError && <div className="error">{backupError}</div>}
     </div>
   )
 }
