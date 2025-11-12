@@ -159,7 +159,15 @@ const FedimintWalletSidebar = [
       {
         text: 'RecoveryService',
         base: '/core/FedimintWallet/RecoveryService/',
-        items: [{ text: 'Docs TODO' }],
+        items: [
+          { text: 'backupToFederation()', link: 'backupToFederation' },
+          { text: 'hasPendingRecoveries()', link: 'hasPendingRecoveries' },
+          {
+            text: 'subscribeToRecoveryProgress()',
+            link: 'subscribeToRecoveryProgress',
+          },
+          { text: 'waitForAllRecoveries()', link: 'waitForAllRecoveries' },
+        ],
       },
     ],
   },

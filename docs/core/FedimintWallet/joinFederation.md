@@ -4,6 +4,10 @@
 
 Attempts to join a federation.
 
+::: info Automatic Backup Recovery
+If you have a backup stored with the federation, it will be automatically fetched and restored when you join the federation.
+:::
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'
