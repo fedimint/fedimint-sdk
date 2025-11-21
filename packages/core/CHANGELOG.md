@@ -1,5 +1,14 @@
 # @fedimint/core
 
+## 0.1.4
+
+### Patch Changes
+
+- 48288a9: patch: fix parseInviteCode, parseBolt11Invoice and previewFederation. - Added detailed type definitions for `PreviewFederation` including `JsonClientConfig` structure - Updated `PreviewFederation.config` to return properly typed `JsonClientConfig` instead of generic object - Added type definitions for `GlobalClientConfig`, `PeerUrl`, `CoreConsensusVersion`, and `ModuleConfig`
+- 82a1863: Bump deps
+- Updated dependencies [48288a9]
+  - @fedimint/types@0.0.4
+
 ## 0.1.3
 
 ### Patch Changes
