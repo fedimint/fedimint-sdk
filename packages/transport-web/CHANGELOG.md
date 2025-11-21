@@ -1,5 +1,14 @@
 # @fedimint/transport-web
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [48288a9]
+- Updated dependencies [82a1863]
+  - @fedimint/types@0.0.4
+  - @fedimint/core@0.1.4
+
 ## 0.1.2
 
 ### Patch Changes
