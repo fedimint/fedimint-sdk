@@ -3,12 +3,26 @@ import type {
   CreateBolt11Response,
   GatewayInfo,
   JSONObject,
+  LightningAddressSuccessAction,
+  LightningAddressVerification,
   LightningGateway,
   LnInternalPayState,
   LnPayState,
   LnReceiveState,
   OutgoingLightningPayment,
 } from '../types'
+
+type PayLightningAddressOptions = {
+  comment?: string
+  extraMeta?: JSONObject
+  gatewayInfo?: GatewayInfo
+}
+
+type PayLightningAddressResult = {
+  invoice: string
+  payment: OutgoingLightningPayment
+  successAction?: LightningAddressSuccessAction
+}
 
 export class LightningService {
   constructor(
@@ -304,4 +318,40 @@ export class LightningService {
       this.clientName,
     )
   }
+
+  async verifyLightningAddress(
+    lightningAddress: string,
+  ): Promise<LightningAddressVerification> {
+    return await this.client.rpcSingle<LightningAddressVerification>(
+      'ln',
+      'verify_lightning_address',
+      {
+        lightning_address: lightningAddress,
+      },
+      this.clientName,
+    )
+  }
+
+  async payLightningAddress(
+    lightningAddress: string,
+    amountMsats: number,
+    options: PayLightningAddressOptions = {},
+  ): Promise<PayLightningAddressResult> {
+    const gateway = options.gatewayInfo ?? (await this._getDefaultGatewayInfo())
+
+    return await this.client.rpcSingle<PayLightningAddressResult>(
+      'ln',
+      'pay_lightning_address',
+      {
+        lightning_address: lightningAddress,
+        amount_msats: amountMsats,
+        comment: options.comment ?? null,
+        extra_meta: options.extraMeta ?? {},
+        gateway,
+      },
+      this.clientName,
+    )
+  }
 }
+
+export type { PayLightningAddressOptions, PayLightningAddressResult }

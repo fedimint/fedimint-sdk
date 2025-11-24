@@ -33,6 +33,52 @@ type OutgoingLightningPayment = {
 
 type PayType = { lightning: string } | { internal: string }
 
+type LightningAddressMetadataItem = [string, string]
+type LightningAddressMetadata = LightningAddressMetadataItem[]
+
+type LightningAddressPayerData = Record<
+  string,
+  { mandatory?: boolean } & Record<string, JSONValue>
+>
+
+type LightningAddressPayRequest = {
+  tag: 'payRequest'
+  callback: string
+  maxSendable: number
+  minSendable: number
+  metadata: string
+  commentAllowed?: number
+  payerData?: LightningAddressPayerData
+  allowsNostr?: boolean
+  nostrPubkey?: string
+  disposable?: boolean
+}
+
+type LightningAddressSuccessAction =
+  | { tag: 'message'; message: string }
+  | { tag: 'url'; description: string; url: string }
+  | { tag: 'aes'; description: string; ciphertext: string; iv: string }
+
+type LightningAddressInvoiceResponse = {
+  pr: string
+  routes?: unknown[]
+  successAction?: LightningAddressSuccessAction
+  disposable?: boolean
+}
+
+type LightningAddressErrorResponse = {
+  status: 'ERROR'
+  reason?: string
+}
+
+type LightningAddressVerification = JSONObject & {
+  address: string
+  username: string
+  domain: string
+  payRequest: LightningAddressPayRequest
+  metadata: LightningAddressMetadata
+}
+
 type LnPayState =
   | 'created'
   | 'canceled'
@@ -264,6 +310,14 @@ export {
   FeeToAmount,
   OutgoingLightningPayment,
   PayType,
+  LightningAddressMetadata,
+  LightningAddressMetadataItem,
+  LightningAddressPayRequest,
+  LightningAddressPayerData,
+  LightningAddressSuccessAction,
+  LightningAddressInvoiceResponse,
+  LightningAddressErrorResponse,
+  LightningAddressVerification,
   LnPayState,
   LnReceiveState,
   CreateBolt11Response,
