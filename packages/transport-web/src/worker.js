@@ -57,7 +57,8 @@ self.onmessage = async (event) => {
       type === 'cancel_rpc' ||
       type === 'parse_invite_code' ||
       type === 'parse_bolt11_invoice' ||
-      type === 'preview_federation'
+      type === 'preview_federation' ||
+      type === 'parse_oob_notes'
     ) {
       self.postMessage({
         type: 'log',

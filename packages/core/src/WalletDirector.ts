@@ -5,6 +5,7 @@ import {
   ParsedInviteCode,
   ParsedBolt11Invoice,
   PreviewFederation,
+  ParsedNoteDetails,
 } from '@fedimint/types'
 import { FedimintWallet } from './FedimintWallet'
 
@@ -176,5 +177,37 @@ export class WalletDirector {
       { words },
     )
     return result.success
+  }
+
+  /**
+   * Parses OOB notes and retrieves their details.
+   *
+   * This method analyzes ecash notes to extract information about the total amount,
+   * federation ID, invite code (if present), and note denomination breakdown.
+   *
+   * @param {string} notes - The OOB notes string to be parsed.
+   * @returns {Promise<ParsedNoteDetails>}
+   *          A promise that resolves to an object containing:
+   *          - `total_amount`: The total amount of all notes in millisats
+   *          - `federation_id_prefix`: 4-byte hex string identifying the federation
+   *          - `federation_id`: Full 32-byte hex string (if invite is present)
+   *          - `invite_code`: Bech32 encoded invite code starting with "fed1" (if present)
+   *          - `note_counts`: Map of denomination amounts (as strings) to their counts
+   *
+   * @throws {Error} If the TransportClient encounters an issue during the parsing process.
+   *
+   * @example
+   * const notes = "...OOB notes string...";
+   * const parsedNotes = await director.parseOobNotes(notes);
+   * console.log(parsedNotes.total_amount, parsedNotes.federation_id_prefix);
+   * console.log(parsedNotes.note_counts); // e.g., { "1000": 5, "5000": 2 }
+   */
+  async parseOobNotes(notes: string): Promise<ParsedNoteDetails> {
+    await this._client.initialize()
+    const response = await this._client.sendSingleMessage<ParsedNoteDetails>(
+      'parse_oob_notes',
+      { notes },
+    )
+    return response
   }
 }

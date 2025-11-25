@@ -6,4 +6,5 @@ export type {
   ParsedInviteCode,
   ParsedBolt11Invoice,
   PreviewFederation,
+  ParsedNoteDetails,
 } from '@fedimint/types'

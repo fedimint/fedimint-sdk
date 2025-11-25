@@ -28,6 +28,23 @@ export type ParsedBolt11Invoice = {
   memo: string
 }
 
+export type ParsedNoteDetails = {
+  /** Total amount of all notes in the OOB notes (in msats) */
+  total_amount: number
+
+  /** Federation ID prefix (always present) - 4-byte hex string */
+  federation_id_prefix: string
+
+  /** Full federation ID (if invite is present) - 32-byte hex string */
+  federation_id: string | null
+
+  /** Invite code to join the federation (if present) - bech32 encoded string starting with "fed1" */
+  invite_code: string | null
+
+  /** Number of notes per denomination - map of amount (as string) to count */
+  note_counts: Record<string, number>
+}
+
 export const TRANSPORT_MESSAGE_TYPES = [
   'init',
   'error',
@@ -45,6 +62,7 @@ export const TRANSPORT_MESSAGE_TYPES = [
   'parse_invite_code',
   'parse_bolt11_invoice',
   'preview_federation',
+  'parse_oob_notes',
 ] as const
 
 export type TransportMessageType = (typeof TRANSPORT_MESSAGE_TYPES)[number]
