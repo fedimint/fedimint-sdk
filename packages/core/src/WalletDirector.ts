@@ -206,7 +206,7 @@ export class WalletDirector {
     await this._client.initialize()
     const response = await this._client.sendSingleMessage<ParsedNoteDetails>(
       'parse_oob_notes',
-      { notes },
+      { oob_notes: notes },
     )
     return response
   }
