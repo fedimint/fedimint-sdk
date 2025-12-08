@@ -194,6 +194,28 @@ Federation preview information containing:
 
 ---
 
+### parseOobNotes(notes)
+
+> **parseOobNotes**(`notes`): `Promise`\<`ParsedNoteDetails`\>
+
+Parses OOB notes and retrieves their details. It allows you to inspect the contents of OOB notes before redeeming them.
+
+#### Parameters
+
+• **notes**: `string`
+
+#### Returns
+
+`Promise`\<`ParsedNoteDetails`\>
+
+The parsed note details containing `total_amount`, `federation_id_prefix`, and `note_counts`.
+
+#### Defined in
+
+[WalletDirector.ts:205](https://github.com/fedimint/fedimint-sdk/tree/main/packages/core/src/WalletDirector.ts#L205)
+
+---
+
 ### open()
 
 > **open**(`clientName`): `Promise`\<`any`\>

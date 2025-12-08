@@ -286,6 +286,11 @@ await wallet.lightning.createInvoice(10_000, 'description')
 
 // Pay Lightning Invoice
 await wallet.lightning.payInvoice('lnbc...')
+
+// Parse OOB Notes (without redeeming)
+const notes = '...OOB notes string...'
+const parsedNotes = await director.parseOobNotes(notes)
+console.log('Total amount:', parsedNotes.total_amount)
 ```
 
 :::

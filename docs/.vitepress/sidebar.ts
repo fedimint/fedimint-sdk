@@ -80,6 +80,10 @@ const FedimintWalletSidebar = [
         link: 'previewFederation',
       },
       {
+        text: 'parseOobNotes()',
+        link: 'parseOobNotes',
+      },
+      {
         text: 'BalanceService',
         base: '/core/FedimintWallet/BalanceService/',
         items: [
