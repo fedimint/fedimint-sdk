@@ -208,7 +208,7 @@ Parses OOB notes and retrieves their details. It allows you to inspect the conte
 
 `Promise`\<`ParsedNoteDetails`\>
 
-The parsed note details containing `total_amount`, `federation_id_prefix`, and `note_counts`.
+The parsed note details containing `total_amount`, `federation_id_prefix`, `federation_id`, `invite_code`, and `note_counts`.
 
 #### Defined in
 
