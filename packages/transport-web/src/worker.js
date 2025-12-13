@@ -40,7 +40,7 @@ self.onmessage = async (event) => {
         create: true,
       })
       dbSyncHandle = await dbFileHandle.createSyncAccessHandle()
-      rpcHandler = new RpcHandler(dbSyncHandle)
+      rpcHandler = await new RpcHandler(dbSyncHandle)
       self.postMessage({
         type: 'initialized',
         data: { filename },
