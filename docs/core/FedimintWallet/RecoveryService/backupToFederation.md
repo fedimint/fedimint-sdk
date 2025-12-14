@@ -4,6 +4,8 @@
 
 Backup the wallet state to the federation with optional metadata. You should call this function periodically to refresh the user's backups.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'

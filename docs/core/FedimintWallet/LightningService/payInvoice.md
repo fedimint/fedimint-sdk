@@ -4,6 +4,8 @@
 
 Attempts to pay an invoice. Returns a `Promise` that resolves when the payment succeeds or fails / times out.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'
@@ -31,6 +33,8 @@ Attempts to pay a lightning invoice. Returns an `OutgoingLightningPayment` objec
 You can use `subscribeLnPay` and `subscribeInternalPay` to track the payment status. `waitForPay` returns a `Promise` that resolves when the payment succeeds or fails / times out.
 
 `subscribeInternalPay` can be used to track the internal payments status
+
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
 
 ```ts twoslash
 // @esModuleInterop

@@ -4,6 +4,8 @@
 
 Returns a paginated list of transactions from the federation. In case limit and lastseen not given, returns all the available transactions.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 /**
  * Represents wallet transaction record.

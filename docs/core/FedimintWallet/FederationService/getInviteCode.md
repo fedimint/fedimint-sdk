@@ -4,6 +4,8 @@
 
 Access the invite code for the connected federation.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'

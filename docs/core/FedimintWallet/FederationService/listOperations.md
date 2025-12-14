@@ -4,6 +4,8 @@
 
 Returns a paginated list of operations (transactions) from the federation. In case limit and lastseen not given, returns all the available operations.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'

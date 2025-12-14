@@ -8,6 +8,8 @@ You can use `subscribeLnReceive` to track the invoice status.
 
 `waitForReceive` returns a `Promise` that resolves when the invoice succeeds or `timeoutMs` is reached.
 
+> **WARNING**: This function will throw an error if the wallet is currently recovering.
+
 ```ts twoslash
 // @esModuleInterop
 import { WalletDirector } from '@fedimint/core'
