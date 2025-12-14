@@ -17,10 +17,10 @@ const wallet = await director.createWallet()
 await wallet.open()
 
 const limit = 10
-const lastseen = {
-  creation_time: { secs_since_epoch: 2323233, nanos_since_epoch: 93429234 },
-  operation_id:
-    '3ff56b29cf014b9ff6c8b6b4aa78e02d3c429de7112bfaf42a876f6a797ddf8b',
-}
-const operations = await wallet.federation.listOperations(limit, lastseen)
+const lastseen = { // [!code focus]
+  creation_time: { secs_since_epoch: 2323233, nanos_since_epoch: 93429234 }, // [!code focus]
+  operation_id: // [!code focus]
+    '3ff56b29cf014b9ff6c8b6b4aa78e02d3c429de7112bfaf42a876f6a797ddf8b', // [!code focus]
+} // [!code focus]
+const operations = await wallet.federation.listOperations(limit, lastseen) // [!code focus]
 ```
