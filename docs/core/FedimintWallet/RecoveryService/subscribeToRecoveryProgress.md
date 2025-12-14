@@ -23,7 +23,6 @@ const unsubscribe = wallet.recovery.subscribeToRecoveryProgress(
   }, // [!code focus]
   (error) => {
     // [!code focus]
-    // [!code focus]
     console.error('Recovery error:', error) // [!code focus]
   }, // [!code focus]
 ) // [!code focus]
