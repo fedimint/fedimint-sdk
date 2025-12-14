@@ -26,8 +26,8 @@ try {
 
 // Backup with metadata
 try {
-  await wallet.recovery.backupToFederation({
-    // [!code focus]
+  // prettier-ignore
+  await wallet.recovery.backupToFederation({ // [!code focus] 
     timestamp: Date.now(), // [!code focus]
     note: 'My backup', // [!code focus]
   }) // [!code focus]
