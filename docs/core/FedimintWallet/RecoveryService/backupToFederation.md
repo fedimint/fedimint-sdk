@@ -2,7 +2,7 @@
 
 ### `recovery.backupToFederation(metadata?: JSONValue)`
 
-Backup the wallet state to the federation with optional metadata.
+Backup the wallet state to the federation with optional metadata. You should call this function periodically to refresh the user's backups.
 
 ```ts twoslash
 // @esModuleInterop
