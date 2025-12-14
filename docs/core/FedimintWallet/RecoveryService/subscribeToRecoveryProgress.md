@@ -14,15 +14,12 @@ const wallet = await director.createWallet()
 
 await wallet.open()
 
-const unsubscribe = wallet.recovery.subscribeToRecoveryProgress(
-  // [!code focus]
-  (progress) => {
-    // [!code focus]
+const unsubscribe = wallet.recovery.subscribeToRecoveryProgress( // [!code focus]
+  (progress) => { // [!code focus]
     console.log('Module:', progress.module_id) // [!code focus]
     console.log('Progress:', progress.progress) // [!code focus]
   }, // [!code focus]
-  (error) => {
-    // [!code focus]
+  (error) => { // [!code focus]
     console.error('Recovery error:', error) // [!code focus]
   }, // [!code focus]
 ) // [!code focus]
