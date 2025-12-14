@@ -16,7 +16,7 @@ const wallet = await director.createWallet()
 
 await wallet.open()
 
-const operationId =
-  '3ff56b29cf014b9ff6c8b6b4aa78e02d3c429de7112bfaf42a876f6a797ddf8b'
-const config = await wallet.federation.getOperation(operationId)
+const operationId = // [!code focus]
+  '3ff56b29cf014b9ff6c8b6b4aa78e02d3c429de7112bfaf42a876f6a797ddf8b' // [!code focus]
+const config = await wallet.federation.getOperation(operationId) // [!code focus]
 ```
