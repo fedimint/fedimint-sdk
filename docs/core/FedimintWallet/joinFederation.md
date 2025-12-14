@@ -4,8 +4,8 @@
 
 Attempts to join a federation.
 
-::: info Automatic Backup Recovery
-If you have a backup stored with the federation, it will be automatically fetched and restored when you join the federation.
+::: info
+If there is an existing backup stored with the federation associated with the user's root mnemonic, it will be automatically fetched and restored when you join the federation.
 :::
 
 ```ts twoslash
