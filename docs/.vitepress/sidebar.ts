@@ -166,7 +166,7 @@ const FedimintWalletSidebar = [
             text: 'subscribeToRecoveryProgress()',
             link: 'subscribeToRecoveryProgress',
           },
-          { text: 'waitForAllRecoveries()', link: 'waitForAllRecoveries' },
+          { text: 'waitForRecovery()', link: 'waitForRecovery' },
         ],
       },
     ],

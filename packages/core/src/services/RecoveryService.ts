@@ -16,7 +16,7 @@ export class RecoveryService {
     )
   }
 
-  async waitForAllRecoveries() {
+  async waitForRecovery() {
     await this.client.rpcSingle(
       '',
       'wait_for_all_recoveries',

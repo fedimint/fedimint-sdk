@@ -1,8 +1,8 @@
-# Wait for All Recoveries
+# Wait for Recovery
 
-### `recovery.waitForAllRecoveries()`
+### `recovery.waitForRecovery()`
 
-Wait for all pending recovery operations to complete.
+Wait for all pending recovery operations of a particular wallet to complete.
 
 ```ts twoslash
 // @esModuleInterop
@@ -16,7 +16,7 @@ await wallet.open()
 
 try {
   console.log('Waiting for recoveries to complete...')
-  await wallet.recovery.waitForAllRecoveries() // [!code focus]
+  await wallet.recovery.waitForRecovery() // [!code focus]
   console.log('All recoveries completed')
 } catch (error) {
   console.error('Recovery failed', error)
