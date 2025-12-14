@@ -16,6 +16,6 @@ const wallet = await director.createWallet()
 
 await wallet.open()
 
-const notes = await wallet.mint.getNotesByDenomination()
+const notes = await wallet.mint.getNotesByDenomination() // [!code focus]
 console.log('Notes are: ', notes) // {1: 2, 2: 1, 8: 2}
 ```
