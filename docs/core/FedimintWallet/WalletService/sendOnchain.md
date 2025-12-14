@@ -19,7 +19,7 @@ await wallet.open()
 const amount = 20 // amount in Sats // [!code focus]
 const address = 'bc1q...' // [!code focus]
 
-const { operation_id } = await wallet.wallet.sendOnchain(
+const { operation_id } = await wallet.wallet.sendOnchain( // [!code focus]
   amount, // [!code focus]
   address, // [!code focus]
 ) // [!code focus]
