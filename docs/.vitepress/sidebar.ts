@@ -84,6 +84,18 @@ const FedimintWalletSidebar = [
         link: 'parseOobNotes',
       },
       {
+        text: 'generateMnemonic()',
+        link: 'generateMnemonic',
+      },
+      {
+        text: 'getMnemonic()',
+        link: 'getMnemonic',
+      },
+      {
+        text: 'setMnemonic()',
+        link: 'setMnemonic',
+      },
+      {
         text: 'hasMnemonicSet()',
         link: 'hasMnemonicSet',
       },
