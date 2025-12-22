@@ -84,6 +84,10 @@ const FedimintWalletSidebar = [
         link: 'parseOobNotes',
       },
       {
+        text: 'hasMnemonicSet()',
+        link: 'hasMnemonicSet',
+      },
+      {
         text: 'BalanceService',
         base: '/core/FedimintWallet/BalanceService/',
         items: [
