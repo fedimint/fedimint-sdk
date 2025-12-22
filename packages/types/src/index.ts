@@ -63,6 +63,7 @@ export const TRANSPORT_MESSAGE_TYPES = [
   'parse_bolt11_invoice',
   'preview_federation',
   'parse_oob_notes',
+  'has_mnemonic_set',
 ] as const
 
 export type TransportMessageType = (typeof TRANSPORT_MESSAGE_TYPES)[number]

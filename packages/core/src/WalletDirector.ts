@@ -210,4 +210,12 @@ export class WalletDirector {
     )
     return response
   }
+
+  /**
+   * Checks if a mnemonic phrase has been set.
+   * @returns {Promise<boolean>} A promise that resolves to true if a mnemonic is set, false otherwise.
+   */
+  async hasMnemonicSet(): Promise<boolean> {
+    return await this._client.sendSingleMessage<boolean>('has_mnemonic_set')
+  }
 }

@@ -58,7 +58,8 @@ self.onmessage = async (event) => {
       type === 'parse_invite_code' ||
       type === 'parse_bolt11_invoice' ||
       type === 'preview_federation' ||
-      type === 'parse_oob_notes'
+      type === 'parse_oob_notes' ||
+      type === 'has_mnemonic_set'
     ) {
       self.postMessage({
         type: 'log',
