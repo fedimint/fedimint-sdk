@@ -20,6 +20,45 @@ This guide is intended to help you get started with contributing. By following t
 
 :::
 
+## Dependency on Fedimint Client WASM
+
+To call Rust side functions, this SDK depends on a WASM binary built from the `fedimint-client-wasm` crate in the [Fedimint repository](https://github.com/fedimint/fedimint/tree/master/fedimint-client-wasm).
+
+**Important:**
+
+- This WASM binary is required for the SDK to function.
+- It is built using the source code from the `fedimint` repository, not this SDK repository.
+- The specific revision of the `fedimint` repository used is defined in `flake.nix`.
+
+### Updating the WASM Binary
+
+If you have made changes to the Rust side (in the `fedimint` repo) and need to update the WASM binary used by this SDK:
+
+1. Update the `fedimint-wasm` input in [flake.nix](https://github.com/fedimint/fedimint-sdk/blob/main/flake.nix) (around line 9) to point to the new commit/revision.
+2. Build the WASM binary (see instructions below).
+
+## Set up Nix
+
+Fedimint uses Nix for managing the development environment. It is **highly recommended** to use Nix to ensure you have the correct tools and versions.
+
+For detailed instructions on setting up Nix, see [Nix Setup](./nix_setup.md).
+
+Once Nix is installed, enter the development shell:
+
+```bash
+nix develop
+```
+
+## Building the WASM Binary
+
+After setting up Nix and entering the shell, you must build the WASM binary:
+
+```bash
+pnpm build:wasm
+```
+
+This command will build the `fedimint-client-wasm` crate and place the resulting binary in the `packages/wasm-bundler` folder.
+
 ## 1. Cloning the repository
 
 To start contributing to the project, clone it to your local machine using git:

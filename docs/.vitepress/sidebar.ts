@@ -30,6 +30,7 @@ export function getSidebar() {
       base: '/core/dev/',
       items: [
         { text: 'Contributing', link: 'contributing' },
+        { text: 'Nix Setup', link: 'nix_setup' },
         { text: 'Awesome Projects', link: 'awesome' },
         { text: 'Testing', link: 'testing' },
       ],
