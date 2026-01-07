@@ -12,13 +12,13 @@ While it is technically possible to develop without Nix, it is **highly recommen
 
 You have two main options to install Nix:
 
-### 1. The Determinate Nix Installer (Recommended)
+### Option 1. The Determinate Nix Installer (Recommended)
 
 This is a modern, opinionated installer that sets up everything ensuring a smooth experience.
 
 [Determinate Systems Nix Installer](https://github.com/DeterminateSystems/nix-installer)
 
-### 2. The Official Installer
+### Option 2. The Official Installer
 
 [Download Nix / NixOS](https://nixos.org/download.html)
 
