@@ -37,14 +37,12 @@ export class TransportClient {
     this.logger.debug('TransportClient transport', transport)
   }
 
-  // Idempotent setup - Loads the wasm module
-  initialize(): Promise<boolean>
-  initialize(testFilename: string): Promise<boolean>
-  initialize(testFilename?: string): Promise<boolean> {
+  // Idempotent setup
+  initialize(dbPath?: string): Promise<boolean> {
     if (this.initPromise) return this.initPromise
-    if (testFilename) {
+    if (dbPath) {
       this.initPromise = this.sendSingleMessage('init', {
-        filename: testFilename,
+        dbPath: dbPath,
       })
     } else {
       this.initPromise = this.sendSingleMessage('init')

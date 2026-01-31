@@ -12,6 +12,7 @@ import { FedimintWallet } from './FedimintWallet'
 export class WalletDirector {
   // Protected to allow for TestWalletDirector to access the client
   protected _client: TransportClient
+  public dbPath: string | undefined
 
   /**
    * Creates a new instance of WalletDirector.
@@ -22,20 +23,21 @@ export class WalletDirector {
    * @param {boolean} lazy - If true, delays Web Worker and WebAssembly initialization
    *                         until needed. Default is false.
    */
-  constructor(transport: Transport, lazy: boolean = false) {
+  constructor(transport: Transport, dbPath?: string, lazy: boolean = false) {
+    this.dbPath = dbPath
     if (!transport) {
       throw new Error('WalletDirector requires a transport implementation')
     }
     this._client = new TransportClient(transport)
     this._client.logger.info('WalletDirector instantiated')
     if (!lazy) {
-      this.initialize()
+      this.initialize(this.dbPath)
     }
   }
 
-  async initialize() {
+  async initialize(dbPath?: string) {
     this._client.logger.info('Initializing TransportClient')
-    await this._client.initialize()
+    await this._client.initialize(dbPath)
     this._client.logger.info('TransportClient initialized')
   }
 

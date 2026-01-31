@@ -37,7 +37,12 @@
     "test:create": "vitest --watch=false --project cli",
     "test:ui": "vitest --browser.headless=false --ui",
     "format": "prettier --write .",
-    "watch": "pnpm run --r --parallel --filter \"./packages/**\" watch"
+    "watch": "pnpm run --r --parallel --filter \"./packages/**\" watch",
+    "ubrn:android": "pnpm --filter react-native ubrn:android",
+    "ubrn:android:release": "pnpm --filter react-native ubrn:android:release",
+    "ubrn:ios": "pnpm --filter react-native ubrn:ios",
+    "ubrn:ios:release": "pnpm --filter react-native ubrn:ios:release",
+    "ubrn:clean": "pnpm --filter react-native ubrn:clean"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
