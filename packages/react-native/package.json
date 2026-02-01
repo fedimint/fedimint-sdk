@@ -33,13 +33,14 @@
     "!**/.*"
     ],
   "scripts": {
-    "example": "yarn workspace react-native-example",
     "ubrn:ios": "ubrn build ios --and-generate && patch -p0 < patches/export_transport.patch && patch -p0 < patches/add_ios_frameworks.patch",
     "ubrn:android": "ubrn build android --and-generate && patch -p0 < patches/export_transport.patch",
-    "ubrn:web": "ubrn build web",
+    "ubrn:ios:release": "ubrn build ios --and-generate --release && patch -p0 < patches/add_ios_frameworks.patch && patch -p0 < patches/export_transport.patch",
+    "ubrn:android:release": "ubrn build android --and-generate --release && patch -p0 < patches/export_transport.patch",
     "ubrn:checkout": "ubrn checkout",
     "ubrn:clean": "rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/",
-    "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
+    "clean:deep": "pnpm clean && rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/",
+    "clean": "rm -rfv android/build example/android/build example/android/app/build example/ios/build lib",
     "build": "bob build",
     "typecheck": "tsc"
   },

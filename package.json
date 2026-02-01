@@ -40,9 +40,9 @@
     "watch": "pnpm run --r --parallel --filter \"./packages/**\" watch",
     "ubrn:android": "pnpm --filter react-native ubrn:android",
     "ubrn:android:release": "pnpm --filter react-native ubrn:android:release",
+    "ubrn:clean": "pnpm --filter react-native ubrn:clean",
     "ubrn:ios": "pnpm --filter react-native ubrn:ios",
-    "ubrn:ios:release": "pnpm --filter react-native ubrn:ios:release",
-    "ubrn:clean": "pnpm --filter react-native ubrn:clean"
+    "ubrn:ios:release": "pnpm --filter react-native ubrn:ios:release"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
