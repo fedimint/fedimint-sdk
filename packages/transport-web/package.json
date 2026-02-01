@@ -21,7 +21,8 @@
     "build": "rollup --config",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "clean:deep": "pnpm run clean && rm -rf node_modules",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "rollup --config"
   },
   "dependencies": {
     "@fedimint/fedimint-client-wasm-bundler": "workspace:*",

@@ -17,7 +17,8 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepare": "tsc --project tsconfig.json"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
