@@ -31,7 +31,7 @@
     "!**/__fixtures__",
     "!**/__mocks__",
     "!**/.*"
-    ],
+  ],
   "scripts": {
     "ubrn:ios": "ubrn build ios --and-generate && patch -p0 < patches/export_transport.patch && patch -p0 < patches/add_ios_frameworks.patch",
     "ubrn:android": "ubrn build android --and-generate && patch -p0 < patches/export_transport.patch",
@@ -42,7 +42,12 @@
     "clean:deep": "pnpm clean && rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/",
     "clean": "rm -rfv android/build example/android/build example/android/app/build example/ios/build lib",
     "build": "bob build",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "postinstall": "node scripts/download-binaries.js"
+  },
+  "checksums": {
+    "android": "",
+    "ios": ""
   },
   "keywords": [
     "react-native",

@@ -1,0 +1,36 @@
+name: Build React Native
+description: Builds Android and iOS bindings using Nix
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: nix develop -c pnpm install --frozen-lockfile
+
+    - name: Build Android Bindings
+      shell: bash
+      working-directory: packages/react-native
+      run: nix develop ../../.#android -c pnpm run ubrn:android:release
+
+    - name: Compress Android binaries
+      shell: bash
+      working-directory: packages/react-native
+      run: |
+        nix develop ../../ -c bash -c "zip -9 -r android-artifacts.zip android/src/main/jniLibs && echo \"ANDROID_SHA256=\$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
+
+    - name: Build iOS Bindings
+      shell: bash
+      working-directory: packages/react-native
+      run: nix develop ../../.#ios -c pnpm run ubrn:ios:release
+
+    - name: Compress iOS binaries
+      shell: bash
+      working-directory: packages/react-native
+      run: |
+        nix develop ../../ -c bash -c "zip -9 -r ios-artifacts.zip FedimintReactNativeFramework.xcframework && echo \"IOS_SHA256=\$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
+
+    - name: Insert package checksums
+      shell: bash
+      working-directory: packages/react-native
+      run: |
+        nix develop ../../ -c node -e "const pkg = require('./package.json'); pkg.checksums={android:'\${{ env.ANDROID_SHA256 }}',ios:'\${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
