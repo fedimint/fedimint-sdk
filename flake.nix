@@ -155,7 +155,7 @@
           '';
 
           iosShellHook = ''
-            export PATH=${xcode-wrapper}/bin:$HOME/.cargo/bin:$PATH
+            export PATH=${xcode-wrapper}/bin:$PATH
 
             if [[ "$OSTYPE" == "darwin"* ]]; then
                 unset SDKROOT
