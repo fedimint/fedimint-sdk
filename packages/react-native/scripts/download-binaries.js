@@ -22,7 +22,10 @@ if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
 }
 
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
-const TAG = pkg.version;
+let TAG = `v${pkg.version}`;
+if (pkg.version.includes('-') || pkg.version.includes('snapshot')) {
+    TAG = 'snapshot';
+}
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
 const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
 
@@ -68,8 +71,8 @@ const unzip = (file, dest) => {
 };
 
 const main = async () => {
-    const androidUrl = `${REPO}/releases/download/v${TAG}/android-artifacts.zip`; // Note the 'v' prefix if your tags have it
-    const iosUrl = `${REPO}/releases/download/v${TAG}/ios-artifacts.zip`;
+    const androidUrl = `${REPO}/releases/download/${TAG}/android-artifacts.zip`;
+    const iosUrl = `${REPO}/releases/download/${TAG}/ios-artifacts.zip`;
 
     console.log(`Downloading Android artifacts from ${androidUrl}...`);
     await downloadFile(androidUrl, 'android-artifacts.zip');
