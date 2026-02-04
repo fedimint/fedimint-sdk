@@ -1,7 +1,0 @@
---- src/index.tsx
-+++ src/index.tsx
-@@ -39,3 +39,4 @@ export default {
-   fedimint_client_uniffi,
- };
- 
-+export * from './transport';

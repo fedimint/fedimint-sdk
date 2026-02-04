@@ -39,4 +39,3 @@ export default {
   fedimint_client_uniffi,
 };
 
-export * from './transport';

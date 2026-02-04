@@ -17,3 +17,4 @@ packages/react-native
 examples/expo-app
 examples/react-native
 fedimint-sdk-ffi
+packages/transport-react-native

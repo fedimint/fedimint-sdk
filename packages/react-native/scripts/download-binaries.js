@@ -14,7 +14,7 @@ if (process.env.EXPO_PUBLIC_SKIP_POSTINSTALL) {
 
 // Check if artifacts already exist (simple check)
 const androidLibCheck = path.join(__dirname, '../android/src/main/jniLibs');
-const iosFrameworkCheck = path.join(__dirname, '../ios/FedimintReactNativeFramework.xcframework');
+const iosFrameworkCheck = path.join(__dirname, '../FedimintReactNativeFramework.xcframework');
 
 if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
     console.log('Binaries already present, skipping download.');

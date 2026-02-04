@@ -1,22 +1,20 @@
 import * as React from 'react';
 
 import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
-import { RpcHandler, createReactNativeTransport, ReactNativeTransport } from '@fedimint/react-native';
+import { ReactNativeTransport } from '@fedimint/transport-react-native';
 import RNFS from 'react-native-fs';
 
 import { WalletDirector } from '@fedimint/core';
 
-let gd: string = "";
 let director: WalletDirector;
 
 const initFedimintCLI = async () => {
   const dbPath = `${RNFS.DocumentDirectoryPath}/fedimint_db`;
 
-  console.log("Using DB Path:", dbPath);
+  console.log('Using DB Path:', dbPath);
 
-  director = new WalletDirector(new ReactNativeTransport(), dbPath);
-}
-
+  director = new WalletDirector(new ReactNativeTransport(dbPath));
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -112,7 +110,7 @@ const styles = StyleSheet.create({
 });
 
 export default function App() {
-  const [mnemonic, setMnemonic] = React.useState<string>("");
+  const [mnemonic, setMnemonic] = React.useState<string>('');
   const [loading, setLoading] = React.useState(false);
 
   React.useEffect(() => {
@@ -127,7 +125,7 @@ export default function App() {
     setLoading(true);
     try {
       const words = await director.generateMnemonic();
-      setMnemonic(words.join(" "));
+      setMnemonic(words.join(' '));
     } catch (e) {
       console.error(e);
     } finally {
@@ -136,7 +134,7 @@ export default function App() {
   };
 
   const handleClear = () => {
-    setMnemonic("");
+    setMnemonic('');
   };
 
   return (
@@ -162,7 +160,7 @@ export default function App() {
             disabled={loading}
           >
             <Text style={styles.buttonText}>
-              {loading ? "Generating..." : "Generate New Mnemonic"}
+              {loading ? 'Generating...' : 'Generate New Mnemonic'}
             </Text>
           </TouchableOpacity>
 

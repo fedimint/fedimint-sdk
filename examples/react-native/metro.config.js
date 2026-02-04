@@ -2,7 +2,6 @@ const { getDefaultConfig } = require('@react-native/metro-config');
 const path = require('path');
 
 const root = path.resolve(__dirname, '../..');
-const pak = require('../../packages/react-native/package.json');
 
 /**
  * Metro configuration
@@ -18,8 +17,18 @@ config.resolver.nodeModulesPaths = [
   path.resolve(root, 'node_modules'),
 ];
 
+// Map all workspace packages to their source directories
 config.resolver.extraNodeModules = {
-  [pak.name]: path.resolve(__dirname, '../../packages/react-native'),
+  '@fedimint/react-native': path.resolve(
+    __dirname,
+    '../../packages/react-native',
+  ),
+  '@fedimint/transport-react-native': path.resolve(
+    __dirname,
+    '../../packages/transport-react-native',
+  ),
+  '@fedimint/core': path.resolve(__dirname, '../../packages/core'),
+  '@fedimint/types': path.resolve(__dirname, '../../packages/types'),
 };
 
 module.exports = config;
