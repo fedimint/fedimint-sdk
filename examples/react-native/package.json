@@ -8,8 +8,7 @@
     "start": "react-native start"
   },
   "dependencies": {
-    "@fedimint/core": "workspace:*",
-    "@fedimint/transport-react-native": "workspace:*",
+    "@fedimint/react-native": "workspace:*",
     "react": "19.2.0",
     "react-native": "0.83.1",
     "react-native-fs": "^2.20.0"

@@ -1,10 +1,8 @@
 import * as React from 'react';
 
 import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
-import { ReactNativeTransport } from '@fedimint/transport-react-native';
+import WalletDirector from '@fedimint/react-native';
 import RNFS from 'react-native-fs';
-
-import { WalletDirector } from '@fedimint/core';
 
 let director: WalletDirector;
 
@@ -13,7 +11,7 @@ const initFedimintCLI = async () => {
 
   console.log('Using DB Path:', dbPath);
 
-  director = new WalletDirector(new ReactNativeTransport(dbPath));
+  director = new WalletDirector(dbPath);
 };
 
 const styles = StyleSheet.create({

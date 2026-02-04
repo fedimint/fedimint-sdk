@@ -13,8 +13,7 @@ docs/core/FedimintWallet/LightningService/payInvoice.md
 flake.lock
 
 # TODO: Add proper ignore files for react-native
-packages/react-native
+packages/react-native-bindings
 examples/expo-app
 examples/react-native
 fedimint-sdk-ffi
-packages/transport-react-native

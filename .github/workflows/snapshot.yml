@@ -44,7 +44,7 @@ jobs:
           pnpm changeset version --no-git-tag --snapshot \$snapshot
 
           # Re-apply checksums (action exported them to env)
-          cd packages/react-native
+          cd packages/react-native-bindings
           node -e \"const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')\"
           cd ../..
 
@@ -56,8 +56,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            packages/react-native/android-artifacts.zip
-            packages/react-native/ios-artifacts.zip
+            packages/react-native-bindings/android-artifacts.zip
+            packages/react-native-bindings/ios-artifacts.zip
           tag_name: snapshot
           name: Snapshot Release
           prerelease: true

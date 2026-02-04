@@ -19,13 +19,13 @@ config.resolver.nodeModulesPaths = [
 
 // Map all workspace packages to their source directories
 config.resolver.extraNodeModules = {
+  '@fedimint/react-native-bindings': path.resolve(
+    __dirname,
+    '../../packages/react-native-bindings',
+  ),
   '@fedimint/react-native': path.resolve(
     __dirname,
     '../../packages/react-native',
-  ),
-  '@fedimint/transport-react-native': path.resolve(
-    __dirname,
-    '../../packages/transport-react-native',
   ),
   '@fedimint/core': path.resolve(__dirname, '../../packages/core'),
   '@fedimint/types': path.resolve(__dirname, '../../packages/types'),

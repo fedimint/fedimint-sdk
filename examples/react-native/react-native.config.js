@@ -1,5 +1,5 @@
 const path = require('path');
-const pkg = require('../../packages/react-native/package.json');
+const pkg = require('../../packages/react-native-bindings/package.json');
 
 module.exports = {
   project: {
@@ -9,7 +9,7 @@ module.exports = {
   },
   dependencies: {
     [pkg.name]: {
-      root: path.join(__dirname, '../../packages/react-native'),
+      root: path.join(__dirname, '../../packages/react-native-bindings'),
     },
   },
 };

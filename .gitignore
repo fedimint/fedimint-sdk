@@ -158,13 +158,13 @@ rust_modules/
 *.so
 
 # React Native Codegen
-packages/react-native/ios/generated
-packages/react-native/android/generated
-packages/react-native/android/src/main/jniLibs
+packages/react-native-bindings/ios/generated
+packages/react-native-bindings/android/generated
+packages/react-native-bindings/android/src/main/jniLibs
 binaries.tar.gz
 examples/react-native/vendor
 examples/react-native/ios/Pods
-packages/react-native/FedimintReactNativeFramework.xcframework
-packages/react-native/ReactNative.podspec.orig
-packages/react-native/cpp/generated/
-packages/react-native/src/generated/
+packages/react-native-bindings/FedimintReactNativeFramework.xcframework
+packages/react-native-bindings/ReactNative.podspec.orig
+packages/react-native-bindings/cpp/generated/
+packages/react-native-bindings/src/generated/
