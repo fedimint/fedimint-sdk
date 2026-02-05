@@ -16,7 +16,7 @@ runs:
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop ../../ -c bash -c "zip -9 -r ios-artifacts.zip FedimintReactNativeFramework.xcframework && echo \"IOS_SHA256=\$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
+        nix develop ../../ -c bash -c "zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework && echo \"IOS_SHA256=\$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
 
     - name: Build Android Bindings
       shell: bash
