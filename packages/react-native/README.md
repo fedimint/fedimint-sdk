@@ -80,13 +80,27 @@ npx expo run:android
 }
 ```
 
+### Skipping Binary Downloads
+
+You can skip the automatic binary download during installation by:
+
+1. **Using an environment variable:**
+
+   ```bash
+   FEDIMINT_SKIP_BINARY_DOWNLOAD=true npm install @fedimint/react-native
+   ```
+
+2. **Using the Expo plugin option** (for Expo projects):
+   Set `"skipBinaryDownload": true` in the plugin options above.
+
+This is useful when you want to handle binary downloads manually or are building from source.
+
 ## Requirements
 
-| React Native    | Support              |
-| --------------- | -------------------- |
-| 0.77.x          | ✅ Minimum supported |
-| 0.78.x - 0.82.x | ✅ Supported         |
-| 0.83.x          | ✅ Recommended       |
+| React Native    | Support        |
+| --------------- | -------------- |
+| 0.78.x - 0.82.x | ✅ Supported   |
+| 0.83.x          | ✅ Recommended |
 
 | Platform | Minimum Version      |
 | -------- | -------------------- |
@@ -113,20 +127,6 @@ import {
 
 // Types
 import type { FedimintWallet } from '@fedimint/react-native'
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Your React Native App                     │
-├─────────────────────────────────────────────────────────────┤
-│                   @fedimint/react-native                     │
-│               (WalletDirector + Transport)                   │
-├─────────────────────────────────────────────────────────────┤
-│              @fedimint/react-native-bindings                 │
-│           (Native Rust bindings via TurboModules)            │
-└─────────────────────────────────────────────────────────────┘
 ```
 
 ## License

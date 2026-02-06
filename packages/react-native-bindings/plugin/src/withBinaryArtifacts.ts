@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 
-const PACKAGE_NAME = '@fedimint/react-native';
+const PACKAGE_NAME = '@fedimint/react-native-bindings';
 const GITHUB_REPO = 'https://github.com/fedimint/fedimint-sdk';
 
 /**
@@ -50,7 +50,9 @@ function downloadBinaryArtifacts(): void {
     console.warn('Binary checksums not found in package.json, skipping verification.');
   }
 
-  const releaseTag = `react-native-v${version}`;
+  // Use 'snapshot' tag for pre-release versions, otherwise use react-native-v{version}
+  const isPreRelease = version.includes('-') || version.includes('snapshot') || version.includes('canary');
+  const releaseTag = isPreRelease ? 'snapshot' : `react-native-v${version}`;
   const androidUrl = `${GITHUB_REPO}/releases/download/${releaseTag}/android-artifacts.zip`;
   const iosUrl = `${GITHUB_REPO}/releases/download/${releaseTag}/ios-artifacts.zip`;
 

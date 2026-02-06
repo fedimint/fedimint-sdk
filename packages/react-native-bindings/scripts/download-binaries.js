@@ -6,9 +6,15 @@ const crypto = require('crypto');
 
 const pkg = require('../package.json');
 
-// Check if we should skip
-if (process.env.EXPO_PUBLIC_SKIP_POSTINSTALL) {
-    console.log('Skipping postinstall due to EXPO_PUBLIC_SKIP_POSTINSTALL');
+// Check if we should skip via environment variable
+if (process.env.EXPO_PUBLIC_SKIP_POSTINSTALL || process.env.FEDIMINT_SKIP_BINARY_DOWNLOAD === 'true') {
+    console.log('Skipping postinstall due to environment variable');
+    process.exit(0);
+}
+
+// Check if skipBinaryDownload is set in package.json
+if (pkg.skipBinaryDownload === true) {
+    console.log('Skipping postinstall due to skipBinaryDownload in package.json');
     process.exit(0);
 }
 
@@ -22,8 +28,8 @@ if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
 }
 
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
-let TAG = `v${pkg.version}`;
-if (pkg.version.includes('-') || pkg.version.includes('snapshot')) {
+let TAG = `react-native-v${pkg.version}`;
+if (pkg.version.includes('-') || pkg.version.includes('snapshot') || pkg.version.includes('canary')) {
     TAG = 'snapshot';
 }
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
