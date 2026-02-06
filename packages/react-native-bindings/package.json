@@ -5,6 +5,7 @@
   "source": "./src/index.tsx",
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
+  "types": "./lib/typescript/module/src/index.d.ts",
   "exports": {
     ".": {
       "source": "./src/index.tsx",
@@ -74,6 +75,7 @@
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.0",
+    "@expo/config-plugins": "^9.0.0",
     "@react-native-community/cli": "15.0.1",
     "@types/jest": "^29.5.5",
     "@types/react": "^19.0.8",
@@ -136,7 +138,6 @@
     "version": "0.41.2"
   },
   "dependencies": {
-    "@expo/config-plugins": "^9.0.0",
     "@fedimint/types": "workspace:*",
     "uniffi-bindgen-react-native": "0.29.3-1"
   }
