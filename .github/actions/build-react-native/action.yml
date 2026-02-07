@@ -16,7 +16,10 @@ runs:
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop ../../ -c bash -c "zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework && echo \"IOS_SHA256=\$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
+        nix develop ../../ -c zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework
+        IOS_SHA256=$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)
+        echo "iOS checksum: $IOS_SHA256"
+        echo "IOS_SHA256=$IOS_SHA256" >> $GITHUB_ENV
 
     - name: Build Android Bindings
       shell: bash
@@ -27,10 +30,14 @@ runs:
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop ../../ -c bash -c "zip -9 -r android-artifacts.zip android/src/main/jniLibs && echo \"ANDROID_SHA256=\$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)\" >> \$GITHUB_ENV"
+        nix develop ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
+        ANDROID_SHA256=$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)
+        echo "Android checksum: $ANDROID_SHA256"
+        echo "ANDROID_SHA256=$ANDROID_SHA256" >> $GITHUB_ENV
 
     - name: Insert package checksums
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop ../../ -c node -e "const pkg = require('./package.json'); pkg.checksums={android:'\${{ env.ANDROID_SHA256 }}',ios:'\${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
+        echo "Inserting checksums - Android: ${{ env.ANDROID_SHA256 }}, iOS: ${{ env.IOS_SHA256 }}"
+        node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
