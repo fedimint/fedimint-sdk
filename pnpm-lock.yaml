@@ -399,9 +399,6 @@ importers:
 
   packages/react-native-bindings:
     dependencies:
-      '@fedimint/types':
-        specifier: workspace:*
-        version: link:../types
       uniffi-bindgen-react-native:
         specifier: 0.29.3-1
         version: 0.29.3-1
