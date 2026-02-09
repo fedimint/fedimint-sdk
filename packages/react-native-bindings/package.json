@@ -43,7 +43,6 @@
   ],
   "scripts": {
     "ubrn:ios": "ubrn build ios --and-generate",
-    "prepare": "pnpm build",
     "ubrn:android": "ubrn build android --and-generate && patch -p0 --forward < patches/rn083_callinvoker.patch || true",
     "ubrn:ios:release": "ubrn build ios --and-generate --release",
     "ubrn:android:release": "ubrn build android --and-generate --release && patch -p0 --forward < patches/rn083_callinvoker.patch || true",
