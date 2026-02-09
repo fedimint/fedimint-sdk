@@ -138,7 +138,6 @@
     "version": "0.41.2"
   },
   "dependencies": {
-    "@fedimint/types": "workspace:*",
     "uniffi-bindgen-react-native": "0.29.3-1"
   }
 }
