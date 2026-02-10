@@ -52,19 +52,6 @@ jobs:
           pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
           "
 
-      - name: Delete existing release assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Delete existing assets from snapshot release to ensure fresh upload
-          for asset in android-artifacts.zip ios-artifacts.zip; do
-            asset_id=$(gh api repos/${{ github.repository }}/releases/tags/snapshot --jq ".assets[] | select(.name == \"$asset\") | .id" 2>/dev/null || true)
-            if [ -n "$asset_id" ]; then
-              echo "Deleting existing asset: $asset (ID: $asset_id)"
-              gh api -X DELETE repos/${{ github.repository }}/releases/assets/$asset_id
-            fi
-          done
-
       - name: Upload Artifacts to Release
         uses: softprops/action-gh-release@v1
         with:
