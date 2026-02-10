@@ -43,6 +43,9 @@
   ],
   "scripts": {
     "ubrn:ios": "ubrn build ios --and-generate",
+    "plugin:build": "EXPO_NONINTERACTIVE=true expo-module build plugin",
+    "plugin:clean": "expo-module clean plugin",
+    "plugin:watch": "expo-module build plugin",
     "ubrn:android": "ubrn build android --and-generate && patch -p0 --forward < patches/rn083_callinvoker.patch || true",
     "ubrn:ios:release": "ubrn build ios --and-generate --release",
     "ubrn:android:release": "ubrn build android --and-generate --release && patch -p0 --forward < patches/rn083_callinvoker.patch || true",
@@ -50,15 +53,19 @@
     "ubrn:clean": "rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/",
     "clean:deep": "pnpm clean && rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/",
     "clean": "rm -rfv android/build example/android/build example/android/app/build example/ios/build lib plugin/build",
-    "build": "bob build && pnpm build:plugin",
-    "build:plugin": "cd plugin && tsc",
+    "build": "bob build && pnpm plugin:build",
     "typecheck": "tsc",
-    "postinstall": "node scripts/download-binaries.js"
+    "postinstall": "node scripts/download-binaries.js",
+    "prepare": "pnpm plugin:build"
   },
   "keywords": [
     "react-native",
     "ios",
-    "android"
+    "android",
+    "fedimint",
+    "bitcoin",
+    "lightning",
+    "wallet"
   ],
   "repository": {
     "type": "git",
@@ -80,6 +87,7 @@
     "@types/jest": "^29.5.5",
     "@types/react": "^19.0.8",
     "del-cli": "^5.1.0",
+    "expo-module-scripts": "^5.0.8",
     "jest": "^29.7.0",
     "prettier": "^3.0.3",
     "react": "19.2.0",
