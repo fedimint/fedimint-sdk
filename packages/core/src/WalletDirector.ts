@@ -151,6 +151,7 @@ export class WalletDirector {
    * @returns {Promise<string[]>} A promise that resolves to the generated mnemonic phrase.
    */
   async generateMnemonic(): Promise<string[]> {
+    await this._client.initialize()
     const result = await this._client.sendSingleMessage<{ mnemonic: string[] }>(
       'generate_mnemonic',
     )
@@ -162,6 +163,7 @@ export class WalletDirector {
    * @returns {Promise<string[]>} A promise that resolves to the current mnemonic phrase.
    */
   async getMnemonic(): Promise<string[]> {
+    await this._client.initialize()
     const result = await this._client.sendSingleMessage<{ mnemonic: string[] }>(
       'get_mnemonic',
     )
@@ -174,6 +176,7 @@ export class WalletDirector {
    * @returns {Promise<boolean>} A promise that resolves to true if the mnemonic was set successfully.
    */
   async setMnemonic(words: string[]): Promise<boolean> {
+    await this._client.initialize()
     const result = await this._client.sendSingleMessage<{ success: boolean }>(
       'set_mnemonic',
       { words },
@@ -218,6 +221,7 @@ export class WalletDirector {
    * @returns {Promise<boolean>} A promise that resolves to true if a mnemonic is set, false otherwise.
    */
   async hasMnemonicSet(): Promise<boolean> {
+    await this._client.initialize()
     return await this._client.sendSingleMessage<boolean>('has_mnemonic_set')
   }
 }

@@ -38,6 +38,7 @@ export class TransportClient {
   }
 
   // Idempotent setup
+  // dbPath is required for react-native.
   initialize(dbPath?: string): Promise<boolean> {
     if (this.initPromise) return this.initPromise
     if (dbPath) {
