@@ -39,6 +39,18 @@ Use the `@fedimint/react-native` package which wraps these bindings with a more 
 npm install @fedimint/react-native
 ```
 
+## Supported Platforms
+
+### Android
+
+- `arm64-v8a`
+- `x86_64`
+
+### iOS
+
+- `aarch64-apple-ios`
+- `x86_64-apple-ios`
+
 ## Credit
 
 Used the [bdk-rn](https://github.com/bitcoindevkit/bdk-rn) and [spark-sdk](https://github.com/breez/spark-sdk/tree/main) libraries as a reference.
