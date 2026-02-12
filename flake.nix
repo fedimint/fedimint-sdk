@@ -247,6 +247,16 @@
             ];
             shellHook = commonShellHook + iosShellHook;
           };
+
+          wasm-tests = pkgs.mkShell {
+             nativeBuildInputs = wasmNativeBuildInputs ++ [
+               fedimint.packages.${system}.devimint
+               fedimint.packages.${system}.gateway-pkgs
+               fedimint.packages.${system}.fedimint-pkgs
+               fedimint.packages.${system}.fedimint-recurringd
+             ] ++ [ wasmToolchain ];
+             shellHook = wasmShellHook;
+          };
         };
         packages = {
           wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;

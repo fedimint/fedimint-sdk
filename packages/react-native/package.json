@@ -9,13 +9,13 @@
   },
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
-  "types": "./lib/typescript/index.d.ts",
+  "types": "./lib/typescript/commonjs/index.d.ts",
   "react-native": "./src/index.ts",
   "source": "./src/index.ts",
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./lib/typescript/index.d.ts",
+      "types": "./lib/typescript/commonjs/index.d.ts",
       "default": "./lib/module/index.js"
     },
     "./app.plugin.js": "./app.plugin.js",
@@ -45,7 +45,7 @@
     "@expo/config-plugins": "^54.0.4",
     "@types/node": "^22.19.7",
     "expo-module-scripts": "^5.0.8",
-    "react-native-builder-bob": "^0.35.0",
+    "react-native-builder-bob": "^0.40.17",
     "typescript": "^5.9.3"
   },
   "react-native-builder-bob": {

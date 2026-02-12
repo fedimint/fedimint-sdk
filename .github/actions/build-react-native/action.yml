@@ -5,12 +5,12 @@ runs:
   steps:
     - name: Install dependencies
       shell: bash
-      run: nix develop -c pnpm install --frozen-lockfile
+      run: nix develop --accept-flake-config -c pnpm install --frozen-lockfile
 
     - name: Build iOS Bindings
       shell: bash
       working-directory: packages/react-native-bindings
-      run: nix develop ../../.#ios -c pnpm run ubrn:ios:release
+      run: nix develop --accept-flake-config ../../.#ios -c pnpm run ubrn:ios:release
 
     - name: Compress iOS binaries
       shell: bash
@@ -24,13 +24,13 @@ runs:
     - name: Build Android Bindings
       shell: bash
       working-directory: packages/react-native-bindings
-      run: nix develop ../../.#android -c pnpm run ubrn:android:release
+      run: nix develop --accept-flake-config ../../.#android -c pnpm run ubrn:android:release
 
     - name: Compress Android binaries
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
+        nix develop --accept-flake-config../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
         ANDROID_SHA256=$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)
         echo "Android checksum: $ANDROID_SHA256"
         echo "ANDROID_SHA256=$ANDROID_SHA256" >> $GITHUB_ENV
