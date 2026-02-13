@@ -30,7 +30,7 @@ runs:
       shell: bash
       working-directory: packages/react-native-bindings
       run: |
-        nix develop --accept-flake-config../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
+        nix develop --accept-flake-config ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
         ANDROID_SHA256=$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)
         echo "Android checksum: $ANDROID_SHA256"
         echo "ANDROID_SHA256=$ANDROID_SHA256" >> $GITHUB_ENV
