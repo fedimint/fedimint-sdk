@@ -10,7 +10,9 @@ runs:
     - name: Build iOS Bindings
       shell: bash
       working-directory: packages/react-native-bindings
-      run: nix develop --accept-flake-config ../../.#ios -c pnpm run ubrn:ios:release
+      run: |
+        nix develop --accept-flake-config ../../.#ios -c pnpm run ubrn:ios:release
+        rm -rf ../../fedimint-sdk-ffi/fedimint-client-uniffi/target # Clean up cache
 
     - name: Compress iOS binaries
       shell: bash
@@ -24,7 +26,9 @@ runs:
     - name: Build Android Bindings
       shell: bash
       working-directory: packages/react-native-bindings
-      run: nix develop --accept-flake-config ../../.#android -c pnpm run ubrn:android:release
+      run: |
+        nix develop --accept-flake-config ../../.#android -c pnpm run ubrn:android:release
+        rm -rf ../../fedimint-sdk-ffi/fedimint-client-uniffi/target # Clean up cache
 
     - name: Compress Android binaries
       shell: bash
