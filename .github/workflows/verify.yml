@@ -4,25 +4,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Lint
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        uses: ./.github/actions/install-deps
-
-      - name: Lint repo
-        run: pnpm lint:repo
-
-      - name: Lint code
-        run: pnpm lint
-
   build-react-native:
     name: Build React Native
     runs-on: macos-latest
@@ -39,6 +20,26 @@ jobs:
 
       - name: Build React Native
         uses: ./.github/actions/build-react-native
+
+  lint:
+    name: Lint
+    needs: build-react-native
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      - name: Lint repo
+        run: pnpm lint:repo
+
+      - name: Lint code
+        run: pnpm lint
 
   build:
     name: Build JS
@@ -58,6 +59,7 @@ jobs:
 
   types:
     name: Check Types
+    needs: build-react-native
     runs-on: ubuntu-latest
 
     steps:
@@ -75,6 +77,7 @@ jobs:
 
   test:
     name: Test
+    needs: build-react-native
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
 
@@ -114,6 +117,7 @@ jobs:
 
   build-docs:
     name: Build Docs
+    needs: build-react-native
     runs-on: ubuntu-latest
 
     steps:
