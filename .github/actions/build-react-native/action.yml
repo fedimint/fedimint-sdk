@@ -55,3 +55,13 @@ runs:
       run: |
         echo "Inserting checksums - Android: ${{ env.ANDROID_SHA256 }}, iOS: ${{ env.IOS_SHA256 }}"
         node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
+
+    - name: Upload Generated Bindings
+      uses: actions/upload-artifact@v4
+      with:
+        name: generated-bindings
+        path: |
+          packages/react-native-bindings/src
+          packages/react-native-bindings/android/src/main/jniLibs
+          packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
+        if-no-files-found: error

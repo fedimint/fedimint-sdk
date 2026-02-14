@@ -34,6 +34,12 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
+      - name: Download Generated Bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings
+          path: packages/react-native-bindings
+
       - name: Install dependencies
         uses: ./.github/actions/install-deps
 
@@ -53,6 +59,12 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
+      - name: Download Generated Bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings
+          path: packages/react-native-bindings
+
       - name: Install dependencies
         uses: ./.github/actions/install-deps
 
@@ -67,6 +79,12 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
+
+      - name: Download Generated Bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings
+          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
@@ -91,6 +109,12 @@ jobs:
         uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Download Generated Bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings
+          path: packages/react-native-bindings
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -125,6 +149,12 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
+
+      - name: Download Generated Bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings
+          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
