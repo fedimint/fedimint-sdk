@@ -20,8 +20,13 @@ runs:
       run: |
         nix develop ../../ -c zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework
         IOS_SHA256=$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)
+        IOS_SIZE=$(du -h ios-artifacts.zip | cut -f1)
         echo "iOS checksum: $IOS_SHA256"
+        echo "iOS size: $IOS_SIZE"
         echo "IOS_SHA256=$IOS_SHA256" >> $GITHUB_ENV
+        echo "### iOS Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Size: $IOS_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- SHA256: $IOS_SHA256" >> $GITHUB_STEP_SUMMARY
 
     - name: Build Android Bindings
       shell: bash
@@ -36,8 +41,13 @@ runs:
       run: |
         nix develop --accept-flake-config ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
         ANDROID_SHA256=$(shasum -a 256 android-artifacts.zip | cut -d' ' -f1)
+        ANDROID_SIZE=$(du -h android-artifacts.zip | cut -f1)
         echo "Android checksum: $ANDROID_SHA256"
+        echo "Android size: $ANDROID_SIZE"
         echo "ANDROID_SHA256=$ANDROID_SHA256" >> $GITHUB_ENV
+        echo "### Android Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Size: $ANDROID_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- SHA256: $ANDROID_SHA256" >> $GITHUB_STEP_SUMMARY
 
     - name: Insert package checksums
       shell: bash
