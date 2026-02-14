@@ -1,35 +1,65 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { wallet, director } from './wallet'
-import type {
-  ParsedInviteCode,
-  ParsedBolt11Invoice,
-  PreviewFederation,
-} from '@fedimint/core'
+import { director, getWallet, getWalletSync } from './wallet'
 
 const TESTNET_FEDERATION_CODE =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
 
-const useIsOpen = () => {
+type ParsedInviteCode = {
+  federation_id: string
+  url: string
+}
+
+type ParsedBolt11Invoice = {
+  amount: number
+  expiry: number
+  memo: string
+}
+
+type PreviewFederation = {
+  federation_id: string
+  config: {
+    global: {
+      meta?: {
+        federation_name?: string
+      }
+      consensus_version: {
+        major: number
+        minor: number
+      }
+      api_endpoints: Record<string, { name?: string; url?: string }>
+    }
+    modules: Record<string, { kind?: string }>
+  }
+}
+
+const useIsOpen = (walletReady: boolean) => {
   const [open, setIsOpen] = useState(false)
 
   const checkIsOpen = useCallback(() => {
-    if (wallet && open !== wallet?.isOpen()) {
-      setIsOpen(wallet.isOpen())
+    if (!walletReady) return
+    const currentWallet = getWalletSync()
+    if (!currentWallet) return
+    if (open !== currentWallet.isOpen()) {
+      setIsOpen(currentWallet.isOpen())
     }
-  }, [open])
+  }, [open, walletReady])
 
   useEffect(() => {
+    if (!walletReady) return
     checkIsOpen()
-  }, [checkIsOpen])
+  }, [checkIsOpen, walletReady])
 
   return { open, checkIsOpen }
 }
 
-const useBalance = (checkIsOpen: () => void) => {
+const useBalance = (checkIsOpen: () => void, walletReady: boolean) => {
   const [balance, setBalance] = useState(0)
 
   useEffect(() => {
-    const unsubscribe = wallet?.balance.subscribeBalance((balance) => {
+    if (!walletReady) return
+    const currentWallet = getWalletSync()
+    if (!currentWallet) return
+    const unsubscribe = currentWallet.balance.subscribeBalance((balance) => {
       // checks if the wallet is open when the first
       // subscription event fires.
       // TODO: make a subscription to the wallet open status
@@ -40,14 +70,84 @@ const useBalance = (checkIsOpen: () => void) => {
     return () => {
       unsubscribe?.()
     }
-  }, [checkIsOpen])
+  }, [checkIsOpen, walletReady])
 
   return balance
 }
 
 const App = () => {
-  const { open, checkIsOpen } = useIsOpen()
-  const balance = useBalance(checkIsOpen)
+  const [mnemonicStatus, setMnemonicStatus] = useState<
+    'checking' | 'missing' | 'set'
+  >('checking')
+  const [walletReady, setWalletReady] = useState(false)
+
+  const initializeWallet = useCallback(async () => {
+    const currentWallet = await getWallet()
+    try {
+      if (!currentWallet.isOpen()) {
+        await currentWallet.open()
+      }
+    } catch (error) {
+      console.warn('Wallet open failed, continuing...', error)
+    } finally {
+      setWalletReady(true)
+      // Expose for testing
+      // @ts-ignore
+      globalThis.wallet = currentWallet
+      // @ts-ignore
+      globalThis.director = director
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    const walletDirector = director as typeof director & {
+      hasMnemonicSet: () => Promise<boolean>
+    }
+
+    walletDirector
+      .hasMnemonicSet()
+      .then((hasMnemonic: boolean) => {
+        if (!active) return
+        setMnemonicStatus(hasMnemonic ? 'set' : 'missing')
+      })
+      .catch((error: unknown) => {
+        console.warn('Failed to check mnemonic status', error)
+        if (!active) return
+        setMnemonicStatus('missing')
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (mnemonicStatus === 'set') {
+      initializeWallet()
+    }
+  }, [initializeWallet, mnemonicStatus])
+
+  const { open, checkIsOpen } = useIsOpen(walletReady)
+  const balance = useBalance(checkIsOpen, walletReady)
+
+  if (mnemonicStatus === 'checking') {
+    return <LoadingScreen message="Checking wallet status..." />
+  }
+
+  if (mnemonicStatus === 'missing') {
+    return (
+      <Onboarding
+        onComplete={() => {
+          setMnemonicStatus('set')
+        }}
+      />
+    )
+  }
+
+  if (!walletReady) {
+    return <LoadingScreen message="Preparing your wallet..." />
+  }
 
   return (
     <>
@@ -89,6 +189,135 @@ const App = () => {
         <SendOnchain />
       </main>
     </>
+  )
+}
+
+const LoadingScreen = ({ message }: { message: string }) => {
+  return (
+    <main className="onboarding-screen">
+      <div className="section onboarding-card">
+        <h3>{message}</h3>
+        <p>Please wait a moment.</p>
+      </div>
+    </main>
+  )
+}
+
+const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
+  const [inputMnemonic, setInputMnemonic] = useState('')
+  const [generatedMnemonic, setGeneratedMnemonic] = useState<string | null>(
+    null,
+  )
+  const [isLoading, setIsLoading] = useState(false)
+  const [message, setMessage] = useState<{
+    text: string
+    type: 'success' | 'error'
+  } | null>(null)
+
+  const handleGenerate = async () => {
+    setIsLoading(true)
+    setMessage(null)
+    try {
+      const words = await director.generateMnemonic()
+      setGeneratedMnemonic(words.join(' '))
+      setMessage({
+        text: 'Mnemonic generated. Please back it up before continuing.',
+        type: 'success',
+      })
+    } catch (error) {
+      console.error('Error generating mnemonic:', error)
+      setMessage({
+        text: error instanceof Error ? error.message : 'Failed to generate',
+        type: 'error',
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSet = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!inputMnemonic.trim()) return
+
+    setIsLoading(true)
+    setMessage(null)
+    try {
+      const words = inputMnemonic.trim().split(/\s+/)
+      await director.setMnemonic(words)
+      setMessage({ text: 'Mnemonic set successfully!', type: 'success' })
+      onComplete()
+    } catch (error) {
+      console.error('Error setting mnemonic:', error)
+      setMessage({
+        text: error instanceof Error ? error.message : 'Failed to set mnemonic',
+        type: 'error',
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleCopy = async () => {
+    if (!generatedMnemonic) return
+    try {
+      await navigator.clipboard.writeText(generatedMnemonic)
+      setMessage({ text: 'Copied to clipboard!', type: 'success' })
+    } catch (error) {
+      setMessage({ text: 'Failed to copy', type: 'error' })
+    }
+  }
+
+  return (
+    <main className="onboarding-screen">
+      <div className="section onboarding-card">
+        <h3>Welcome to Fedimint</h3>
+        <p>
+          To continue, set an existing mnemonic or generate a new one for this
+          wallet.
+        </p>
+
+        <div className="onboarding-actions">
+          <button onClick={handleGenerate} disabled={isLoading}>
+            {isLoading ? 'Generating...' : 'Generate Mnemonic'}
+          </button>
+          {generatedMnemonic && (
+            <button onClick={onComplete} disabled={isLoading}>
+              Continue
+            </button>
+          )}
+        </div>
+
+        {generatedMnemonic && (
+          <div className="mnemonic-output">
+            <div className="mnemonic-text">{generatedMnemonic}</div>
+            <div className="button-group">
+              <button onClick={handleCopy} disabled={isLoading}>
+                Copy
+              </button>
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSet} className="mnemonic-form">
+          <textarea
+            className="mnemonic-input"
+            placeholder="Enter 12 or 24 words separated by spaces"
+            value={inputMnemonic}
+            onChange={(e) => setInputMnemonic(e.target.value)}
+            rows={3}
+          />
+          <button type="submit" disabled={isLoading || !inputMnemonic.trim()}>
+            {isLoading ? 'Setting...' : 'Set Mnemonic'}
+          </button>
+        </form>
+
+        {message && (
+          <div className={message.type === 'error' ? 'error' : 'success'}>
+            {message.text}
+          </div>
+        )}
+      </div>
+    </main>
   )
 }
 
@@ -336,7 +565,7 @@ const JoinFederation = ({
 
     try {
       const data = await director.previewFederation(inviteCode)
-      setPreviewData(data)
+      setPreviewData(data as PreviewFederation)
       console.log('Preview federation:', data)
     } catch (error) {
       console.error('Error previewing federation:', error)
@@ -353,7 +582,7 @@ const JoinFederation = ({
 
     console.log('Joining federation:', inviteCode)
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
+      const wallet = await getWallet()
       setJoining(true)
       const res = await wallet.joinFederation(inviteCode)
       console.log('join federation res', res)
@@ -427,14 +656,20 @@ const JoinFederation = ({
               <summary>Guardian Endpoints</summary>
               <div className="guardian-list">
                 {Object.entries(previewData.config.global.api_endpoints).map(
-                  ([id, peer]) => (
-                    <div key={id} className="guardian-item">
-                      <div>
-                        <strong>{peer.name}</strong>
+                  ([id, peer]) => {
+                    const endpoint = peer as {
+                      name?: string
+                      url?: string
+                    }
+                    return (
+                      <div key={id} className="guardian-item">
+                        <div>
+                          <strong>{endpoint.name || id}</strong>
+                        </div>
+                        <div className="url">{endpoint.url || ''}</div>
                       </div>
-                      <div className="url">{peer.url}</div>
-                    </div>
-                  ),
+                    )
+                  },
                 )}
               </div>
             </details>
@@ -443,11 +678,14 @@ const JoinFederation = ({
               <summary>Module Configuration</summary>
               <div className="module-list">
                 {Object.entries(previewData.config.modules).map(
-                  ([id, module]) => (
-                    <div key={id} className="module-item">
-                      <strong>{module.kind}</strong>
-                    </div>
-                  ),
+                  ([id, module]) => {
+                    const moduleInfo = module as { kind?: string }
+                    return (
+                      <div key={id} className="module-item">
+                        <strong>{moduleInfo.kind || id}</strong>
+                      </div>
+                    )
+                  },
                 )}
               </div>
             </details>
@@ -475,7 +713,7 @@ const RedeemEcash = () => {
   const handleRedeem = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
+      const wallet = await getWallet()
       const res = await wallet.mint.redeemEcash(ecashInput)
       console.log('redeem ecash res', res)
       setRedeemResult('Redeemed!')
@@ -512,8 +750,8 @@ const SendLightning = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    const wallet = await getWallet()
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
       await wallet.lightning.payInvoice(lightningInput)
       setLightningResult('Paid!')
       setLightningError('')
@@ -555,7 +793,7 @@ const GenerateLightningInvoice = () => {
     setError('')
     setGenerating(true)
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
+      const wallet = await getWallet()
       const response = await wallet.lightning.createInvoice(
         Number(amount),
         description,
@@ -632,7 +870,7 @@ const InviteCodeParser = () => {
 
     try {
       const result = await director.parseInviteCode(inviteCode)
-      setParseResult(result)
+      setParseResult(result as unknown as ParsedInviteCode)
     } catch (e) {
       console.error('Error parsing invite code', e)
       setParseError(e instanceof Error ? e.message : String(e))
@@ -689,7 +927,7 @@ const ParseLightningInvoice = () => {
     try {
       const result = await director.parseBolt11Invoice(invoiceStr)
       console.log('result ', result)
-      setParseResult(result)
+      setParseResult(result as unknown as ParsedBolt11Invoice)
     } catch (e) {
       console.error('Error parsing invite code', e)
       setParseError(e instanceof Error ? e.message : String(e))
@@ -743,7 +981,7 @@ const Deposit = () => {
     e.preventDefault()
     setAddressStatus(true)
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
+      const wallet = await getWallet()
       const result = await wallet.wallet.generateAddress()
       result && setAddress(result.deposit_address)
     } catch (e) {
@@ -782,7 +1020,7 @@ const SendOnchain = () => {
     e.preventDefault()
     try {
       setWithdrawalStatus(true)
-      if (!wallet) throw new Error('Wallet unavailable')
+      const wallet = await getWallet()
       const result = await wallet.wallet.sendOnchain(amount, address)
       result && setWithdrawalResult(result.operation_id)
     } catch (e) {
