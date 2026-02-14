@@ -34,7 +34,7 @@ self.onmessage = async (event) => {
 
       const root = await navigator.storage.getDirectory()
       // Allows to pass in a filename for testing
-      const filename = payload?.filename || 'fedimint.db'
+      const filename = payload?.dbPath || 'fedimint.db'
       dbFilename = filename
       const dbFileHandle = await root.getFileHandle(filename, {
         create: true,

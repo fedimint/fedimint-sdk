@@ -4,7 +4,7 @@ import { TestFedimintWallet } from './TestFedimintWallet'
 
 export class TestWalletDirector extends WalletDirector {
   constructor(client: Transport = new WasmWorkerTransport()) {
-    super(client, true)
+    super(client, undefined, true)
   }
   async createTestWallet(testId: string) {
     await this._client.initialize(testId)
