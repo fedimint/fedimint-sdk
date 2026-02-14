@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
