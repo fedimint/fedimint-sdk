@@ -7,7 +7,7 @@ jobs:
   build-react-native:
     name: Build React Native
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Clone repository
