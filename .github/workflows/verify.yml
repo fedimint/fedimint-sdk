@@ -138,8 +138,8 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '{packages/**/dist/**/*.{js,mjs,cjs},packages/**/*.wasm}'
-          install-script: pnpm install
-          build-script: pnpm build
+          install-script: nix develop -c pnpm install
+          build-script: nix develop -c pnpm build
 
   build-docs:
     name: Build Docs
