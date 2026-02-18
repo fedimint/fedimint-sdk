@@ -1,8 +1,16 @@
-import { FedimintWallet } from '@fedimint/core'
+import { WalletDirector } from '@fedimint/core'
+import { WasmWorkerTransport } from '@fedimint/transport-web'
 
-const wallet = new FedimintWallet()
+const director = new WalletDirector(new WasmWorkerTransport())
+director.setLogLevel('debug')
 
-wallet.setLogLevel('debug')
-wallet.open()
+let wallet
 
-export { wallet }
+const getWallet = async () => {
+  if (!wallet) {
+    wallet = await director.createWallet()
+  }
+  return wallet
+}
+
+export { director, getWallet }

@@ -168,3 +168,50 @@ button[type='submit'] {
   padding: 0.5rem;
   border-radius: 4px;
 }
+
+.hidden {
+  display: none;
+}
+
+.onboarding-screen {
+  max-width: 600px;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+
+.onboarding-card {
+  gap: 1rem;
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.mnemonic-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mnemonic-input {
+  width: 100%;
+  min-height: 80px;
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background-color: #333;
+  color: rgba(255, 255, 255, 0.87);
+}
+
+.mnemonic-output {
+  background-color: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  word-break: break-word;
+}

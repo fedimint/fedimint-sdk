@@ -33,7 +33,29 @@
             </ol>
         </div>
     </header>
-    <main>
+    <section id="onboarding" class="onboarding-screen hidden">
+        <div class="section onboarding-card">
+            <h3>Welcome to Fedimint</h3>
+            <p>Set an existing mnemonic or generate a new one to continue.</p>
+
+            <div class="onboarding-actions">
+                <button id="generateMnemonic">Generate Mnemonic</button>
+                <button id="continueOnboarding" disabled>Continue</button>
+            </div>
+
+            <div id="generatedMnemonic" class="mnemonic-output hidden"></div>
+
+            <form id="setMnemonicForm" class="mnemonic-form">
+                <textarea id="mnemonicInput" class="mnemonic-input" rows="3"
+                    placeholder="Enter 12 or 24 words separated by spaces"></textarea>
+                <button type="submit">Set Mnemonic</button>
+            </form>
+
+            <div id="onboardingMessage" class=""></div>
+        </div>
+    </section>
+
+    <main id="app">
         <div class="section">
             <h3>Wallet Status</h3>
             <div class="row">
