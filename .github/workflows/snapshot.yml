@@ -49,7 +49,7 @@ jobs:
           cd ../..
 
           pnpm build
-          pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
+          pnpm changeset publish --no-git-tag --snapshot $snapshot --tag snapshot
           "
 
       - name: Upload Artifacts to Release
