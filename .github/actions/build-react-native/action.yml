@@ -13,6 +13,7 @@ runs:
       run: |
         nix develop --accept-flake-config ../../.#ios -c pnpm run ubrn:ios:release
         rm -rf ../../fedimint-sdk-ffi/fedimint-client-uniffi/target # Clean up cache
+        nix store gc
 
     - name: Compress iOS binaries
       shell: bash
@@ -35,6 +36,7 @@ runs:
         nix develop --accept-flake-config ../../.#android -c pnpm run ubrn:android:release
         nix develop --accept-flake-config ../../.#android -c pnpm build
         rm -rf ../../fedimint-sdk-ffi/fedimint-client-uniffi/target # Clean up cache
+        nix store gc
 
     - name: Compress Android binaries
       shell: bash
