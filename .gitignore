@@ -165,6 +165,8 @@ binaries.tar.gz
 examples/react-native/vendor
 examples/react-native/ios/Pods
 packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
-packages/react-native-bindings/ReactNative.podspec.orig
+packages/react-native-bindings/ReactNativeBindings.podspec.orig
 packages/react-native-bindings/cpp/generated/
 packages/react-native-bindings/src/generated/
+packages/react-native-bindings/android/cpp-adapter.cpp.rej
+packages/react-native-bindings/android/cpp-adapter.cpp.orig
