@@ -1,6 +1,5 @@
 {
   "name": "react-native-sdk-example",
-  "version": "0.0.1",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -24,7 +23,7 @@
     "@react-native/gradle-plugin": "0.83.1",
     "@react-native/metro-config": "0.83.1",
     "@react-native/typescript-config": "0.83.1",
-    "@types/react": "^19.0.8",
+    "@types/react": ">=19.2.2",
     "@types/react-native": "^0.73.0",
     "typescript": "^5.9.3"
   },
