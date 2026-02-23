@@ -162,11 +162,25 @@ packages/react-native-bindings/ios/generated
 packages/react-native-bindings/android/generated
 packages/react-native-bindings/android/src/main/jniLibs
 binaries.tar.gz
-examples/react-native/vendor
-examples/react-native/ios/Pods
 packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
 packages/react-native-bindings/ReactNativeBindings.podspec.orig
 packages/react-native-bindings/cpp/generated/
 packages/react-native-bindings/src/generated/
 packages/react-native-bindings/android/cpp-adapter.cpp.rej
 packages/react-native-bindings/android/cpp-adapter.cpp.orig
+
+# examples/react-native
+examples/react-native/vendor
+examples/react-native/ios/Pods
+examples/react-native/**/.xcode.env.local
+examples/react-native/DerivedData
+examples/react-native/*.ipa
+examples/react-native/*.hprof
+examples/react-native/*.iml
+examples/react-native/*.keystore
+!examples/react-native/android/app/debug.keystore
+examples/react-native/*.jsbundle
+examples/react-native/**/fastlane/report.xml
+examples/react-native/**/fastlane/Preview.html
+examples/react-native/**/fastlane/screenshots
+examples/react-native/**/fastlane/test_output
