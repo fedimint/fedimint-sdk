@@ -35,7 +35,7 @@ export class TransportClient {
    * @param lazy - When `true`, skips automatic initialization on construction — you must call
    *   `initialize()` manually. Defaults to `false` (initializes immediately).
    */
-  constructor(transport: Transport, dbPath?: string, lazy: boolean = false) {
+  constructor(transport: Transport, dbPath?: string) {
     this.transport = transport
     this.logger = new Logger(transport.logger)
     this.transport.setMessageHandler(this.handleTransportMessage)
