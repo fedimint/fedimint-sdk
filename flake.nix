@@ -96,7 +96,7 @@
           # Minimal dependencies for CI steps that just run pnpm commands
           commonNativeBuildInputs = [
             pkgs.pnpm
-            pkgs.nodejs_20
+            pkgs.nodejs_24
             pkgs.git
             pkgs.gh
             pkgs.zip
