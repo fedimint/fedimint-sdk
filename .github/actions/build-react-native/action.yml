@@ -52,13 +52,6 @@ runs:
         echo "- Size: $ANDROID_SIZE" >> $GITHUB_STEP_SUMMARY
         echo "- SHA256: $ANDROID_SHA256" >> $GITHUB_STEP_SUMMARY
 
-    - name: Insert package checksums
-      shell: bash
-      working-directory: packages/react-native-bindings
-      run: |
-        echo "Inserting checksums - Android: ${{ env.ANDROID_SHA256 }}, iOS: ${{ env.IOS_SHA256 }}"
-        node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
-
     - name: Upload Generated Bindings
       uses: actions/upload-artifact@v4
       with:

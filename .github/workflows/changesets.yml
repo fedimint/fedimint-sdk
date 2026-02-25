@@ -47,12 +47,6 @@ jobs:
           nix develop -c pnpm install
           nix develop -c pnpm build
 
-      - name: Re-apply React Native Checksums
-        run: |
-          cd packages/react-native-bindings
-          node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
-          cd ../..
-
       - name: PR or Publish to NPM
         id: changesets
         uses: changesets/action@v1
@@ -93,12 +87,6 @@ jobs:
             git reset --hard origin/main
             pnpm clean
             pnpm changeset version --no-git-tag --snapshot canary
-
-            # Re-apply checksums (action exported them to env)
-            cd packages/react-native-bindings
-            node -e "const pkg = require(\"./package.json\"); pkg.checksums={android:\"$ANDROID_SHA256\",ios:\"$IOS_SHA256\"}; require(\"fs\").writeFileSync(\"package.json\",JSON.stringify(pkg,null,2)+\"\\n\")"
-            cd ../..
-
             pnpm build
             pnpm changeset publish --no-git-tag --snapshot canary --tag canary
           '
