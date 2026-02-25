@@ -105,6 +105,7 @@ const downloadFile = (url, dest, attempt = 1) => {
 };
 
 const verifyChecksum = (file, expected) => {
+  // TODO : Add logic to verify chceksums.
   return true;
 };
 
