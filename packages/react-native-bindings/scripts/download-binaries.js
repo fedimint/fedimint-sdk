@@ -44,14 +44,14 @@ let TAG = isSnapshot ? 'snapshot' : `react-native-v${pkg.version}`;
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
 const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
 
-/*
+
 if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
   console.warn(
     'Checksums not found in package.json. Skipping download (assume local dev or first install).'
   );
   process.exit(0);
 }
-*/
+
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
