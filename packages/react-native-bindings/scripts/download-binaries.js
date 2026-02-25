@@ -49,6 +49,7 @@ if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
   console.warn(
     'Checksums not found in package.json. Skipping download (assume local dev or first install).'
   );
+  process.exit(0);
 }
 
 
