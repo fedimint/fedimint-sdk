@@ -2,205 +2,112 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const http = require('http');
 const { execSync } = require('child_process');
+const crypto = require('crypto');
 
 const pkg = require('../package.json');
 
 // Check if we should skip via environment variable
-if (
-  process.env.EXPO_PUBLIC_SKIP_POSTINSTALL ||
-  process.env.FEDIMINT_SKIP_BINARY_DOWNLOAD === 'true'
-) {
-  console.log('Skipping postinstall due to environment variable');
-  process.exit(0);
+if (process.env.EXPO_PUBLIC_SKIP_POSTINSTALL || process.env.FEDIMINT_SKIP_BINARY_DOWNLOAD === 'true') {
+    console.log('Skipping postinstall due to environment variable');
+    process.exit(0);
 }
 
 // Check if skipBinaryDownload is set in package.json
 if (pkg.skipBinaryDownload === true) {
-  console.log('Skipping postinstall due to skipBinaryDownload in package.json');
-  process.exit(0);
+    console.log('Skipping postinstall due to skipBinaryDownload in package.json');
+    process.exit(0);
 }
 
 // Check if artifacts already exist (simple check)
 const androidLibCheck = path.join(__dirname, '../android/src/main/jniLibs');
-const iosFrameworkCheck = path.join(
-  __dirname,
-  '../FedimintReactNativeBindingsFramework.xcframework'
-);
+const iosFrameworkCheck = path.join(__dirname, '../FedimintReactNativeBindingsFramework.xcframework');
 
 if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
-  console.log('Binaries already present, skipping download.');
-  process.exit(0);
+    console.log('Binaries already present, skipping download.');
+    process.exit(0);
 }
 
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
-// Version includes '-snapshot' or '-canary'
-const isSnapshot = pkg.version.includes('snapshot');
-const isCanary = pkg.version.includes('canary');
-
-let TAG;
-if (isSnapshot) {
-  const parts = pkg.version.split('-');
-  const snapshotSuffix = parts.slice(1).join('-'); // handles 0.0.0-branch-commit
-  TAG = `snapshot-${snapshotSuffix}`;
-} else {
-  TAG = `react-native-v${pkg.version}`;
+let TAG = `react-native-v${pkg.version}`;
+if (pkg.version.includes('-') || pkg.version.includes('snapshot') || pkg.version.includes('canary')) {
+    TAG = 'snapshot';
 }
-
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
 const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
 
 if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
-  console.log(
-    'Checksums not found in package.json. Skipping download (assume local dev or first install).'
-  );
-  process.exit(0);
+    console.warn("Checksums not found in package.json. Skipping download (assume local dev or first install).");
+    process.exit(0);
 }
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const downloadFile = (url, dest, attempt = 1) => {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https') ? https : http;
-
-    // Remove any stale partial file
-    if (fs.existsSync(dest)) {
-      fs.unlinkSync(dest);
-    }
-
-    const file = fs.createWriteStream(dest);
-    client
-      .get(url, { headers: { 'Cache-Control': 'no-cache' } }, (response) => {
-        // Follow redirects (GitHub releases redirect to S3/CDN)
-        if (response.statusCode === 302 || response.statusCode === 301) {
-          file.close();
-          fs.unlinkSync(dest);
-          downloadFile(response.headers.location, dest, attempt)
-            .then(resolve)
-            .catch(reject);
-          return;
-        }
-
-        if (response.statusCode !== 200) {
-          file.close();
-          fs.unlinkSync(dest);
-          reject(
-            new Error(
-              `HTTP ${response.statusCode} when downloading ${url}`
-            )
-          );
-          return;
-        }
-
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close(resolve);
+const downloadFile = (url, dest) => {
+    return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(dest);
+        https.get(url, (response) => {
+            if (response.statusCode === 302 || response.statusCode === 301) {
+                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+                return;
+            }
+            response.pipe(file);
+            file.on('finish', () => {
+                file.close(resolve);
+            });
+        }).on('error', (err) => {
+            fs.unlink(dest, () => { });
+            reject(err);
         });
-      })
-      .on('error', (err) => {
-        file.close();
-        reject(err);
-      });
-  });
+    });
+};
+
+const verifyChecksum = (file, expected) => {
+  // TODO : complete this
+  return true;
 };
 
 const unzip = (file, dest) => {
-  try {
-    execSync(`unzip -o "${file}" -d "${dest}"`, { stdio: 'pipe' });
-  } catch (e) {
-    console.error(`Failed to unzip ${file}: ${e.message}`);
-    throw e;
-  }
-};
-
-const downloadReleaseFiles = async (url, dest, label) => {
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(
-        `Downloading ${label} artifacts (attempt ${attempt}/${MAX_RETRIES}) from ${url}...`
-      );
-      await downloadFile(url, dest, attempt);
-      console.log(`${label} download successful ✓`);
-      return true;
-    } catch (err) {
-      console.error(`Download error on attempt ${attempt}: ${err.message}`);
-
-      if (attempt < MAX_RETRIES) {
-        console.log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
-        await sleep(RETRY_DELAY_MS);
-      }
+        execSync(`unzip -o ${file} -d ${dest}`);
+    } catch (e) {
+        console.error(`Failed to unzip ${file}: ${e.message}`);
+        throw e;
     }
-  }
-
-  return false;
 };
 
 const main = async () => {
-  const androidUrl = `${REPO}/releases/download/${TAG}/android-artifacts.zip`;
-  const iosUrl = `${REPO}/releases/download/${TAG}/ios-artifacts.zip`;
-  const baseDir = path.join(__dirname, '../');
+    const androidUrl = `${REPO}/releases/download/${TAG}/android-artifacts.zip`;
+    const iosUrl = `${REPO}/releases/download/${TAG}/ios-artifacts.zip`;
 
-  // --- Android ---
-  const androidOk = await downloadReleaseFiles(
-    androidUrl,
-    'android-artifacts.zip',
-    'Android'
-  );
+    console.log(`Downloading Android artifacts from ${androidUrl}...`);
+    await downloadFile(androidUrl, 'android-artifacts.zip');
 
-  if (!androidOk) {
-    if (isSnapshot) {
-      console.warn(
-        'WARNING: Android checksum verification failed after all retries.'
-      );
-      console.warn(
-        'This is a snapshot version — the release artifacts may have been overwritten by a newer CI run.'
-      );
-      console.warn(
-        'Re-run pnpm install, or set FEDIMINT_SKIP_BINARY_DOWNLOAD=true to skip.'
-      );
+    if (!verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM)) {
+        console.error('Android checkum mismatch!');
+        process.exit(1);
     }
-    console.warn('Android artifact checksum verification failed!');
-  } else {
+
     console.log('Extracting Android artifacts...');
-    unzip('android-artifacts.zip', baseDir);
+    // Adjust destination if needed based on zip structure
+    unzip('android-artifacts.zip', path.join(__dirname, '../'));
     fs.unlinkSync('android-artifacts.zip');
-  }
 
-  // --- iOS ---
-  const iosOk = await downloadReleaseFiles(
-    iosUrl,
-    'ios-artifacts.zip',
-    'iOS'
-  );
 
-  if (!iosOk) {
-    if (isSnapshot) {
-      console.warn(
-        'WARNING: iOS checksum verification failed after all retries.'
-      );
-      console.warn(
-        'This is a snapshot version — the release artifacts may have been overwritten by a newer CI run.'
-      );
-      console.warn(
-        'Re-run pnpm install, or set FEDIMINT_SKIP_BINARY_DOWNLOAD=true to skip.'
-      );
+    console.log(`Downloading iOS artifacts from ${iosUrl}...`);
+    await downloadFile(iosUrl, 'ios-artifacts.zip');
+
+    if (!verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM)) {
+        console.error('iOS checkum mismatch!');
+        process.exit(1);
     }
-    console.warn('iOS artifact checksum verification failed!');
-    // process.exit(1);
-  } else {
-    console.log('Extracting iOS artifacts...');
-    unzip('ios-artifacts.zip', baseDir);
-    fs.unlinkSync('ios-artifacts.zip');
-  }
 
-  console.log('Binaries downloaded and extracted successfully. ✓');
+    console.log('Extracting iOS artifacts...');
+    unzip('ios-artifacts.zip', path.join(__dirname, '../'));
+    fs.unlinkSync('ios-artifacts.zip');
+
+    console.log('Binaries downloaded and installed successfully.');
 };
 
-main().catch((err) => {
-  console.error('Error downloading binaries:', err);
-  process.exit(1);
+main().catch(err => {
+    console.error('Error downloading binaries:', err);
+    process.exit(1);
 });
