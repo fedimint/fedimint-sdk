@@ -73,6 +73,12 @@ jobs:
           npm config set '//registry.npmjs.org/:_authToken' '$NPM_TOKEN'
 
           pnpm changeset version --no-git-tag --snapshot \$snapshot
+
+          # Re-apply checksums AFTER changeset version (which resets package.json)
+          cd packages/react-native-bindings
+          node -e \"const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')\"
+          cd ../..
+
           pnpm build
           pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
           "
