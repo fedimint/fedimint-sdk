@@ -4,7 +4,6 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const { execSync } = require('child_process');
-const crypto = require('crypto');
 
 const pkg = require('../package.json');
 
@@ -36,22 +35,28 @@ if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
 }
 
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
-const isSnapshot =
-  pkg.version.includes('snapshot') ||
-  pkg.version.includes('canary');
-let TAG = isSnapshot ? 'snapshot' : `react-native-v${pkg.version}`;
+// Version includes '-snapshot' or '-canary'
+const isSnapshot = pkg.version.includes('snapshot');
+const isCanary = pkg.version.includes('canary');
+
+let TAG;
+if (isSnapshot) {
+  const parts = pkg.version.split('-');
+  const snapshotSuffix = parts.slice(1).join('-'); // handles 0.0.0-branch-commit
+  TAG = `snapshot-${snapshotSuffix}`;
+} else {
+  TAG = `react-native-v${pkg.version}`;
+}
 
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
 const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
 
-
 if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
-  console.warn(
+  console.log(
     'Checksums not found in package.json. Skipping download (assume local dev or first install).'
   );
   process.exit(0);
 }
-
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
@@ -98,15 +103,9 @@ const downloadFile = (url, dest, attempt = 1) => {
       })
       .on('error', (err) => {
         file.close();
-        if (fs.existsSync(dest)) fs.unlinkSync(dest);
         reject(err);
       });
   });
-};
-
-const verifyChecksum = (file, expected) => {
-  // TODO : Add logic to verify chceksums.
-  return true;
 };
 
 const unzip = (file, dest) => {
@@ -118,33 +117,17 @@ const unzip = (file, dest) => {
   }
 };
 
-const downloadAndVerify = async (url, dest, expectedChecksum, label) => {
+const downloadReleaseFiles = async (url, dest, label) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       console.log(
         `Downloading ${label} artifacts (attempt ${attempt}/${MAX_RETRIES}) from ${url}...`
       );
       await downloadFile(url, dest, attempt);
-
-      if (verifyChecksum(dest, expectedChecksum)) {
-        console.log(`${label} checksum verified ✓`);
-        return true;
-      }
-
-      console.warn(
-        `${label} checksum mismatch on attempt ${attempt}/${MAX_RETRIES}`
-      );
-
-      // Clean up bad download
-      if (fs.existsSync(dest)) fs.unlinkSync(dest);
-
-      if (attempt < MAX_RETRIES) {
-        console.log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
-        await sleep(RETRY_DELAY_MS);
-      }
+      console.log(`${label} download successful ✓`);
+      return true;
     } catch (err) {
       console.error(`Download error on attempt ${attempt}: ${err.message}`);
-      if (fs.existsSync(dest)) fs.unlinkSync(dest);
 
       if (attempt < MAX_RETRIES) {
         console.log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
@@ -162,10 +145,9 @@ const main = async () => {
   const baseDir = path.join(__dirname, '../');
 
   // --- Android ---
-  const androidOk = await downloadAndVerify(
+  const androidOk = await downloadReleaseFiles(
     androidUrl,
     'android-artifacts.zip',
-    ANDROID_CHECKSUM,
     'Android'
   );
 
@@ -182,17 +164,16 @@ const main = async () => {
       );
     }
     console.warn('Android artifact checksum verification failed!');
+  } else {
+    console.log('Extracting Android artifacts...');
+    unzip('android-artifacts.zip', baseDir);
+    fs.unlinkSync('android-artifacts.zip');
   }
 
-  console.log('Extracting Android artifacts...');
-  unzip('android-artifacts.zip', baseDir);
-  fs.unlinkSync('android-artifacts.zip');
-
   // --- iOS ---
-  const iosOk = await downloadAndVerify(
+  const iosOk = await downloadReleaseFiles(
     iosUrl,
     'ios-artifacts.zip',
-    IOS_CHECKSUM,
     'iOS'
   );
 
@@ -210,13 +191,13 @@ const main = async () => {
     }
     console.warn('iOS artifact checksum verification failed!');
     // process.exit(1);
+  } else {
+    console.log('Extracting iOS artifacts...');
+    unzip('ios-artifacts.zip', baseDir);
+    fs.unlinkSync('ios-artifacts.zip');
   }
 
-  console.log('Extracting iOS artifacts...');
-  unzip('ios-artifacts.zip', baseDir);
-  fs.unlinkSync('ios-artifacts.zip');
-
-  console.log('Binaries downloaded and installed successfully. ✓');
+  console.log('Binaries downloaded and extracted successfully. ✓');
 };
 
 main().catch((err) => {
