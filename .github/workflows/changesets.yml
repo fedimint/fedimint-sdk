@@ -44,8 +44,10 @@ jobs:
 
       - name: Install and build packages
         run: |
-          nix develop -c pnpm install
-          nix develop -c pnpm build
+          nix develop --accept-flake-config --command bash << 'EOF'
+            pnpm install
+            pnpm build
+          EOF
 
       - name: Re-apply React Native Checksums
         run: |
@@ -57,7 +59,7 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: nix develop -c pnpm changeset publish
+          publish: nix develop --accept-flake-config -c pnpm changeset publish
           createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,7 +90,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          nix develop -c bash -c '
+          nix develop --accept-flake-config -c bash -c '
             npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
             git reset --hard origin/main
             pnpm clean

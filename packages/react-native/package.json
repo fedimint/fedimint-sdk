@@ -38,8 +38,8 @@
     "@fedimint/types": "workspace:*"
   },
   "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
+    "react": ">=18.0.0",
+    "react-native": ">=0.78.0"
   },
   "devDependencies": {
     "@expo/config-plugins": "^54.0.4",

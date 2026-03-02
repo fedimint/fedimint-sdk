@@ -2449,7 +2449,7 @@ PODS:
     - React-perflogger (= 0.83.1)
     - React-utils (= 0.83.1)
     - SocketRocket
-  - ReactNative (0.1.0):
+  - ReactNativeBindings (0.1.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2563,7 +2563,7 @@ DEPENDENCIES:
   - ReactAppDependencyProvider (from `build/generated/ios/ReactAppDependencyProvider`)
   - ReactCodegen (from `build/generated/ios/ReactCodegen`)
   - ReactCommon/turbomodule/core (from `../node_modules/react-native/ReactCommon`)
-  - ReactNative (from `../../../packages/react-native-bindings`)
+  - ReactNativeBindings (from `../../../packages/react-native-bindings`)
   - RNFS (from `../node_modules/react-native-fs`)
   - SocketRocket (~> 0.7.1)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
@@ -2727,7 +2727,7 @@ EXTERNAL SOURCES:
     :path: build/generated/ios/ReactCodegen
   ReactCommon:
     :path: "../node_modules/react-native/ReactCommon"
-  ReactNative:
+  ReactNativeBindings:
     :path: "../../../packages/react-native-bindings"
   RNFS:
     :path: "../node_modules/react-native-fs"
@@ -2741,7 +2741,7 @@ SPEC CHECKSUMS:
   FBLazyVector: 309703e71d3f2f1ed7dc7889d58309c9d77a95a4
   fmt: a40bb5bd0294ea969aaaba240a927bd33d878cdd
   glog: 5683914934d5b6e4240e497e0f4a3b42d1854183
-  hermes-engine: b8049b15606b00de5c5073c0bc9ea301e7aff37e
+  hermes-engine: 4b713a00ee3d06875a671f4303fb32d218d3c89d
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: a41bbdd9af30bf2e5715796b313e44ec43eefff1
   RCTRequired: 7be34aabb0b77c3cefe644528df0fa0afad4e4d0
@@ -2809,9 +2809,9 @@ SPEC CHECKSUMS:
   React-utils: 8ab26781c2f5c2f7fafb2022c8ab39d39f231b80
   React-webperformancenativemodule: 7953b7fe519f76fa595111fe18ff3d5de131bfe9
   ReactAppDependencyProvider: 0eb286cc274abb059ee601b862ebddac2e681d01
-  ReactCodegen: 64e7dbb1a069f24a87d5ec3ba6068521fca0e407
+  ReactCodegen: 476e3b5cb251197ba6045db0481de1eab1bfb7b9
   ReactCommon: ac934cb340aee91282ecd6f273a26d24d4c55cae
-  ReactNative: e13265c2029cb8d83c8a1417fca79df770260645
+  ReactNativeBindings: 3850c1f9df963972050aff2e04b9f2130725bb5d
   RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 125eae9e3a0cf34bf8f3d4b0ceed517df7cc0733

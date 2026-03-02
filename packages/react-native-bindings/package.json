@@ -99,8 +99,8 @@
     "@types/react": ">=19.2.14"
   },
   "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
+    "react": ">=18.0.0",
+    "react-native": ">=0.78.0"
   },
   "react-native-builder-bob": {
     "source": "src",
