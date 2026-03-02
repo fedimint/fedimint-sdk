@@ -41,15 +41,19 @@ npm install @fedimint/react-native
 
 ## Supported Platforms
 
-### Android
+The `@fedimint/react-native-bindings` package contains pre-compiled native Rust binaries. It explicitly supports the following architectures, which cover the vast majority of modern devices and simulators needed for React Native development:
 
-- `arm64-v8a`
-- `x86_64`
+### Android
+*(Minimum Supported Version: Android 7.0 / API Level 24)*
+* **`arm64-v8a`**: Required for all modern 64-bit physical Android devices (e.g., Samsung Galaxy S-series, Google Pixel).
+* **`x86_64`**: Required for running the app on Android Emulators running on modern Mac/PC laptops.
+
+
 
 ### iOS
-
-- `aarch64-apple-ios`
-- `x86_64-apple-ios`
+*(Minimum Supported Version: iOS 15.0)*
+* **`aarch64-apple-ios`**: Required for all physical iOS devices (iPhone, iPad).
+* **`x86_64-apple-ios`**: Required for running the app on the iOS Simulator on Intel-based Macs.
 
 ## Credit
 

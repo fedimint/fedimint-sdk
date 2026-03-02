@@ -16,9 +16,9 @@ import type {
  * Handles communication with a generic transport.
  * Must be instantiated with a platform-specific transport (WASM for web/Node, native module for React Native, etc.).
  *
- * On React Native, pass `dbPath` so the native transport knows where to persist its RocksDB store.
- * Use `lazy = true` to defer initialization until `initialize()` is explicitly called (useful when
- * you need to set up the client before the user provides credentials or a database path).
+ * It is completely uninitialized upon construction — you must always call `initialize()` explicitly
+ * before sending messages. On React Native, you can pass `dbPath` during `initialize()` so the
+ * native transport knows where to persist its RocksDB store.
  */
 export class TransportClient {
   // Generic Transport. Can be wasm, react native, node, etc.
@@ -32,8 +32,6 @@ export class TransportClient {
    * @param transport - The platform-specific transport to use (WASM for web/Node, native module for React Native, etc.).
    * @param dbPath - Path to the on-disk RocksDB store. Required on React Native; ignored on web/Node
    *   where the WASM transport manages storage internally.
-   * @param lazy - When `true`, skips automatic initialization on construction — you must call
-   *   `initialize()` manually. Defaults to `false` (initializes immediately).
    */
   constructor(transport: Transport, dbPath?: string) {
     this.transport = transport

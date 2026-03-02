@@ -2,7 +2,13 @@
 
 React Native SDK for Fedimint - the easiest way to integrate Fedimint into your React Native app.
 
-## Installation
+## Implementation Options
+
+Depending on your project setup, you can use the SDK with or without Expo. Choose the option below that fits your environment.
+
+### Option 1: Without Expo (Bare React Native)
+
+#### Installation
 
 ```bash
 npm install @fedimint/react-native
@@ -18,7 +24,7 @@ You'll also need `react-native-fs` for database storage:
 npm install react-native-fs
 ```
 
-## Usage
+#### Usage
 
 ```typescript
 import WalletDirector from '@fedimint/react-native'
@@ -40,7 +46,13 @@ await wallet.joinFederation(inviteCode)
 const balance = await wallet.balance.getBalance()
 ```
 
-## Expo Support
+### Option 2: With Expo
+
+#### Installation
+
+```bash
+npx expo install @fedimint/react-native expo-file-system
+```
 
 For Expo managed workflow (SDK 52+), add the plugin to your `app.json`:
 
@@ -63,7 +75,32 @@ npx expo run:android
 
 **Note:** Expo Go is not supported. You must use a custom dev client.
 
-### Plugin Options
+#### Usage
+
+```typescript
+import WalletDirector from '@fedimint/react-native'
+import * as FileSystem from 'expo-file-system'
+
+// Create a wallet director with a database path
+// Note: documentDirectory includes a trailing slash
+const dbPath = `${FileSystem.documentDirectory}fedimint_db`
+const director = new WalletDirector(dbPath)
+
+// Preview a federation before joining
+const preview = await director.previewFederation(inviteCode)
+console.log('Federation:', preview.config.global.meta.federation_name)
+
+// Create a wallet and join a federation
+const wallet = await director.createWallet()
+await wallet.joinFederation(inviteCode)
+
+// Use wallet methods
+const balance = await wallet.balance.getBalance()
+```
+
+#### Plugin Options
+
+This is required for Expo managed workflow.
 
 ```json
 {
@@ -80,9 +117,9 @@ npx expo run:android
 }
 ```
 
-### Skipping Binary Downloads
+### Building from Source
 
-You can skip the automatic binary download during installation by:
+You can choose to build the SDK from scratch (recompile from source) and skip the automatic binary download during installation by:
 
 1. **Using an environment variable:**
 
@@ -105,12 +142,12 @@ This is useful when you want to handle binary downloads manually or are building
 | Platform | Minimum Version      |
 | -------- | -------------------- |
 | Android  | API 24 (Android 7.0) |
-| iOS      | 13.4                 |
+| iOS      | 15.0                 |
 
-| Expo SDK | Support                   |
-| -------- | ------------------------- |
-| 52+      | ✅ With custom dev client |
-| Expo Go  | ❌ Not supported          |
+| Expo SDK | Support          |
+| -------- | ---------------- |
+| 52+      | ✅ With plugins  |
+| Expo Go  | ❌ Not supported |
 
 ## Exports
 

@@ -1,3 +1,3 @@
 [submodule "fedimint-sdk-ffi"]
 	path = fedimint-sdk-ffi
-	url = https://github.com/MrImmortal09/fedimint-sdk-ffi.git
+	url = https://github.com/fedimint/fedimint-sdk-ffi.git
