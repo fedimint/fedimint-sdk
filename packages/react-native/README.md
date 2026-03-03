@@ -34,9 +34,9 @@ import RNFS from 'react-native-fs'
 const dbPath = `${RNFS.DocumentDirectoryPath}/fedimint_db`
 const director = new WalletDirector(dbPath)
 
-// Preview a federation before joining
-const preview = await director.previewFederation(inviteCode)
-console.log('Federation:', preview.config.global.meta.federation_name)
+// Generate a mnemonic
+const words = await director.generateMnemonic()
+console.log('Mnemonic:', words.join(' '))
 
 // Create a wallet and join a federation
 const wallet = await director.createWallet()
@@ -79,16 +79,20 @@ npx expo run:android
 
 ```typescript
 import WalletDirector from '@fedimint/react-native'
-import * as FileSystem from 'expo-file-system'
+import { Paths } from 'expo-file-system'
+
+// Prepare Database Path
+const dbUriPath = Paths.document.uri // e.g. file:///data/...
+// Strip the file:// scheme to get the plain filesystem path for Rust
+const dbPath = dbUriPath + 'fedimint_db'
+const rustPath = dbPath.replace(/^file:\/\//, '')
 
 // Create a wallet director with a database path
-// Note: documentDirectory includes a trailing slash
-const dbPath = `${FileSystem.documentDirectory}fedimint_db`
-const director = new WalletDirector(dbPath)
+const director = new WalletDirector(rustPath)
 
-// Preview a federation before joining
-const preview = await director.previewFederation(inviteCode)
-console.log('Federation:', preview.config.global.meta.federation_name)
+// Generate a mnemonic
+const words = await director.generateMnemonic()
+console.log('Mnemonic:', words.join(' '))
 
 // Create a wallet and join a federation
 const wallet = await director.createWallet()
