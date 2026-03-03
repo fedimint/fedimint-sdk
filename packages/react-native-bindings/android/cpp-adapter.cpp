@@ -25,8 +25,15 @@ Java_com_fedimint_reactnative_ReactNativeBindingsModule_nativeInstallRustCrate(
     jlong rtPtr,
     jobject callInvokerHolderJavaObj
 ) {
-    // React Native 0.77+ uses fbjni HybridClass for CallInvokerHolder
-    // Use the proper fbjni API to extract the CallInvoker
+    // WHY THIS PATCH IS NEEDED:
+    // The uniffi-bindgen-react-native generator outputs C++ code that manually attempts to
+    // extract the CallInvoker from the Java CallInvokerHolder object using JNI reflection.
+    // However, in React Native 0.77+ (and the new architecture), the memory layout and standard
+    // approaches for hybrid objects changed. The manual reflection approach fails sometimes
+    // and causes crashes. Instead, we use the proper fbjni API `facebook::jni::wrap_alias`
+    // which is the officially supported way to extract the C++ HybridClass from the Java
+    // representation.
+    // Reference: https://github.com/realm/realm-js/issues/7011
     auto callInvokerHolder = facebook::jni::wrap_alias(
         reinterpret_cast<facebook::react::CallInvokerHolder::javaobject>(callInvokerHolderJavaObj)
     )->cthis();
