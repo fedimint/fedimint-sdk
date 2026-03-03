@@ -154,6 +154,12 @@
             export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
             export BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
             export BINDGEN_EXTRA_CLANG_ARGS_i686_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
+
+            # Force bindgen to use NDK clang instead of any Homebrew/system LLVM
+            # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
+            if [ -f "$TOOLCHAIN/bin/clang" ]; then
+              export CLANG_PATH="$TOOLCHAIN/bin/clang"
+            fi
             
           '';
 
@@ -215,6 +221,21 @@
                 export MACOSX_DEPLOYMENT_TARGET="15.0"
                 export IPHONEOS_DEPLOYMENT_TARGET="15.0"
 
+                # Force bindgen to use Xcode clang instead of any Homebrew/system LLVM
+                # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
+                export CLANG_PATH=$(xcrun --find clang 2>/dev/null || which clang)
+
+                # Set BINDGEN_EXTRA_CLANG_ARGS for iOS cross-compilation targets
+                IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
+                SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)
+                if [ -n "$IOS_SDKROOT" ]; then
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
+                fi
+                if [ -n "$SIM_SDKROOT" ]; then
+                  # x86_64-apple-ios needs the simulator SDK (iPhoneOS SDK is ARM-only)
+                  export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
+                fi
+
             fi
           '';
         in {
@@ -228,6 +249,8 @@
           };
 
           android = pkgs.mkShell {
+            # Set as derivation env var so it can't be overridden by user shell profiles
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
               androidSdk.androidsdk
               pkgs.cmake
@@ -241,9 +264,12 @@
           };
 
           ios = pkgs.mkShellNoCC {
+            # Set as derivation env var so it can't be overridden by user shell profiles
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
                pkgs.cmake
                pkgs.go
+               pkgs.libclang # Needed for bindgen (aws-lc-sys etc.)
                iosToolchain
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
                xcode-wrapper
