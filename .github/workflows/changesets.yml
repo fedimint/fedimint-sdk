@@ -38,6 +38,7 @@ jobs:
 
       - name: Build React Native Bindings
         uses: ./.github/actions/build-react-native
+        timeout-minutes: 75
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -58,6 +59,7 @@ jobs:
       - name: PR or Publish to NPM
         id: changesets
         uses: changesets/action@v1
+        timeout-minutes: 10
         with:
           publish: nix develop --accept-flake-config -c bash -c "export CI=true; pnpm changeset publish"
           createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
@@ -86,6 +88,7 @@ jobs:
         # Only publish a prerelease if we didn't publish a release
         if: steps.changesets.outputs.published != 'true'
         continue-on-error: true
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
