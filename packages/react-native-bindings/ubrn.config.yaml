@@ -18,6 +18,7 @@ ios:
   tags: [ios]
   targets:
     - aarch64-apple-ios
+    - aarch64-apple-ios-sim
     - x86_64-apple-ios
   frameworks: # Needed for rust bindings to work on iOS
     - SystemConfiguration

@@ -82,6 +82,7 @@
         
         iosToolchain = mkToolchain [
           "aarch64-apple-ios"
+          "aarch64-apple-ios-sim"
           "x86_64-apple-ios"
         ];
         
@@ -232,8 +233,12 @@
                   export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
                 fi
                 if [ -n "$SIM_SDKROOT" ]; then
-                  # x86_64-apple-ios needs the simulator SDK (iPhoneOS SDK is ARM-only)
+                  # x86_64 and aarch64-sim need the simulator SDK (iPhoneOS SDK is ARM-only)
                   export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
+                  # aws-lc-sys bundles an older bindgen that passes "aarch64-apple-ios-sim" to clang,
+                  # but clang expects "aarch64-apple-ios-simulator". Override the target explicitly.
+                  # See: https://github.com/rust-lang/rust-bindgen/pull/3182
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--sysroot=$SIM_SDKROOT --target=arm64-apple-ios-simulator"
                 fi
 
             fi
