@@ -59,7 +59,7 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: nix develop --accept-flake-config -c pnpm changeset publish
+          publish: nix develop --accept-flake-config -c bash -c "export CI=true; pnpm changeset publish"
           createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,6 +91,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           nix develop --accept-flake-config -c bash -c '
+            export CI=true
             npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
             git reset --hard origin/main
             pnpm clean

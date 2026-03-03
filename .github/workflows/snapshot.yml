@@ -37,6 +37,7 @@ jobs:
         run: |
           nix develop -c bash -c "
           set -e
+          export CI=true
           branch=\$(git branch --show-current)
           snapshot=\$(echo \$branch | tr -cs '[:alnum:]-' '-' | tr '[:upper:]' '[:lower:]' | sed 's/-$//')
           npm config set '//registry.npmjs.org/:_authToken' '$NPM_TOKEN'
