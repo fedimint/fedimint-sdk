@@ -29,7 +29,9 @@ jobs:
         uses: ./.github/actions/build-wasm
 
       - name: Build all packages
-        run: nix develop -c pnpm build
+        run: |
+          nix develop -c pnpm build
+          nix develop -c pnpm build:reactnative
 
       - name: Publish Snapshot
         timeout-minutes: 10
@@ -54,6 +56,7 @@ jobs:
           cd ../..
 
           pnpm build
+          pnpm build:reactnative
           pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
           "
 

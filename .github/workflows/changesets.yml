@@ -48,6 +48,7 @@ jobs:
           nix develop --accept-flake-config --command bash << 'EOF'
             pnpm install
             pnpm build
+            pnpm build:reactnative
           EOF
 
       - name: Re-apply React Native Checksums
@@ -106,6 +107,7 @@ jobs:
             cd ../..
 
             pnpm build
+            pnpm build:reactnative
             pnpm changeset publish --no-git-tag --snapshot canary --tag canary
           '
 

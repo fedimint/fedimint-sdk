@@ -4,28 +4,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-react-native:
-    name: Build React Native
-    runs-on: macos-latest
-    timeout-minutes: 75
-
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build React Native
-        uses: ./.github/actions/build-react-native
-
   lint:
     name: Lint
-    needs: build-react-native
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -33,12 +13,6 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
-      - name: Download Generated Bindings
-        uses: actions/download-artifact@v4
-        with:
-          name: generated-bindings
-          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
@@ -51,19 +25,12 @@ jobs:
 
   build:
     name: Build JS
-    needs: build-react-native
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
-      - name: Download Generated Bindings
-        uses: actions/download-artifact@v4
-        with:
-          name: generated-bindings
-          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
@@ -73,18 +40,11 @@ jobs:
 
   types:
     name: Check Types
-    needs: build-react-native
     runs-on: ubuntu-latest
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
-      - name: Download Generated Bindings
-        uses: actions/download-artifact@v4
-        with:
-          name: generated-bindings
-          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
@@ -97,9 +57,8 @@ jobs:
 
   test:
     name: Test
-    needs: build-react-native
     runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Clone repository
@@ -110,47 +69,38 @@ jobs:
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Download Generated Bindings
-        uses: actions/download-artifact@v4
-        with:
-          name: generated-bindings
-          path: packages/react-native-bindings
-
       - name: Build WASM
         uses: ./.github/actions/build-wasm
 
       - name: Run pnpm tests
         shell: bash
         run: |
-          nix develop --accept-flake-config .#wasm-tests -c bash << 'EOF'
-            set -euo pipefail
-            pnpm install
-            pnpm build
-            pnpm test
-          EOF
+          set -euo pipefail
+
+          # Install dependencies
+          pnpm install
+
+          # Build packages
+          pnpm build
+
+          # Run Tests
+          nix develop --accept-flake-config --command pnpm test
 
       - name: Report Size
         uses: alexlwn123/compressed-size-action@alex/fix-build
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '{packages/**/dist/**/*.{js,mjs,cjs},packages/**/*.wasm}'
-          install-script: nix develop --accept-flake-config -c pnpm install
-          build-script: nix develop --accept-flake-config -c pnpm build
+          install-script: pnpm install
+          build-script: pnpm build
 
   build-docs:
     name: Build Docs
-    needs: build-react-native
     runs-on: ubuntu-latest
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
-      - name: Download Generated Bindings
-        uses: actions/download-artifact@v4
-        with:
-          name: generated-bindings
-          path: packages/react-native-bindings
 
       - name: Install dependencies
         uses: ./.github/actions/install-deps
