@@ -23,7 +23,7 @@ jobs:
 
       - name: Build React Native Bindings
         uses: ./.github/actions/build-react-native
-        timeout-minutes: 75
+        timeout-minutes: 90
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
