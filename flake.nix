@@ -102,6 +102,7 @@
             pkgs.gh
             pkgs.zip
             pkgs.coreutils
+            pkgs.patch
           ];
 
           commonShellHook = ''
