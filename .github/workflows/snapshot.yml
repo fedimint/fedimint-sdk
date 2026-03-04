@@ -49,6 +49,8 @@ jobs:
           # Re-apply checksums (action exported them to env)
           cd packages/react-native-bindings
           node -e \"const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')\"
+          # This is required as the snapshot version is string is too long and considered invalid by the xcode.
+          patch -p0 --forward < patches/snapshot_version.patch || true
           cd ../..
 
           pnpm build
