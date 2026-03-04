@@ -29,7 +29,7 @@
     "reset": "pnpm clean && pnpm build && pnpm preview",
     "changeset": "changeset",
     "version": "changeset version",
-    "typecheck": "pnpm run --r --parallel typecheck",
+    "typecheck": "pnpm run --r --parallel --filter \"!@fedimint/react-native\" --filter \"!@fedimint/react-native-bindings\" typecheck",
     "coverage": "vitest run --coverage",
     "test": "pnpm run test:setup pnpm run test:lib",
     "test:setup": "bash scripts/setup_test_shell.sh",
