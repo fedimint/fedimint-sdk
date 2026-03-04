@@ -99,7 +99,7 @@ jobs:
     name: Test
     needs: build-react-native
     runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Clone repository
