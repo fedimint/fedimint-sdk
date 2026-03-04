@@ -75,7 +75,7 @@ jobs:
       - name: Run pnpm tests
         shell: bash
         run: |
-          nix develop --accept-flake-config --command bash << 'EOF'
+          nix develop --accept-flake-config .#wasm-tests --command bash << 'EOF'
             set -euo pipefail
 
             # Install dependencies
