@@ -163,6 +163,8 @@ packages/react-native-bindings/android/generated
 packages/react-native-bindings/android/src/main/jniLibs
 binaries.tar.gz
 packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
+packages/react-native-bindings/ios-artifacts.zip
+packages/react-native-bindings/android-artifacts.zip
 packages/react-native-bindings/ReactNativeBindings.podspec.orig
 packages/react-native-bindings/cpp/generated/
 packages/react-native-bindings/src/generated/
