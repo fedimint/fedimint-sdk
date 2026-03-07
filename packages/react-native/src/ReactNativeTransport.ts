@@ -53,7 +53,7 @@ export class ReactNativeTransport extends Transport {
         const rustRequest = {
           type: type,
           request_id: requestId,
-          payload: payload ?? null,
+          ...(payload ?? {}),
         }
         const json = JSON.stringify(rustRequest)
         console.log('ReactNativeTransport sending RPC:', json)
