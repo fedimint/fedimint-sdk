@@ -19,7 +19,7 @@ export class ReactNativeTransport extends Transport {
   }
 
   async postMessage(message: TransportRequest): Promise<void> {
-    console.log(
+    this.logger.info(
       'ReactNativeTransport postMessage received:',
       JSON.stringify(message),
     )
@@ -53,17 +53,20 @@ export class ReactNativeTransport extends Transport {
         const rustRequest = {
           request_id: requestId,
           type: type,
-          ...(payload ?? {}),
+          ...(typeof payload === 'object' && payload !== null ? payload : {}),
         }
         const json = JSON.stringify(rustRequest)
-        console.log('ReactNativeTransport sending RPC:', json)
+        console.info('ReactNativeTransport sending RPC:', json)
 
         const callback = {
           onResponse: (responseStr: string) => {
             try {
-              console.log('ReactNativeTransport RPC raw response:', responseStr)
+              console.debug(
+                'ReactNativeTransport RPC raw response:',
+                responseStr,
+              )
               const response = JSON.parse(responseStr)
-              console.log(
+              console.info(
                 'ReactNativeTransport RPC parsed response:',
                 JSON.stringify(response),
               )
@@ -110,7 +113,7 @@ export class ReactNativeTransport extends Transport {
           this.errorHandler(e)
         }
       } else if (type === 'cleanup') {
-        console.log('cleanup message received')
+        this.logger.info('cleanup message received')
         this.rpcHandler.uniffiDestroy()
       } else {
         this.logger.error('Unknown message type', type)
