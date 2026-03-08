@@ -129,6 +129,10 @@ npm-debug.log
 yarn-debug.log
 yarn-error.log
 
+# Python (Flask)
+/examples/python-flask/.venv
+/examples/python-flask/static/sdk/
+
 # BUCK
 buck-out/
 \.buckd/

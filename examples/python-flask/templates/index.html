@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fedi: Python Flask Example</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon" />
+</head>
+
+<body>
+  <header>
+    <h1>
+      <img src="/static/favicon.ico" alt="Fedimint logo" width="32" height="32"
+        style="vertical-align: middle; margin-right: 0.4rem;" />
+      Fedimint SDK
+    </h1>
+    <p>Python (Flask) Example &nbsp;·&nbsp; Open browser console to see logs</p>
+  </header>
+
+  <div class="card">
+    <h2>Wallet Status</h2>
+    <div class="status-row">
+      <span class="dot yellow" id="status-dot"></span>
+      <span id="status-text">Initializing…</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Balance</h2>
+    <div>
+      <span class="balance-value" id="balance-value">–</span>
+      <span class="balance-unit">msats</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Console Output</h2>
+    <div class="console-box" id="console-box">
+      <div class="log-line dim">Waiting for wallet…</div>
+    </div>
+  </div>
+
+  <div class="card" id="invoice-card">
+    <h2>Generate Test Invoice</h2>
+    <div class="invoice-form">
+      <div class="input-group">
+        <label for="invoice-amount">Amount (sats)</label>
+        <input id="invoice-amount" type="number" placeholder="e.g. 100" min="1" disabled />
+      </div>
+      <div class="input-group">
+        <label for="invoice-desc">Description</label>
+        <input id="invoice-desc" type="text" placeholder="e.g. test payment" disabled />
+      </div>
+      <button id="invoice-btn" disabled>Generate Invoice</button>
+    </div>
+    <div id="invoice-result"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@fedimint/fedimint-client-wasm-bundler": "/static/sdk/fedimint_client_wasm.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    const box = document.getElementById("console-box");
+    const statusDot = document.getElementById("status-dot");
+    const statusText = document.getElementById("status-text");
+    const balanceEl = document.getElementById("balance-value");
+
+    // Invoice elements
+    const invoiceAmountEl = document.getElementById("invoice-amount");
+    const invoiceDescEl = document.getElementById("invoice-desc");
+    const invoiceBtn = document.getElementById("invoice-btn");
+    const invoiceResult = document.getElementById("invoice-result");
+
+    function log(msg, level = "info") {
+      const line = document.createElement("div");
+      line.className = `log-line ${level}`;
+      line.textContent = `> ${msg}`;
+      if (box.children.length === 1 && box.children[0].classList.contains("dim")) box.innerHTML = "";
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function setStatus(text, color) {
+      statusText.textContent = text;
+      statusDot.className = `dot ${color}`;
+    }
+
+    function enableInvoiceForm(walletInstance) {
+      invoiceAmountEl.disabled = false;
+      invoiceDescEl.disabled = false;
+      invoiceBtn.disabled = false;
+
+      invoiceBtn.addEventListener("click", async () => {
+        const amount = parseInt(invoiceAmountEl.value, 10);
+        const desc = invoiceDescEl.value.trim() || "test payment";
+
+        if (!amount || amount < 1) {
+          invoiceResult.innerHTML = `<span class="result-error">Enter a valid amount.</span>`;
+          return;
+        }
+
+        invoiceBtn.disabled = true;
+        invoiceBtn.textContent = "Generating…";
+        invoiceResult.innerHTML = "";
+
+        try {
+          const { invoice } = await walletInstance.lightning.createInvoice(amount, desc);
+          log(`Invoice generated for ${amount} sats ✓`, "ok");
+          invoiceResult.innerHTML = `
+            <div class="invoice-output">
+              <p class="invoice-label">Lightning Invoice</p>
+              <p class="invoice-string">${invoice}</p>
+              <button class="copy-btn" id="copy-btn">Copy</button>
+            </div>`;
+          document.getElementById("copy-btn").addEventListener("click", () => {
+            navigator.clipboard.writeText(invoice);
+            document.getElementById("copy-btn").textContent = "Copied!";
+            setTimeout(() => document.getElementById("copy-btn").textContent = "Copy", 2000);
+          });
+        } catch (err) {
+          log(`Invoice error: ${err.message}`, "error");
+          invoiceResult.innerHTML = `<span class="result-error">${err.message}</span>`;
+        } finally {
+          invoiceBtn.disabled = false;
+          invoiceBtn.textContent = "Generate Invoice";
+        }
+      });
+    }
+
+    try {
+      log("Loading Fedimint SDK…", "dim");
+      const coreMod = await import("/static/sdk/core.mjs");
+      const transportMod = await import("/static/sdk/transport-web.mjs");
+      const { WalletDirector } = coreMod;
+      const { createWasmWorkerTransport } = transportMod;
+      log("SDK loaded ✓", "dim");
+
+      // Create wallet 
+      const transport = createWasmWorkerTransport();
+      const director = new WalletDirector(transport);
+      const wallet = await director.createWallet();
+
+      // Required output #1
+      console.log("Fedimint wallet initialized", wallet);
+      log("Fedimint wallet initialized", "ok");
+      setStatus("Wallet initialized", "green");
+
+      // Ensure mnemonic exists
+      const mnemonic = await director.getMnemonic();
+      if (!mnemonic || mnemonic.length === 0) {
+        log("Generating mnemonic…", "dim");
+        const words = await director.generateMnemonic();
+        await director.setMnemonic(words);
+        log("Mnemonic generated ✓", "dim");
+      } else {
+        log("Mnemonic ready ✓", "dim");
+      }
+
+      // Open existing client OR join federation
+      if (!wallet.isOpen()) {
+        let opened = false;
+        try {
+          log("Reopening existing client…", "dim");
+          await wallet.open();
+          opened = true;
+          log("Existing client reopened ✓", "ok");
+          setStatus("Wallet open", "green");
+        } catch (openErr) {
+          log("No existing client — joining federation…", "info");
+        }
+
+        if (!opened) {
+          const { inviteCode } = await fetch("/api/invite-code").then(r => r.json());
+          const codeToTry = inviteCode.startsWith("fedi:")
+            ? inviteCode.slice("fedi:".length)
+            : inviteCode;
+          log(`Joining: ${codeToTry.slice(0, 40)}…`, "info");
+          setStatus("Joining federation…", "yellow");
+          const joined = await wallet.joinFederation(codeToTry);
+          if (!joined) throw new Error("joinFederation returned false — check invite code");
+          log("Joined federation ✓", "ok");
+          setStatus("Joined federation", "green");
+        }
+      } else {
+        log("Wallet already open ✓", "ok");
+        setStatus("Wallet open", "green");
+      }
+
+      // Wait for wallet to be fully ready 
+      await wallet.waitForOpen();
+
+      // Subscribe to balance 
+      wallet.balance.subscribeBalance((balance) => {
+        // Required output #2
+        console.log("balance", balance);
+        log(`balance ${balance}`, "ok");
+        balanceEl.textContent = balance.toLocaleString();
+        setStatus("Ready", "green");
+
+        // Enable invoice form once wallet is ready
+        enableInvoiceForm(wallet);
+      });
+
+    } catch (err) {
+      log(`Error: ${err.message}`, "error");
+      setStatus("Failed", "red");
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

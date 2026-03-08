@@ -22,6 +22,7 @@ export function getSidebar() {
         { text: 'Vanilla JS', link: 'bare-js' },
         { text: 'Next.JS', link: 'next-js' },
         { text: 'Webpack', link: 'webpack' },
+        { text: 'Python Flask', link: 'python-flask' },
       ],
     },
     {
