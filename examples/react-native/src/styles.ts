@@ -1,96 +1,233 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native'
 
-const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#1a1a1a',
-        padding: 20,
-    },
-    content: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    header: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#ffffff',
-        marginBottom: 40,
-        letterSpacing: 0.5,
-    },
-    card: {
-        backgroundColor: '#2d2d2d',
-        borderRadius: 16,
-        padding: 24,
-        width: '100%',
-        marginBottom: 30,
-        shadowColor: '#000',
-        shadowOffset: {
-            width: 0,
-            height: 4,
-        },
-        shadowOpacity: 0.3,
-        shadowRadius: 4.65,
-        elevation: 8,
-    },
-    mnemonicLabel: {
-        color: '#888888',
-        fontSize: 14,
-        marginBottom: 12,
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-    },
-    mnemonicText: {
-        color: '#ffffff',
-        fontSize: 18,
-        lineHeight: 28,
-        textAlign: 'center',
-        fontFamily: 'Courier New',
-    },
-    placeholderText: {
-        color: '#555555',
-        fontSize: 16,
-        textAlign: 'center',
-        fontStyle: 'italic',
-    },
-    buttonContainer: {
-        width: '100%',
-        gap: 16,
-    },
-    primaryButton: {
-        backgroundColor: '#4CAF50',
-        paddingVertical: 16,
-        borderRadius: 12,
-        alignItems: 'center',
-        shadowColor: '#4CAF50',
-        shadowOffset: {
-            width: 0,
-            height: 2,
-        },
-        shadowOpacity: 0.3,
-        shadowRadius: 3.84,
-        elevation: 5,
-    },
-    secondaryButton: {
-        backgroundColor: '#3d3d3d',
-        paddingVertical: 16,
-        borderRadius: 12,
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: '#555555',
-    },
-    buttonText: {
-        color: '#ffffff',
-        fontSize: 16,
-        fontWeight: '600',
-        letterSpacing: 0.5,
-    },
-    secondaryButtonText: {
-        color: '#dddddd',
-        fontSize: 16,
-        fontWeight: '600',
-        letterSpacing: 0.5,
-    },
-});
+const s = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#1a1a2e',
+  },
+  container: {
+    flex: 1,
+    backgroundColor: '#1a1a2e',
+  },
+  contentContainer: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  header: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  stepsCard: {
+    backgroundColor: '#16213e',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  stepsTitle: {
+    color: '#e0e0e0',
+    fontWeight: '700',
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  stepItem: {
+    color: '#b0b0b0',
+    fontSize: 14,
+    marginBottom: 4,
+    paddingLeft: 4,
+  },
+  section: {
+    backgroundColor: '#16213e',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
+  },
+  label: {
+    color: '#b0b0b0',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  value: {
+    color: '#e0e0e0',
+    fontSize: 14,
+  },
+  balance: {
+    color: '#4ade80',
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  mono: {
+    fontFamily: 'monospace',
+    color: '#93c5fd',
+    fontSize: 12,
+  },
+  italic: {
+    color: '#888',
+    fontStyle: 'italic',
+    marginTop: 8,
+  },
+  link: {
+    color: '#60a5fa',
+    textDecorationLine: 'underline',
+    marginTop: 4,
+    fontSize: 13,
+  },
+  input: {
+    backgroundColor: '#0f3460',
+    color: '#ffffff',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1a4a7a',
+  },
+  textArea: {
+    backgroundColor: '#0f3460',
+    color: '#ffffff',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1a4a7a',
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  formGroup: {
+    marginTop: 8,
+  },
+  btn: {
+    backgroundColor: '#0f3460',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnActive: {
+    backgroundColor: '#1a5276',
+    borderWidth: 1,
+    borderColor: '#60a5fa',
+  },
+  btnSmall: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  btnPrimary: {
+    backgroundColor: '#4CAF50',
+  },
+  btnDisabled: {
+    opacity: 0.5,
+  },
+  btnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  btnTextSmall: {
+    fontSize: 12,
+  },
+  btnTextDisabled: {
+    color: '#aaa',
+  },
+  mnemonicDisplay: {
+    backgroundColor: '#0f3460',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+  },
+  mnemonicText: {
+    color: '#e0e0e0',
+    fontFamily: 'monospace',
+    fontSize: 14,
+    lineHeight: 22,
+    marginBottom: 8,
+  },
+  mnemonicBlurred: {
+    color: '#e0e0e0',
+    fontFamily: 'monospace',
+    fontSize: 14,
+    lineHeight: 22,
+    marginBottom: 8,
+    opacity: 0.1,
+  },
+  success: {
+    backgroundColor: '#064e3b',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
+  successText: {
+    color: '#6ee7b7',
+    fontSize: 13,
+  },
+  error: {
+    backgroundColor: '#7f1d1d',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
+  errorText: {
+    color: '#fca5a5',
+    fontSize: 13,
+  },
+  previewCard: {
+    backgroundColor: '#0f3460',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+  },
+  previewTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  guardianItem: {
+    marginLeft: 8,
+    marginBottom: 4,
+  },
+  guardianName: {
+    color: '#e0e0e0',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  guardianUrl: {
+    color: '#93c5fd',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  invoiceBox: {
+    backgroundColor: '#0f3460',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+  },
+  resultBox: {
+    backgroundColor: '#0f3460',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+  },
+})
 
-export default styles;
+export default s
