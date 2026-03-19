@@ -23,8 +23,6 @@ import type {
 const TESTNET_FEDERATION_CODE =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
 
-// ─── Hooks ───────────────────────────────────────────────────────────
-
 const useIsOpen = () => {
   const [open, setIsOpen] = useState(false)
 
@@ -70,8 +68,6 @@ const useBalance = (checkIsOpen: () => void) => {
   return balance
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────
-
 const extractErrorMessage = (error: any): string => {
   if (error instanceof Error) return error.message
   if (typeof error === 'object' && error !== null) {
@@ -80,8 +76,6 @@ const extractErrorMessage = (error: any): string => {
   }
   return 'Operation failed'
 }
-
-// ─── Shared UI components ────────────────────────────────────────────
 
 const SectionCard: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -138,8 +132,6 @@ const Row: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <View style={s.row}>{children}</View>
 )
 
-// ─── Wallet Status ───────────────────────────────────────────────────
-
 const WalletStatus = ({
   open,
   checkIsOpen,
@@ -163,8 +155,6 @@ const WalletStatus = ({
     </Row>
   </SectionCard>
 )
-
-// ─── Mnemonic Manager ────────────────────────────────────────────────
 
 const MnemonicManager = () => {
   const [mnemonicState, setMnemonicState] = useState('')
@@ -326,8 +316,6 @@ const MnemonicManager = () => {
   )
 }
 
-// ─── Join Federation ─────────────────────────────────────────────────
-
 const JoinFederation = ({
   open,
   checkIsOpen,
@@ -458,8 +446,6 @@ const JoinFederation = ({
   )
 }
 
-// ─── Redeem Ecash ────────────────────────────────────────────────────
-
 const RedeemEcash = () => {
   const [ecashInput, setEcashInput] = useState('')
   const [redeemResult, setRedeemResult] = useState('')
@@ -494,8 +480,6 @@ const RedeemEcash = () => {
   )
 }
 
-// ─── Send Lightning ──────────────────────────────────────────────────
-
 const SendLightning = () => {
   const [lightningInput, setLightningInput] = useState('')
   const [lightningResult, setLightningResult] = useState('')
@@ -529,8 +513,6 @@ const SendLightning = () => {
     </SectionCard>
   )
 }
-
-// ─── Generate Lightning Invoice ──────────────────────────────────────
 
 const GenerateLightningInvoice = () => {
   const [amount, setAmount] = useState('')
@@ -608,8 +590,6 @@ const GenerateLightningInvoice = () => {
   )
 }
 
-// ─── Invite Code Parser ─────────────────────────────────────────────
-
 const InviteCodeParser = () => {
   const [inviteCode, setInviteCode] = useState('')
   const [parseResult, setParseResult] = useState<ParsedInviteCode | null>(null)
@@ -659,8 +639,6 @@ const InviteCodeParser = () => {
     </SectionCard>
   )
 }
-
-// ─── Parse Lightning Invoice ─────────────────────────────────────────
 
 const ParseLightningInvoice = () => {
   const [invoiceStr, setInvoiceStr] = useState('')
@@ -717,8 +695,6 @@ const ParseLightningInvoice = () => {
   )
 }
 
-// ─── Deposit ─────────────────────────────────────────────────────────
-
 const Deposit = () => {
   const [address, setAddress] = useState('')
   const [addressError, setAddressError] = useState('')
@@ -751,8 +727,6 @@ const Deposit = () => {
     </SectionCard>
   )
 }
-
-// ─── Send Onchain ────────────────────────────────────────────────────
 
 const SendOnchain = () => {
   const [address, setAddress] = useState('')
@@ -803,8 +777,6 @@ const SendOnchain = () => {
     </SectionCard>
   )
 }
-
-// ─── Root App ────────────────────────────────────────────────────────
 
 const App = () => {
   const { open, checkIsOpen } = useIsOpen()

@@ -61,10 +61,6 @@ export class ReactNativeTransport extends Transport {
         const callback = {
           onResponse: (responseStr: string) => {
             try {
-              console.debug(
-                'ReactNativeTransport RPC raw response:',
-                responseStr,
-              )
               const response = JSON.parse(responseStr)
               console.info(
                 'ReactNativeTransport RPC parsed response:',
