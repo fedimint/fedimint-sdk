@@ -104,6 +104,7 @@ jobs:
             # Re-apply checksums (action exported them to env)
             cd packages/react-native-bindings
             node -e "const pkg = require(\"./package.json\"); pkg.checksums={android:\"$ANDROID_SHA256\",ios:\"$IOS_SHA256\"}; require(\"fs\").writeFileSync(\"package.json\",JSON.stringify(pkg,null,2)+\"\\n\")"
+            patch -p0 --forward < patches/snapshot_version.patch || true
             cd ../..
 
             pnpm build

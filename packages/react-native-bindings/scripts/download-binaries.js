@@ -23,14 +23,29 @@ if (pkg.skipBinaryDownload === true) {
 const androidLibCheck = path.join(__dirname, '../android/src/main/jniLibs');
 const iosFrameworkCheck = path.join(__dirname, '../FedimintReactNativeBindingsFramework.xcframework');
 
-if (fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
+const isCanary = pkg.version.includes('canary');
+const isSnapshot = pkg.version.includes('-') || pkg.version.includes('snapshot');
+const isMutableRelease = isCanary || isSnapshot;
+
+if (!isMutableRelease && fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
     console.log('Binaries already present, skipping download.');
     process.exit(0);
 }
 
+if (isMutableRelease) {
+    if (fs.existsSync(androidLibCheck)) {
+        fs.rmSync(androidLibCheck, { recursive: true, force: true });
+    }
+    if (fs.existsSync(iosFrameworkCheck)) {
+        fs.rmSync(iosFrameworkCheck, { recursive: true, force: true });
+    }
+}
+
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
 let TAG = `react-native-v${pkg.version}`;
-if (pkg.version.includes('-') || pkg.version.includes('snapshot') || pkg.version.includes('canary')) {
+if (pkg.version.includes('canary')) {
+    TAG = 'canary';
+} else if (pkg.version.includes('-') || pkg.version.includes('snapshot')) {
     TAG = 'snapshot';
 }
 const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;

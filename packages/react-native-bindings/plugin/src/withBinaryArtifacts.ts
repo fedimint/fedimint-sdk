@@ -35,14 +35,27 @@ function downloadBinaryArtifacts(): void {
     'FedimintReactNativeBindingsFramework.xcframework'
   );
 
-  if (fs.existsSync(androidLibsPath) && fs.existsSync(iosFrameworkPath)) {
+  const packageJsonPath = path.join(packageRoot, 'package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+  const version = packageJson.version;
+  const isCanary = version.includes('canary');
+  const isSnapshot = version.includes('-') || version.includes('snapshot');
+  const isMutableRelease = isCanary || isSnapshot;
+
+  if (!isMutableRelease && fs.existsSync(androidLibsPath) && fs.existsSync(iosFrameworkPath)) {
     console.log('Fedimint SDK binary artifacts already exist, skipping download.');
     return;
   }
 
-  const packageJsonPath = path.join(packageRoot, 'package.json');
-  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-  const version = packageJson.version;
+  if (isMutableRelease) {
+    if (fs.existsSync(androidLibsPath)) {
+        fs.rmSync(androidLibsPath, { recursive: true, force: true });
+    }
+    if (fs.existsSync(iosFrameworkPath)) {
+        fs.rmSync(iosFrameworkPath, { recursive: true, force: true });
+    }
+  }
+  
   const androidChecksum = packageJson.checksums?.android;
   const iosChecksum = packageJson.checksums?.ios;
 
@@ -50,9 +63,13 @@ function downloadBinaryArtifacts(): void {
     console.warn('Binary checksums not found in package.json, skipping verification.');
   }
 
-  // Use 'snapshot' tag for pre-release versions, otherwise use react-native-v{version}
-  const isPreRelease = version.includes('-') || version.includes('snapshot') || version.includes('canary');
-  const releaseTag = isPreRelease ? 'snapshot' : `react-native-v${version}`;
+  // Determine release tag based on version
+  let releaseTag = `react-native-v${version}`;
+  if (isCanary) {
+    releaseTag = 'canary';
+  } else if (version.includes('-') || version.includes('snapshot')) {
+    releaseTag = 'snapshot';
+  }
   const androidUrl = `${GITHUB_REPO}/releases/download/${releaseTag}/android-artifacts.zip`;
   const iosUrl = `${GITHUB_REPO}/releases/download/${releaseTag}/ios-artifacts.zip`;
 
