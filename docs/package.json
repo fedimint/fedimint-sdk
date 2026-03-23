@@ -13,6 +13,7 @@
     "@fedimint/types": "workspace:*",
     "@shikijs/vitepress-twoslash": "1.4.0",
     "vitepress": "1.1.4",
-    "vitepress-plugin-group-icons": "^1.7.1"
+    "vitepress-plugin-group-icons": "^1.7.1",
+    "vitepress-versioning-plugin": "^1.3.0"
   }
 }

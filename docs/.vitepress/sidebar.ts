@@ -1,41 +1,43 @@
 import type { DefaultTheme } from 'vitepress'
 
 export function getSidebar() {
-  return [
-    {
-      base: '/core/',
-      collapsed: false,
-      text: 'Introduction',
-      items: [
-        { text: 'Overview', link: 'overview' },
-        { text: 'Getting Started', link: 'getting-started' },
-        { text: 'Architecture', link: 'architecture' },
-      ],
-    },
-    ...FedimintWalletSidebar,
-    {
-      base: '/examples/',
-      collapsed: false,
-      text: 'Examples',
-      items: [
-        { text: 'Vite + React', link: 'vite-react' },
-        { text: 'Vanilla JS', link: 'bare-js' },
-        { text: 'Next.JS', link: 'next-js' },
-        { text: 'Webpack', link: 'webpack' },
-      ],
-    },
-    {
-      text: 'Dev',
-      collapsed: true,
-      base: '/core/dev/',
-      items: [
-        { text: 'Contributing', link: 'contributing' },
-        { text: 'Nix Setup', link: 'nix_setup' },
-        { text: 'Awesome Projects', link: 'awesome' },
-        { text: 'Testing', link: 'testing' },
-      ],
-    },
-  ] satisfies DefaultTheme.Sidebar
+  return {
+    '/': [
+      {
+        base: '/core/',
+        collapsed: false,
+        text: 'Introduction',
+        items: [
+          { text: 'Overview', link: 'overview' },
+          { text: 'Getting Started', link: 'getting-started' },
+          { text: 'Architecture', link: 'architecture' },
+        ],
+      },
+      ...FedimintWalletSidebar,
+      {
+        base: '/examples/',
+        collapsed: false,
+        text: 'Examples',
+        items: [
+          { text: 'Vite + React', link: 'vite-react' },
+          { text: 'Vanilla JS', link: 'bare-js' },
+          { text: 'Next.JS', link: 'next-js' },
+          { text: 'Webpack', link: 'webpack' },
+        ],
+      },
+      {
+        text: 'Dev',
+        collapsed: true,
+        base: '/core/dev/',
+        items: [
+          { text: 'Contributing', link: 'contributing' },
+          { text: 'Nix Setup', link: 'nix_setup' },
+          { text: 'Awesome Projects', link: 'awesome' },
+          { text: 'Testing', link: 'testing' },
+        ],
+      },
+    ],
+  } satisfies DefaultTheme.SidebarMulti
 }
 
 const FedimintWalletSidebar = [

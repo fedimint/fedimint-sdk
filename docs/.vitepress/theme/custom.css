@@ -25,3 +25,12 @@
     --vp-home-hero-image-filter: blur(120px);
   }
 }
+
+/* Make active version selection obvious in the version switcher dropdown. */
+.VPNavBarMenuGroup .VPMenu .VPLink.link.active,
+.VPNavBarExtra .VPMenu .VPLink.link.active {
+  background-color: var(--vp-c-brand-soft);
+  border: 1px solid var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+  font-weight: 600;
+}
