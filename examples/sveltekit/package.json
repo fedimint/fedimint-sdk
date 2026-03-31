@@ -1,0 +1,26 @@
+{
+  "name": "sveltekit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "svelte-kit sync && vite dev",
+    "build": "svelte-kit sync && vite build",
+    "preview": "svelte-kit sync && vite preview",
+    "clean": "rm -rf .svelte-kit build dist tsconfig.tsbuildinfo",
+    "clean:deep": "pnpm run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@fedimint/core": "latest",
+    "@fedimint/transport-web": "latest"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-auto": "^6.0.0",
+    "@sveltejs/kit": "^2.39.6",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "svelte": "^5.28.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1",
+    "vite-plugin-wasm": "^3.5.0"
+  },
+  "packageManager": "pnpm@9.15.9"
+}

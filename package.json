@@ -13,6 +13,7 @@
     "dev:react": "pnpm --filter react dev",
     "dev:vite": "pnpm --filter vite-core dev",
     "dev:bare": "pnpm run --filter bare-js server",
+    "dev:svelte": "pnpm --filter sveltekit dev",
     "dev:webpack": "pnpm --filter webpack-app build && pnpm --filter webpack-app start",
     "dev:next": "pnpm run --filter next-js dev",
     "docs:dev": "pnpm run --filter docs docs:dev",
