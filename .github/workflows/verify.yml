@@ -17,7 +17,7 @@ on:
 jobs:
   lint:
     name: Lint
-    # FIX: Run if ANY of the filters are true, or just remove 'if' to always run
+    # FIX Run if ANY of the filters are true, or just remove 'if' to always run
     if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.react_native == 'true' }}
     permissions:
       contents: write

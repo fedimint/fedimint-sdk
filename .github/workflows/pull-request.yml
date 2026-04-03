@@ -1,5 +1,5 @@
 name: Pull Request
-
+# FIX: Run if ANY of the filters are true, or just remove 'if' to always run
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
