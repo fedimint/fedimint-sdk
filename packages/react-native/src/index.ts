@@ -4,7 +4,7 @@ import {
   TransportClient,
 } from '@fedimint/core'
 import type { FedimintWallet } from '@fedimint/core'
-
+// comment to test CI
 /**
  * WalletDirector for React Native.
  * Automatically uses ReactNativeTransport under the hood.
