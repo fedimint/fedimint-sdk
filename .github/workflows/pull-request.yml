@@ -1,4 +1,5 @@
 name: Pull Request
+
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -9,6 +10,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      react_native: ${{ steps.filter.outputs.react_native }}
+      web: ${{ steps.filter.outputs.web }}
+      core: ${{ steps.filter.outputs.core }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            react_native:
+              - 'packages/react-native/**'
+              - 'packages/react-native-bindings/**'
+
+            web:
+              - 'packages/core-web/**'
+              - 'packages/transport-web/**'
+              - 'packages/wasm-web/**'
+
+            core:
+              - 'packages/core/**'
+              - 'packages/types/**'
+              - 'packages/integration-tests/**'
+              - 'packages/wasm-bundler/**'
+
   verify:
     name: Verify
+    needs: changes
     uses: ./.github/workflows/verify.yml
+    with:
+      react_native: ${{ needs.changes.outputs.react_native }}
+      web: ${{ needs.changes.outputs.web }}
+      core: ${{ needs.changes.outputs.core }}

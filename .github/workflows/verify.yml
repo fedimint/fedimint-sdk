@@ -1,93 +1,87 @@
 name: Verify
+
 on:
   workflow_call:
+    inputs:
+      react_native:
+        required: true
+        type: string
+      web:
+        required: true
+        type: string
+      core:
+        required: true
+        type: string
   workflow_dispatch:
 
 jobs:
   lint:
     name: Lint
+    # FIX: Run if ANY of the filters are true, or just remove 'if' to always run
+    if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.react_native == 'true' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
-
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-
       - name: Lint repo
         run: pnpm lint:repo
-
       - name: Lint code
         run: pnpm lint
 
   build:
     name: Build JS
+    if: ${{ inputs.core == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-
       - name: Build
         run: pnpm build
 
   types:
     name: Check Types
+    if: ${{ inputs.core == 'true' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-
       - name: Build types package
         run: pnpm --filter @fedimint/types build
-
       - name: Check types
         run: pnpm typecheck
 
   test:
     name: Test
+    if: ${{ inputs.core == 'true' || inputs.web == 'true' }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
-
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Build WASM
         uses: ./.github/actions/build-wasm
-
       - name: Run pnpm tests
         shell: bash
         run: |
           nix develop --accept-flake-config .#wasm-tests --command bash << 'EOF'
             set -euo pipefail
-
-            # Install dependencies
             pnpm install
-
-            # Build packages
             pnpm build
-
-            # Run Tests
             pnpm test
           EOF
-
       - name: Report Size
         uses: alexlwn123/compressed-size-action@alex/fix-build
         with:
@@ -98,17 +92,30 @@ jobs:
 
   build-docs:
     name: Build Docs
+    if: ${{ inputs.core == 'true' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-
       - name: Build Packages (dependency of docs)
         run: pnpm build
-
       - name: Build Docs
         run: pnpm docs:build
+
+  react-native-build:
+    name: React Native Build
+    # This matches the requirement: Run RN builds if RN files changed
+    # We keep the 'core != true' if Core already runs a build that covers RN.
+    if: ${{ inputs.react_native == 'true' && inputs.core != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+      - name: Build iOS
+        run: pnpm ubrn:ios:release
+      - name: Build Android
+        run: pnpm ubrn:android:release
