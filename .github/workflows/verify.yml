@@ -17,7 +17,6 @@ on:
 jobs:
   lint:
     name: Lint
-    # FIX Run if ANY of the filters are true, or just remove 'if' to always run
     if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.react_native == 'true' }}
     permissions:
       contents: write
@@ -104,18 +103,37 @@ jobs:
       - name: Build Docs
         run: pnpm docs:build
 
-  react-native-build:
-    name: React Native Build
-    # This matches the requirement: Run RN builds if RN files changed
-    # We keep the 'core != true' if Core already runs a build that covers RN.
+  # --- NEW: Android Build (Runs on Linux) ---
+  react-native-android:
+    name: React Native Android
     if: ${{ inputs.react_native == 'true' && inputs.core != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-      - name: Build iOS
-        run: pnpm ubrn:ios:release
+
       - name: Build Android
         run: pnpm ubrn:android:release
+
+  # --- NEW: iOS Build (Runs on GitHub's Mac) ---
+  react-native-ios:
+    name: React Native iOS
+    if: ${{ inputs.react_native == 'true' && inputs.core != 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build React Native Bindings (iOS)
+        uses: ./.github/actions/build-react-native
+        timeout-minutes: 90
