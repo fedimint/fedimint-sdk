@@ -102,7 +102,7 @@ const MnemonicManager = () => {
           <TextInput
             style={s.textArea}
             placeholder="Enter 12 or 24 words separated by spaces"
-            placeholderTextColor="#888"
+            placeholderTextColor="#a0aec0"
             value={inputMnemonic}
             onChangeText={setInputMnemonic}
             multiline
@@ -174,7 +174,7 @@ const JoinFederation = ({ open, checkIsOpen }: { open: boolean; checkIsOpen: () 
       <TextInput
         style={s.input}
         placeholder="Invite Code..."
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={inviteCode}
         onChangeText={(text) => {
           setInviteCode(text)
@@ -241,7 +241,7 @@ const InviteCodeParser = () => {
       <TextInput
         style={s.input}
         placeholder="Enter invite code..."
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={inviteCode}
         onChangeText={setInviteCode}
       />

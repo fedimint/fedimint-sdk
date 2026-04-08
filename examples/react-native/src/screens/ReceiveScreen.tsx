@@ -39,7 +39,7 @@ const GenerateLightningInvoice = () => {
       <TextInput
         style={s.input}
         placeholder="Enter amount in msats"
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         keyboardType="numeric"
         value={amount}
         onChangeText={setAmount}
@@ -48,7 +48,7 @@ const GenerateLightningInvoice = () => {
       <TextInput
         style={s.input}
         placeholder="Enter description"
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={description}
         onChangeText={setDescription}
       />
@@ -125,7 +125,7 @@ const RedeemEcash = () => {
       <TextInput
         style={s.input}
         placeholder="Long ecash string..."
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={ecashInput}
         onChangeText={setEcashInput}
       />

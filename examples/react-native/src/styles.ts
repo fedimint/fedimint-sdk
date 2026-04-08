@@ -1,232 +1,284 @@
-import { StyleSheet } from 'react-native'
+import { StyleSheet, Platform } from 'react-native'
+
+// Claymorphism uses soft pastel or off-white backgrounds with diffuse shadows
+// to create a 3D, tactile "clay-like" appearance.
+const BG_COLOR = '#E0E5EC' // A soft, cool off-white
+const CLAY_LITE = '#ffffff'
+const CLAY_DARK = '#a3b1c6'
+const TEXT_DARK = '#2d3748'
+const TEXT_MUTED = '#718096'
+
+// Reusable shadow styles for the "floating clay" effect
+const clayShadows = {
+  ...Platform.select({
+    ios: {
+      shadowColor: CLAY_DARK,
+      shadowOffset: { width: 6, height: 6 },
+      shadowOpacity: 0.8,
+      shadowRadius: 10,
+    },
+    android: {
+      elevation: 8,
+    },
+  })
+}
 
 const s = StyleSheet.create({
+  // Main wrapping area
   safeArea: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: BG_COLOR,
   },
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: BG_COLOR,
   },
   contentContainer: {
-    padding: 16,
-    paddingBottom: 40,
+    padding: 20,
+    paddingBottom: 60,
   },
+  // Typography
   header: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#ffffff',
+    fontSize: 28,
+    fontWeight: '800',
+    color: TEXT_DARK,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 24,
+    letterSpacing: 0.5,
   },
-  stepsCard: {
-    backgroundColor: '#16213e',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-  },
-  stepsTitle: {
-    color: '#e0e0e0',
-    fontWeight: '700',
-    fontSize: 15,
-    marginBottom: 8,
-  },
-  stepItem: {
-    color: '#b0b0b0',
-    fontSize: 14,
-    marginBottom: 4,
-    paddingLeft: 4,
-  },
+  // Soft, padded sections that feel like lifted clay blocks
   section: {
-    backgroundColor: '#16213e',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    backgroundColor: BG_COLOR,
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 20,
+    ...clayShadows,
   },
   sectionTitle: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 12,
+    color: TEXT_DARK,
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 16,
+    letterSpacing: 0.5,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 8,
+    gap: 12,
+    marginBottom: 12,
   },
   label: {
-    color: '#b0b0b0',
-    fontSize: 14,
+    color: TEXT_MUTED,
+    fontSize: 16,
     fontWeight: '600',
     marginBottom: 4,
   },
   value: {
-    color: '#e0e0e0',
-    fontSize: 14,
+    color: TEXT_DARK,
+    fontSize: 16,
+    fontWeight: '500',
   },
   balance: {
-    color: '#4ade80',
-    fontSize: 20,
-    fontWeight: 'bold',
+    color: '#4fd1c5', // Soft teal
+    fontSize: 28,
+    fontWeight: '900',
   },
   mono: {
-    fontFamily: 'monospace',
-    color: '#93c5fd',
-    fontSize: 12,
-  },
-  italic: {
-    color: '#888',
-    fontStyle: 'italic',
-    marginTop: 8,
-  },
-  link: {
-    color: '#60a5fa',
-    textDecorationLine: 'underline',
-    marginTop: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#6b46c1', // Soft purple
     fontSize: 13,
   },
-  input: {
-    backgroundColor: '#0f3460',
-    color: '#ffffff',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  italic: {
+    color: TEXT_MUTED,
+    fontStyle: 'italic',
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  link: {
+    color: '#4299e1', // Soft bright blue
+    textDecorationLine: 'underline',
+    marginTop: 4,
     fontSize: 14,
-    marginBottom: 8,
+  },
+  // Neumorphic/clay inputs 
+  input: {
+    backgroundColor: '#ebf0f5', // Slightly darker than background for inset feel
+    color: TEXT_DARK,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    marginBottom: 12,
+    // Add inner shadow or subtle border to simulate inset
     borderWidth: 1,
-    borderColor: '#1a4a7a',
+    borderColor: '#d1d8e0',
   },
   textArea: {
-    backgroundColor: '#0f3460',
-    color: '#ffffff',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    marginBottom: 8,
+    backgroundColor: '#ebf0f5',
+    color: TEXT_DARK,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#1a4a7a',
-    minHeight: 60,
+    borderColor: '#d1d8e0',
+    minHeight: 80,
     textAlignVertical: 'top',
   },
   formGroup: {
-    marginTop: 8,
+    marginTop: 12,
   },
+  // Big soft buttons
   btn: {
-    backgroundColor: '#0f3460',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
+    backgroundColor: BG_COLOR,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    ...clayShadows,
   },
   btnActive: {
-    backgroundColor: '#1a5276',
-    borderWidth: 1,
-    borderColor: '#60a5fa',
+    backgroundColor: '#cbd5e0', // Slightly pressed state
   },
   btnSmall: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
   },
   btnPrimary: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: '#4fd1c5', // Soft teal primary button
   },
   btnDisabled: {
     opacity: 0.5,
   },
   btnText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  btnTextSmall: {
-    fontSize: 12,
-  },
-  btnTextDisabled: {
-    color: '#aaa',
-  },
-  mnemonicDisplay: {
-    backgroundColor: '#0f3460',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
-  },
-  mnemonicText: {
-    color: '#e0e0e0',
-    fontFamily: 'monospace',
-    fontSize: 14,
-    lineHeight: 22,
-    marginBottom: 8,
-  },
-  mnemonicBlurred: {
-    color: '#e0e0e0',
-    fontFamily: 'monospace',
-    fontSize: 14,
-    lineHeight: 22,
-    marginBottom: 8,
-    opacity: 0.1,
-  },
-  success: {
-    backgroundColor: '#064e3b',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 8,
-  },
-  successText: {
-    color: '#6ee7b7',
-    fontSize: 13,
-  },
-  error: {
-    backgroundColor: '#7f1d1d',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 8,
-  },
-  errorText: {
-    color: '#fca5a5',
-    fontSize: 13,
-  },
-  previewCard: {
-    backgroundColor: '#0f3460',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 12,
-  },
-  previewTitle: {
-    color: '#ffffff',
+    color: TEXT_DARK,
     fontSize: 16,
     fontWeight: '700',
-    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+  btnTextSmall: {
+    fontSize: 14,
+  },
+  btnTextDisabled: {
+    color: TEXT_MUTED,
+  },
+  // Display blocks
+  mnemonicDisplay: {
+    backgroundColor: '#ebf0f5',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#d1d8e0',
+  },
+  mnemonicText: {
+    color: TEXT_DARK,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 15,
+    lineHeight: 24,
+    letterSpacing: 1,
+  },
+  mnemonicBlurred: {
+    color: TEXT_DARK,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 15,
+    lineHeight: 24,
+    opacity: 0.1,
+  },
+  // Alert boxes mapped to clay concept
+  success: {
+    backgroundColor: '#F0FFF4', // Soft mint
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+    borderLeftWidth: 4,
+    borderColor: '#48BB78',
+  },
+  successText: {
+    color: '#276749',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  error: {
+    backgroundColor: '#FFF5F5', // Soft blush
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+    borderLeftWidth: 4,
+    borderColor: '#F56565',
+  },
+  errorText: {
+    color: '#9B2C2C',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  // Misc cards
+  previewCard: {
+    backgroundColor: BG_COLOR,
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 16,
+    ...clayShadows,
+  },
+  previewTitle: {
+    color: TEXT_DARK,
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 12,
   },
   guardianItem: {
     marginLeft: 8,
-    marginBottom: 4,
+    marginBottom: 8,
   },
   guardianName: {
-    color: '#e0e0e0',
-    fontWeight: '600',
-    fontSize: 13,
+    color: TEXT_DARK,
+    fontWeight: '700',
+    fontSize: 15,
   },
   guardianUrl: {
-    color: '#93c5fd',
-    fontSize: 12,
-    fontFamily: 'monospace',
+    color: '#4299e1',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   invoiceBox: {
-    backgroundColor: '#0f3460',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
+    backgroundColor: '#ebf0f5',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#d1d8e0',
   },
   resultBox: {
-    backgroundColor: '#0f3460',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
+    backgroundColor: '#ebf0f5',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#d1d8e0',
+  },
+  stepsCard: {
+    backgroundColor: BG_COLOR,
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 20,
+    ...clayShadows,
+  },
+  stepsTitle: {
+    color: TEXT_DARK,
+    fontWeight: '800',
+    fontSize: 16,
+    marginBottom: 12,
+  },
+  stepItem: {
+    color: TEXT_MUTED,
+    fontSize: 15,
+    marginBottom: 8,
+    paddingLeft: 8,
+    lineHeight: 22,
   },
 })
 

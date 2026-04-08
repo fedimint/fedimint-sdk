@@ -28,7 +28,7 @@ const SendLightning = () => {
       <TextInput
         style={s.input}
         placeholder="lnbc..."
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={lightningInput}
         onChangeText={setLightningInput}
       />
@@ -65,7 +65,7 @@ const SendOnchain = () => {
       <TextInput
         style={s.input}
         placeholder="Enter amount"
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         keyboardType="numeric"
         value={amount}
         onChangeText={setAmount}
@@ -73,7 +73,7 @@ const SendOnchain = () => {
       <TextInput
         style={s.input}
         placeholder="Enter onchain address"
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={address}
         onChangeText={setAddress}
       />
@@ -110,7 +110,7 @@ const ParseLightningInvoice = () => {
       <TextInput
         style={s.input}
         placeholder="Enter invoice..."
-        placeholderTextColor="#888"
+        placeholderTextColor="#a0aec0"
         value={invoiceStr}
         onChangeText={setInvoiceStr}
       />
