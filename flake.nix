@@ -289,6 +289,7 @@
                fedimint.packages.${system}.gateway-pkgs
                fedimint.packages.${system}.fedimint-pkgs
                fedimint.packages.${system}.fedimint-recurringd
+               fedimint.packages.${system}.fedimint-recurringdv2
              ] ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
           };
