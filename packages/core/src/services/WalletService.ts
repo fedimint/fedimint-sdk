@@ -54,7 +54,7 @@ export class WalletService {
     onError: (error: string) => void = () => {},
   ) {
     return this.client.rpcStream(
-      'ln',
+      'wallet',
       'subscribe_deposit',
       { operation_id: operation_id },
       this.clientName,
