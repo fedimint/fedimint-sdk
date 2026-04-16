@@ -3,6 +3,21 @@ import { FedimintWallet } from '@fedimint/core/testing'
 import { expect, vi } from 'vitest'
 import { walletTest } from './test/fixtures'
 
+function sumNoteCounts(noteCounts: Record<string, number>) {
+  return Object.entries(noteCounts).reduce((sum, [denomination, count]) => {
+    return sum + Number(denomination) * count
+  }, 0)
+}
+
+function federationIdPrefixBytes(federationId: string) {
+  return (
+    federationId
+      .slice(0, 8)
+      .match(/.{1,2}/g)
+      ?.map((byte) => Number.parseInt(byte, 16)) ?? []
+  )
+}
+
 walletTest('get invite code from devimint', async ({ wallet }) => {
   expect(wallet).toBeDefined()
   const inviteCode = await wallet.testing.getInviteCode()
@@ -116,3 +131,33 @@ walletTest('previewFederation', async ({ walletDirector, unopenedWallet }) => {
     federation_id: expect.any(String),
   })
 })
+
+walletTest(
+  'parseOobNotes should parse locally spent notes via wasm',
+  async ({ walletDirector, fundedWallet }) => {
+    expect(fundedWallet).toBeDefined()
+    expect(fundedWallet.isOpen()).toBe(true)
+
+    const spendAmount = 4096
+    const federationId = await fundedWallet.federation.getFederationId()
+    const inviteCode = await fundedWallet.federation.getInviteCode(0)
+
+    if (!inviteCode) {
+      throw new Error('Expected federation invite code to be available')
+    }
+
+    const { operation_id: spendOperationId, notes } =
+      await fundedWallet.mint.spendNotes(spendAmount, 3600, true)
+    expect(spendOperationId).toBeTypeOf('string')
+
+    const parsed = await walletDirector.parseOobNotes(notes)
+    expect(parsed).toMatchObject({
+      total_amount: spendAmount,
+      federation_id_prefix: federationIdPrefixBytes(federationId),
+      federation_id: federationId,
+      invite_code: inviteCode,
+    })
+    expect(sumNoteCounts(parsed.note_counts)).toEqual(spendAmount)
+  },
+  30000,
+)
