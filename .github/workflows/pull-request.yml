@@ -1,5 +1,5 @@
 name: Pull Request
-# FIX: Run if ANY of the filters are true, or just remove 'if' to always run
+
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -17,6 +17,7 @@ jobs:
       react_native: ${{ steps.filter.outputs.react_native }}
       web: ${{ steps.filter.outputs.web }}
       core: ${{ steps.filter.outputs.core }}
+      workflows: ${{ steps.filter.outputs.workflows }}
 
     steps:
       - name: Checkout
@@ -27,15 +28,15 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
+            workflows:
+              - '.github/workflows/**'
             react_native:
               - 'packages/react-native/**'
               - 'packages/react-native-bindings/**'
-
             web:
               - 'packages/core-web/**'
               - 'packages/transport-web/**'
               - 'packages/wasm-web/**'
-
             core:
               - 'packages/core/**'
               - 'packages/types/**'
@@ -50,3 +51,4 @@ jobs:
       react_native: ${{ needs.changes.outputs.react_native }}
       web: ${{ needs.changes.outputs.web }}
       core: ${{ needs.changes.outputs.core }}
+      workflows: ${{ needs.changes.outputs.workflows }}

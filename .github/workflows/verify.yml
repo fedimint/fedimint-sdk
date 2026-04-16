@@ -12,12 +12,16 @@ on:
       core:
         required: true
         type: string
+      workflows:
+        required: true
+        type: string
   workflow_dispatch:
 
 jobs:
   lint:
     name: Lint
-    if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.react_native == 'true' }}
+    # Run if anything relevant changed OR if workflow files changed
+    if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.react_native == 'true' || inputs.workflows == 'true' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -33,7 +37,7 @@ jobs:
 
   build:
     name: Build JS
-    if: ${{ inputs.core == 'true' }}
+    if: ${{ inputs.core == 'true' || inputs.workflows == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -46,7 +50,7 @@ jobs:
 
   types:
     name: Check Types
-    if: ${{ inputs.core == 'true' }}
+    if: ${{ inputs.core == 'true' || inputs.workflows == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Clone repository
@@ -60,7 +64,7 @@ jobs:
 
   test:
     name: Test
-    if: ${{ inputs.core == 'true' || inputs.web == 'true' }}
+    if: ${{ inputs.core == 'true' || inputs.web == 'true' || inputs.workflows == 'true' }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
     steps:
@@ -91,7 +95,7 @@ jobs:
 
   build-docs:
     name: Build Docs
-    if: ${{ inputs.core == 'true' }}
+    if: ${{ inputs.core == 'true' || inputs.workflows == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Clone repository
@@ -103,37 +107,32 @@ jobs:
       - name: Build Docs
         run: pnpm docs:build
 
-  # --- NEW: Android Build (Runs on Linux) ---
   react-native-android:
     name: React Native Android
-    if: ${{ inputs.react_native == 'true' && inputs.core != 'true' }}
+    # Run if RN changed OR workflow changed, but skip if Core is already running everything
+    if: ${{ (inputs.react_native == 'true' || inputs.workflows == 'true') && inputs.core != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install dependencies
         uses: ./.github/actions/install-deps
-
       - name: Build Android
         run: pnpm ubrn:android:release
 
-  # --- NEW: iOS Build (Runs on GitHub's Mac) ---
   react-native-ios:
     name: React Native iOS
-    if: ${{ inputs.react_native == 'true' && inputs.core != 'true' }}
+    if: ${{ (inputs.react_native == 'true' || inputs.workflows == 'true') && inputs.core != 'true' }}
     runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
-
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Build React Native Bindings (iOS)
         uses: ./.github/actions/build-react-native
         timeout-minutes: 90
