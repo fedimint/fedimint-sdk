@@ -3,10 +3,10 @@
     flake-utils.url = "github:numtide/flake-utils";
     fedimint = {
       # Devimint input - Should point to a release tag, as it doesn't need to be updated often.
-      url = "github:fedimint/fedimint/v0.9.1";
+      url = "github:fedimint/fedimint/v0.10.0";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint?rev=c2350bb7528fff6100968d23ddeb626653c5ebb0";
+         url = "github:fedimint/fedimint/v0.10.0";
     };
     fenix = {
       url = "github:nix-community/fenix";
@@ -289,6 +289,7 @@
                fedimint.packages.${system}.gateway-pkgs
                fedimint.packages.${system}.fedimint-pkgs
                fedimint.packages.${system}.fedimint-recurringd
+               fedimint.packages.${system}.fedimint-recurringdv2
              ] ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
           };

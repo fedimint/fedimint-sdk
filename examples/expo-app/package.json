@@ -1,0 +1,36 @@
+{
+  "name": "expo-app-example",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~55.0.0",
+    "@expo/vector-icons": "^15.0.0",
+    "@fedimint/core": "workspace:*",
+    "@fedimint/react-native": "workspace:*",
+    "expo": "~55.0.0",
+    "expo-clipboard": "~55.0.0",
+    "expo-constants": "~55.0.0",
+    "expo-file-system": "~55.0.0",
+    "expo-linking": "~55.0.0",
+    "expo-router": "~55.0.0",
+    "expo-status-bar": "~55.0.0",
+    "react": ">=19.2.4",
+    "react-native": "0.83.1",
+    "react-native-safe-area-context": "~5.4.0",
+    "react-native-screens": "~4.24.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@types/react": ">=19.2.14",
+    "dotenv-expand": "^12.0.3",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
