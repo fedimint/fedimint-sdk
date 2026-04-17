@@ -29,6 +29,23 @@ runs:
         echo "- Size: $IOS_SIZE" >> $GITHUB_STEP_SUMMARY
         echo "- SHA256: $IOS_SHA256" >> $GITHUB_STEP_SUMMARY
 
+    - name: Free disk space before Android build
+      shell: bash
+      working-directory: packages/react-native-bindings
+      run: |
+        echo "=== Disk usage before cleanup ==="
+        df -h /
+        # xcframework is already captured in ios-artifacts.zip; drop it to free space
+        rm -rf FedimintReactNativeBindingsFramework.xcframework
+        rm -rf ios/build
+        # Purge macOS/Xcode caches that balloon during iOS Rust cross-compilation
+        rm -rf "$HOME/Library/Developer/Xcode/DerivedData" || true
+        rm -rf "$HOME/Library/Developer/CoreSimulator/Caches" || true
+        rm -rf "$HOME/Library/Caches/CocoaPods" || true
+        rm -rf "$HOME/.cargo/registry/cache" "$HOME/.cargo/registry/src" "$HOME/.cargo/git" || true
+        echo "=== Disk usage after cleanup ==="
+        df -h /
+
     - name: Build Android Bindings
       shell: bash
       working-directory: packages/react-native-bindings
@@ -58,7 +75,7 @@ runs:
         name: generated-bindings
         path: |
           packages/react-native-bindings/src
-          packages/react-native-bindings/android/src/main/jniLibs
-          packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
           packages/react-native-bindings/lib
+          packages/react-native-bindings/ios-artifacts.zip
+          packages/react-native-bindings/android-artifacts.zip
         if-no-files-found: error
