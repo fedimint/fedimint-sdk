@@ -6,7 +6,7 @@
       url = "github:fedimint/fedimint/v0.10.0";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint/v0.10.0";
+         url = "github:fedimint/fedimint?rev=4b0d77d9fc660082ea3b24d33e3900ef9400b20a";
     };
     fenix = {
       url = "github:nix-community/fenix";
