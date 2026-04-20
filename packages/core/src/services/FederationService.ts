@@ -1,7 +1,9 @@
 import type {
   EcashTransaction,
+  JSONValue,
   LightningTransaction,
   LnVariant,
+  MetaConsensusValue,
   MintVariant,
   OperationKey,
   OperationLog,
@@ -10,6 +12,11 @@ import type {
   WalletVariant,
 } from '../types'
 import { TransportClient } from '../transport'
+
+/**
+ * Mirrors `fedimint_meta_common::DEFAULT_META_KEY`.
+ */
+export const DEFAULT_META_KEY = 0
 
 export class FederationService {
   constructor(
@@ -37,6 +44,17 @@ export class FederationService {
       {
         peer,
       },
+      this.clientName,
+    )
+  }
+
+  async getMetaConsensusValue<T extends JSONValue = JSONValue>(
+    key: number = DEFAULT_META_KEY,
+  ): Promise<MetaConsensusValue<T> | null> {
+    return await this.client.rpcSingle<MetaConsensusValue<T> | null>(
+      'meta',
+      'get_consensus_value',
+      { key },
       this.clientName,
     )
   }

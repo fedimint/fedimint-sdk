@@ -1,7 +1,12 @@
 import { MSats, Duration, JSONValue, JSONObject } from './utils'
 
-const MODULE_KINDS = ['', 'ln', 'mint', 'wallet'] as const
+const MODULE_KINDS = ['', 'ln', 'meta', 'mint', 'wallet'] as const
 type ModuleKind = (typeof MODULE_KINDS)[number]
+
+type MetaConsensusValue<T extends JSONValue = JSONValue> = {
+  revision: number
+  value: T
+}
 
 type GatewayInfo = {
   gateway_id: string
@@ -263,6 +268,7 @@ export {
   RouteHint,
   FeeToAmount,
   OutgoingLightningPayment,
+  MetaConsensusValue,
   PayType,
   LnPayState,
   LnReceiveState,
