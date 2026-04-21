@@ -55,6 +55,7 @@ jobs:
           patch -p0 --forward < patches/snapshot_version.patch || true
           cd ../..
 
+          pnpm changeset:verify-publish-manifests
           pnpm build
           pnpm build:reactnative
           pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot

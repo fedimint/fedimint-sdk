@@ -62,7 +62,7 @@ jobs:
         uses: changesets/action@v1
         timeout-minutes: 10
         with:
-          publish: nix develop --accept-flake-config -c bash -c "export CI=true; pnpm changeset publish"
+          publish: nix develop --accept-flake-config -c bash -c "export CI=true; pnpm changeset:verify-publish-manifests; pnpm changeset publish"
           createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,6 +107,7 @@ jobs:
             patch -p0 --forward < patches/snapshot_version.patch || true
             cd ../..
 
+            pnpm changeset:verify-publish-manifests
             pnpm build
             pnpm build:reactnative
             pnpm changeset publish --no-git-tag --snapshot canary --tag canary
