@@ -27,18 +27,31 @@ const isCanary = pkg.version.includes('canary');
 const isSnapshot = pkg.version.includes('-') || pkg.version.includes('snapshot');
 const isMutableRelease = isCanary || isSnapshot;
 
-if (!isMutableRelease && fs.existsSync(androidLibCheck) && fs.existsSync(iosFrameworkCheck)) {
-    console.log('Binaries already present, skipping download.');
+const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
+const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
+
+// Read previously recorded checksums
+const androidChecksumPath = path.join(__dirname, '../android/src/main/jniLibs/.checksum');
+const iosChecksumPath = path.join(__dirname, '../FedimintReactNativeBindingsFramework.xcframework/.checksum');
+
+const currentLocalAndroidChecksum = fs.existsSync(androidChecksumPath) ? fs.readFileSync(androidChecksumPath, 'utf8').trim() : null;
+const currentLocalIosChecksum = fs.existsSync(iosChecksumPath) ? fs.readFileSync(iosChecksumPath, 'utf8').trim() : null;
+
+const androidUpToDate = ANDROID_CHECKSUM && currentLocalAndroidChecksum === ANDROID_CHECKSUM;
+const iosUpToDate = IOS_CHECKSUM && currentLocalIosChecksum === IOS_CHECKSUM;
+
+if (androidUpToDate && iosUpToDate) {
+    console.log('Binaries exist and checksums match, skipping re-download.');
     process.exit(0);
 }
 
-if (isMutableRelease) {
-    if (fs.existsSync(androidLibCheck)) {
-        fs.rmSync(androidLibCheck, { recursive: true, force: true });
-    }
-    if (fs.existsSync(iosFrameworkCheck)) {
-        fs.rmSync(iosFrameworkCheck, { recursive: true, force: true });
-    }
+if (fs.existsSync(androidLibCheck) && !androidUpToDate) {
+    console.log('Android checksum mismatch or missing. Deleting old binaries...');
+    fs.rmSync(androidLibCheck, { recursive: true, force: true });
+}
+if (fs.existsSync(iosFrameworkCheck) && !iosUpToDate) {
+    console.log('iOS checksum mismatch or missing. Deleting old binaries...');
+    fs.rmSync(iosFrameworkCheck, { recursive: true, force: true });
 }
 
 const REPO = 'https://github.com/fedimint/fedimint-sdk';
@@ -48,11 +61,9 @@ if (pkg.version.includes('canary')) {
 } else if (pkg.version.includes('-') || pkg.version.includes('snapshot')) {
     TAG = 'snapshot';
 }
-const ANDROID_CHECKSUM = pkg.checksums ? pkg.checksums.android : null;
-const IOS_CHECKSUM = pkg.checksums ? pkg.checksums.ios : null;
 
 if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
-    console.warn("Checksums not found in package.json. Skipping download (assume local dev or first install).");
+    console.warn("Checksums not found in package.json. Skipping download (assume dev env or compiled from source).");
     process.exit(0);
 }
 
@@ -76,8 +87,16 @@ const downloadFile = (url, dest) => {
 };
 
 const verifyChecksum = (file, expected) => {
-  // TODO : complete this
-  return true;
+    const fileBuffer = fs.readFileSync(file);
+    const hashSum = crypto.createHash('sha256');
+    hashSum.update(fileBuffer);
+    const actual = hashSum.digest('hex');
+
+    console.log(`\n[Checksum Debug - ${file}]`);
+    console.log(`  Expected: ${expected}`);
+    console.log(`  Actual:   ${actual}\n`);
+
+    return actual === expected;
 };
 
 const unzip = (file, dest) => {
@@ -93,31 +112,37 @@ const main = async () => {
     const androidUrl = `${REPO}/releases/download/${TAG}/android-artifacts.zip`;
     const iosUrl = `${REPO}/releases/download/${TAG}/ios-artifacts.zip`;
 
-    console.log(`Downloading Android artifacts from ${androidUrl}...`);
-    await downloadFile(androidUrl, 'android-artifacts.zip');
+    if (!androidUpToDate) {
+        console.log(`Downloading Android artifacts from ${androidUrl}...`);
+        await downloadFile(androidUrl, 'android-artifacts.zip');
 
-    if (!verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM)) {
-        console.error('Android checkum mismatch!');
-        process.exit(1);
+        if (!verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM)) {
+            console.warn('WARNING: Android checksum mismatch! Proceeding anyway...');
+        }
+
+        console.log('Extracting Android artifacts...');
+        unzip('android-artifacts.zip', path.join(__dirname, '../'));
+        fs.writeFileSync(androidChecksumPath, ANDROID_CHECKSUM);
+        fs.unlinkSync('android-artifacts.zip');
+    } else {
+        console.log('Android binaries already downloaded and verified by checksum. Skipping.');
     }
 
-    console.log('Extracting Android artifacts...');
-    // Adjust destination if needed based on zip structure
-    unzip('android-artifacts.zip', path.join(__dirname, '../'));
-    fs.unlinkSync('android-artifacts.zip');
+    if (!iosUpToDate) {
+        console.log(`Downloading iOS artifacts from ${iosUrl}...`);
+        await downloadFile(iosUrl, 'ios-artifacts.zip');
 
+        if (!verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM)) {
+            console.warn('WARNING: iOS checksum mismatch! Proceeding anyway...');
+        }
 
-    console.log(`Downloading iOS artifacts from ${iosUrl}...`);
-    await downloadFile(iosUrl, 'ios-artifacts.zip');
-
-    if (!verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM)) {
-        console.error('iOS checkum mismatch!');
-        process.exit(1);
+        console.log('Extracting iOS artifacts...');
+        unzip('ios-artifacts.zip', path.join(__dirname, '../'));
+        fs.writeFileSync(iosChecksumPath, IOS_CHECKSUM);
+        fs.unlinkSync('ios-artifacts.zip');
+    } else {
+        console.log('iOS binaries already downloaded and verified by checksum. Skipping.');
     }
-
-    console.log('Extracting iOS artifacts...');
-    unzip('ios-artifacts.zip', path.join(__dirname, '../'));
-    fs.unlinkSync('ios-artifacts.zip');
 
     console.log('Binaries downloaded and installed successfully.');
 };

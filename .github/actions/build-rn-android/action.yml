@@ -1,0 +1,46 @@
+name: Build Android RN
+description: Builds Android bindings using Nix
+outputs:
+  sha256:
+    description: 'SHA256 of the android-artifacts.zip'
+    value: ${{ steps.compress.outputs.sha256 }}
+runs:
+  using: composite
+  steps:
+    - name: Cache Android Bindings
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          fedimint-sdk-ffi/fedimint-client-uniffi/target
+        key: ${{ runner.os }}-android-bindings-${{ hashFiles('fedimint-sdk-ffi/**', 'packages/react-native-bindings/package.json', 'packages/react-native-bindings/ubrn.config.yaml', 'packages/react-native-bindings/patches/*.patch') }}
+
+    - name: Build Android Bindings
+      shell: bash
+      run: |
+        nix develop --accept-flake-config .#android -c just release-android
+
+    - name: Compress Android binaries
+      id: compress
+      shell: bash
+      working-directory: packages/react-native-bindings
+      run: |
+        nix develop --accept-flake-config ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
+        ANDROID_SHA256=$(sha256sum android-artifacts.zip | cut -d' ' -f1)
+        ANDROID_SIZE=$(du -h android-artifacts.zip | cut -f1)
+        echo "sha256=$ANDROID_SHA256" >> $GITHUB_OUTPUT
+        echo "ANDROID_SHA256=$ANDROID_SHA256" >> $GITHUB_ENV
+        echo "### Android Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Size: $ANDROID_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- SHA256: $ANDROID_SHA256" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Generated Bindings
+      uses: actions/upload-artifact@v4
+      with:
+        name: generated-bindings-android
+        path: |
+          packages/react-native-bindings/src
+          packages/react-native-bindings/lib
+          packages/react-native-bindings/cpp
+          packages/react-native-bindings/android-artifacts.zip
+        if-no-files-found: error

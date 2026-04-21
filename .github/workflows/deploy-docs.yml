@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pnpm i
       - name: Build Packages (dependency of docs)
-        run: pnpm build
+        run: pnpm build:web
       - name: Build with VitePress
         run: pnpm run docs:build
       - name: Upload artifact

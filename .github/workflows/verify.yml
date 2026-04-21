@@ -36,7 +36,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build
-        run: pnpm build
+        run: pnpm build:web
 
   types:
     name: Check Types
@@ -82,7 +82,7 @@ jobs:
             pnpm install
 
             # Build packages
-            pnpm build
+            pnpm build:web
 
             # Run Tests
             pnpm test
@@ -94,7 +94,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '{packages/**/dist/**/*.{js,mjs,cjs},packages/**/*.wasm}'
           install-script: nix develop --accept-flake-config -c pnpm install
-          build-script: nix develop --accept-flake-config -c pnpm build
+          build-script: nix develop --accept-flake-config -c pnpm build:web
 
   build-docs:
     name: Build Docs
@@ -108,7 +108,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build Packages (dependency of docs)
-        run: pnpm build
+        run: pnpm build:web
 
       - name: Build Docs
         run: pnpm docs:build

@@ -33,7 +33,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build
-        run: pnpm build && pnpm build:pages
+        run: pnpm build:web && pnpm build:pages
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

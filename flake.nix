@@ -103,6 +103,7 @@
             pkgs.zip
             pkgs.coreutils
             pkgs.patch
+            pkgs.just
           ];
 
           commonShellHook = ''
@@ -161,6 +162,11 @@
             # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
             if [ -f "$TOOLCHAIN/bin/clang" ]; then
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
+            fi
+              export CARGO_NDK_VERSION=$(cargo ndk --version 2>/dev/null | awk '{print $2}')
+            if [ "$CARGO_NDK_VERSION" != "3.4.0" ]; then
+              echo "Installing cargo-ndk 3.4.0 (for uniffi-bindgen-react-native compatibility)..."
+              cargo install cargo-ndk --version 3.4.0
             fi
             
           '';

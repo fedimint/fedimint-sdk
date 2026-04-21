@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm clean && pnpm run --r --filter \"./packages/**\" --filter \"!@fedimint/react-native\" --filter \"!@fedimint/react-native-bindings\" build",
-    "build:reactnative": "pnpm run --r --filter @fedimint/react-native-bindings --filter @fedimint/react-native build",
+    "build": "pnpm run build:web && pnpm run build:react-native",
+    "build:web": "pnpm run --r --filter \"./packages/**\" --filter \"!@fedimint/react-native\" --filter \"!@fedimint/react-native-bindings\" build",
+    "build:react-native": "pnpm run --r --filter @fedimint/react-native-bindings --filter @fedimint/react-native build",
     "build:wasm": "bash scripts/build_wasm.sh",
     "clean": "pnpm run --r --parallel clean && rm -rf packages/**/*.json.tmp",
     "clean:deep": "rm -rf node_modules && pnpm run --r --parallel clean:deep",
