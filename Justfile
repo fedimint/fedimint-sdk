@@ -28,3 +28,12 @@ release-ios: clone-ffi
     nix develop --accept-flake-config .#ios -c pnpm i
     nix develop --accept-flake-config .#ios -c pnpm run ubrn:ios:release
     nix develop --accept-flake-config -c pnpm run build
+
+test:
+    nix develop --accept-flake-config .#wasm-tests -c pnpm run test
+
+test-coverage:
+    nix develop --accept-flake-config .#wasm-tests -c pnpm run test:coverage
+
+test-ui:
+    nix develop --accept-flake-config .#wasm-tests -c pnpm run test:ui

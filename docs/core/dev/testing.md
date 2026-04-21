@@ -29,11 +29,7 @@ To setup nix, use the [Determinate Nix Installer](https://github.com/Determinate
 nix (Nix) 2.9.1
 ```
 
-Next, [install direnv](https://direnv.net/docs/installation.html) and run the following command to initialize direnv in your shell:
-
-```sh
-direnv allow
-```
+Next, install [just](https://just.systems/man/en/chapter_1.html), a command runner we use to run tests in the Nix environment.
 
 ::: tip
 This takes a really long time to run for the first time. All future runs will be relatively quick.
@@ -43,11 +39,11 @@ This takes a really long time to run for the first time. All future runs will be
 
 ```bash
 # in the root of the repo
-pnpm run test
+just test
 ```
 
-- `pnpm test` — runs tests in a headless browser
-- `pnpm test:cov` — runs tests and reports coverage
-- `pnpm test:ui` — runs tests in the [Vitest UI](https://vitest.dev/guide/ui.html)
+- `just test` — runs tests in a headless browser
+- `just test-coverage` — runs tests and reports coverage
+- `just test-ui` — runs tests in the [Vitest UI](https://vitest.dev/guide/ui.html)
 
 When adding new features or fixing bugs, it's important to add test cases to cover the new or updated behavior.
