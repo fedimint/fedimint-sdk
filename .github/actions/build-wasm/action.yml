@@ -11,7 +11,7 @@ runs:
           connect-timeout = 15
           stalled-download-timeout = 15
 
-    - uses: cachix/cachix-action@v15
+    - uses: cachix/cachix-action@v17
       with:
         name: fedimint
         authToken: ${{ inputs.cachix_auth_token }}
