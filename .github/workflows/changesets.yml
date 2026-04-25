@@ -81,13 +81,11 @@ jobs:
           name: generated-bindings-android
           path: packages/react-native-bindings/
 
-      - name: Extract Artifacts
-        run: |
-          cd packages/react-native-bindings
-          unzip -o android-artifacts.zip
-          unzip -o ios-artifacts.zip
-          rm android-artifacts.zip ios-artifacts.zip
-          cd ../..
+      - name: Download iOS Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-bindings-ios
+          path: packages/react-native-bindings/
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm

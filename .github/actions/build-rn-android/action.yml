@@ -42,5 +42,6 @@ runs:
           packages/react-native-bindings/src
           packages/react-native-bindings/lib
           packages/react-native-bindings/cpp
+          packages/react-native-bindings/android
           packages/react-native-bindings/android-artifacts.zip
         if-no-files-found: error
