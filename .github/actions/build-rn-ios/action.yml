@@ -1,0 +1,41 @@
+name: Build iOS RN
+description: Builds iOS React Native bindings using Nix-cached Rust derivations
+outputs:
+  sha256:
+    description: 'SHA256 of the ios-artifacts.zip'
+    value: ${{ steps.compress.outputs.sha256 }}
+runs:
+  using: composite
+  steps:
+    - name: Build iOS via Nix
+      # iOS Nix derivations are impure (read /Applications/Xcode.app), so the
+      # daemon must allow relaxed sandboxing. `just build-ios` invokes
+      # `nix build` for each iOS Rust target then runs ubrn --no-cargo to
+      # assemble the .xcframework.
+      shell: bash
+      run: nix develop --accept-flake-config -c just build-ios
+
+    - name: Compress iOS binaries
+      id: compress
+      shell: bash
+      working-directory: packages/react-native-bindings
+      run: |
+        nix develop ../../ -c zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework
+        IOS_SHA256=$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)
+        IOS_SIZE=$(du -h ios-artifacts.zip | cut -f1)
+        echo "sha256=$IOS_SHA256" >> $GITHUB_OUTPUT
+        echo "IOS_SHA256=$IOS_SHA256" >> $GITHUB_ENV
+        echo "### iOS Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Size: $IOS_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- SHA256: $IOS_SHA256" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Generated Bindings
+      uses: actions/upload-artifact@v4
+      with:
+        name: generated-bindings-ios
+        path: |
+          packages/react-native-bindings/src
+          packages/react-native-bindings/lib
+          packages/react-native-bindings/cpp
+          packages/react-native-bindings/ios-artifacts.zip
+        if-no-files-found: error
