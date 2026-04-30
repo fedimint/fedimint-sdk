@@ -8,6 +8,12 @@
     fedimint-wasm = {
          url = "github:fedimint/fedimint/v0.10.0";
     };
+    fedimint-sdk-ffi = {
+      # Provides cross-compiled Android (.so) and iOS (.a) bindings as
+      # cacheable Nix derivations: see #androidBundle / #iosBundle.
+      url = "github:fedimint/fedimint-sdk-ffi";
+      inputs.fenix.follows = "fenix";
+    };
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "fedimint/nixpkgs";
@@ -19,6 +25,7 @@
       flake-utils,
       fedimint,
       fedimint-wasm,
+      fedimint-sdk-ffi,
       fenix,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -294,9 +301,31 @@
              shellHook = wasmShellHook;
           };
         };
-        packages = {
-          wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
-        };
+        packages =
+          let
+            ffi = fedimint-sdk-ffi.packages.${system};
+            # Per-target packages exposed by the FFI flake. We re-export the
+            # ones we ship so build scripts can `nix build .#android-<triple>`
+            # and place artifacts into the cargo target directory for
+            # consumption by `ubrn build --no-cargo`.
+            androidPerTarget = pkgs.lib.genAttrs [
+              "android-aarch64-linux-android"
+              "android-x86_64-linux-android"
+            ] (n: ffi.${n});
+            iosPerTarget = pkgs.lib.genAttrs [
+              "ios-aarch64-apple-ios"
+              "ios-aarch64-apple-ios-sim"
+              "ios-x86_64-apple-ios"
+            ] (n: ffi.${n});
+          in
+          {
+            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+            androidBundle = ffi.androidBundle;
+          }
+          // androidPerTarget
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin (
+            { iosBundle = ffi.iosBundle; } // iosPerTarget
+          );
       }
     );
   nixConfig = {
