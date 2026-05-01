@@ -424,7 +424,7 @@
         "narHash": "sha256-FCRRAzSaL/+umLIm3RU3O/+fJ2ssaPHseI2SSFL8yZU=",
         "owner": "ipetkov",
         "repo": "crane",
-        "rev": "3d9df76e29656c679c744968b17fbaf28f0e923d",
+        "rev": "25bd41b24426c7734278c2ff02e53258851db914",
         "type": "github"
       },
       "original": {
@@ -635,7 +635,7 @@
         "flakebox": "flakebox_5",
         "nixpkgs": "nixpkgs_9",
         "nixpkgs-unstable": "nixpkgs-unstable_2",
-        "wild": "wild_3"
+        "wild": "wild_4"
       },
       "locked": {
         "lastModified": 1776688274,
@@ -1992,6 +1992,12 @@
         "narHash": "sha256-Ef2A6YON5N9GsapHg0Tvidig5Fn2kZxHo9NdqzEA6vk=",
         "owner": "davidlattimore",
         "repo": "wild",
+        "rev": "9a7ad7cb05bce0487a7089bffe95452b43d07cfb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "davidlattimore",
+        "repo": "wild",
         "type": "github"
       }
     },
@@ -2004,11 +2010,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1762215977,
-        "narHash": "sha256-x0IZuWjj0LRMj4pu2FVaD8SENm/UVtE1e4rl0EOZZZM=",
+        "lastModified": 1775089439,
+        "narHash": "sha256-Ef2A6YON5N9GsapHg0Tvidig5Fn2kZxHo9NdqzEA6vk=",
         "owner": "davidlattimore",
         "repo": "wild",
-        "rev": "7daaf0c89f7b4b9c9ded36e7b3c72aa6512537a1",
+        "rev": "9a7ad7cb05bce0487a7089bffe95452b43d07cfb",
         "type": "github"
       },
       "original": {
