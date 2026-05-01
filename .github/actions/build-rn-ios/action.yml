@@ -1,5 +1,15 @@
 name: Build iOS RN
 description: Builds iOS React Native bindings using Nix-cached Rust derivations
+inputs:
+  device-only:
+    description: |
+      Build only the aarch64-apple-ios (device) target instead of all three
+      iOS Rust targets. Roughly halves the iOS Rust cross-compile time on
+      macos-latest, suitable for PR smoke tests. Release / publish flows
+      should leave this `false` so the resulting .xcframework includes the
+      simulator slices.
+    required: false
+    default: 'false'
 outputs:
   sha256:
     description: 'SHA256 of the ios-artifacts.zip'
@@ -13,6 +23,8 @@ runs:
       # `nix build` for each iOS Rust target then runs ubrn --no-cargo to
       # assemble the .xcframework.
       shell: bash
+      env:
+        IOS_TARGETS: ${{ inputs.device-only == 'true' && 'aarch64-apple-ios' || '' }}
       run: nix develop --accept-flake-config -c just build-ios
 
     - name: Compress iOS binaries

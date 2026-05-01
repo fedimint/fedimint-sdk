@@ -32,10 +32,22 @@ case "$PLATFORM" in
         place x86_64-linux-android   android-x86_64-linux-android   libfedimint_client_uniffi.so
         ;;
     ios)
-        echo "Pre-building iOS libs via Nix..."
-        place aarch64-apple-ios     ios-aarch64-apple-ios     libfedimint_client_uniffi.a
-        place aarch64-apple-ios-sim ios-aarch64-apple-ios-sim libfedimint_client_uniffi.a
-        place x86_64-apple-ios      ios-x86_64-apple-ios      libfedimint_client_uniffi.a
+        # IOS_TARGETS controls which iOS Rust targets to pre-build. Defaults
+        # to all three (device + arm64 sim + x86_64 sim) so a release build
+        # produces a complete .xcframework. PR validation passes
+        # IOS_TARGETS="aarch64-apple-ios" to smoke-test only the device
+        # slice -- skipping the two simulator targets roughly halves the
+        # iOS Rust cross-compile time on macos-latest.
+        IOS_TARGETS="${IOS_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios}"
+        echo "Pre-building iOS libs via Nix (targets: $IOS_TARGETS)..."
+        for triple in $IOS_TARGETS; do
+            case "$triple" in
+                aarch64-apple-ios)     place "$triple" ios-aarch64-apple-ios     libfedimint_client_uniffi.a ;;
+                aarch64-apple-ios-sim) place "$triple" ios-aarch64-apple-ios-sim libfedimint_client_uniffi.a ;;
+                x86_64-apple-ios)      place "$triple" ios-x86_64-apple-ios      libfedimint_client_uniffi.a ;;
+                *)                     echo "unknown iOS target: $triple" >&2; exit 1 ;;
+            esac
+        done
         ;;
     *)
         echo "unknown platform: $PLATFORM" >&2
