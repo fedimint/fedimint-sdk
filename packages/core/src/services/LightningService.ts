@@ -88,7 +88,7 @@ export class LightningService {
     gateway,
     invoice,
   }: GetAvailableGatewayParams | undefined = {}) {
-    return await this.client.rpcSingle<LightningGateway | null>(
+    return await this.client.rpcSingle<GatewayInfo | null>(
       'ln',
       'select_available_gateway',
       {
@@ -102,7 +102,7 @@ export class LightningService {
   private async _getDefaultGatewayInfo(invoice?: string) {
     await this.updateGatewayCache()
     const gateway = await this.getAvailableGateway({ invoice })
-    return gateway?.info ?? null
+    return gateway ?? null
   }
 
   /** https://sdk.fedimint.org/core/FedimintWallet/LightningService/payInvoice#lightning-payinvoice-invoice-string */
