@@ -33,7 +33,7 @@ jobs:
   build-ios:
     name: Build iOS
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:

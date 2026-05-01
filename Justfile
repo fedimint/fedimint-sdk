@@ -23,9 +23,15 @@ release-android: build-android
 # Build iOS bindings using Nix-cached Rust derivations. macOS only.
 # Requires the Nix daemon to permit `__noChroot` sandboxing
 # (e.g. `--option sandbox relaxed`) so the iOS derivations can read Xcode.
+#
+# `NIX_CONFIG` serialises the iOS path end-to-end: Nix builds one
+# derivation at a time (`max-jobs = 1`) and rustc/cc inside each
+# derivation use a single thread (`cores = 1`). Heavy native deps
+# (rocksdb, aws-lc-sys) otherwise saturate macos-latest's 7 GB RAM and
+# OOM-kill the linker. Slower wall clock but the run actually finishes.
 build-ios: clone-ffi
     nix develop --accept-flake-config -c pnpm install --frozen-lockfile
-    nix develop --accept-flake-config .#ios -c pnpm --filter @fedimint/react-native-bindings run ubrn:nix:ios:release
+    NIX_CONFIG=$'max-jobs = 1\ncores = 1' nix develop --accept-flake-config .#ios -c pnpm --filter @fedimint/react-native-bindings run ubrn:nix:ios:release
     nix develop --accept-flake-config -c pnpm run build:reactnative
 
 release-ios: build-ios

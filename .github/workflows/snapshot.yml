@@ -33,7 +33,7 @@ jobs:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - id: build
         uses: ./.github/actions/build-rn-ios
-        timeout-minutes: 90
+        timeout-minutes: 120
 
   snapshot:
     name: Release snapshot version
