@@ -6,7 +6,7 @@
       url = "github:fedimint/fedimint/v0.10.0";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint/v0.10.0";
+         url = "github:fedimint/fedimint?rev=4b0d77d9fc660082ea3b24d33e3900ef9400b20a";
     };
     fedimint-sdk-ffi = {
       # Provides cross-compiled Android (.so) and iOS (.a) bindings as
