@@ -1,6 +1,6 @@
-# Fedimint React Native Example App
+# Fedimint Expo Example App
 
-This is a sample application demonstrating how to integrate and use the `@fedimint/react-native` SDK.
+This is a sample application demonstrating how to integrate and use the `@fedimint/react-native` SDK with [Expo Router](https://docs.expo.dev/router/introduction/) file-based navigation.
 
 This app serves two primary purposes:
 1. **Developer Sandbox:** A convenient environment for the SDK maintainers to test local changes to the native bindings and JavaScript APIs.
@@ -8,7 +8,7 @@ This app serves two primary purposes:
 
 ## Prerequisites
 
-Before running this example, ensure you have the standard React Native environment set up for your platform (Node.js, Watchman, Xcode for iOS, Android Studio for Android). 
+Before running this example, ensure you have the standard React Native environment set up for your platform (Node.js, Watchman, Xcode for iOS, Android Studio for Android).
 
 You must also build the local monorepo packages first, as this example depends on the local workspace versions of the Fedimint SDK.
 
@@ -33,7 +33,7 @@ pnpm build
 Then, navigate to this example directory:
 
 ```sh
-cd examples/react-native
+cd examples/expo-app
 ```
 
 ### Running on iOS

@@ -1,5 +1,6 @@
 export { WalletDirector } from './WalletDirector'
 export { TransportClient } from './transport'
+export { DEFAULT_META_KEY } from './services/FederationService'
 export type { FedimintWallet } from './FedimintWallet'
 export type * from './types'
 export type {

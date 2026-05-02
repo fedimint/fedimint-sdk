@@ -3,10 +3,16 @@
     flake-utils.url = "github:numtide/flake-utils";
     fedimint = {
       # Devimint input - Should point to a release tag, as it doesn't need to be updated often.
-      url = "github:fedimint/fedimint/v0.9.1";
+      url = "github:fedimint/fedimint/v0.10.0";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint?rev=c2350bb7528fff6100968d23ddeb626653c5ebb0";
+         url = "github:fedimint/fedimint?rev=4b0d77d9fc660082ea3b24d33e3900ef9400b20a";
+    };
+    fedimint-sdk-ffi = {
+      # Provides cross-compiled Android (.so) and iOS (.a) bindings as
+      # cacheable Nix derivations: see #androidBundle / #iosBundle.
+      url = "github:fedimint/fedimint-sdk-ffi";
+      inputs.fenix.follows = "fenix";
     };
     fenix = {
       url = "github:nix-community/fenix";
@@ -19,6 +25,7 @@
       flake-utils,
       fedimint,
       fedimint-wasm,
+      fedimint-sdk-ffi,
       fenix,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -103,6 +110,7 @@
             pkgs.zip
             pkgs.coreutils
             pkgs.patch
+            pkgs.just
           ];
 
           commonShellHook = ''
@@ -289,13 +297,36 @@
                fedimint.packages.${system}.gateway-pkgs
                fedimint.packages.${system}.fedimint-pkgs
                fedimint.packages.${system}.fedimint-recurringd
+               fedimint.packages.${system}.fedimint-recurringdv2
              ] ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
           };
         };
-        packages = {
-          wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
-        };
+        packages =
+          let
+            ffi = fedimint-sdk-ffi.packages.${system};
+            # Per-target packages exposed by the FFI flake. We re-export the
+            # ones we ship so build scripts can `nix build .#android-<triple>`
+            # and place artifacts into the cargo target directory for
+            # consumption by `ubrn build --no-cargo`.
+            androidPerTarget = pkgs.lib.genAttrs [
+              "android-aarch64-linux-android"
+              "android-x86_64-linux-android"
+            ] (n: ffi.${n});
+            iosPerTarget = pkgs.lib.genAttrs [
+              "ios-aarch64-apple-ios"
+              "ios-aarch64-apple-ios-sim"
+              "ios-x86_64-apple-ios"
+            ] (n: ffi.${n});
+          in
+          {
+            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+            androidBundle = ffi.androidBundle;
+          }
+          // androidPerTarget
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin (
+            { iosBundle = ffi.iosBundle; } // iosPerTarget
+          );
       }
     );
   nixConfig = {

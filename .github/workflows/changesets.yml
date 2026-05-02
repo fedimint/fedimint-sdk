@@ -15,18 +15,57 @@ jobs:
     name: Verify
     uses: ./.github/workflows/verify.yml
 
+  build-rn-android:
+    name: Build Android Bindings
+    needs: verify
+    runs-on: [self-hosted, linux, x64]
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - id: build
+        uses: ./.github/actions/build-rn-android
+        timeout-minutes: 90
+
+  build-rn-ios:
+    name: Build iOS Bindings
+    needs: verify
+    runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - id: build
+        uses: ./.github/actions/build-rn-ios
+        timeout-minutes: 120
+
   changesets:
     name: Publish Changesets
-    needs: verify
+    needs: [build-rn-android, build-rn-ios]
     permissions:
       contents: write
       id-token: write
       pull-requests: write
     runs-on: macos-latest
+    env:
+      ANDROID_SHA256: ${{ needs.build-rn-android.outputs.sha256 }}
+      IOS_SHA256: ${{ needs.build-rn-ios.outputs.sha256 }}
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -36,9 +75,17 @@ jobs:
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Build React Native Bindings
-        uses: ./.github/actions/build-react-native
-        timeout-minutes: 90
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings-android
+          path: packages/react-native-bindings/
+
+      - name: Download iOS Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings-ios
+          path: packages/react-native-bindings/
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -48,7 +95,6 @@ jobs:
           nix develop --accept-flake-config --command bash << 'EOF'
             pnpm install
             pnpm build
-            pnpm build:reactnative
           EOF
 
       - name: Re-apply React Native Checksums

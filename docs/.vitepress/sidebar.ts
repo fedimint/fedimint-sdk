@@ -154,6 +154,7 @@ const FedimintWalletSidebar = [
           { text: 'getOperation()', link: 'getOperation' },
           { text: 'listOperations()', link: 'listOperations' },
           { text: 'listTransactions()', link: 'listTransactions' },
+          { text: 'getMetaConsensusValue()', link: 'getMetaConsensusValue' },
         ],
       },
       {

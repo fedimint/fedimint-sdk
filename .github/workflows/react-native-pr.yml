@@ -1,0 +1,46 @@
+name: React Native Verify
+
+on:
+  pull_request:
+    paths:
+      - 'packages/react-native/**'
+      - 'packages/react-native-bindings/**'
+      - 'fedimint-sdk-ffi'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Justfile'
+      - '.github/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build Android
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-android
+
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-ios
+        with:
+          device-only: 'true'
