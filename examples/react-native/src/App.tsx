@@ -1,5 +1,5 @@
-import React from 'react'
-import { SafeAreaView, StatusBar } from 'react-native'
+import React, { useState, useEffect, useCallback } from 'react'
+import { SafeAreaView, StatusBar, View, Text } from 'react-native'
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -11,6 +11,8 @@ import { ReceiveScreen } from './screens/ReceiveScreen'
 import { SendScreen } from './screens/SendScreen'
 import { HistoryScreen } from './screens/HistoryScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
+import { OnboardingScreen } from './screens/OnboardingScreen'
+import { director } from './wallet'
 
 const Tab = createBottomTabNavigator()
 
@@ -27,7 +29,47 @@ const ClayTheme = {
   },
 }
 
+type AppPhase = 'checking' | 'onboarding' | 'ready'
+
 const App = () => {
+  const [phase, setPhase] = useState<AppPhase>('checking')
+
+  const checkMnemonic = useCallback(async () => {
+    try {
+      const has = await director.hasMnemonicSet()
+      setPhase(has ? 'ready' : 'onboarding')
+    } catch {
+      setPhase('onboarding')
+    }
+  }, [])
+
+  useEffect(() => {
+    // Quick delay to ensure director is fully initialized in wallet.ts
+    const timer = setTimeout(checkMnemonic, 500)
+    return () => clearTimeout(timer)
+  }, [checkMnemonic])
+
+  if (phase === 'checking') {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView style={[s.safeArea, { justifyContent: 'center', alignItems: 'center' }]}>
+          <Text style={s.header}>Loading...</Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
+  if (phase === 'onboarding') {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView style={s.safeArea}>
+          <StatusBar barStyle="dark-content" backgroundColor="#E0E5EC" />
+          <OnboardingScreen onComplete={() => setPhase('ready')} />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={s.safeArea}>
@@ -41,7 +83,6 @@ const App = () => {
                 borderTopColor: '#d1d8e0',
                 borderTopWidth: 1,
                 elevation: 0,
-                // Soft shadow for iOS indicating a clay layer
                 shadowColor: '#a3b1c6',
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: 0.15,

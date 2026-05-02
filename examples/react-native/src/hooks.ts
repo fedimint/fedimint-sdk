@@ -44,8 +44,7 @@ export const useBalance = (checkIsOpen: () => void) => {
   const [balance, setBalance] = useState(0)
 
   useEffect(() => {
-    // Listens to balance stream from WebAssembly core via Rust
-    const unsubscribe = wallet?.balance.subscribeBalance((bal) => {
+    const unsubscribe = wallet?.balance.subscribeBalance((bal: number) => {
       checkIsOpen() // Make sure we confirm it's open if we somehow receive a balance
       setBalance(bal)
     })
@@ -57,4 +56,14 @@ export const useBalance = (checkIsOpen: () => void) => {
   }, [checkIsOpen])
 
   return balance
+}
+
+export const extractErrorMessage = (error: any): string => {
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null) {
+    if (error.error) return String(error.error)
+    if (error.message) return String(error.message)
+  }
+  return 'Operation failed'
 }
