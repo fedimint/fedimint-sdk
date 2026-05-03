@@ -1,6 +1,10 @@
 export { MintService } from './MintService'
 export { BalanceService } from './BalanceService'
 export { LightningService } from './LightningService'
+export type {
+  PayLightningAddressOptions,
+  PayLightningAddressResult,
+} from './LightningService'
 export { RecoveryService } from './RecoveryService'
 export { FederationService } from './FederationService'
 export { WalletService } from './WalletService'
