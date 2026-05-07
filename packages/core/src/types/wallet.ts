@@ -15,7 +15,12 @@ type GatewayInfo = {
   federation_index: number
   route_hints: RouteHint[]
   fees: FeeToAmount
+  gateway_redeem_key: string
+  lightning_alias: string
+  mint_channel_id: number
+  supports_private_payments: boolean
 }
+
 type LightningGateway = {
   info: GatewayInfo
   vetted: boolean
@@ -37,6 +42,11 @@ type OutgoingLightningPayment = {
 }
 
 type PayType = { lightning: string } | { internal: string }
+
+type GetAvailableGatewayParams = {
+  gateway?: GatewayInfo
+  invoice?: string
+}
 
 type LnPayState =
   | 'created'
@@ -297,4 +307,5 @@ export {
   WalletTransaction,
   Transactions,
   WalletDepositState,
+  GetAvailableGatewayParams,
 }
