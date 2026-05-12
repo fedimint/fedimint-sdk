@@ -264,3 +264,23 @@ walletTest(
     }
   },
 )
+
+walletTest(
+  'getAvailableGateway should return a gateway',
+  async ({ wallet }) => {
+    expect(wallet).toBeDefined()
+    expect(wallet.isOpen()).toBe(true)
+
+    await wallet.lightning.updateGatewayCache()
+    const gateway = await wallet.lightning.getAvailableGateway()
+    expect(gateway).toBeDefined()
+    expect(gateway).toMatchObject({
+      api: expect.any(String),
+      fees: expect.any(Object),
+      gateway_id: expect.any(String),
+      gateway_redeem_key: expect.any(String),
+      node_pub_key: expect.any(String),
+      route_hints: expect.any(Array),
+    })
+  },
+)

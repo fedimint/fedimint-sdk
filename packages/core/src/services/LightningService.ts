@@ -2,6 +2,7 @@ import { TransportClient } from '../transport'
 import type {
   CreateBolt11Response,
   GatewayInfo,
+  GetAvailableGatewayParams,
   JSONObject,
   LightningGateway,
   LnInternalPayState,
@@ -83,10 +84,25 @@ export class LightningService {
     )
   }
 
-  private async _getDefaultGatewayInfo() {
+  async getAvailableGateway({
+    gateway,
+    invoice,
+  }: GetAvailableGatewayParams | undefined = {}) {
+    return await this.client.rpcSingle<GatewayInfo | null>(
+      'ln',
+      'select_available_gateway',
+      {
+        maybe_gateway: gateway ?? null,
+        maybe_invoice: invoice ?? null,
+      },
+      this.clientName,
+    )
+  }
+
+  private async _getDefaultGatewayInfo(invoice?: string) {
     await this.updateGatewayCache()
-    const gateways = await this.listGateways()
-    return gateways[0]?.info
+    const gateway = await this.getAvailableGateway({ invoice })
+    return gateway ?? null
   }
 
   /** https://sdk.fedimint.org/core/FedimintWallet/LightningService/payInvoice#lightning-payinvoice-invoice-string */
@@ -95,7 +111,7 @@ export class LightningService {
     gatewayInfo?: GatewayInfo,
     extraMeta?: JSONObject,
   ) {
-    const gateway = gatewayInfo ?? (await this._getDefaultGatewayInfo())
+    const gateway = gatewayInfo ?? (await this._getDefaultGatewayInfo(invoice))
     return await this.client.rpcSingle<OutgoingLightningPayment>(
       'ln',
       'pay_bolt11_invoice',

@@ -1,7 +1,12 @@
 import { MSats, Duration, JSONValue, JSONObject } from './utils'
 
-const MODULE_KINDS = ['', 'ln', 'mint', 'wallet'] as const
+const MODULE_KINDS = ['', 'ln', 'meta', 'mint', 'wallet'] as const
 type ModuleKind = (typeof MODULE_KINDS)[number]
+
+type MetaConsensusValue<T extends JSONValue = JSONValue> = {
+  revision: number
+  value: T
+}
 
 type GatewayInfo = {
   gateway_id: string
@@ -10,7 +15,12 @@ type GatewayInfo = {
   federation_index: number
   route_hints: RouteHint[]
   fees: FeeToAmount
+  gateway_redeem_key: string
+  lightning_alias: string
+  mint_channel_id: number
+  supports_private_payments: boolean
 }
+
 type LightningGateway = {
   info: GatewayInfo
   vetted: boolean
@@ -32,6 +42,11 @@ type OutgoingLightningPayment = {
 }
 
 type PayType = { lightning: string } | { internal: string }
+
+type GetAvailableGatewayParams = {
+  gateway?: GatewayInfo
+  invoice?: string
+}
 
 type LnPayState =
   | 'created'
@@ -263,6 +278,7 @@ export {
   RouteHint,
   FeeToAmount,
   OutgoingLightningPayment,
+  MetaConsensusValue,
   PayType,
   LnPayState,
   LnReceiveState,
@@ -291,4 +307,5 @@ export {
   WalletTransaction,
   Transactions,
   WalletDepositState,
+  GetAvailableGatewayParams,
 }
