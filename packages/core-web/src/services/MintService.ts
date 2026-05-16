@@ -40,6 +40,30 @@ export class MintService {
     )
   }
 
+  async spendExactDenominationNotes(
+    denominations: number[],
+    tryCancelAfter: number | Duration = 3600 * 24, // defaults to 1 day
+    includeInvite: boolean = false,
+    extraMeta: JSONValue = {},
+  ) {
+    const duration =
+      typeof tryCancelAfter === 'number'
+        ? { nanos: 0, secs: tryCancelAfter }
+        : tryCancelAfter
+
+    return await this.client.rpcSingle<string>(
+      'mint',
+      'spend_notes_with_exact_denominations',
+      {
+        denominations_msat: denominations,
+        include_invite: includeInvite,
+        try_cancel_after: duration,
+        extra_meta: extraMeta,
+      },
+      this.clientName,
+    )
+  }
+
   subscribeReissueExternalNotes(
     operationId: string,
     onSuccess: (state: ReissueExternalNotesState) => void = () => {},

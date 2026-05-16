@@ -44,7 +44,7 @@ self.onmessage = async (event) => {
       )
 
       // Initialize the RPC handler
-      rpcHandler = new RpcHandler(dbSyncHandle)
+      rpcHandler = await new RpcHandler(dbSyncHandle)
 
       console.log('Worker: WASM module loaded successfully')
       self.postMessage({
