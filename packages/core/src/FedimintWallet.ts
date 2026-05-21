@@ -12,6 +12,11 @@ import {
 // This is temporary until we have a proper client management system
 const DEFAULT_CLIENT_NAME = 'dd5135b2-c228-41b7-a4f9-3b6e7afe3088' as const
 
+export type JoinFederationOptions = {
+  clientName?: string
+  forceRecover?: boolean
+}
+
 export class FedimintWallet {
   public balance: BalanceService
   public mint: MintService
@@ -88,8 +93,27 @@ export class FedimintWallet {
 
   async joinFederation(
     inviteCode: string,
-    clientName: string = DEFAULT_CLIENT_NAME,
-  ) {
+    clientName?: string,
+  ): Promise<boolean>
+  async joinFederation(
+    inviteCode: string,
+    options?: JoinFederationOptions,
+  ): Promise<boolean>
+  async joinFederation(
+    inviteCode: string,
+    clientNameOrOptions: string | JoinFederationOptions = DEFAULT_CLIENT_NAME,
+  ): Promise<boolean> {
+    const options =
+      typeof clientNameOrOptions === 'string'
+        ? {
+            clientName: clientNameOrOptions,
+            forceRecover: false,
+          }
+        : {
+            clientName: clientNameOrOptions.clientName ?? DEFAULT_CLIENT_NAME,
+            forceRecover: clientNameOrOptions.forceRecover ?? false,
+          }
+
     // TODO: Determine if this should be safe or throw
     if (this._isOpen)
       throw new Error(
@@ -98,8 +122,8 @@ export class FedimintWallet {
     try {
       await this._client.sendSingleMessage('join_federation', {
         invite_code: inviteCode,
-        client_name: clientName,
-        force_recover: false,
+        client_name: options.clientName,
+        force_recover: options.forceRecover,
       })
       this._isOpen = true
       this._resolveOpen()

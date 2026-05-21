@@ -1,4 +1,6 @@
-import { expect } from 'vitest'
+import { TransportClient } from '@fedimint/core'
+import { FedimintWallet } from '@fedimint/core/testing'
+import { expect, vi } from 'vitest'
 import { walletTest } from './test/fixtures'
 
 walletTest('get invite code from devimint', async ({ wallet }) => {
@@ -11,6 +13,49 @@ walletTest('fund wallet with devimint', async ({ fundedWallet }) => {
   expect(fundedWallet).toBeDefined()
   const balance = await fundedWallet.balance.getBalance()
   expect(balance).toBeGreaterThan(0)
+})
+
+walletTest('joinFederation passes options to the transport', async () => {
+  const sendSingleMessage = vi.fn().mockResolvedValue(undefined)
+  const wallet = new FedimintWallet({
+    sendSingleMessage,
+    logger: {
+      error: vi.fn(),
+    },
+  } as unknown as TransportClient)
+
+  await expect(
+    wallet.joinFederation('fed123...', {
+      clientName: 'my-client-name',
+      forceRecover: true,
+    }),
+  ).resolves.toBe(true)
+
+  expect(sendSingleMessage).toHaveBeenCalledWith('join_federation', {
+    invite_code: 'fed123...',
+    client_name: 'my-client-name',
+    force_recover: true,
+  })
+})
+
+walletTest('joinFederation still accepts a client name string', async () => {
+  const sendSingleMessage = vi.fn().mockResolvedValue(undefined)
+  const wallet = new FedimintWallet({
+    sendSingleMessage,
+    logger: {
+      error: vi.fn(),
+    },
+  } as unknown as TransportClient)
+
+  await expect(
+    wallet.joinFederation('fed123...', 'my-client-name'),
+  ).resolves.toBe(true)
+
+  expect(sendSingleMessage).toHaveBeenCalledWith('join_federation', {
+    invite_code: 'fed123...',
+    client_name: 'my-client-name',
+    force_recover: false,
+  })
 })
 
 walletTest(
