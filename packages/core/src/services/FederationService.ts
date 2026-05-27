@@ -1,5 +1,6 @@
 import type {
   EcashTransaction,
+  EventLogParams,
   JSONValue,
   LightningTransaction,
   LnVariant,
@@ -7,6 +8,7 @@ import type {
   MintVariant,
   OperationKey,
   OperationLog,
+  PersistedLogEntry,
   Transactions,
   WalletTransaction,
   WalletVariant,
@@ -79,6 +81,18 @@ export class FederationService {
       '',
       'get_operation',
       { operation_id: operationId },
+      this.clientName,
+    )
+  }
+
+  async getEventLog(params: EventLogParams = {}): Promise<PersistedLogEntry[]> {
+    return await this.client.rpcSingle<PersistedLogEntry[]>(
+      '',
+      'get_event_log',
+      {
+        pos: params.pos ?? null,
+        limit: params.limit ?? null,
+      },
       this.clientName,
     )
   }

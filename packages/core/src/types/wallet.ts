@@ -217,6 +217,19 @@ type OperationLog = {
   }
 }
 
+type EventLogParams = {
+  pos?: number | null
+  limit?: number | null
+}
+
+type PersistedLogEntry = {
+  id: number
+  kind: string
+  module: [string, number] | null
+  ts_usecs: number
+  payload: JSONValue
+}
+
 type BaseTransactions = {
   timestamp: number
   operationId: string
@@ -299,6 +312,8 @@ export {
   GenerateAddressResponse,
   OperationKey,
   OperationLog,
+  EventLogParams,
+  PersistedLogEntry,
   LnVariant,
   MintVariant,
   WalletVariant,

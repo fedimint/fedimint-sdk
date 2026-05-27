@@ -152,6 +152,7 @@ const FedimintWalletSidebar = [
           { text: 'getFederationId()', link: 'getFederationId' },
           { text: 'getInviteCode()', link: 'getInviteCode' },
           { text: 'getOperation()', link: 'getOperation' },
+          { text: 'getEventLog()', link: 'getEventLog' },
           { text: 'listOperations()', link: 'listOperations' },
           { text: 'listTransactions()', link: 'listTransactions' },
           { text: 'getMetaConsensusValue()', link: 'getMetaConsensusValue' },
