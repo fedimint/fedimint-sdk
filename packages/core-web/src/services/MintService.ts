@@ -1,5 +1,6 @@
 import { RpcClient } from '../rpc'
 import type {
+  DecodedNotes,
   Duration,
   JSONObject,
   JSONValue,
@@ -43,7 +44,6 @@ export class MintService {
   async spendExactDenominationNotes(
     denominations: number[],
     tryCancelAfter: number | Duration = 3600 * 24, // defaults to 1 day
-    includeInvite: boolean = false,
     extraMeta: JSONValue = {},
   ) {
     const duration =
@@ -56,12 +56,30 @@ export class MintService {
       'spend_notes_with_exact_denominations',
       {
         denominations_msat: denominations,
-        include_invite: includeInvite,
         try_cancel_after: duration,
         extra_meta: extraMeta,
       },
       this.clientName,
     )
+  }
+
+  subscribeSpendExactNotes(
+    operationId: string,
+    includeInvite: boolean = false,
+    onSuccess: (state: string) => void = () => {},
+    onError: (error: string) => void = () => {},
+  ) {
+    const unsubscribe = this.client.rpcStream<string>(
+      'mint',
+      'subscribe_spend_exact_notes',
+      { operation_id: operationId, include_invite: includeInvite },
+      onSuccess,
+      onError,
+      () => {},
+      this.clientName,
+    )
+
+    return unsubscribe
   }
 
   subscribeReissueExternalNotes(
@@ -170,6 +188,15 @@ export class MintService {
       'mint',
       'note_counts_by_denomination',
       {},
+      this.clientName,
+    )
+  }
+
+  async decodeNotes(oobNotes: string): Promise<DecodedNotes> {
+    return await this.client.rpcSingle<DecodedNotes>(
+      'mint',
+      'decode_notes',
+      { oob_notes: oobNotes },
       this.clientName,
     )
   }

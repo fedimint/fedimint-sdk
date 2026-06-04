@@ -3,10 +3,10 @@
     flake-utils.url = "github:numtide/flake-utils";
     fedimint = {
       # Devimint input - Should point to a release tag, as it doesn't need to be updated often.
-      url = "github:Harshdev098/fedimint?rev=d6e8ac7c62eff05120774022a62a441d8fa9d550";
+      url = "github:Harshdev098/fedimint?rev=c6a15dcb54ca69ba17eca936988aa8e883948abd";
     };
     fedimint-wasm = {
-      url = "github:Harshdev098/fedimint?rev=d6e8ac7c62eff05120774022a62a441d8fa9d550";
+      url = "github:Harshdev098/fedimint?rev=c6a15dcb54ca69ba17eca936988aa8e883948abd";
     };
   };
   outputs =

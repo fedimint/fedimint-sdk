@@ -268,6 +268,12 @@ type WalletInfo = {
   lastAccessedAt: number
 }
 
+type DecodedNotes = {
+  total_amount_msat: number
+  notes: Record<string, string[]>
+  federation_id_prefix: string
+}
+
 type WalletStorageData = {
   version: number
   wallets: WalletInfo[]
@@ -309,4 +315,5 @@ export {
   Transactions,
   WalletInfo,
   WalletStorageData,
+  DecodedNotes,
 }
