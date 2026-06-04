@@ -277,6 +277,16 @@ export class LightningService {
             clearTimeout(timeoutId)
             unsubscribe()
             resolve(res)
+          } else if (
+            typeof res === 'object' &&
+            res !== null &&
+            'canceled' in res
+          ) {
+            clearTimeout(timeoutId)
+            unsubscribe()
+            reject(
+              new Error(`Invoice receive canceled: ${res.canceled.reason}`),
+            )
           }
         },
         (error) => {
