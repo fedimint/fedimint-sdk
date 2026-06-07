@@ -144,24 +144,37 @@ export class LightningService {
         extraMeta,
       )
 
+      let unsubscribe: (() => void) | null = null
+      let isSettled = false
+      const timeoutId = setTimeout(() => {
+        isSettled = true
+        if (unsubscribe) unsubscribe()
+        resolve({ success: false, error: 'Payment timeout' })
+      }, timeoutMs)
+
+      const cleanup = () => {
+        clearTimeout(timeoutId)
+        isSettled = true
+        if (unsubscribe) unsubscribe()
+      }
+
       // TODO: handle  error handling for other subscription statuses
-      const unsubscribe = this.subscribeLnPay(contract_id, (res) => {
+      unsubscribe = this.subscribeLnPay(contract_id, (res) => {
         if (typeof res !== 'string' && 'success' in res) {
-          clearTimeout(timeoutId)
-          unsubscribe()
+          cleanup()
           resolve({
             success: true,
             data: { feeMsats: fee, preimage: res.success.preimage },
           })
         } else if (typeof res !== 'string' && 'unexpected_error' in res) {
+          cleanup()
           reject(new Error(res.unexpected_error.error_message))
         }
       })
 
-      const timeoutId = setTimeout(() => {
+      if (isSettled && unsubscribe) {
         unsubscribe()
-        resolve({ success: false, error: 'Payment timeout' })
-      }, timeoutMs)
+      }
     })
   }
 
@@ -220,17 +233,25 @@ export class LightningService {
       | { success: false; error?: string }
       | { success: true; data: { preimage: string } }
     >((resolve, reject) => {
-      let unsubscribe: () => void
+      let unsubscribe: (() => void) | null = null
+      let isSettled = false
       const timeoutId = setTimeout(() => {
+        isSettled = true
+        if (unsubscribe) unsubscribe()
         resolve({ success: false, error: 'Waiting for receive timeout' })
       }, 15000)
+
+      const cleanup = () => {
+        clearTimeout(timeoutId)
+        isSettled = true
+        if (unsubscribe) unsubscribe()
+      }
 
       unsubscribe = this.subscribeLnPay(
         operationId,
         (res) => {
           if (typeof res !== 'string' && 'success' in res) {
-            clearTimeout(timeoutId)
-            unsubscribe()
+            cleanup()
             resolve({
               success: true,
               data: { preimage: res.success.preimage },
@@ -238,11 +259,14 @@ export class LightningService {
           }
         },
         (error) => {
-          clearTimeout(timeoutId)
-          unsubscribe()
+          cleanup()
           reject(error)
         },
       )
+
+      if (isSettled && unsubscribe) {
+        unsubscribe()
+      }
     })
   }
 
@@ -262,39 +286,55 @@ export class LightningService {
     )
   }
 
-  /** https://sdk.fedimint.org/core/FedimintWallet/LightningService/createInvoice#lightning-createinvoice */
+  /**
+   * Waits for a payment to be received.
+   * Resolves with 'claimed' on success.
+   * Rejects immediately if the payment is canceled (with the reason from the gateway),
+   * or rejects with a timeout error after timeoutMs.
+   * https://sdk.fedimint.org/core/FedimintWallet/LightningService/createInvoice#lightning-createinvoice
+   */
   async waitForReceive(operationId: string, timeoutMs: number = 15000) {
     return new Promise<LnReceiveState>((resolve, reject) => {
-      let unsubscribe: () => void
+      let unsubscribe: (() => void) | null = null
+      let isSettled = false
       const timeoutId = setTimeout(() => {
+        isSettled = true
+        if (unsubscribe) unsubscribe()
         reject(new Error('Timeout waiting for receive'))
       }, timeoutMs)
+
+      const cleanup = () => {
+        clearTimeout(timeoutId)
+        isSettled = true
+        if (unsubscribe) unsubscribe()
+      }
 
       unsubscribe = this.subscribeLnReceive(
         operationId,
         (res) => {
           if (res === 'claimed') {
-            clearTimeout(timeoutId)
-            unsubscribe()
+            cleanup()
             resolve(res)
           } else if (
             typeof res === 'object' &&
             res !== null &&
             'canceled' in res
           ) {
-            clearTimeout(timeoutId)
-            unsubscribe()
+            cleanup()
             reject(
               new Error(`Invoice receive canceled: ${res.canceled.reason}`),
             )
           }
         },
         (error) => {
-          clearTimeout(timeoutId)
-          unsubscribe()
+          cleanup()
           reject(error)
         },
       )
+
+      if (isSettled && unsubscribe) {
+        unsubscribe()
+      }
     })
   }
 
