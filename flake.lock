@@ -612,11 +612,11 @@
         "nixpkgs": "nixpkgs_5"
       },
       "locked": {
-        "lastModified": 1777591115,
-        "narHash": "sha256-DhX5mKp0rXNa/NJmrvRJvE0ASXV//BrzPtZktRetPiQ=",
+        "lastModified": 1784407339,
+        "narHash": "sha256-MTO67rA5ljg+G4IVFZqZFO666IuVkUa/Yp0FifTqXkI=",
         "owner": "fedimint",
         "repo": "fedimint-sdk-ffi",
-        "rev": "3da88e1d8244152d4ca03c6f5b7b53fccb124416",
+        "rev": "6873aa36ecca44a748a85d0cbc8bd2e2ba179732",
         "type": "github"
       },
       "original": {
