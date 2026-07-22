@@ -201,6 +201,13 @@
                 export CXX_aarch64_apple_darwin=clang++
                 export CXX_x86_64_apple_darwin=clang++
 
+                # Bypass Nix's cc-wrapper for host builds — it hardcodes
+                # --sysroot to an incompatible apple-sdk-11 store path that
+                # lacks libSystem.dylib on modern macOS runners, causing
+                # "symbol not found" errors for _writev, _sysconf, etc.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+
                 unset CC_aarch64_apple_ios_sim
                 unset CC_x86_64_apple_ios_sim
                 unset LD_aarch64_apple_ios LD_aarch64_apple_darwin LD_aarch64_apple_ios_sim
