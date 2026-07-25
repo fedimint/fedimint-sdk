@@ -2,11 +2,7 @@ name: Pull Request
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-    paths-ignore:
-      - 'js/react-native/react-native/**'
-      - 'js/react-native/react-native-bindings/**'
-      - 'rust/fedimint-client-uniffi/**'
-      - 'nix/**'
+
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +10,113 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+ # 1. Lightweight change-detection (runs in ~10 s)
+
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      web: ${{ steps.filter.outputs.web }}
+      react-native: ${{ steps.filter.outputs.react-native }}
+      docs: ${{ steps.filter.outputs.docs }}
+      cli: ${{ steps.filter.outputs.cli }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'js/shared/core/**'
+              - 'js/shared/types/**'
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/tsconfig.base.json'
+              - '.github/workflows/**'
+            web:
+              - 'js/shared/core/**'
+              - 'js/shared/types/**'
+              - 'js/web/core-web/**'
+              - 'js/web/transport-web/**'
+              - 'js/web/wasm-bundler/**'
+              - 'js/web/wasm-web/**'
+              - 'js/web/integration-tests/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'js/vitest.config.ts'
+              - 'js/vitest.workspace.ts'
+              - 'scripts/**'
+              - '.github/workflows/**'
+            react-native:
+              - 'js/react-native/react-native/**'
+              - 'js/react-native/react-native-bindings/**'
+              - 'js/shared/core/**'
+              - 'js/shared/types/**'
+              - 'rust/fedimint-client-uniffi/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'Justfile'
+              - '.github/actions/setup-nix/**'
+              - '.github/actions/build-rn-android/**'
+              - '.github/actions/build-rn-ios/**'
+              - '.github/workflows/**'
+            docs:
+              - 'js/docs/**'
+              - 'js/shared/core/**'
+              - 'js/shared/types/**'
+              - '.github/workflows/**'
+            cli:
+              - 'js/tools/create-fedimint-app/**'
+              - '.github/workflows/**'
+
+  # Reusable verify jobs (lint always runs; others are conditional)
+
   verify:
     name: Verify
+    needs: detect-changes
     uses: ./.github/workflows/verify.yml
     secrets: inherit
+    with:
+      run_core: ${{ needs.detect-changes.outputs.core == 'true' || needs.detect-changes.outputs.web == 'true' }}
+      run_web: ${{ needs.detect-changes.outputs.web == 'true' }}
+      run_docs: ${{ needs.detect-changes.outputs.docs == 'true' }}
+      run_cli: ${{ needs.detect-changes.outputs.cli == 'true' }}
+
+  # 3. React Native builds (only when relevant paths change)
+
+  build-android:
+    name: Build Android
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.react-native == 'true' }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-android
+
+  build-ios:
+    name: Build iOS
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.react-native == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-ios
+        with:
+          device-only: 'true'
+>>>>>>> abbc2d4 (ci: unify PR workflows with dynamic path filtering)
