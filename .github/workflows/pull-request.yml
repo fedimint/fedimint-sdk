@@ -10,8 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-
- # 1. Lightweight change-detection (runs in ~10 s)
+  # 1. Lightweight change-detection (runs in ~10 s)
 
   detect-changes:
     name: Detect Changes
@@ -119,4 +118,4 @@ jobs:
       - uses: ./.github/actions/build-rn-ios
         with:
           device-only: 'true'
->>>>>>> abbc2d4 (ci: unify PR workflows with dynamic path filtering)
+
