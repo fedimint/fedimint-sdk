@@ -31,11 +31,13 @@ jobs:
           filters: |
             core:
               - 'js/shared/core/**'
+              - 'js/web/react/**'
               - 'js/shared/types/**'
               - 'js/package.json'
               - 'js/pnpm-lock.yaml'
               - 'js/tsconfig.base.json'
               - '.github/workflows/**'
+              - '.github/actions/**'
             web:
               - 'js/shared/core/**'
               - 'js/shared/types/**'
@@ -50,6 +52,7 @@ jobs:
               - 'js/vitest.workspace.ts'
               - 'scripts/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
             react-native:
               - 'js/react-native/react-native/**'
               - 'js/react-native/react-native-bindings/**'
@@ -59,18 +62,18 @@ jobs:
               - 'flake.nix'
               - 'flake.lock'
               - 'Justfile'
-              - '.github/actions/setup-nix/**'
-              - '.github/actions/build-rn-android/**'
-              - '.github/actions/build-rn-ios/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
             docs:
               - 'js/docs/**'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
             cli:
               - 'js/tools/create-fedimint-app/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
 
   # Reusable verify jobs (lint always runs; others are conditional)
 
