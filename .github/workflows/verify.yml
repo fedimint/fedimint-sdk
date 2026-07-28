@@ -49,7 +49,7 @@ jobs:
 
   build:
     name: Build JS
-    if: ${{ inputs.run_core != false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_core != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -80,7 +80,7 @@ jobs:
 
   types:
     name: Check Types
-    if: ${{ inputs.run_core != false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_core != false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -98,7 +98,7 @@ jobs:
 
   test:
     name: Test
-    if: ${{ inputs.run_web != false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_web != false }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
 
@@ -142,7 +142,7 @@ jobs:
 
   build-docs:
     name: Build Docs
-    if: ${{ inputs.run_docs != false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_docs != false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -160,7 +160,7 @@ jobs:
 
   test-cli:
     name: Test CLI
-    if: ${{ inputs.run_cli != false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_cli != false }}
     runs-on: ubuntu-latest
 
     steps:

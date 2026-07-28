@@ -39,6 +39,7 @@ jobs:
               - '.github/workflows/**'
               - '.github/actions/**'
             web:
+<<<<<<< HEAD
               - 'js/shared/core/**'
               - 'js/shared/types/**'
               - 'js/web/core-web/**'
@@ -46,6 +47,18 @@ jobs:
               - 'js/web/wasm-bundler/**'
               - 'js/web/wasm-web/**'
               - 'js/web/integration-tests/**'
+=======
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tsconfig.base.json'
+              - 'packages/core/**'
+              - 'packages/types/**'
+              - 'packages/core-web/**'
+              - 'packages/transport-web/**'
+              - 'packages/wasm-bundler/**'
+              - 'packages/wasm-web/**'
+              - 'packages/integration-tests/**'
+>>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - 'flake.nix'
               - 'flake.lock'
               - 'js/vitest.config.ts'
@@ -54,17 +67,30 @@ jobs:
               - '.github/workflows/**'
               - '.github/actions/**'
             react-native:
+<<<<<<< HEAD
               - 'js/react-native/react-native/**'
               - 'js/react-native/react-native-bindings/**'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
               - 'rust/fedimint-client-uniffi/**'
+=======
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tsconfig.base.json'
+              - 'packages/react-native/**'
+              - 'packages/react-native-bindings/**'
+              - 'packages/core/**'
+              - 'packages/types/**'
+              - 'fedimint-sdk-ffi'
+              - 'fedimint-sdk-ffi/**'
+>>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - 'flake.nix'
               - 'flake.lock'
               - 'Justfile'
               - '.github/workflows/**'
               - '.github/actions/**'
             docs:
+<<<<<<< HEAD
               - 'js/docs/**'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
@@ -72,6 +98,21 @@ jobs:
               - '.github/actions/**'
             cli:
               - 'js/tools/create-fedimint-app/**'
+=======
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tsconfig.base.json'
+              - 'docs/**'
+              - 'packages/core/**'
+              - 'packages/types/**'
+              - '.github/workflows/**'
+              - '.github/actions/**'
+            cli:
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tsconfig.base.json'
+              - 'packages/create-fedimint-app/**'
+>>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - '.github/workflows/**'
               - '.github/actions/**'
 
@@ -83,17 +124,17 @@ jobs:
     uses: ./.github/workflows/verify.yml
     secrets: inherit
     with:
-      run_core: ${{ needs.detect-changes.outputs.core == 'true' || needs.detect-changes.outputs.web == 'true' }}
-      run_web: ${{ needs.detect-changes.outputs.web == 'true' }}
-      run_docs: ${{ needs.detect-changes.outputs.docs == 'true' }}
-      run_cli: ${{ needs.detect-changes.outputs.cli == 'true' }}
+      run_core: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.core == 'true' || needs.detect-changes.outputs.web == 'true' || needs.detect-changes.outputs.cli == 'true' }}
+      run_web: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.web == 'true' }}
+      run_docs: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.docs == 'true' }}
+      run_cli: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.cli == 'true' }}
 
   # 3. React Native builds (only when relevant paths change)
 
   build-android:
     name: Build Android
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.react-native == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true' }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     steps:
@@ -108,7 +149,7 @@ jobs:
   build-ios:
     name: Build iOS
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.react-native == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
