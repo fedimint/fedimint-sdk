@@ -30,16 +30,22 @@ jobs:
         with:
           filters: |
             core:
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/pnpm-workspace.yaml'
+              - 'js/.npmrc'
+              - 'js/tsconfig.base.json'
               - 'js/shared/core/**'
               - 'js/web/react/**'
               - 'js/shared/types/**'
-              - 'js/package.json'
-              - 'js/pnpm-lock.yaml'
-              - 'js/tsconfig.base.json'
               - '.github/workflows/**'
               - '.github/actions/**'
             web:
-<<<<<<< HEAD
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/pnpm-workspace.yaml'
+              - 'js/.npmrc'
+              - 'js/tsconfig.base.json'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
               - 'js/web/core-web/**'
@@ -47,18 +53,6 @@ jobs:
               - 'js/web/wasm-bundler/**'
               - 'js/web/wasm-web/**'
               - 'js/web/integration-tests/**'
-=======
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'tsconfig.base.json'
-              - 'packages/core/**'
-              - 'packages/types/**'
-              - 'packages/core-web/**'
-              - 'packages/transport-web/**'
-              - 'packages/wasm-bundler/**'
-              - 'packages/wasm-web/**'
-              - 'packages/integration-tests/**'
->>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - 'flake.nix'
               - 'flake.lock'
               - 'js/vitest.config.ts'
@@ -67,52 +61,42 @@ jobs:
               - '.github/workflows/**'
               - '.github/actions/**'
             react-native:
-<<<<<<< HEAD
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/pnpm-workspace.yaml'
+              - 'js/.npmrc'
+              - 'js/tsconfig.base.json'
               - 'js/react-native/react-native/**'
               - 'js/react-native/react-native-bindings/**'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
               - 'rust/fedimint-client-uniffi/**'
-=======
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'tsconfig.base.json'
-              - 'packages/react-native/**'
-              - 'packages/react-native-bindings/**'
-              - 'packages/core/**'
-              - 'packages/types/**'
-              - 'fedimint-sdk-ffi'
-              - 'fedimint-sdk-ffi/**'
->>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - 'flake.nix'
               - 'flake.lock'
               - 'Justfile'
               - '.github/workflows/**'
               - '.github/actions/**'
             docs:
-<<<<<<< HEAD
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/pnpm-workspace.yaml'
+              - 'js/.npmrc'
+              - 'js/tsconfig.base.json'
               - 'js/docs/**'
               - 'js/shared/core/**'
               - 'js/shared/types/**'
+              - 'js/web/transport-web/**'
               - '.github/workflows/**'
               - '.github/actions/**'
             cli:
+              - 'js/package.json'
+              - 'js/pnpm-lock.yaml'
+              - 'js/pnpm-workspace.yaml'
+              - 'js/.npmrc'
+              - 'js/tsconfig.base.json'
+              - 'js/vitest.config.ts'
+              - 'js/vitest.workspace.ts'
               - 'js/tools/create-fedimint-app/**'
-=======
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'tsconfig.base.json'
-              - 'docs/**'
-              - 'packages/core/**'
-              - 'packages/types/**'
-              - '.github/workflows/**'
-              - '.github/actions/**'
-            cli:
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'tsconfig.base.json'
-              - 'packages/create-fedimint-app/**'
->>>>>>> e9af9b3 (ci: fix manual dispatch, root workspace triggers, and CLI typecheck coverage)
               - '.github/workflows/**'
               - '.github/actions/**'
 
@@ -162,4 +146,3 @@ jobs:
       - uses: ./.github/actions/build-rn-ios
         with:
           device-only: 'true'
-
