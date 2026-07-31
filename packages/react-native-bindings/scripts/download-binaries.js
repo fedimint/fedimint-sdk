@@ -1,4 +1,3 @@
-// TODO: Add check for checksums and fail if they don't match.
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -75,9 +74,17 @@ const downloadFile = (url, dest) => {
     });
 };
 
-const verifyChecksum = (file, expected) => {
-  // TODO : complete this
-  return true;
+const verifyChecksum = (filePath, expected) => {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => {
+            const actual = hash.digest('hex');
+            resolve(actual === expected);
+        });
+        stream.on('error', reject);
+    });
 };
 
 const unzip = (file, dest) => {
@@ -96,22 +103,24 @@ const main = async () => {
     console.log(`Downloading Android artifacts from ${androidUrl}...`);
     await downloadFile(androidUrl, 'android-artifacts.zip');
 
-    if (!verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM)) {
-        console.error('Android checkum mismatch!');
+    const androidValid = await verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM);
+    if (!androidValid) {
+        fs.unlinkSync('android-artifacts.zip');
+        console.error('Android checksum mismatch!');
         process.exit(1);
     }
 
     console.log('Extracting Android artifacts...');
-    // Adjust destination if needed based on zip structure
     unzip('android-artifacts.zip', path.join(__dirname, '../'));
     fs.unlinkSync('android-artifacts.zip');
-
 
     console.log(`Downloading iOS artifacts from ${iosUrl}...`);
     await downloadFile(iosUrl, 'ios-artifacts.zip');
 
-    if (!verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM)) {
-        console.error('iOS checkum mismatch!');
+    const iosValid = await verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM);
+    if (!iosValid) {
+        fs.unlinkSync('ios-artifacts.zip');
+        console.error('iOS checksum mismatch!');
         process.exit(1);
     }
 
