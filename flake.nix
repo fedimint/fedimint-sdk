@@ -6,7 +6,8 @@
       url = "github:fedimint/fedimint/v0.10.0";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint?rev=4b0d77d9fc660082ea3b24d33e3900ef9400b20a";
+         url = "github:fedimint/fedimint?rev=382afc209c80e5445c65ccfabd37edf282669291";
+         
     };
     fedimint-sdk-ffi = {
       # Provides cross-compiled Android (.so) and iOS (.a) bindings as
@@ -199,6 +200,13 @@
                 export CXX_x86_64_apple_ios=clang++
                 export CXX_aarch64_apple_darwin=clang++
                 export CXX_x86_64_apple_darwin=clang++
+
+                # Bypass Nix's cc-wrapper for host builds — it hardcodes
+                # --sysroot to an incompatible apple-sdk-11 store path that
+                # lacks libSystem.dylib on modern macOS runners, causing
+                # "symbol not found" errors for _writev, _sysconf, etc.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
 
                 unset CC_aarch64_apple_ios_sim
                 unset CC_x86_64_apple_ios_sim
