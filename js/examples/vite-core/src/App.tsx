@@ -107,19 +107,41 @@ const MnemonicManager = () => {
 
   const clearMessage = () => setMessage(undefined)
 
+  const mapTechnicalErrorToFriendly = (rawError: string): string => {
+    const lowerError = rawError.toLowerCase()
+    
+    if (lowerError.includes('mnemonic already exists')) {
+      return 'You already have a wallet set up.'
+    }
+    if (lowerError.includes('invalid checksum')) {
+      return 'The recovery phrase you entered is invalid. Please double-check your spelling.'
+    }
+    if (lowerError.includes('invalid word count')) {
+      return 'Recovery phrases must be exactly 12 or 24 words long.'
+    }
+    if (lowerError.includes('contains an unknown word')) {
+      return 'The recovery phrase contains an unknown word. Please check your spelling.'
+    }
+    
+    // Fallback for unknown strings
+    return 'Operation failed'
+  }
+
   // Helper function to extract user-friendly error messages
   const extractErrorMessage = (error: any): string => {
     let errorMsg = 'Operation failed'
 
-    if (error instanceof Error) {
-      errorMsg = error.message
+    if (typeof error === 'string') {
+      errorMsg = mapTechnicalErrorToFriendly(error)
+    } else if (error instanceof Error) {
+      errorMsg = mapTechnicalErrorToFriendly(error.message)
     } else if (typeof error === 'object' && error !== null) {
       // Handle RPC error objects
       const rpcError = error as any
       if (rpcError.error) {
-        errorMsg = rpcError.error
+        errorMsg = mapTechnicalErrorToFriendly(rpcError.error)
       } else if (rpcError.message) {
-        errorMsg = rpcError.message
+        errorMsg = mapTechnicalErrorToFriendly(rpcError.message)
       }
     }
 
