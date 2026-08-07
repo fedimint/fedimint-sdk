@@ -1,4 +1,4 @@
-import { TransportClient } from '@fedimint/core'
+import { TransportClient, WalletDirector, type Transport } from '@fedimint/core'
 import { FedimintWallet } from '@fedimint/core/testing'
 import { expect, vi } from 'vitest'
 import { walletTest } from './test/fixtures'
@@ -9,13 +9,32 @@ function sumNoteCounts(noteCounts: Record<string, number>) {
   }, 0)
 }
 
-function federationIdPrefixBytes(federationId: string) {
-  return (
-    federationId
-      .slice(0, 8)
-      .match(/.{1,2}/g)
-      ?.map((byte) => Number.parseInt(byte, 16)) ?? []
-  )
+class StaticResponseTransport {
+  logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }
+
+  private messageHandler: Parameters<Transport['setMessageHandler']>[0] =
+    () => {}
+
+  constructor(private readonly response: unknown) {}
+
+  setMessageHandler(handler: Parameters<Transport['setMessageHandler']>[0]) {
+    this.messageHandler = handler
+  }
+
+  setErrorHandler() {}
+
+  postMessage(message: Parameters<Transport['postMessage']>[0]) {
+    this.messageHandler({
+      type: 'data',
+      request_id: message.requestId,
+      data: message.type === 'init' ? true : this.response,
+    })
+  }
 }
 
 walletTest('get invite code from devimint', async ({ wallet }) => {
@@ -153,11 +172,39 @@ walletTest(
     const parsed = await walletDirector.parseOobNotes(notes)
     expect(parsed).toMatchObject({
       total_amount: spendAmount,
-      federation_id_prefix: federationIdPrefixBytes(federationId),
+      federation_id_prefix: federationId.slice(0, 8),
       federation_id: federationId,
       invite_code: inviteCode,
     })
     expect(sumNoteCounts(parsed.note_counts)).toEqual(spendAmount)
   },
   30000,
+)
+
+walletTest.each([
+  { name: 'non-array values', prefix: '00010203' },
+  { name: 'too few bytes', prefix: [0, 1, 2] },
+  { name: 'too many bytes', prefix: [0, 1, 2, 3, 4] },
+  { name: 'negative bytes', prefix: [0, 1, 2, -1] },
+  { name: 'bytes above 255', prefix: [0, 1, 2, 256] },
+  { name: 'non-integer bytes', prefix: [0, 1, 2, 3.5] },
+])(
+  'parseOobNotes rejects malformed federation ID prefixes: $name',
+  async ({ prefix }) => {
+    const director = new WalletDirector(
+      new StaticResponseTransport({
+        total_amount: 1000,
+        federation_id_prefix: prefix,
+        federation_id: null,
+        invite_code: null,
+        note_counts: { '1000': 1 },
+      }) as unknown as Transport,
+      undefined,
+      true,
+    )
+
+    await expect(director.parseOobNotes('notes')).rejects.toThrow(
+      'Invalid parse_oob_notes response: federation_id_prefix must contain four bytes',
+    )
+  },
 )
