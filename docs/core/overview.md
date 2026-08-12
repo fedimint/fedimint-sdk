@@ -10,6 +10,12 @@ Just want to try it out? Skip to the [Quickstart](./getting-started).
 
 The `@fedimint/core` package contains a robust, fault-tolerant fedimint client via a [wasm](https://webassembly.org/) module that runs in a web worker. This wasm module is compiled from the rust-based [fedimint client](https://github.com/fedimint/fedimint/tree/master/fedimint-client-wasm).
 
+Applications configure the platform integration through a `WalletDirector` and
+obtain a `FedimintWallet` by calling `director.createWallet()`. The wallet is not
+constructed directly. This keeps transport initialization in the director while
+the returned wallet focuses on opening or joining a federation and providing
+wallet services.
+
 ## Key Features:
 
 - 🚀 **WebAssembly-powered Client**: Exposes the robust, fault-tolerant fedimint-client (built in Rust) via WebAssembly. Lazy-Loads within a web worker for performance.

@@ -1,61 +1,75 @@
 # Architecture
 
-The Fedimint Sdk **Core Web** library is a modular and extensible JavaScript library designed to interact with the Fedimint client in a web browser. It provides a high-level API for developers to manage federated ecash wallets, perform operations like minting and spending ecash, and interact with the Lightning Network. The library is structured to promote maintainability, scalability, and ease of use, leveraging modern software development practices.
+The Fedimint SDK separates platform and transport lifecycle concerns from wallet
+operations. Application code starts with a `WalletDirector`, then obtains a
+`FedimintWallet` through `createWallet()`.
 
-The **Core Web** library is built around a set of composable services and a communication layer that interacts with a Web Worker running WebAssembly (WASM) code.
+```mermaid
+flowchart TD
+  director["WalletDirector"] -->|"owns"| client["TransportClient"]
+  director -->|"creates"| wallet["FedimintWallet"]
 
-<img src="/architecture-diagram.svg" alt="Architecture" />
+  wallet -->|"uses"| client
+  wallet -->|"provides"| services["Services"]
 
-## [**FedimintWallet**](FedimintWallet/index)
+  services --> balance["BalanceService"]
+  services --> federation["FederationService"]
+  services --> lightning["LightningService"]
+  services --> mint["MintService"]
+  services --> recovery["RecoveryService"]
+  services --> walletService["WalletService"]
 
-The `FedimintWallet` class serves as the main entry point for the library. It orchestrates the various services and the TransportClient.
+  services -->|"use"| client
+  client -->|"wraps"| transport["Platform Transport"]
+  client -->|"owns"| logger["Logger"]
+```
+
+## WalletDirector
+
+`WalletDirector` is the public creation and configuration entry point. It:
+
+- accepts or configures the platform-specific transport;
+- owns and initializes the `TransportClient`;
+- creates `FedimintWallet` instances;
+- provides utilities that do not require an open wallet, such as parsing,
+  federation previews, mnemonic management, and logging configuration.
+
+For browser applications, pass a `WasmWorkerTransport`. Platform packages may
+provide a specialized director that configures the appropriate transport.
+
+[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/WalletDirector.ts)
+
+## FedimintWallet
+
+`FedimintWallet` is returned by `WalletDirector.createWallet()`. It manages the
+open or join lifecycle for an individual wallet client and exposes the wallet's
+domain services. It is exported from `@fedimint/core` as a TypeScript type, not as
+a directly constructible production value.
+
+[Creating a FedimintWallet](FedimintWallet/createWallet)
 
 [Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/FedimintWallet.ts)
 
-## **TransportClient**
+## TransportClient
 
-The `TransportClient` manages all communication between the main js thread and environment-dependent transport (wasm for web, NativeModule for react-native, etc.).
+`TransportClient` manages communication between JavaScript and the
+environment-dependent transport, such as the browser WASM worker or a native
+module. It handles initialization, request routing, subscriptions, and transport
+errors.
 
-- Initializes and maintains the Transport instance.
-- Handles message passing and response callbacks.
-- Provides methods for sending RPC requests and handling streaming responses.
+Application code normally does not need to construct or pass a `TransportClient`;
+the `WalletDirector` creates it and shares it with the wallets it produces.
 
-::: info
-The `TransportClient` should not be used directly by the end user. Instead, the `FedimintWallet` class should be used to interact with the library.
-:::
-
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/worker/TransportClient.ts)
+[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/transport/TransportClient.ts)
 
 ## Services
 
-The library is decomposed into several services, each encapsulating a specific domain of functionality. This modular design allows for easier maintenance and testing.
+`FedimintWallet` groups operations into focused services:
 
-### **FederationService**
-
-Handles federation-related operations such as joining federations, retrieving configurations, and obtaining invite codes.
-
-### **MintService**
-
-Manages operations related to minting and handling ecash notes, including redeeming, reissuing, spending, and validating notes.
-
-### **LightningService**
-
-Facilitates interactions with the Lightning Network, handling invoice creation/payment, gateway management, and event subscriptions.
-
-### **BalanceService**
-
-Manages balance inquiries and subscriptions, allowing users to fetch current wallet balance and subscribe to changes.
-
-### **RecoveryService**
-
-Manages recovery operations, including checking for pending recoveries, waiting for completion, and subscribing to progress updates.
-
-## Utilities
-
-The library includes a configurable logging utility to aid in development and debugging.
-
-### **Logger Utility**
-
-A `Logger` class supports multiple log levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, and `NONE`.
-
-Users can set the desired log level using the `setLogLevel` method.
+- `FederationService`: federation configuration, metadata, operations, and
+  transactions;
+- `MintService`: ecash redemption, spending, parsing, and note queries;
+- `LightningService`: invoice creation and payment;
+- `BalanceService`: balance queries and subscriptions;
+- `RecoveryService`: recovery status and progress;
+- `WalletService`: on-chain wallet operations.

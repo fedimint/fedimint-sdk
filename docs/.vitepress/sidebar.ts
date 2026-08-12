@@ -45,60 +45,28 @@ const FedimintWalletSidebar = [
     base: '/core/FedimintWallet/',
     items: [
       {
-        text: 'new FedimintWallet()',
-        link: 'constructor',
+        text: 'WalletDirector',
+        items: [
+          { text: 'Creating a wallet', link: 'createWallet' },
+          { text: 'setLogLevel()', link: 'setLogLevel' },
+          { text: 'parseInviteCode()', link: 'parseInviteCode' },
+          { text: 'parseBolt11Invoice()', link: 'parseBolt11Invoice' },
+          { text: 'previewFederation()', link: 'previewFederation' },
+          { text: 'parseOobNotes()', link: 'parseOobNotes' },
+          { text: 'generateMnemonic()', link: 'generateMnemonic' },
+          { text: 'getMnemonic()', link: 'getMnemonic' },
+          { text: 'setMnemonic()', link: 'setMnemonic' },
+          { text: 'hasMnemonicSet()', link: 'hasMnemonicSet' },
+        ],
       },
       {
-        text: 'setLogLevel()',
-        link: 'setLogLevel',
-      },
-      {
-        text: 'parseInviteCode()',
-        link: 'parseInviteCode',
-      },
-      {
-        text: 'parseBolt11Invoice()',
-        link: 'parseBolt11Invoice',
-      },
-      {
-        text: 'joinFederation()',
-        link: 'joinFederation',
-      },
-      {
-        text: 'isOpen()',
-        link: 'isOpen',
-      },
-      {
-        text: 'open()',
-        link: 'open',
-      },
-      {
-        text: 'cleanup()',
-        link: 'cleanup',
-      },
-      {
-        text: 'previewFederation()',
-        link: 'previewFederation',
-      },
-      {
-        text: 'parseOobNotes()',
-        link: 'parseOobNotes',
-      },
-      {
-        text: 'generateMnemonic()',
-        link: 'generateMnemonic',
-      },
-      {
-        text: 'getMnemonic()',
-        link: 'getMnemonic',
-      },
-      {
-        text: 'setMnemonic()',
-        link: 'setMnemonic',
-      },
-      {
-        text: 'hasMnemonicSet()',
-        link: 'hasMnemonicSet',
+        text: 'FedimintWallet',
+        items: [
+          { text: 'open()', link: 'open' },
+          { text: 'joinFederation()', link: 'joinFederation' },
+          { text: 'isOpen()', link: 'isOpen' },
+          { text: 'cleanup()', link: 'cleanup' },
+        ],
       },
       {
         text: 'BalanceService',

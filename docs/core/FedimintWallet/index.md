@@ -1,269 +1,77 @@
-# FedimintWallet Overview
+# Wallet API overview
 
-The `FedimintWallet` class serves as the main entry point for the library. It orchestrates the various services and the TransportClient.
+`WalletDirector` is the public entry point for configuring the platform transport
+and creating wallets. A `FedimintWallet` is the wallet operations facade returned
+by `WalletDirector.createWallet()`; application code should not construct it
+directly.
 
 ::: info
-Check out the [Getting Started](../getting-started) guide to get started using the Fedimint Sdk.
+See [Getting Started](../getting-started) for the complete browser setup.
 :::
 
-<img src="/architecture-diagram.svg" alt="Architecture" />
+## Creating a wallet
 
-## Properties
+```ts twoslash
+import { WalletDirector } from '@fedimint/core'
+import { WasmWorkerTransport } from '@fedimint/transport-web'
 
-### balance
+const director = new WalletDirector(new WasmWorkerTransport())
+const wallet = await director.createWallet()
+```
 
-> **balance**: `BalanceService`
+The returned wallet is not open yet. Use one of the following lifecycle paths:
 
-#### Defined in
+```ts twoslash
+import { WalletDirector } from '@fedimint/core'
+import { WasmWorkerTransport } from '@fedimint/transport-web'
 
-[FedimintWallet.ts:18](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L18)
+const director = new WalletDirector(new WasmWorkerTransport())
+const wallet = await director.createWallet()
 
----
+// Open client state that already exists.
+await wallet.open()
 
-### federation
+// Or, on an unopened wallet, join a federation.
+// await wallet.joinFederation('fed11...')
+```
 
-> **federation**: `FederationService`
+See [Creating a FedimintWallet](createWallet) for the creation and initialization
+contract.
 
-#### Defined in
+## Responsibilities
 
-[FedimintWallet.ts:21](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L21)
+### WalletDirector
 
----
+The director owns the `TransportClient` and its initialization. It is also the
+home for operations that do not require an open wallet, including:
 
-### lightning
+- configuring logging;
+- previewing a federation;
+- parsing invite codes, Lightning invoices, and OOB notes;
+- generating, reading, and setting the mnemonic;
+- creating `FedimintWallet` instances.
 
-> **lightning**: `LightningService`
+### FedimintWallet
 
-#### Defined in
+The wallet represents an individual client lifecycle. It provides `open()`,
+`joinFederation()`, `isOpen()`, and access to these services:
 
-[FedimintWallet.ts:20](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L20)
+- `balance`: balance queries and subscriptions;
+- `mint`: ecash redemption and spending;
+- `lightning`: Lightning invoice creation and payment;
+- `federation`: federation configuration and operation history;
+- `recovery`: recovery status and progress;
+- `wallet`: on-chain wallet operations.
 
----
+When `cleanup()` is called, discard that wallet instance. Do not construct a
+replacement with `new FedimintWallet()`; obtain one through a `WalletDirector`.
 
-### mint
-
-> **mint**: `MintService`
-
-#### Defined in
-
-[FedimintWallet.ts:19](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L19)
-
----
-
-### recovery
-
-> **recovery**: `RecoveryService`
-
-#### Defined in
-
-[FedimintWallet.ts:22](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L22)
-
-## Methods
-
-### cleanup()
-
-> **cleanup**(): `Promise`\<`void`\>
-
-This should ONLY be called when UNLOADING the wallet client.
-After this call, the FedimintWallet instance should be discarded.
-
-#### Returns
-
-`Promise`\<`void`\>
-
-#### Defined in
-
-[FedimintWallet.ts:134](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L134)
-
----
-
-### initialize()
-
-> **initialize**(): `Promise`\<`void`\>
-
-#### Returns
-
-`Promise`\<`void`\>
-
-#### Defined in
-
-[FedimintWallet.ts:85](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L85)
-
----
-
-### isOpen()
-
-> **isOpen**(): `boolean`
-
-#### Returns
-
-`boolean`
-
-#### Defined in
-
-[FedimintWallet.ts:140](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L140)
-
----
-
-### parseInviteCode()
-
-> **parseInviteCode**(`inviteCode`): `Promise`\<`ParsedInviteCode`\>
-
-Parses an invite code without requiring an open wallet or joined federation.
-
-#### Parameters
-
-• **inviteCode**: `string`
-
-#### Returns
-
-`Promise`\<`ParsedInviteCode`\>
-
-The parsed invite code data containing `federation_id` and `url`.
-
-#### Defined in
-
-[WalletDirector.ts:109](https://github.com/fedimint/fedimint-sdk/tree/main/packages/core/src/WalletDirector.ts#L109)
-
----
-
-### parseBolt11Invoice()
-
-> **parseBolt11Invoice**(`invoiceStr`): `Promise`\<`ParsedBolt11Invoice`\>
-
-Parses a BOLT11 invoice without requiring an open wallet or joined federation.
-
-#### Parameters
-
-• **invoiceStr**: `string`
-
-#### Returns
-
-`Promise`\<`ParsedBolt11Invoice`\>
-
-The parsed invoice data where `amount` is in satoshis.
-
-#### Defined in
-
-[WalletDirector.ts:137](https://github.com/fedimint/fedimint-sdk/tree/main/packages/core/src/WalletDirector.ts#L137)
-
----
-
-### joinFederation()
-
-> **joinFederation**(`inviteCode`, `clientName`): `Promise`\<`void`\>
-
-#### Parameters
-
-• **inviteCode**: `string`
-
-• **clientName**: `string` = `DEFAULT_CLIENT_NAME`
-
-#### Returns
-
-`Promise`\<`void`\>
-
-#### Defined in
-
-[FedimintWallet.ts:110](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L110)
-
----
-
-### previewFederation(inviteCode)
-
-> **previewFederation**(`inviteCode`): `Promise`\<`PreviewFederation`\>
-
-Retrieves federation details before joining a Federation. This allows you to inspect the federation's configuration, endpoints, modules, and metadata.
-
-#### Parameters
-
-• **inviteCode**: `string`
-
-#### Returns
-
-`Promise`\<`PreviewFederation`\>
-
-Federation preview information containing:
-
-- `config`: Detailed JSON configuration including global settings, API endpoints, consensus version, and module configurations
-- `federation_id`: The unique federation identifier
-
-#### Defined in
-
-[WalletDirector.ts:137](https://github.com/fedimint/fedimint-sdk/tree/main/packages/core/src/WalletDirector.ts#L71)
-
----
-
-### parseOobNotes(notes)
-
-> **parseOobNotes**(`notes`): `Promise`\<`ParsedNoteDetails`\>
-
-Parses OOB notes and retrieves their details. It allows you to inspect the contents of OOB notes before redeeming them.
-
-#### Parameters
-
-• **notes**: `string`
-
-#### Returns
-
-`Promise`\<`ParsedNoteDetails`\>
-
-The parsed note details containing `total_amount`, `federation_id_prefix`, `federation_id`, `invite_code`, and `note_counts`.
-
-#### Defined in
-
-[WalletDirector.ts:205](https://github.com/fedimint/fedimint-sdk/tree/main/packages/core/src/WalletDirector.ts#L205)
-
----
-
-### open()
-
-> **open**(`clientName`): `Promise`\<`any`\>
-
-#### Parameters
-
-• **clientName**: `string` = `DEFAULT_CLIENT_NAME`
-
-#### Returns
-
-`Promise`\<`any`\>
-
-#### Defined in
-
-[FedimintWallet.ts:96](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L96)
-
----
-
-### setLogLevel()
-
-> **setLogLevel**(`level`): `void`
-
-Sets the log level for the library.
-
-#### Parameters
-
-• **level**: `"debug"` \| `"info"` \| `"warn"` \| `"error"` \| `"none"`
-
-The desired log level ('DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE').
-
-#### Returns
-
-`void`
-
-#### Defined in
-
-[FedimintWallet.ts:148](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L148)
-
----
-
-### waitForOpen()
-
-> **waitForOpen**(): `Promise`\<`null` \| `void`\>
-
-#### Returns
-
-`Promise`\<`null` \| `void`\>
-
-#### Defined in
-
-[FedimintWallet.ts:91](https://github.com/fedimint/fedimint-sdk/blob/451b02527305a23fec3a269d39bde9a3ec377df2/packages/core/src/FedimintWallet.ts#L91)
+```mermaid
+flowchart LR
+  app["Application"] --> director["WalletDirector"]
+  director -->|"owns"| client["TransportClient"]
+  director -->|"createWallet()"| wallet["FedimintWallet"]
+  wallet --> services["Wallet services"]
+  services -->|"use shared client"| client
+  client --> transport["Platform transport"]
+```
