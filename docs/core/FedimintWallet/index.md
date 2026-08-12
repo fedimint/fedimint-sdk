@@ -66,12 +66,7 @@ The wallet represents an individual client lifecycle. It provides `open()`,
 When `cleanup()` is called, discard that wallet instance. Do not construct a
 replacement with `new FedimintWallet()`; obtain one through a `WalletDirector`.
 
-```mermaid
-flowchart LR
-  app["Application"] --> director["WalletDirector"]
-  director -->|"owns"| client["TransportClient"]
-  director -->|"createWallet()"| wallet["FedimintWallet"]
-  wallet --> services["Wallet services"]
-  services -->|"use shared client"| client
-  client --> transport["Platform transport"]
-```
+<img
+  src="/architecture-diagram.svg"
+  alt="WalletDirector owns the TransportClient and creates FedimintWallet instances, which expose wallet services"
+/>

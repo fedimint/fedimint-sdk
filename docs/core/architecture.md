@@ -4,25 +4,10 @@ The Fedimint SDK separates platform and transport lifecycle concerns from wallet
 operations. Application code starts with a `WalletDirector`, then obtains a
 `FedimintWallet` through `createWallet()`.
 
-```mermaid
-flowchart TD
-  director["WalletDirector"] -->|"owns"| client["TransportClient"]
-  director -->|"creates"| wallet["FedimintWallet"]
-
-  wallet -->|"uses"| client
-  wallet -->|"provides"| services["Services"]
-
-  services --> balance["BalanceService"]
-  services --> federation["FederationService"]
-  services --> lightning["LightningService"]
-  services --> mint["MintService"]
-  services --> recovery["RecoveryService"]
-  services --> walletService["WalletService"]
-
-  services -->|"use"| client
-  client -->|"wraps"| transport["Platform Transport"]
-  client -->|"owns"| logger["Logger"]
-```
+<img
+  src="/architecture-diagram.svg"
+  alt="WalletDirector owns the TransportClient and creates FedimintWallet instances, which expose wallet services"
+/>
 
 ## WalletDirector
 
