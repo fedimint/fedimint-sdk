@@ -27,7 +27,7 @@
     "@react-native/typescript-config": "0.83.1",
     "@types/react": ">=19.2.14",
     "@types/react-native": "^0.73.0",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=18"
