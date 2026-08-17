@@ -94,10 +94,9 @@
           ++ (map (t: fenixPkgs.targets.${t}.stable.rust-std) targets)
         );
 
+        # Only the ABIs we ship (see ubrn.config.yaml's android targets).
         androidToolchain = mkToolchain [
           "aarch64-linux-android"
-          "armv7-linux-androideabi"
-          "i686-linux-android"
           "x86_64-linux-android"
         ];
         
@@ -177,8 +176,6 @@
             
             export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
             export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_i686_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
 
             # Force bindgen to use NDK clang instead of any Homebrew/system LLVM
             # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
