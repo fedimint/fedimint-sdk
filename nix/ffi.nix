@@ -18,8 +18,11 @@ let
       android_sdk.accept_license = true;
     };
   };
-  lib = pkgs.lib;
-  stdenv = pkgs.stdenv;
+  # lib from the flake output and isDarwin from the system string, so that
+  # computing the returned attr *names* (which every `nix build .#wasmBundle`
+  # does through the merge in flake.nix) never forces the pkgs import above.
+  lib = nixpkgs.lib;
+  isDarwin = lib.hasSuffix "-darwin" system;
 
   # NOTE: at the pinned flakebox rev, mkStdTargets only uses this argument's
   # presence to gate the android-* target attrs — the cross-compile env it
@@ -68,7 +71,7 @@ let
         "aarch64-android"
         "x86_64-android"
       ]
-      ++ lib.optionals stdenv.isDarwin [
+      ++ lib.optionals isDarwin [
         "aarch64-ios"
         "aarch64-ios-sim"
         "x86_64-ios"
@@ -78,21 +81,16 @@ let
 
   craneLib = toolchain.craneLib;
 
-  # Keep .c, .toml (uniffi.toml, uniffi-android.toml), and .udl alongside
-  # Rust sources. craneLib.cleanCargoSource on its own would strip these.
+  # Keep sdallocx_stub.c (compiled by build.rs) alongside the Rust sources
+  # craneLib.filterCargoSources keeps. The uniffi*.toml configs are
+  # deliberately NOT included: these builds only run `cargo build --lib`
+  # (bindgen runs later via ubrn, outside Nix), so including bindgen-only
+  # config would needlessly invalidate every cross-compile on edits to it.
   src =
     let
       crateDir = ../fedimint-client-uniffi;
-      keepExtras =
-        path: _type:
-        let
-          base = baseNameOf path;
-        in
-        base == "sdallocx_stub.c"
-        || base == "uniffi.toml"
-        || base == "uniffi-android.toml"
-        || lib.hasSuffix ".udl" path;
-      filter = path: type: (keepExtras path type) || (craneLib.filterCargoSources path type);
+      filter =
+        path: type: baseNameOf path == "sdallocx_stub.c" || craneLib.filterCargoSources path type;
     in
     lib.cleanSourceWith {
       src = crateDir;
@@ -133,7 +131,7 @@ let
     in
     craneLib.buildPackage (
       target.args
-      // (lib.optionalAttrs stdenv.isDarwin {
+      // (lib.optionalAttrs isDarwin {
         # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to
         # the cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what
         # makes `cc -liconv` resolve in the host build-script link
@@ -300,7 +298,7 @@ in
   androidBundle = androidJniLibs;
 }
 // lib.mapAttrs' (t: drv: lib.nameValuePair "android-${t}" drv) androidPerTargetBuilds
-// lib.optionalAttrs stdenv.isDarwin (
+// lib.optionalAttrs isDarwin (
   {
     iosBundle = iosBundle;
   }
