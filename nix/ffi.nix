@@ -117,7 +117,11 @@ let
     ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
   '';
 
-  # Build the crate for a single (rustTarget, targetKey) pair.
+  # Build the crate for a single (rustTarget, targetKey) pair, returning
+  # `{ deps, lib }`: the crane dependency-only derivation and the final
+  # library build on top of it. Exposing deps as its own package lets CI
+  # push it to Cachix, so a source edit only recompiles the crate itself
+  # instead of the whole cross-compiled dependency tree.
   # `targetKey` is the flakebox-stdTargets key (e.g. `aarch64-ios`),
   # `rustTarget` is the Cargo triple (e.g. `aarch64-apple-ios`).
   buildOne =
@@ -128,81 +132,85 @@ let
     }:
     let
       target = stdTargets.${targetKey} { };
+      commonArgs =
+        target.args
+        // (lib.optionalAttrs isDarwin {
+          # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to
+          # the cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what
+          # makes `cc -liconv` resolve in the host build-script link
+          # step on macOS 14+ (where iconv lives only in the Apple SDK).
+          # iOS cross-compile linker invocations also see this path but
+          # harmlessly skip the wrong-arch Mach-O lib (with a warning)
+          # and resolve via the SDK paths supplied by mkIOSTarget.
+          buildInputs = [ pkgs.libiconv ];
+        })
+        // (lib.optionalAttrs isIos {
+          # iOS cross-compile reads /Applications/Xcode.app and /usr/bin
+          # via the xcode-wrapper symlinks; this requires relaxed
+          # sandboxing.
+          __noChroot = true;
+          IPHONEOS_DEPLOYMENT_TARGET = "15.0";
+          MACOSX_DEPLOYMENT_TARGET = "14.0";
+
+          # nixpkgs' darwin stdenv sets SDKROOT to its bundled
+          # apple-sdk-11 (a macOS SDK) and points DEVELOPER_DIR into
+          # the Nix store. When cc-rs's build script runs
+          # `xcrun --sdk iphoneos --show-sdk-path` to find the
+          # iPhoneOS SDK, those Nix-store paths confuse xcrun and it
+          # exits 255. Reset to the real /Applications/Xcode.app so
+          # xcrun resolves SDKs via xcode-select.
+          #
+          # Mirrors the iosShellHook in flake.nix + fedi's xcode dev shell.
+          preBuild = ''
+            unset SDKROOT
+            unset NIX_CFLAGS_COMPILE
+            unset NIX_LDFLAGS
+            # APPEND (not prepend) /usr/bin so xcrun resolves but
+            # bare `tar` still picks up Nix's GNU tar — crane's deps
+            # archive uses GNU-only `--sort=name` and would fail
+            # against macOS's BSD tar.
+            export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
+            export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+            # Nix's cc-wrapper hardcodes --sysroot to a Nix-store
+            # SDK that lacks libSystem on modern macOS runners.
+            # Bypass it for host builds by pointing Cargo's host
+            # linker to the system clang, which resolves libSystem
+            # natively via xcrun.
+            export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+          '';
+        })
+        // {
+          inherit src;
+          pname = "fedimint-client-uniffi-${rustTarget}";
+          version = "0.1.0";
+          cargoExtraArgs = "--locked --target ${rustTarget} --lib";
+          CARGO_BUILD_TARGET = rustTarget;
+          doCheck = false;
+          strictDeps = true;
+          # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go.
+          # python3 is needed by some ring/aws-lc generation scripts.
+          # gnutar overrides macOS's BSD tar so crane's depsArchive
+          # (`tar --sort=name`) works.
+          nativeBuildInputs =
+            (target.args.nativeBuildInputs or [ ])
+            ++ [
+              pkgs.gnutar
+              pkgs.cmake
+              pkgs.pkg-config
+              pkgs.perl
+              pkgs.python3
+              pkgs.go
+            ]
+            ++ lib.optionals isIos [ xcode-wrapper ];
+      };
+      deps = craneLib.buildDepsOnly commonArgs;
     in
-    craneLib.buildPackage (
-      target.args
-      // (lib.optionalAttrs isDarwin {
-        # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to
-        # the cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what
-        # makes `cc -liconv` resolve in the host build-script link
-        # step on macOS 14+ (where iconv lives only in the Apple SDK).
-        # iOS cross-compile linker invocations also see this path but
-        # harmlessly skip the wrong-arch Mach-O lib (with a warning)
-        # and resolve via the SDK paths supplied by mkIOSTarget.
-        buildInputs = [ pkgs.libiconv ];
-      })
-      // (lib.optionalAttrs isIos {
-        # iOS cross-compile reads /Applications/Xcode.app and /usr/bin
-        # via the xcode-wrapper symlinks; this requires relaxed
-        # sandboxing.
-        __noChroot = true;
-        IPHONEOS_DEPLOYMENT_TARGET = "15.0";
-        MACOSX_DEPLOYMENT_TARGET = "14.0";
-
-        # nixpkgs' darwin stdenv sets SDKROOT to its bundled
-        # apple-sdk-11 (a macOS SDK) and points DEVELOPER_DIR into
-        # the Nix store. When cc-rs's build script runs
-        # `xcrun --sdk iphoneos --show-sdk-path` to find the
-        # iPhoneOS SDK, those Nix-store paths confuse xcrun and it
-        # exits 255. Reset to the real /Applications/Xcode.app so
-        # xcrun resolves SDKs via xcode-select.
-        #
-        # Mirrors the iosShellHook in flake.nix + fedi's xcode dev shell.
-        preBuild = ''
-          unset SDKROOT
-          unset NIX_CFLAGS_COMPILE
-          unset NIX_LDFLAGS
-          # APPEND (not prepend) /usr/bin so xcrun resolves but
-          # bare `tar` still picks up Nix's GNU tar — crane's deps
-          # archive uses GNU-only `--sort=name` and would fail
-          # against macOS's BSD tar.
-          export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
-          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-
-          # Nix's cc-wrapper hardcodes --sysroot to a Nix-store
-          # SDK that lacks libSystem on modern macOS runners.
-          # Bypass it for host builds by pointing Cargo's host
-          # linker to the system clang, which resolves libSystem
-          # natively via xcrun.
-          export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
-          export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
-        '';
-      })
-      // {
-        inherit src;
-        pname = "fedimint-client-uniffi-${rustTarget}";
-        version = "0.1.0";
-        cargoExtraArgs = "--locked --target ${rustTarget} --lib";
-        CARGO_BUILD_TARGET = rustTarget;
-        doCheck = false;
-        strictDeps = true;
-        # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go.
-        # python3 is needed by some ring/aws-lc generation scripts.
-        # gnutar overrides macOS's BSD tar so crane's depsArchive
-        # (`tar --sort=name`) works.
-        nativeBuildInputs =
-          (target.args.nativeBuildInputs or [ ])
-          ++ [
-            pkgs.gnutar
-            pkgs.cmake
-            pkgs.pkg-config
-            pkgs.perl
-            pkgs.python3
-            pkgs.go
-          ]
-          ++ lib.optionals isIos [ xcode-wrapper ];
-      }
-    );
+    {
+      inherit deps;
+      lib = craneLib.buildPackage (commonArgs // { cargoArtifacts = deps; });
+    };
 
   ##############
   # Android
@@ -237,7 +245,7 @@ let
     mkdir -p $out/jniLibs
     ${lib.concatMapStringsSep "\n" (t: ''
       mkdir -p $out/jniLibs/${t.abi}
-      cp ${androidPerTargetBuilds.${t.rustTarget}}/lib/libfedimint_client_uniffi.so \
+      cp ${androidPerTargetBuilds.${t.rustTarget}.lib}/lib/libfedimint_client_uniffi.so \
          $out/jniLibs/${t.abi}/
     '') androidShipped}
   '';
@@ -284,23 +292,25 @@ let
       ''
         export PATH=/usr/bin:$PATH
         mkdir -p $out/ios-arm64
-        cp ${iosPerTargetBuilds."aarch64-apple-ios"}/lib/libfedimint_client_uniffi.a \
+        cp ${iosPerTargetBuilds."aarch64-apple-ios".lib}/lib/libfedimint_client_uniffi.a \
            $out/ios-arm64/
 
         mkdir -p $out/ios-arm64_x86_64-simulator
         /usr/bin/lipo -create \
-          ${iosPerTargetBuilds."aarch64-apple-ios-sim"}/lib/libfedimint_client_uniffi.a \
-          ${iosPerTargetBuilds."x86_64-apple-ios"}/lib/libfedimint_client_uniffi.a \
+          ${iosPerTargetBuilds."aarch64-apple-ios-sim".lib}/lib/libfedimint_client_uniffi.a \
+          ${iosPerTargetBuilds."x86_64-apple-ios".lib}/lib/libfedimint_client_uniffi.a \
           -output $out/ios-arm64_x86_64-simulator/libfedimint_client_uniffi.a
       '';
 in
 {
   androidBundle = androidJniLibs;
 }
-// lib.mapAttrs' (t: drv: lib.nameValuePair "android-${t}" drv) androidPerTargetBuilds
+// lib.mapAttrs' (t: b: lib.nameValuePair "android-${t}" b.lib) androidPerTargetBuilds
+// lib.mapAttrs' (t: b: lib.nameValuePair "android-${t}-deps" b.deps) androidPerTargetBuilds
 // lib.optionalAttrs isDarwin (
   {
     iosBundle = iosBundle;
   }
-  // lib.mapAttrs' (t: drv: lib.nameValuePair "ios-${t}" drv) iosPerTargetBuilds
+  // lib.mapAttrs' (t: b: lib.nameValuePair "ios-${t}" b.lib) iosPerTargetBuilds
+  // lib.mapAttrs' (t: b: lib.nameValuePair "ios-${t}-deps" b.deps) iosPerTargetBuilds
 )

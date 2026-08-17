@@ -39,7 +39,7 @@ runs:
       run: |
         installables=()
         for target in ${IOS_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios}; do
-          installables+=(".#ios-$target")
+          installables+=(".#ios-$target" ".#ios-$target-deps")
         done
         nix build --accept-flake-config --no-link --print-out-paths "${installables[@]}" \
           | cachix push fedimint
