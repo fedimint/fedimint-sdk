@@ -1,3 +1,11 @@
+# Android-specific overrides for Kotlin bindings generation. uniffi-bindgen
+# only auto-loads uniffi.toml, so this file has no effect unless a bindgen
+# invocation merges it in explicitly — nothing in this repo does (the
+# react-native bindings generate C++/TypeScript via ubrn, and the Kotlin
+# bindgen flow that concatenated this file with uniffi.toml — the
+# fedimint-sdk-ffi repo's scripts/generate-android-so.sh — has not been
+# ported here). Kept so that flow can be restored without re-deriving these
+# settings.
 [bindings.kotlin]
 android = true
 android_cleaner = true
