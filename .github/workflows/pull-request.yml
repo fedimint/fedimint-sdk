@@ -5,7 +5,7 @@ on:
     paths-ignore:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
-      - 'fedimint-sdk-ffi'
+      - 'fedimint-client-uniffi/**'
   workflow_dispatch:
 
 concurrency:

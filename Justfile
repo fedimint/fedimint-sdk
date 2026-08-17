@@ -1,19 +1,9 @@
 set shell := ["bash", "-c"]
 
-# Ensure the fedimint-sdk-ffi submodule is checked out (Rust crate metadata
-# is read by ubrn even when --no-cargo skips the build).
-clone-ffi:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -d "fedimint-sdk-ffi/fedimint-client-uniffi" ]; then
-        echo "fedimint-sdk-ffi not present; initialising submodule…"
-        git submodule update --init --recursive
-    fi
-
 # Build Android bindings using Nix-cached Rust derivations.
 # `ubrn build android --no-cargo` finds pre-placed .so files in the cargo
 # target dir and skips the cross-compile.
-build-android: clone-ffi
+build-android:
     nix develop --accept-flake-config -c pnpm install --frozen-lockfile
     nix develop --accept-flake-config .#android -c pnpm --filter @fedimint/react-native-bindings run ubrn:nix:android:release
     nix develop --accept-flake-config -c pnpm run build:reactnative
@@ -29,7 +19,7 @@ release-android: build-android
 # derivation use a single thread (`cores = 1`). Heavy native deps
 # (rocksdb, aws-lc-sys) otherwise saturate macos-latest's 7 GB RAM and
 # OOM-kill the linker. Slower wall clock but the run actually finishes.
-build-ios: clone-ffi
+build-ios:
     nix develop --accept-flake-config -c pnpm install --frozen-lockfile
     NIX_CONFIG=$'max-jobs = 1\ncores = 1' nix develop --accept-flake-config .#ios -c pnpm --filter @fedimint/react-native-bindings run ubrn:nix:ios:release
     nix develop --accept-flake-config -c pnpm run build:reactnative
