@@ -6,7 +6,7 @@ license = "MIT"
 authors = ["The Fedimint Developers"]
 description = "fedimint client for uniffi"
 readme = "README.md"
-repository = "https://github.com/fedimint/fedimint"
+repository = "https://github.com/fedimint/fedimint-sdk"
 
 [lib]
 crate-type = ["staticlib", "cdylib", "lib"]
