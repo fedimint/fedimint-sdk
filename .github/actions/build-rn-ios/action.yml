@@ -27,6 +27,23 @@ runs:
         IOS_TARGETS: ${{ inputs.device-only == 'true' && 'aarch64-apple-ios' || '' }}
       run: nix develop --accept-flake-config -c just build-ios
 
+    - name: Push FFI libs to Cachix
+      # Same rationale as the Android action: cachix-action's post-run hook
+      # only pushes newly *built* paths, so already-realized libs never reach
+      # the cache. Push explicitly so local builds can substitute them. The
+      # fallback target list mirrors nix-prebuild.sh's default.
+      shell: bash
+      continue-on-error: true
+      env:
+        IOS_TARGETS: ${{ inputs.device-only == 'true' && 'aarch64-apple-ios' || '' }}
+      run: |
+        installables=()
+        for target in ${IOS_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios}; do
+          installables+=(".#ios-$target")
+        done
+        nix build --accept-flake-config --no-link --print-out-paths "${installables[@]}" \
+          | cachix push fedimint
+
     - name: Compress iOS binaries
       id: compress
       shell: bash

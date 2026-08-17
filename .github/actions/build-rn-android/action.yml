@@ -15,6 +15,19 @@ runs:
       shell: bash
       run: nix develop --accept-flake-config -c just build-android
 
+    - name: Push FFI libs to Cachix
+      # The self-hosted runner keeps a persistent /nix/store, so cachix-action's
+      # post-run hook (which only pushes newly *built* paths) stops pushing once
+      # the store is warm and the cache entries can expire. Push the lib outputs
+      # explicitly so `just build-android` elsewhere substitutes them instead of
+      # cross-compiling the whole dependency tree from source.
+      shell: bash
+      continue-on-error: true
+      run: |
+        nix build --accept-flake-config --no-link --print-out-paths \
+          .#android-aarch64-linux-android .#android-x86_64-linux-android \
+          | cachix push fedimint
+
     - name: Compress Android binaries
       id: compress
       shell: bash
