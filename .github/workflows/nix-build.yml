@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - 'fedimint-client-uniffi/**'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - '.github/workflows/nix-build.yml'
   pull_request:
     paths:
       - 'fedimint-client-uniffi/**'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - '.github/workflows/nix-build.yml'

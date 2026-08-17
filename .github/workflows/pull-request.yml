@@ -6,6 +6,7 @@ on:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
       - 'fedimint-client-uniffi/**'
+      - 'nix/**'
   workflow_dispatch:
 
 concurrency:

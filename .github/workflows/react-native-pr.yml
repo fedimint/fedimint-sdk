@@ -8,6 +8,7 @@ on:
       - 'packages/core/**'
       - 'packages/types/**'
       - 'fedimint-client-uniffi/**'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'Justfile'
