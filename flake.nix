@@ -18,7 +18,9 @@
       url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     };
     fenix = {
-      url = "github:nix-community/fenix";
+      # Pinned like the inputs below: fenix moves nightly, and every bump
+      # invalidates all toolchain and cross-compile derivations.
+      url = "github:nix-community/fenix/298b12d701ef0d12c0f2e4858d4208bee24d14e5";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flakebox = {
