@@ -56,14 +56,14 @@
             android_sdk.accept_license = true;
           };
         };
+        # No emulator system images: nothing in this repo runs an emulator, and
+        # each ABI's image adds gigabytes to the dev shell closure.
         androidSdk = pkgs.androidenv.composeAndroidPackages {
           includeNDK = true;
           toolsVersion = "26.1.1";
           ndkVersions = ["27.1.12297006"];
-          includeSystemImages = true;
           buildToolsVersions = ["36.0.0"];
           platformVersions = ["36"];
-          abiVersions = ["arm64-v8a" "x86_64"];
           cmdLineToolsVersion = "13.0";
         };
         
@@ -127,9 +127,10 @@
             pkgs.just
           ];
 
+          # Used by the android/ios shells; referencing playwright-driver here
+          # would pull the browser bundles (>1 GiB) into their closures, so
+          # only the wasm shells (via wasmShellHook) set up Playwright.
           commonShellHook = ''
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
 
