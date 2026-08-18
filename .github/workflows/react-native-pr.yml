@@ -19,6 +19,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-transport:
+    name: Test RN Transport
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-deps
+      - name: Run transport unit tests
+        run: pnpm test:reactnative
+
   build-android:
     name: Build Android
     runs-on: [self-hosted, linux, x64]

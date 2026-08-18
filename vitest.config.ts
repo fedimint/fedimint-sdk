@@ -46,6 +46,28 @@ export default defineConfig({
           testTimeout: 20000,
         },
       },
+      {
+        test: {
+          name: 'react-native',
+          environment: 'node',
+          include: ['packages/react-native/**/*.test.ts'],
+        },
+        resolve: {
+          alias: {
+            // The real bindings module is ubrn-generated and needs a compiled
+            // native library; unit tests run against a stub instead. Types are
+            // aliased to source so no workspace build is needed beforehand.
+            '@fedimint/react-native-bindings': new URL(
+              './packages/react-native/src/__tests__/rpc-handler-stub.ts',
+              import.meta.url,
+            ).pathname,
+            '@fedimint/types': new URL(
+              './packages/types/src/index.ts',
+              import.meta.url,
+            ).pathname,
+          },
+        },
+      },
     ],
   },
   optimizeDeps: {
