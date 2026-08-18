@@ -5,6 +5,8 @@ on:
     paths:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
+      - 'packages/core/**'
+      - 'packages/types/**'
       - 'fedimint-sdk-ffi'
       - 'flake.nix'
       - 'flake.lock'

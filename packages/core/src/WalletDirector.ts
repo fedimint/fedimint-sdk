@@ -6,8 +6,38 @@ import {
   ParsedBolt11Invoice,
   PreviewFederation,
   ParsedNoteDetails,
+  JSONValue,
 } from '@fedimint/types'
 import { FedimintWallet } from './FedimintWallet'
+
+type RpcParsedNoteDetails = Omit<ParsedNoteDetails, 'federation_id_prefix'> & {
+  federation_id_prefix: JSONValue
+}
+
+function isByte(value: JSONValue): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 255
+  )
+}
+
+function isFourByteArray(
+  value: JSONValue,
+): value is [number, number, number, number] {
+  return Array.isArray(value) && value.length === 4 && value.every(isByte)
+}
+
+function federationIdPrefixToHex(prefix: JSONValue): string {
+  if (!isFourByteArray(prefix)) {
+    throw new Error(
+      'Invalid parse_oob_notes response: federation_id_prefix must contain four bytes',
+    )
+  }
+
+  return prefix.map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
 
 export class WalletDirector {
   // Protected to allow for TestWalletDirector to access the client
@@ -209,11 +239,16 @@ export class WalletDirector {
    */
   async parseOobNotes(notes: string): Promise<ParsedNoteDetails> {
     await this._client.initialize()
-    const response = await this._client.sendSingleMessage<ParsedNoteDetails>(
+    const response = await this._client.sendSingleMessage<RpcParsedNoteDetails>(
       'parse_oob_notes',
       { oob_notes: notes },
     )
-    return response
+    return {
+      ...response,
+      federation_id_prefix: federationIdPrefixToHex(
+        response.federation_id_prefix,
+      ),
+    }
   }
 
   /**

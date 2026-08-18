@@ -73,6 +73,12 @@ fedimint-sdk
 - [`webpack-app`](../examples/webpack-app/README.md): Demonstrates configuring webpack for Fedimint applications.
 - [`bare-js`](../examples/bare-js/README.md): Minimal usage of `@fedimint/core` without a bundler.
 
+### Developer Calls
+
+- [SDK Developer Calls](https://meet.jit.si/fedimintdevcall): We have developer calls every Wednesday at 4PM UTC to
+  review PRs and discuss current development priorities. As a new developer, this is a great place to find good first
+  issues and mentorship from the core team on how to get started contributing.
+
 ### Credit
 
 Used the [wagmi](https://github.com/wevm/wagmi) library as a reference for the repo's structure.

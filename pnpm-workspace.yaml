@@ -2,3 +2,13 @@ packages:
   - 'packages/*'
   - 'examples/*'
   - 'docs'
+
+allowBuilds:
+  esbuild: true
+  secp256k1: true
+  sharp: true
+  simple-git-hooks: true
+  vue-demi: true
+
+overrides:
+  'dom-serializer@2.0.0>entities': '4.4.0'
