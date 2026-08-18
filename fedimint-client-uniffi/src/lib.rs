@@ -111,3 +111,125 @@ async fn create_database(path: &str) -> anyhow::Result<Database> {
 
     Ok(Database::new(db, Default::default()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// The standard BIP-39 English test vector.
+    const TEST_MNEMONIC: [&str; 12] = [
+        "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
+        "abandon", "abandon", "abandon", "about",
+    ];
+
+    struct ChannelCallback(mpsc::Sender<String>);
+
+    impl RpcCallback for ChannelCallback {
+        fn on_response(&self, response_json: String) {
+            self.0.send(response_json).expect("test receiver dropped");
+        }
+    }
+
+    fn new_handler(dir: &tempfile::TempDir) -> Arc<RpcHandler> {
+        RpcHandler::new(dir.path().display().to_string()).expect("failed to create handler")
+    }
+
+    /// Sends `request` and collects the JSON responses up to and including the
+    /// terminating `end` message.
+    fn rpc_collect(handler: &RpcHandler, request: Value) -> Vec<Value> {
+        let (tx, rx) = mpsc::channel();
+        handler
+            .rpc(request.to_string(), Box::new(ChannelCallback(tx)))
+            .expect("request was rejected");
+
+        let mut responses = Vec::new();
+        loop {
+            let json = rx.recv_timeout(RESPONSE_TIMEOUT).expect("no response");
+            let response: Value = serde_json::from_str(&json).expect("invalid response JSON");
+            let is_end = response["type"] == "end";
+            responses.push(response);
+            if is_end {
+                return responses;
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_request_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = new_handler(&dir);
+        let (tx, _rx) = mpsc::channel();
+
+        let result = handler.rpc("not json".to_owned(), Box::new(ChannelCallback(tx)));
+
+        assert!(matches!(result, Err(FedimintError::InvalidRequest { .. })));
+    }
+
+    #[test]
+    fn fails_on_unusable_db_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("occupied");
+        std::fs::write(&file, b"not a directory").unwrap();
+
+        let result = RpcHandler::new(file.display().to_string());
+
+        assert!(matches!(result, Err(FedimintError::DatabaseError { .. })));
+    }
+
+    #[test]
+    fn mnemonic_round_trips_through_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = new_handler(&dir);
+
+        let responses = rpc_collect(
+            &handler,
+            json!({ "request_id": 1, "type": "has_mnemonic_set" }),
+        );
+        assert_eq!(
+            responses,
+            vec![
+                json!({ "request_id": 1, "type": "data", "data": false }),
+                json!({ "request_id": 1, "type": "end" }),
+            ]
+        );
+
+        let responses = rpc_collect(
+            &handler,
+            json!({ "request_id": 2, "type": "set_mnemonic", "words": TEST_MNEMONIC }),
+        );
+        assert_eq!(
+            responses[0]["type"], "data",
+            "unexpected response: {responses:?}"
+        );
+
+        let responses = rpc_collect(&handler, json!({ "request_id": 3, "type": "get_mnemonic" }));
+        assert_eq!(responses[0]["data"]["mnemonic"], json!(TEST_MNEMONIC));
+
+        let responses = rpc_collect(
+            &handler,
+            json!({ "request_id": 4, "type": "has_mnemonic_set" }),
+        );
+        assert_eq!(responses[0]["data"], json!(true));
+    }
+
+    #[test]
+    fn reports_errors_as_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = new_handler(&dir);
+
+        let responses = rpc_collect(
+            &handler,
+            json!({ "request_id": 1, "type": "parse_invite_code", "invite_code": "garbage" }),
+        );
+
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "end");
+    }
+}
