@@ -47,11 +47,17 @@ export class WalletDirector {
   /**
    * Creates a new instance of WalletDirector.
    *
-   * @param {Transport} [transport] - Optional worker client instance. Provide your
-   *                         own to use a custom transport (e.g. React Native).
+   * The director is the public entry point for configuring a platform transport
+   * and creating {@link FedimintWallet} instances.
    *
-   * @param {boolean} lazy - If true, delays Web Worker and WebAssembly initialization
-   *                         until needed. Default is false.
+   * @param transport - Required platform transport, such as `WasmWorkerTransport`
+   * for browsers. Platform packages may provide a specialized director that
+   * configures this transport for you.
+   * @param dbPath - Optional platform-specific database path.
+   * @param lazy - If true, skips constructor-time transport initialization. When
+   * using a custom `dbPath`, call `await director.initialize(dbPath)` before
+   * {@link WalletDirector.createWallet | createWallet} or any other operation
+   * that initializes the transport. Default is false.
    */
   constructor(transport: Transport, dbPath?: string, lazy: boolean = false) {
     this.dbPath = dbPath
@@ -72,6 +78,19 @@ export class WalletDirector {
   }
 
   // TODO: Make this stateful... handle listing/joining/opening/closing wallets at this level
+  /**
+   * Creates a new wallet using this director's transport client.
+   *
+   * This is the supported way for application code to obtain a
+   * {@link FedimintWallet}. The method waits for transport initialization before
+   * returning an unopened wallet. Call `wallet.open()` to use existing client
+   * state or `wallet.joinFederation()` to join a federation.
+   *
+   * For a lazy director that requires a custom database path, call
+   * `director.initialize(dbPath)` before calling this method.
+   *
+   * @returns A newly created, unopened wallet.
+   */
   async createWallet() {
     await this._client.initialize()
     return new FedimintWallet(this._client)

@@ -45,8 +45,8 @@ const FedimintWalletSidebar = [
     base: '/core/FedimintWallet/',
     items: [
       {
-        text: 'new FedimintWallet()',
-        link: 'constructor',
+        text: 'Creating a wallet',
+        link: 'createWallet',
       },
       {
         text: 'setLogLevel()',
