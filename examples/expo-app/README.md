@@ -14,21 +14,21 @@ You must also build the local monorepo packages first, as this example depends o
 
 ## Getting Started
 
-From the root of the monorepo, you must first initialize the Rust FFI submodules. This pulls down the core Fedimint Rust code needed to compile the bindings:
+Because this example depends on the local workspace versions of the Fedimint React Native SDK and its native Rust bindings, you must build them first. This process requires `nix` and `just` (refer to the [SDK contributing guide](../../docs/core/dev/react-native.md)).
 
+From the root of the monorepo, build the native bindings for your target platform:
+
+For Android:
 ```sh
-git submodule update --init --recursive
+just build-android
 ```
 
-Then, ensure all dependencies are installed and the native bindings are built:
-
+For iOS (macOS only):
 ```sh
-pnpm install
-nix develop .#android -c pnpm ubrn:android
-nix develop .#ios -c pnpm ubrn:ios
-pnpm build:reactnative
-pnpm build
+just build-ios
 ```
+
+These commands will automatically clone the required FFI repositories, configure the Nix environment, compile the Rust libraries, and build the TypeScript packages across the workspace.
 
 Then, navigate to this example directory:
 
@@ -38,7 +38,7 @@ cd examples/expo-app
 
 ### Running on iOS
 
-First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install *after* the `pnpm build` step at the monorepo root.
+First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install *after* the `just build-ios` step at the monorepo root.
 
 ```sh
 cd ios
