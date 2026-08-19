@@ -46,7 +46,7 @@
     "@types/node": "^22.19.11",
     "expo-module-scripts": "^5.0.8",
     "react-native-builder-bob": "^0.40.18",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   },
   "react-native-builder-bob": {
     "source": "src",

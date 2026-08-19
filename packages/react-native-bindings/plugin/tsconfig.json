@@ -2,7 +2,9 @@
   "extends": "expo-module-scripts/tsconfig.plugin",
   "compileOnSave": false,
   "compilerOptions": {
-    "outDir": "build"
+    "outDir": "build",
+    "rootDir": "src",
+    "types": ["node"]
   },
   "include": ["src"]
 }

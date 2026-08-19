@@ -19,6 +19,7 @@ export default defineConfig({
           browser: {
             enabled: true,
             provider: 'playwright',
+            fileParallelism: false,
             ui: false, // no ui for the core library
             api: {
               port: 63315,
