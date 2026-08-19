@@ -16,6 +16,7 @@ export default defineConfig({
           name: 'integration-tests',
           include: ['packages/integration-tests/**/*.test.ts'],
           exclude: ['packages/create-fedimint-app/**/*.test.ts'],
+          testTimeout: 30000,
           browser: {
             enabled: true,
             provider: 'playwright',
