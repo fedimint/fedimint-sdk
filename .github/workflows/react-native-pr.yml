@@ -24,7 +24,7 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: ./.github/actions/setup-nix
@@ -37,7 +37,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: ./.github/actions/setup-nix
