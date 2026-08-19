@@ -1,9 +1,5 @@
 // Web Worker for fedimint-client-wasm to run in the browser
 
-// HACK: Fixes vitest browser runner
-// TODO: remove once https://github.com/vitest-dev/vitest/pull/6569 lands in a release
-globalThis.__vitest_browser_runner__ = { wrapDynamicImport: (foo) => foo() }
-
 // dynamically imported rpcHandler
 /** @type {import('@fedimint/fedimint-client-wasm-bundler').RpcHandler} */
 let rpcHandler

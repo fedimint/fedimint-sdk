@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  - package-ecosystem: 'npm'
+    directories:
+      - '/'
+      - '/docs'
+      - '/packages/*'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: 'chore'
+      include: 'scope'
+    groups:
+      npm:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: 'chore'
+      include: 'scope'
+    groups:
+      github-actions:
+        patterns:
+          - '*'

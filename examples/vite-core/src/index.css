@@ -232,3 +232,10 @@ button[type='submit'] {
   font-size: 0.85rem;
   line-height: 1.4;
 }
+
+.blurred {
+  filter: blur(5px);
+  user-select: none;
+  pointer-events: none;
+  opacity: 0.6;
+}
