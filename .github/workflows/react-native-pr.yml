@@ -29,6 +29,11 @@ jobs:
       - uses: ./.github/actions/install-deps
       - name: Run transport unit tests
         run: pnpm test:reactnative
+      - name: Type-check transport against the stubbed bindings
+        # The package is excluded from the root typecheck because its real
+        # bindings types are ubrn-generated; this config maps them to the
+        # test stub so the type-level contract still gets checked.
+        run: pnpm --filter @fedimint/react-native typecheck:test
 
   build-android:
     name: Build Android

@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 import wasm from 'vite-plugin-wasm'
 import { defineConfig } from 'vitest/config'
 
@@ -58,14 +60,15 @@ export default defineConfig({
             // The real bindings module is ubrn-generated and needs a compiled
             // native library; unit tests run against a stub instead. Types are
             // aliased to source so no workspace build is needed beforehand.
-            '@fedimint/react-native-bindings': new URL(
-              './packages/react-native/src/__tests__/rpc-handler-stub.ts',
-              import.meta.url,
-            ).pathname,
-            '@fedimint/types': new URL(
-              './packages/types/src/index.ts',
-              import.meta.url,
-            ).pathname,
+            '@fedimint/react-native-bindings': fileURLToPath(
+              new URL(
+                './packages/react-native/src/__tests__/rpc-handler-stub.ts',
+                import.meta.url,
+              ),
+            ),
+            '@fedimint/types': fileURLToPath(
+              new URL('./packages/types/src/index.ts', import.meta.url),
+            ),
           },
         },
       },
