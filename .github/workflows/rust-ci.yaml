@@ -7,11 +7,18 @@ name: Rust Continuous Integration
 
 on:
   push:
+    branches: [main]
     paths:
       - 'fedimint-client-uniffi/**'
+      - '.github/workflows/rust-ci.yaml'
   pull_request:
     paths:
       - 'fedimint-client-uniffi/**'
+      - '.github/workflows/rust-ci.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions: {}
 
@@ -19,6 +26,7 @@ jobs:
   test:
     name: 'Run tests'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: fedimint-client-uniffi
@@ -32,16 +40,13 @@ jobs:
       - name: 'Set up Rust'
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: 'Build'
-        run: cargo build
-
       - name: 'Test'
-        run: CLASSPATH=./tests/jna/jna-5.14.0.jar cargo test --features uniffi/bindgen-tests
+        run: cargo test --locked
 
   check:
     name: 'Run clippy and fmt'
-    needs: test
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: fedimint-client-uniffi
@@ -56,7 +61,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: 'Check fmt'
-        run: cargo fmt --all -- --config format_code_in_doc_comments=true --check
+        run: cargo fmt --all -- --check
 
       - name: 'Check clippy'
-        run: cargo clippy --all-targets --features "uniffi/bindgen-tests"
+        run: cargo clippy --locked --all-targets

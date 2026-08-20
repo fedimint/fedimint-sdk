@@ -2,6 +2,7 @@ name: Nix Native Builds
 
 on:
   push:
+    branches: [main]
     paths:
       - 'fedimint-client-uniffi/**'
       - 'nix/**'
@@ -16,10 +17,17 @@ on:
       - 'flake.lock'
       - '.github/workflows/nix-build.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
 jobs:
   build-ios:
     name: Build iOS Artifacts
     runs-on: macos-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -27,8 +35,13 @@ jobs:
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+          # max-jobs/cores mirror the Justfile's build-ios: heavy native deps
+          # (rocksdb, aws-lc-sys) otherwise OOM macos-latest's small runners
+          # on cache-cold builds. Warm runs only substitute, so unaffected.
           extra_nix_config: |
             sandbox = relaxed
+            max-jobs = 1
+            cores = 1
 
       - name: Setup Cachix
         uses: cachix/cachix-action@18cf96c7c98e048e10a83abd92116114cd8504be # v14
@@ -51,6 +64,7 @@ jobs:
   build-android:
     name: Build Android Artifacts
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
