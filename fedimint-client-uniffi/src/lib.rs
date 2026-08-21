@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use fedimint_client_rpc::{RpcGlobalState, RpcRequest, RpcResponse, RpcResponseHandler};
+use fedimint_client_rpc::{
+    RpcGlobalState, RpcRequest, RpcResponse, RpcResponseHandler, RpcResponseKind,
+};
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::db::Database;
 
@@ -98,7 +100,23 @@ struct CallbackWrapper(Box<dyn RpcCallback>);
 
 impl RpcResponseHandler for CallbackWrapper {
     fn handle_response(&self, response: RpcResponse) {
-        let json = serde_json::to_string(&response).expect("Failed to serialize RPC response");
+        // With panic = "abort" in the release profile, panicking here would
+        // take down the whole host app, so degrade to an error response on
+        // the (currently impossible) serialization failure instead.
+        let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+            let fallback = RpcResponse {
+                request_id: response.request_id,
+                kind: RpcResponseKind::Error {
+                    error: format!("Failed to serialize RPC response: {e}"),
+                },
+            };
+            serde_json::to_string(&fallback).unwrap_or_else(|_| {
+                format!(
+                    r#"{{"request_id":{},"type":"error","error":"unserializable RPC response"}}"#,
+                    response.request_id
+                )
+            })
+        });
         self.0.on_response(json);
     }
 }

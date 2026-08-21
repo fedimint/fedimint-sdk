@@ -19,11 +19,10 @@ export class ReactNativeTransport extends Transport {
   }
 
   async postMessage(message: TransportRequest): Promise<void> {
-    this.logger.info(
-      'ReactNativeTransport postMessage received:',
-      JSON.stringify(message),
-    )
     const { type, payload, requestId } = message
+    // Payloads can carry secrets (mnemonic words, invite codes), so only the
+    // message type and id are ever logged.
+    this.logger.debug('ReactNativeTransport postMessage:', type, requestId)
     try {
       // Handle init - just respond with success since we initialized in constructor
       if (type === 'init') {
@@ -56,15 +55,16 @@ export class ReactNativeTransport extends Transport {
           ...(typeof payload === 'object' && payload !== null ? payload : {}),
         }
         const json = JSON.stringify(rustRequest)
-        console.info('ReactNativeTransport sending RPC:', json)
+        this.logger.debug('ReactNativeTransport sending RPC:', type, requestId)
 
         const callback = {
           onResponse: (responseStr: string) => {
             try {
               const response = JSON.parse(responseStr)
-              console.info(
-                'ReactNativeTransport RPC parsed response:',
-                JSON.stringify(response),
+              this.logger.debug(
+                'ReactNativeTransport RPC response:',
+                response.type,
+                response.request_id,
               )
 
               if (response.type === 'error') {

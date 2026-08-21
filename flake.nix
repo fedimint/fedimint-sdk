@@ -18,7 +18,9 @@
       url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     };
     fenix = {
-      url = "github:nix-community/fenix";
+      # Pinned like the inputs below: fenix moves nightly, and every bump
+      # invalidates all toolchain and cross-compile derivations.
+      url = "github:nix-community/fenix/298b12d701ef0d12c0f2e4858d4208bee24d14e5";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flakebox = {
@@ -56,14 +58,14 @@
             android_sdk.accept_license = true;
           };
         };
+        # No emulator system images: nothing in this repo runs an emulator, and
+        # each ABI's image adds gigabytes to the dev shell closure.
         androidSdk = pkgs.androidenv.composeAndroidPackages {
           includeNDK = true;
           toolsVersion = "26.1.1";
           ndkVersions = ["27.1.12297006"];
-          includeSystemImages = true;
           buildToolsVersions = ["36.0.0"];
           platformVersions = ["36"];
-          abiVersions = ["arm64-v8a" "x86_64"];
           cmdLineToolsVersion = "13.0";
         };
         
@@ -94,10 +96,9 @@
           ++ (map (t: fenixPkgs.targets.${t}.stable.rust-std) targets)
         );
 
+        # Only the ABIs we ship (see ubrn.config.yaml's android targets).
         androidToolchain = mkToolchain [
           "aarch64-linux-android"
-          "armv7-linux-androideabi"
-          "i686-linux-android"
           "x86_64-linux-android"
         ];
         
@@ -127,9 +128,10 @@
             pkgs.just
           ];
 
+          # Used by the android/ios shells; referencing playwright-driver here
+          # would pull the browser bundles (>1 GiB) into their closures, so
+          # only the wasm shells (via wasmShellHook) set up Playwright.
           commonShellHook = ''
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
 
@@ -176,8 +178,6 @@
             
             export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
             export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_i686_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
 
             # Force bindgen to use NDK clang instead of any Homebrew/system LLVM
             # This prevents aws-lc-sys build failures when Homebrew LLVM is installed

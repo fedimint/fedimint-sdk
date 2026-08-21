@@ -17,3 +17,4 @@ jobs:
   verify:
     name: Verify
     uses: ./.github/workflows/verify.yml
+    secrets: inherit
