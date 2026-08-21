@@ -1,7 +1,24 @@
 name: React Native Verify
 
 on:
+  # On pushes to main everything builds, including iOS — the safety net for
+  # the label-gated PR builds below.
+  push:
+    branches: [main]
+    paths:
+      - 'packages/react-native/**'
+      - 'packages/react-native-bindings/**'
+      - 'packages/core/**'
+      - 'packages/types/**'
+      - 'fedimint-client-uniffi/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Justfile'
+      - '.github/**'
   pull_request:
+    # `labeled` so adding the `ci-ios` label starts the gated iOS build.
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
@@ -50,6 +67,10 @@ jobs:
     name: Build iOS
     runs-on: macos-latest
     timeout-minutes: 120
+    # macOS runners are the scarce and expensive lane, so PRs only build iOS
+    # when explicitly asked to via the `ci-ios` label. workflow_dispatch and
+    # other events still always build.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-nix
