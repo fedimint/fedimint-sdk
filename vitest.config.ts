@@ -35,7 +35,11 @@ export default defineConfig({
             ],
           },
           env: {
-            FAUCET: `http://localhost:15243`,
+            // devimint exports the faucet port to the environment of the command it
+            // execs (`pnpm test` runs under `devimint wasm-test-setup --exec`); the
+            // fallback matches devimint's current hard-coded default. `||` so a
+            // set-but-empty variable also falls back, like `:-` in the setup script.
+            FAUCET: `http://localhost:${process.env.FM_PORT_FAUCET || '15243'}`,
           },
         },
       },
