@@ -119,9 +119,15 @@ const MnemonicManager = () => {
       // Handle RPC error objects
       const rpcError = error as any
       if (rpcError.error) {
-        errorMsg = rpcError.error
+        errorMsg =
+          typeof rpcError.error === 'string'
+            ? rpcError.error
+            : JSON.stringify(rpcError.error)
       } else if (rpcError.message) {
-        errorMsg = rpcError.message
+        errorMsg =
+          typeof rpcError.message === 'string'
+            ? rpcError.message
+            : JSON.stringify(rpcError.message)
       }
     }
 
@@ -428,29 +434,35 @@ const JoinFederation = ({
             <details className="preview-details">
               <summary>Guardian Endpoints</summary>
               <div className="guardian-list">
-                {Object.entries(previewData.config.global.api_endpoints).map(
-                  ([id, peer]: [string, any]) => (
-                    <div key={id} className="guardian-item">
-                      <div>
-                        <strong>{peer.name}</strong>
-                      </div>
-                      <div className="url">{peer.url}</div>
+                {(
+                  Object.entries(previewData.config.global.api_endpoints) as [
+                    string,
+                    { name: string; url: string },
+                  ][]
+                ).map(([id, peer]) => (
+                  <div key={id} className="guardian-item">
+                    <div>
+                      <strong>{peer.name}</strong>
                     </div>
-                  ),
-                )}
+                    <div className="url">{peer.url}</div>
+                  </div>
+                ))}
               </div>
             </details>
 
             <details className="preview-details">
               <summary>Module Configuration</summary>
               <div className="module-list">
-                {Object.entries(previewData.config.modules).map(
-                  ([id, module]: [string, any]) => (
-                    <div key={id} className="module-item">
-                      <strong>{module.kind}</strong>
-                    </div>
-                  ),
-                )}
+                {(
+                  Object.entries(previewData.config.modules) as [
+                    string,
+                    { kind: string },
+                  ][]
+                ).map(([id, module]) => (
+                  <div key={id} className="module-item">
+                    <strong>{module.kind}</strong>
+                  </div>
+                ))}
               </div>
             </details>
 
