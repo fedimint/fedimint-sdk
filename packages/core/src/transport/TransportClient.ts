@@ -85,6 +85,22 @@ export class TransportClient {
       this.handleLogMessage(message)
     }
 
+    if (type === 'error' && request_id === undefined) {
+      // The transport failed outside any single request — e.g. an uncaught error
+      // or unhandled rejection in the wasm worker (a panic in the wasm client
+      // aborts its task without ever answering the request that triggered it).
+      // None of the in-flight requests can be answered anymore, so fail them all
+      // with the real error instead of leaving callers to hang until their own
+      // timeouts.
+      // `||` (not `??`): an empty error string must not slip through, because
+      // sendSingleMessage's error branch treats '' as falsy and the request
+      // would silently hang — the exact bug class this path exists to fix.
+      this.failAllPendingRequests(
+        String(data.error || 'unknown transport error'),
+      )
+      return
+    }
+
     const streamCallback =
       request_id !== undefined
         ? this.requestCallbacks.get(request_id)
@@ -101,6 +117,28 @@ export class TransportClient {
         'TransportClient - handleTransportMessage - received message with no callback',
         message,
       )
+    }
+  }
+
+  private failAllPendingRequests(error: string) {
+    const callbacks = [...this.requestCallbacks.values()]
+    this.requestCallbacks.clear()
+    this.logger.error(
+      'TransportClient - transport-level error, failing all pending requests',
+      callbacks.length,
+      error,
+    )
+    for (const callback of callbacks) {
+      // A consumer callback that throws (e.g. a stream onError) must not
+      // prevent the remaining requests from being failed.
+      try {
+        callback({ error })
+      } catch (callbackError) {
+        this.logger.error(
+          'TransportClient - pending request callback threw',
+          callbackError,
+        )
+      }
     }
   }
 
@@ -239,6 +277,12 @@ export class TransportClient {
   ) {
     this.requestCallbacks.set(requestId, (response: StreamResult<Response>) => {
       if (response.error !== undefined) {
+        // Errors terminate the stream (the wasm client ends the stream on the
+        // first error, and worker-generated errors are never followed by an
+        // `end`), so drop the callback — otherwise it leaks for the client's
+        // lifetime and a later transport-level failure would fire onError a
+        // second time on an already-failed request.
+        this.requestCallbacks.delete(requestId)
         onError(response.error)
       } else if (response.data !== undefined) {
         onSuccess(response.data)

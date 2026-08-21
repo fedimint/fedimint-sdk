@@ -51,6 +51,22 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'unit',
+          environment: 'node',
+          include: ['packages/core/**/*.test.ts'],
+        },
+        resolve: {
+          alias: {
+            // Type-only workspace dependency; alias to source so the package
+            // does not have to be built before running unit tests.
+            '@fedimint/types': fileURLToPath(
+              new URL('./packages/types/src/index.ts', import.meta.url),
+            ),
+          },
+        },
+      },
+      {
+        test: {
           name: 'react-native',
           environment: 'node',
           include: ['packages/react-native/**/*.test.ts'],

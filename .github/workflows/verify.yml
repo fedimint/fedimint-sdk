@@ -41,6 +41,21 @@ jobs:
       - name: Build
         run: pnpm build
 
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      - name: Run unit tests
+        run: pnpm test:unit
+
   types:
     name: Check Types
     runs-on: ubuntu-latest

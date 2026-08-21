@@ -67,7 +67,12 @@ export class WalletDirector {
     this._client = new TransportClient(transport)
     this._client.logger.info('WalletDirector instantiated')
     if (!lazy) {
-      this.initialize(this.dbPath)
+      // Fire-and-forget on purpose; log instead of surfacing an unhandled
+      // rejection. Later operations await the same (cached) initialization
+      // and get the error properly.
+      this.initialize(this.dbPath).catch((error) => {
+        this._client.logger.error('WalletDirector initialization failed', error)
+      })
     }
   }
 
