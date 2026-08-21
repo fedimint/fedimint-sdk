@@ -88,7 +88,6 @@
         "devshell": "devshell_3",
         "flake-utils": "flake-utils_8",
         "nixpkgs": [
-          "fedimint-sdk-ffi",
           "nixpkgs"
         ]
       },
@@ -102,8 +101,8 @@
       },
       "original": {
         "owner": "tadfisher",
-        "ref": "stable",
         "repo": "android-nixpkgs",
+        "rev": "a2b56f05390f7ad84c158eefd1877fbd9e4d2825",
         "type": "github"
       }
     },
@@ -111,12 +110,10 @@
       "inputs": {
         "devshell": "devshell_4",
         "flake-utils": [
-          "fedimint-sdk-ffi",
           "flakebox",
           "flake-utils"
         ],
         "nixpkgs": [
-          "fedimint-sdk-ffi",
           "flakebox",
           "nixpkgs"
         ]
@@ -484,7 +481,6 @@
     "devshell_3": {
       "inputs": {
         "nixpkgs": [
-          "fedimint-sdk-ffi",
           "android-nixpkgs",
           "nixpkgs"
         ]
@@ -506,7 +502,6 @@
     "devshell_4": {
       "inputs": {
         "nixpkgs": [
-          "fedimint-sdk-ffi",
           "flakebox",
           "android-nixpkgs",
           "nixpkgs"
@@ -598,30 +593,6 @@
         "owner": "fedimint",
         "ref": "v0.10.0",
         "repo": "fedimint",
-        "type": "github"
-      }
-    },
-    "fedimint-sdk-ffi": {
-      "inputs": {
-        "android-nixpkgs": "android-nixpkgs_3",
-        "fenix": [
-          "fenix"
-        ],
-        "flake-utils": "flake-utils_9",
-        "flakebox": "flakebox_3",
-        "nixpkgs": "nixpkgs_5"
-      },
-      "locked": {
-        "lastModified": 1784407339,
-        "narHash": "sha256-MTO67rA5ljg+G4IVFZqZFO666IuVkUa/Yp0FifTqXkI=",
-        "owner": "fedimint",
-        "repo": "fedimint-sdk-ffi",
-        "rev": "6873aa36ecca44a748a85d0cbc8bd2e2ba179732",
-        "type": "github"
-      },
-      "original": {
-        "owner": "fedimint",
-        "repo": "fedimint-sdk-ffi",
         "type": "github"
       }
     },
@@ -748,7 +719,6 @@
     "fenix_5": {
       "inputs": {
         "nixpkgs": [
-          "fedimint",
           "nixpkgs"
         ],
         "rust-analyzer-src": "rust-analyzer-src_5"
@@ -785,7 +755,6 @@
     "flake-utils_10": {
       "inputs": {
         "systems": [
-          "fedimint-sdk-ffi",
           "flakebox",
           "systems"
         ]
@@ -1089,24 +1058,6 @@
         "type": "github"
       }
     },
-    "flake-utils_9": {
-      "inputs": {
-        "systems": "systems_10"
-      },
-      "locked": {
-        "lastModified": 1731533236,
-        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "type": "github"
-      }
-    },
     "flakebox": {
       "inputs": {
         "android-nixpkgs": "android-nixpkgs",
@@ -1166,12 +1117,10 @@
         "android-nixpkgs": "android-nixpkgs_4",
         "crane": "crane_5",
         "fenix": [
-          "fedimint-sdk-ffi",
           "fenix"
         ],
         "flake-utils": "flake-utils_10",
         "nixpkgs": [
-          "fedimint-sdk-ffi",
           "nixpkgs"
         ],
         "systems": "systems_11"
@@ -1187,6 +1136,7 @@
       "original": {
         "owner": "rustshop",
         "repo": "flakebox",
+        "rev": "fa493d2de9db942e4d03934e6599d756a70388d4",
         "type": "github"
       }
     },
@@ -1435,8 +1385,8 @@
       },
       "original": {
         "owner": "NixOS",
-        "ref": "nixos-25.05",
         "repo": "nixpkgs",
+        "rev": "ac62194c3917d5f474c1a844b6fd6da2db95077d",
         "type": "github"
       }
     },
@@ -1506,10 +1456,12 @@
     "root": {
       "inputs": {
         "fedimint": "fedimint",
-        "fedimint-sdk-ffi": "fedimint-sdk-ffi",
         "fedimint-wasm": "fedimint-wasm",
         "fenix": "fenix_5",
-        "flake-utils": "flake-utils_18"
+        "flake-utils": "flake-utils_18",
+        "nixpkgs": "nixpkgs_5",
+        "flakebox": "flakebox_3",
+        "android-nixpkgs": "android-nixpkgs_3"
       }
     },
     "rust-analyzer-src": {
@@ -1598,21 +1550,6 @@
       }
     },
     "systems": {
-      "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-systems",
-        "repo": "default",
-        "type": "github"
-      }
-    },
-    "systems_10": {
       "locked": {
         "lastModified": 1681028828,
         "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",

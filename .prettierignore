@@ -16,4 +16,3 @@ flake.lock
 packages/react-native-bindings
 examples/expo-app
 examples/react-native
-fedimint-sdk-ffi

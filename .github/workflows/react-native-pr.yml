@@ -7,7 +7,8 @@ on:
       - 'packages/react-native-bindings/**'
       - 'packages/core/**'
       - 'packages/types/**'
-      - 'fedimint-sdk-ffi'
+      - 'fedimint-client-uniffi/**'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'Justfile'
@@ -19,14 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-transport:
+    name: Test RN Transport
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-deps
+      - name: Run transport unit tests
+        run: pnpm test:reactnative
+
   build-android:
     name: Build Android
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -38,8 +47,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}

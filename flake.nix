@@ -9,15 +9,27 @@
          url = "github:fedimint/fedimint?rev=382afc209c80e5445c65ccfabd37edf282669291";
          
     };
-    fedimint-sdk-ffi = {
-      # Provides cross-compiled Android (.so) and iOS (.a) bindings as
-      # cacheable Nix derivations: see #androidBundle / #iosBundle.
-      url = "github:fedimint/fedimint-sdk-ffi";
-      inputs.fenix.follows = "fenix";
+    # nixpkgs, fenix, flakebox and android-nixpkgs feed the FFI cross-compile
+    # derivations in nix/ffi.nix (see #androidBundle / #iosBundle). Pinned to
+    # the same revisions the fedimint-sdk-ffi repo's flake.lock used before it
+    # was merged in here, since that combination is known to build.
+    nixpkgs = {
+      # nixos-25.05
+      url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     };
     fenix = {
       url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "fedimint/nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    flakebox = {
+      url = "github:rustshop/flakebox/fa493d2de9db942e4d03934e6599d756a70388d4";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
+    };
+    android-nixpkgs = {
+      # stable channel
+      url = "github:tadfisher/android-nixpkgs/a2b56f05390f7ad84c158eefd1877fbd9e4d2825";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
   outputs =
@@ -26,14 +38,15 @@
       flake-utils,
       fedimint,
       fedimint-wasm,
-      fedimint-sdk-ffi,
+      nixpkgs,
       fenix,
+      flakebox,
+      android-nixpkgs,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        nixpkgs = fedimint.inputs.nixpkgs;
-        pkgs = import nixpkgs {
+        pkgs = import fedimint.inputs.nixpkgs {
           inherit system;
           overlays = [
              (import "${fedimint}/nix/overlays/esplora-electrs.nix")
@@ -311,30 +324,22 @@
           };
         };
         packages =
-          let
-            ffi = fedimint-sdk-ffi.packages.${system};
-            # Per-target packages exposed by the FFI flake. We re-export the
-            # ones we ship so build scripts can `nix build .#android-<triple>`
-            # and place artifacts into the cargo target directory for
-            # consumption by `ubrn build --no-cargo`.
-            androidPerTarget = pkgs.lib.genAttrs [
-              "android-aarch64-linux-android"
-              "android-x86_64-linux-android"
-            ] (n: ffi.${n});
-            iosPerTarget = pkgs.lib.genAttrs [
-              "ios-aarch64-apple-ios"
-              "ios-aarch64-apple-ios-sim"
-              "ios-x86_64-apple-ios"
-            ] (n: ffi.${n});
-          in
-          {
-            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
-            androidBundle = ffi.androidBundle;
+          # Cross-compiled builds of the in-tree fedimint-client-uniffi crate:
+          # per-target `android-<triple>` / `ios-<triple>` packages plus the
+          # androidBundle / iosBundle aggregates. Build scripts `nix build`
+          # these and place the artifacts into the cargo target directory for
+          # consumption by `ubrn build --no-cargo`.
+          import ./nix/ffi.nix {
+            inherit
+              system
+              nixpkgs
+              flakebox
+              android-nixpkgs
+              ;
           }
-          // androidPerTarget
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin (
-            { iosBundle = ffi.iosBundle; } // iosPerTarget
-          );
+          // {
+            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+          };
       }
     );
   nixConfig = {

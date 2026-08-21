@@ -14,13 +14,7 @@ You must also build the local monorepo packages first, as this example depends o
 
 ## Getting Started
 
-From the root of the monorepo, you must first initialize the Rust FFI submodules. This pulls down the core Fedimint Rust code needed to compile the bindings:
-
-```sh
-git submodule update --init --recursive
-```
-
-Then, ensure all dependencies are installed and the native bindings are built:
+From the root of the monorepo, ensure all dependencies are installed and the native bindings are built:
 
 ```sh
 pnpm install

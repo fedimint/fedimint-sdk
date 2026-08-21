@@ -1,0 +1,38 @@
+# Rust related
+target
+build
+
+# Nix
+result
+result-*
+
+# Kotlin related
+.gradle
+wallet_db
+local.properties
+*.log
+*.dylib
+*.so
+*.db
+*/data/signet
+.DS_Store
+testdb
+.lsp
+.clj-kondo
+.idea/
+.editorconfig
+.kotlin/
+
+# Swift related
+/.build
+.swiftpm
+/Packages
+/*.xcodeproj
+xcuserdata/
+DerivedData/
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.build
+*.xcframework/
+Info.plist
+Sources/
+xcuserdata

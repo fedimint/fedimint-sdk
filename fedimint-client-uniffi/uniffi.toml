@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "org.fedimint"
+cdylib_name = "fedimint_client_uniffi"
+
+[bindings.swift]
+module_name = "Fedimint"
+cdylib_name = "fedimint_client_uniffi"
