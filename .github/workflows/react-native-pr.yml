@@ -1,13 +1,31 @@
 name: React Native Verify
 
 on:
-  pull_request:
+  # On pushes to main everything builds, including iOS — the safety net for
+  # the label-gated PR builds below.
+  push:
+    branches: [main]
     paths:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
       - 'packages/core/**'
       - 'packages/types/**'
-      - 'fedimint-sdk-ffi'
+      - 'fedimint-client-uniffi/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Justfile'
+      - '.github/**'
+  pull_request:
+    # `labeled` so adding the `ci-ios` label starts the gated iOS build.
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'packages/react-native/**'
+      - 'packages/react-native-bindings/**'
+      - 'packages/core/**'
+      - 'packages/types/**'
+      - 'fedimint-client-uniffi/**'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'Justfile'
@@ -19,14 +37,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-transport:
+    name: Test RN Transport
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-deps
+      - name: Run transport unit tests
+        run: pnpm test:reactnative
+      - name: Type-check transport against the stubbed bindings
+        # The package is excluded from the root typecheck because its real
+        # bindings types are ubrn-generated; this config maps them to the
+        # test stub so the type-level contract still gets checked.
+        run: pnpm --filter @fedimint/react-native typecheck:test
+
   build-android:
     name: Build Android
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -36,10 +67,12 @@ jobs:
     name: Build iOS
     runs-on: macos-latest
     timeout-minutes: 120
+    # macOS runners are the scarce and expensive lane, so PRs only build iOS
+    # when explicitly asked to via the `ci-ios` label. workflow_dispatch and
+    # other events still always build.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}

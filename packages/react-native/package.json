@@ -30,7 +30,8 @@
     "build": "bob build",
     "clean": "rm -rf lib tsconfig.tsbuildinfo",
     "clean:deep": "pnpm run clean && rm -rf node_modules",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@fedimint/core": "workspace:*",

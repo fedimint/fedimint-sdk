@@ -9,15 +9,29 @@
          url = "github:fedimint/fedimint?rev=382afc209c80e5445c65ccfabd37edf282669291";
          
     };
-    fedimint-sdk-ffi = {
-      # Provides cross-compiled Android (.so) and iOS (.a) bindings as
-      # cacheable Nix derivations: see #androidBundle / #iosBundle.
-      url = "github:fedimint/fedimint-sdk-ffi";
-      inputs.fenix.follows = "fenix";
+    # nixpkgs, fenix, flakebox and android-nixpkgs feed the FFI cross-compile
+    # derivations in nix/ffi.nix (see #androidBundle / #iosBundle). Pinned to
+    # the same revisions the fedimint-sdk-ffi repo's flake.lock used before it
+    # was merged in here, since that combination is known to build.
+    nixpkgs = {
+      # nixos-25.05
+      url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     };
     fenix = {
-      url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "fedimint/nixpkgs";
+      # Pinned like the inputs below: fenix moves nightly, and every bump
+      # invalidates all toolchain and cross-compile derivations.
+      url = "github:nix-community/fenix/298b12d701ef0d12c0f2e4858d4208bee24d14e5";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    flakebox = {
+      url = "github:rustshop/flakebox/fa493d2de9db942e4d03934e6599d756a70388d4";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
+    };
+    android-nixpkgs = {
+      # stable channel
+      url = "github:tadfisher/android-nixpkgs/a2b56f05390f7ad84c158eefd1877fbd9e4d2825";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
   outputs =
@@ -26,14 +40,15 @@
       flake-utils,
       fedimint,
       fedimint-wasm,
-      fedimint-sdk-ffi,
+      nixpkgs,
       fenix,
+      flakebox,
+      android-nixpkgs,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        nixpkgs = fedimint.inputs.nixpkgs;
-        pkgs = import nixpkgs {
+        pkgs = import fedimint.inputs.nixpkgs {
           inherit system;
           overlays = [
              (import "${fedimint}/nix/overlays/esplora-electrs.nix")
@@ -43,14 +58,14 @@
             android_sdk.accept_license = true;
           };
         };
+        # No emulator system images: nothing in this repo runs an emulator, and
+        # each ABI's image adds gigabytes to the dev shell closure.
         androidSdk = pkgs.androidenv.composeAndroidPackages {
           includeNDK = true;
           toolsVersion = "26.1.1";
           ndkVersions = ["27.1.12297006"];
-          includeSystemImages = true;
           buildToolsVersions = ["36.0.0"];
           platformVersions = ["36"];
-          abiVersions = ["arm64-v8a" "x86_64"];
           cmdLineToolsVersion = "13.0";
         };
         
@@ -81,10 +96,9 @@
           ++ (map (t: fenixPkgs.targets.${t}.stable.rust-std) targets)
         );
 
+        # Only the ABIs we ship (see ubrn.config.yaml's android targets).
         androidToolchain = mkToolchain [
           "aarch64-linux-android"
-          "armv7-linux-androideabi"
-          "i686-linux-android"
           "x86_64-linux-android"
         ];
         
@@ -114,9 +128,10 @@
             pkgs.just
           ];
 
+          # Used by the android/ios shells; referencing playwright-driver here
+          # would pull the browser bundles (>1 GiB) into their closures, so
+          # only the wasm shells (via wasmShellHook) set up Playwright.
           commonShellHook = ''
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
 
@@ -163,8 +178,6 @@
             
             export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
             export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
-            export BINDGEN_EXTRA_CLANG_ARGS_i686_linux_android="--sysroot=$TOOLCHAIN/sysroot -I$TOOLCHAIN/lib/clang/$CLANG_VER/include -I$TOOLCHAIN/lib64/clang/$CLANG_VER/include"
 
             # Force bindgen to use NDK clang instead of any Homebrew/system LLVM
             # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
@@ -311,30 +324,22 @@
           };
         };
         packages =
-          let
-            ffi = fedimint-sdk-ffi.packages.${system};
-            # Per-target packages exposed by the FFI flake. We re-export the
-            # ones we ship so build scripts can `nix build .#android-<triple>`
-            # and place artifacts into the cargo target directory for
-            # consumption by `ubrn build --no-cargo`.
-            androidPerTarget = pkgs.lib.genAttrs [
-              "android-aarch64-linux-android"
-              "android-x86_64-linux-android"
-            ] (n: ffi.${n});
-            iosPerTarget = pkgs.lib.genAttrs [
-              "ios-aarch64-apple-ios"
-              "ios-aarch64-apple-ios-sim"
-              "ios-x86_64-apple-ios"
-            ] (n: ffi.${n});
-          in
-          {
-            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
-            androidBundle = ffi.androidBundle;
+          # Cross-compiled builds of the in-tree fedimint-client-uniffi crate:
+          # per-target `android-<triple>` / `ios-<triple>` packages plus the
+          # androidBundle / iosBundle aggregates. Build scripts `nix build`
+          # these and place the artifacts into the cargo target directory for
+          # consumption by `ubrn build --no-cargo`.
+          import ./nix/ffi.nix {
+            inherit
+              system
+              nixpkgs
+              flakebox
+              android-nixpkgs
+              ;
           }
-          // androidPerTarget
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin (
-            { iosBundle = ffi.iosBundle; } // iosPerTarget
-          );
+          // {
+            wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+          };
       }
     );
   nixConfig = {

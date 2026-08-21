@@ -1,6 +1,9 @@
 name: Verify
 on:
   workflow_call:
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
   workflow_dispatch:
 
 jobs:
@@ -71,6 +74,8 @@ jobs:
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Run pnpm tests
         shell: bash

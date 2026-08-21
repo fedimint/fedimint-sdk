@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# Pre-populate the fedimint-sdk-ffi cargo target directory with Nix-built
-# native libraries so `ubrn build <platform> --no-cargo` can pick them up
-# instead of running cargo cross-compile from scratch.
+# Pre-populate the fedimint-client-uniffi cargo target directory with
+# Nix-built native libraries so `ubrn build <platform> --no-cargo` can pick
+# them up instead of running cargo cross-compile from scratch.
 #
 # Usage:
 #   nix-prebuild.sh android   # or: ios
-#
-# Requires the `fedimint-sdk-ffi` submodule to be checked out.
 set -euo pipefail
 
 PLATFORM="${1:?usage: $0 (android|ios)}"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-TARGET_DIR="$REPO_ROOT/fedimint-sdk-ffi/fedimint-client-uniffi/target"
+TARGET_DIR="$REPO_ROOT/fedimint-client-uniffi/target"
 
 cd "$REPO_ROOT"
 

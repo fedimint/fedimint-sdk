@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": "../..",
+    "paths": {
+      "@fedimint/react-native-bindings": [
+        "./src/__tests__/rpc-handler-stub.ts"
+      ],
+      "@fedimint/types": ["../types/src/index.ts"]
+    }
+  },
+  "include": ["src/ReactNativeTransport.ts", "src/__tests__"]
+}
