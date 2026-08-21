@@ -10,6 +10,8 @@ on:
       - 'flake.lock'
       - '.github/workflows/nix-build.yml'
   pull_request:
+    # `labeled` so adding the `ci-ios` label starts the gated iOS build.
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'fedimint-client-uniffi/**'
       - 'nix/**'
@@ -28,6 +30,11 @@ jobs:
     name: Build iOS Artifacts
     runs-on: macos-latest
     timeout-minutes: 240
+    # macOS runners are the scarce and expensive lane, so PRs only build iOS
+    # when explicitly asked to via the `ci-ios` label (adding the label
+    # triggers a run through the `labeled` event). Pushes to main always
+    # build, so breakage is still caught before release.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -63,7 +70,7 @@ jobs:
 
   build-android:
     name: Build Android Artifacts
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
