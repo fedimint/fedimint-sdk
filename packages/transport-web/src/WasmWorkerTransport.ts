@@ -16,6 +16,22 @@ export class WasmWorkerTransport extends Transport {
     }
     this.worker.onerror = (event: ErrorEvent) => {
       this.errorHandler(event)
+      // The worker is in an unknown state (the script failed to load or an
+      // uncaught error escaped it), so no in-flight request can be answered
+      // anymore. Report a transport-level error (no request_id) so the client
+      // fails them all instead of leaving them hanging.
+      this.messageHandler({
+        type: 'error',
+        error: `Wasm worker error: ${event.message || 'unknown'}`,
+      })
+    }
+    this.worker.onmessageerror = () => {
+      // A response failed structured deserialization; it cannot be attributed
+      // to a request, so the pending ones would otherwise hang forever.
+      this.messageHandler({
+        type: 'error',
+        error: 'Wasm worker response could not be deserialized',
+      })
     }
   }
 

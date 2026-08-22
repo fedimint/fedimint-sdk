@@ -18,6 +18,14 @@ export default defineConfig({
           name: 'integration-tests',
           include: ['packages/integration-tests/**/*.test.ts'],
           exclude: ['packages/create-fedimint-app/**/*.test.ts'],
+          // These tests run against a live devimint federation and a fresh
+          // wallet per test, so they can hit transient failures — most notably
+          // a wasm client crash when an RPC lands right after joining the
+          // federation (issues #330/#340). Fixtures re-run on retry, so each
+          // attempt gets a fresh worker and wallet. NOTE: config-level retry
+          // works for test.extend-based tests; per-test `{ retry }` options are
+          // silently ignored for them (vitest 3.2.x).
+          retry: 2,
           browser: {
             enabled: true,
             provider: 'playwright',
@@ -35,7 +43,11 @@ export default defineConfig({
             ],
           },
           env: {
-            FAUCET: `http://localhost:15243`,
+            // devimint exports the faucet port to the environment of the command it
+            // execs (`pnpm test` runs under `devimint wasm-test-setup --exec`); the
+            // fallback matches devimint's current hard-coded default. `||` so a
+            // set-but-empty variable also falls back, like `:-` in the setup script.
+            FAUCET: `http://localhost:${process.env.FM_PORT_FAUCET || '15243'}`,
           },
         },
       },
@@ -47,6 +59,22 @@ export default defineConfig({
           exclude: ['packages/create-fedimint-app/__tests__/subfolder'],
           isolate: true,
           testTimeout: 20000,
+        },
+      },
+      {
+        test: {
+          name: 'unit',
+          environment: 'node',
+          include: ['packages/core/**/*.test.ts'],
+        },
+        resolve: {
+          alias: {
+            // Type-only workspace dependency; alias to source so the package
+            // does not have to be built before running unit tests.
+            '@fedimint/types': fileURLToPath(
+              new URL('./packages/types/src/index.ts', import.meta.url),
+            ),
+          },
         },
       },
       {
