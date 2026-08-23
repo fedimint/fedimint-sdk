@@ -1,0 +1,59 @@
+name: Android E2E (Appium)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Which tests to run'
+        type: choice
+        options:
+          - all
+          - mnemonic
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  android-e2e:
+    name: Android E2E
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    # Reuses the same devimint faucet-port serialization as the wasm test job
+    # (see verify.yml) since a future federation-touching test here would hit
+    # the same fixed port. The v1 mnemonic test doesn't need it, but the group
+    # is shared so nothing added later races the wasm job for the faucet port.
+    concurrency:
+      group: devimint-tests
+      queue: max
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Run Android E2E tests
+        shell: bash
+        env:
+          TESTS_TO_RUN: ${{ inputs.tests || 'all' }}
+        run: |
+          nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js install
+            bash scripts/e2e-android/run-android-e2e.sh
+          EOF
+
+      - name: Upload logs & screenshots
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: android-e2e-logs
+          include-hidden-files: true
+          path: |
+            js/react-native/integration-tests-android/.appium/*.log
+            js/react-native/integration-tests-android/screenshots/*
