@@ -245,6 +245,12 @@
             mkdir -p "$APPIUM_HOME"
             export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
             mkdir -p "$ANDROID_AVD_HOME"
+
+            # avdmanager, the uiautomator2 driver, and ./gradlew all need a
+            # JVM; the `android` build shell never needed one since it only
+            # cross-compiles Rust, so this is android-tests-only.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
           '';
 
           iosShellHook = ''
@@ -372,6 +378,12 @@
               pkgs.cargo-ndk
               pkgs.libclang
               androidToolchain
+              # curl backs the Appium server health-check in
+              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # present, like `ps`/`lsof`, on minimal self-hosted runners).
+              pkgs.curl
+              # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
+              pkgs.jdk17
             ];
             shellHook = commonShellHook + androidTestsShellHook;
           };
