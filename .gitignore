@@ -179,6 +179,10 @@ js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 android/fedimint-sdk/src/main/jniLibs
 android/fedimint-sdk/src/main/java/org/fedimint/sdk
 
+# js/react-native/integration-tests-android
+js/react-native/integration-tests-android/.appium/
+js/react-native/integration-tests-android/screenshots/
+
 # js/examples/react-native
 js/examples/react-native/vendor
 js/examples/react-native/ios/Pods

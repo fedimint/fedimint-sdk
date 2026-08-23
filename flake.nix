@@ -90,6 +90,35 @@
           cmdLineToolsVersion = "13.0";
         };
 
+        # Separate from androidSdk above: this pulls in the emulator +
+        # a system image (gigabytes), only for the android-tests shell that
+        # actually boots a device to run the Appium suite against.
+        # arm64-v8a on Apple Silicon hosts runs with hardware acceleration
+        # (Hypervisor.framework); x86_64 elsewhere (Intel Mac, Linux CI).
+        #
+        # The extra buildToolsVersions/cmakeVersions cover what the example app
+        # and its gradle plugins request at configure time (e.g. the ubrn-
+        # generated react-native-bindings/android/build.gradle is pinned to AGP
+        # 7.2.1 and defaults to build-tools 35.0.0 + cmake 3.22.1 regardless of
+        # what the app itself asks for). The Nix store is read-only, so Gradle's
+        # SDK manager cannot install a missing one mid-build the way it would on
+        # a normal machine — listing them up front is cheaper than discovering
+        # each one a failed build at a time.
+        androidEmulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
+        androidSdkEmulator = pkgs.androidenv.composeAndroidPackages {
+          includeNDK = true;
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = [ "google_apis" ];
+          abiVersions = [ androidEmulatorAbi ];
+          toolsVersion = "26.1.1";
+          ndkVersions = ["27.1.12297006"];
+          buildToolsVersions = ["30.0.3" "32.0.0" "33.0.0" "34.0.0" "35.0.0" "36.0.0"];
+          cmakeVersions = ["3.22.1"];
+          platformVersions = ["34" "36"];
+          cmdLineToolsVersion = "13.0";
+        };
+
         fenixPkgs = fenix.packages.${system};
         baseToolchain = fenixPkgs.stable.toolchain;
         
@@ -167,8 +196,12 @@
             fi
           '';
 
-          androidShellHook = ''
-            export ANDROID_HOME=${androidSdk.androidsdk}/libexec/android-sdk
+          # Parametrized over which composeAndroidPackages result to point at:
+          # the lean androidSdk (build-only, no emulator) for the `android`
+          # shell, or androidSdkEmulator (adds emulator + a system image) for
+          # `android-tests`.
+          mkAndroidShellHook = sdk: ''
+            export ANDROID_HOME=${sdk.androidsdk}/libexec/android-sdk
             export ANDROID_SDK_ROOT=$ANDROID_HOME
             export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
             export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
@@ -218,6 +251,33 @@
             fi
 
           '';
+
+          androidShellHook = mkAndroidShellHook androidSdk;
+
+          # Adds: emulator/platform-tools/cmdline-tools on PATH, a repo-local
+          # APPIUM_HOME + ANDROID_AVD_HOME (so driver installs and AVDs don't
+          # land in ~/.appium / ~/.android on a contributor's machine), and
+          # the pnpm-installed `appium` binary on PATH. Appium itself is a
+          # plain npm devDependency of js/react-native/integration-tests-android
+          # (see its package.json), not a Nix package — only the Android SDK/
+          # emulator toolchain it drives comes from Nix here.
+          androidTestsShellHook = mkAndroidShellHook androidSdkEmulator + ''
+            REPO_ROOT=$(git rev-parse --show-toplevel)
+
+            export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+            export PATH="$REPO_ROOT/js/react-native/integration-tests-android/node_modules/.bin:$PATH"
+
+            export APPIUM_HOME="$REPO_ROOT/js/react-native/integration-tests-android/.appium"
+            mkdir -p "$APPIUM_HOME"
+            export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
+            mkdir -p "$ANDROID_AVD_HOME"
+
+            # avdmanager, the uiautomator2 driver, and ./gradlew all need a
+            # JVM; the `android` build shell never needed one since it only
+            # cross-compiles Rust, so this is android-tests-only.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
+          '';
         in {
           default = pkgs.mkShell {
             nativeBuildInputs = commonNativeBuildInputs;
@@ -241,6 +301,32 @@
               androidToolchain
             ];
             shellHook = commonShellHook + androidShellHook;
+          };
+
+          # For js/react-native/integration-tests-android: everything `android` gives
+          # you, plus a bootable emulator + appium's PATH/APPIUM_HOME wiring.
+          # Kept separate from `android` so the plain FFI build shell doesn't
+          # pay for the emulator system image (gigabytes) it doesn't need.
+          android-tests = pkgs.mkShell {
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              androidSdkEmulator.androidsdk
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.go
+              pkgs.cargo-ndk
+              pkgs.libclang
+              androidToolchain
+              # curl backs the Appium server health-check in
+              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # present, like `ps`/`lsof`, on minimal self-hosted runners).
+              pkgs.curl
+              # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
+              pkgs.jdk17
+              pkgs.bundletool
+              pkgs.ffmpeg-headless
+            ];
+            shellHook = commonShellHook + androidTestsShellHook;
           };
 
           wasm-tests = pkgs.mkShell {
