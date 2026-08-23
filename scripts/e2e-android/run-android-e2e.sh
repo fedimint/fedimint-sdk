@@ -9,16 +9,40 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 EXAMPLE_DIR="$REPO_ROOT/js/examples/react-native"
 PKG_DIR="$REPO_ROOT/js/react-native/integration-tests-android"
 
-for bin in adb emulator appium; do
+required_bins=(adb emulator)
+[[ "${SKIP_BINDINGS_BUILD:-}" == "true" ]] || required_bins+=(just)
+for bin in "${required_bins[@]}"; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "$bin not found on PATH. Run this inside 'nix develop .#android-tests'."
     exit 1
   fi
 done
-LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
-mkdir -p "$LOG_DIR"
 
 echo "=== Android E2E (SDK) tests ==="
+
+cd "$REPO_ROOT"
+if [[ "${SKIP_BINDINGS_BUILD:-}" == "true" ]]; then
+  echo "SKIP_BINDINGS_BUILD=true — assuming bindings + node_modules are already in place."
+else
+  # Builds the native FFI library (fedimint-client-uniffi cross-compiled for
+  # Android) and the generated Kotlin/JS glue js/examples/react-native depends on.
+  # Without this, `pnpm install`'s postinstall may leave a stale prebuilt
+  # binary in place (or download a previously-published release) instead of
+  # reflecting the current source tree — see js/react-native/react-native-bindings's
+  # postinstall (scripts/download-binaries.js) and Justfile's build-android
+  # recipe. This also runs `pnpm --dir js install --frozen-lockfile` for the whole
+  # workspace, so it must happen before anything below that needs
+  # node_modules (e.g. the `appium` binary).
+  just build-android
+fi
+
+if ! command -v appium >/dev/null 2>&1; then
+  echo "appium not found on PATH. Make sure bindings/deps were built (see SKIP_BINDINGS_BUILD) and js/react-native/integration-tests-android/node_modules/.bin exists."
+  exit 1
+fi
+
+LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
+mkdir -p "$LOG_DIR"
 
 bash "$REPO_ROOT/scripts/e2e-android/setup-and-start-appium.sh"
 

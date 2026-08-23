@@ -25,19 +25,15 @@ fi
 mkdir -p "$APPIUM_HOME"
 
 echo "Checking for a running Appium server..."
-APPIUM_PID=""
-while IFS= read -r line; do
-  pid=$(echo "$line" | awk '{print $1}')
-  args=$(echo "$line" | cut -d' ' -f2-)
-  if [[ "$args" == *"integration-tests-android"* && "$args" == *"appium"* ]]; then
-    APPIUM_PID="$pid"
-    break
+PID_FILE="$APPIUM_HOME/appium_pid.txt"
+if [[ -f "$PID_FILE" ]]; then
+  EXISTING_PID=$(cat "$PID_FILE")
+  # kill -0 checks the process exists without needing `ps`, which isn't
+  # guaranteed to be installed on minimal (e.g. self-hosted) runners.
+  if kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "Appium already running (PID=$EXISTING_PID), no setup needed."
+    exit 0
   fi
-done < <(ps -axo pid=,args= | grep appium || true)
-
-if [[ -n "$APPIUM_PID" ]]; then
-  echo "Appium already running (PID=$APPIUM_PID), no setup needed."
-  exit 0
 fi
 
 echo "=== Ensuring Appium is installed & the uiautomator2 driver is ready ==="
@@ -55,7 +51,6 @@ appium driver doctor uiautomator2 || {
   echo "⚠️  uiautomator2 driver doctor reported issues — check ANDROID_HOME/adb/Java above."
 }
 
-PID_FILE="$APPIUM_HOME/appium_pid.txt"
 LOG_FILE="$APPIUM_HOME/appium.log"
 
 echo "=== Starting Appium server in background ==="
@@ -63,7 +58,6 @@ APP_PORT=""
 for attempt in 1 2 3; do
   CANDIDATE_PORT=$((4722 + attempt))
   echo "--- attempt $attempt: port $CANDIDATE_PORT ---"
-  lsof -ti:"$CANDIDATE_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
   [[ $attempt -gt 1 ]] && sleep 2
 
   if [[ "${DEBUG_MODE:-}" == "1" || "${DEBUG_MODE:-}" == "true" ]]; then
@@ -83,8 +77,13 @@ for attempt in 1 2 3; do
 
   for _ in $(seq 1 80); do
     if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
-    FOUND_PORT=$(lsof -Pan -p "$APP_PID" -a -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {split($9,a,":"); print a[2]}' | head -1 || true)
-    if [[ -n "$FOUND_PORT" ]]; then APP_PORT="$FOUND_PORT"; break; fi
+    # We already know which port we asked Appium to bind, so confirm it's
+    # actually serving there rather than inspecting open sockets (lsof isn't
+    # guaranteed to be installed, e.g. on minimal self-hosted runners).
+    if curl -sf -o /dev/null "http://127.0.0.1:$CANDIDATE_PORT/status"; then
+      APP_PORT="$CANDIDATE_PORT"
+      break
+    fi
     sleep 0.5
   done
 
