@@ -18,7 +18,7 @@ function newTransport() {
   const errors: unknown[] = []
   transport.setMessageHandler((message) => messages.push(message))
   transport.setErrorHandler((error) => errors.push(error))
-  const handler = RpcHandler.instances.at(-1)!
+  const handler = RpcHandler.instances[RpcHandler.instances.length - 1]!
   return { transport, handler, messages, errors }
 }
 
