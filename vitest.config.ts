@@ -1,5 +1,6 @@
 import wasm from 'vite-plugin-wasm'
 import { defineConfig } from 'vitest/config'
+import { playwright } from '@vitest/browser-playwright'
 
 export default defineConfig({
   test: {
@@ -18,7 +19,7 @@ export default defineConfig({
           exclude: ['packages/create-fedimint-app/**/*.test.ts'],
           browser: {
             enabled: true,
-            provider: 'playwright',
+            provider: playwright(),
             ui: false, // no ui for the core library
             api: {
               port: 63315,
