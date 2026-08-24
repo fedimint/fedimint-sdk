@@ -249,13 +249,17 @@ Check out the [vite-react sample app](../examples/vite-react) for a full working
 
 Here's a basic example of how to use the `@fedimint/core` library:
 
+`WalletDirector` owns transport initialization and is the supported way to
+create a wallet. `FedimintWallet` is returned by `createWallet()` and should not
+be constructed directly.
+
 ::: code-group
 
 ```ts twoslash [example.ts]
 import { WalletDirector } from '@fedimint/core'
 import { WasmWorkerTransport } from '@fedimint/transport-web'
 
-// Create the Wallet client
+// Configure the platform transport and create the wallet
 const director = new WalletDirector(new WasmWorkerTransport())
 const wallet = await director.createWallet()
 

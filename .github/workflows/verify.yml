@@ -1,6 +1,9 @@
 name: Verify
 on:
   workflow_call:
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
   workflow_dispatch:
 
 jobs:
@@ -38,6 +41,21 @@ jobs:
       - name: Build
         run: pnpm build
 
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      - name: Run unit tests
+        run: pnpm test:unit
+
   types:
     name: Check Types
     runs-on: ubuntu-latest
@@ -59,6 +77,13 @@ jobs:
     name: Test
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
+    # devimint's faucet listens on a fixed port (15243, hard-coded upstream), so two of
+    # these jobs on the same host race for it and the loser's tests talk to the winner's
+    # federation. Serialize all devimint-backed test jobs until the port is dynamic.
+    # See https://github.com/fedimint/fedimint-sdk/issues/340.
+    concurrency:
+      group: devimint-tests
+      queue: max
 
     steps:
       - name: Clone repository
@@ -71,6 +96,8 @@ jobs:
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Run pnpm tests
         shell: bash

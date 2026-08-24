@@ -17,7 +17,17 @@ export default defineConfig({
   markdown: {
     // TODO: Fix version conflicts
     // @ts-ignore
-    codeTransformers: [transformerTwoslash()],
+    codeTransformers: [
+      transformerTwoslash({
+        twoslashOptions: {
+          compilerOptions: {
+            moduleResolution: 100, // ModuleResolutionKind.Bundler
+            module: 99, // ModuleKind.ESNext
+            baseUrl: undefined,
+          },
+        },
+      }),
+    ],
     config: (md) => {
       // @ts-ignore
       md.use(groupIconMdPlugin)

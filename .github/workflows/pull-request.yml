@@ -5,7 +5,8 @@ on:
     paths-ignore:
       - 'packages/react-native/**'
       - 'packages/react-native-bindings/**'
-      - 'fedimint-sdk-ffi'
+      - 'fedimint-client-uniffi/**'
+      - 'nix/**'
   workflow_dispatch:
 
 concurrency:
@@ -16,3 +17,4 @@ jobs:
   verify:
     name: Verify
     uses: ./.github/workflows/verify.yml
+    secrets: inherit

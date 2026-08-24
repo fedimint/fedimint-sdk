@@ -2,7 +2,8 @@
 
 ## Classes
 
-- [FedimintWallet]()
+- [WalletDirector and FedimintWallet](index)
+- [Creating a FedimintWallet](createWallet)
 
 ## Type Aliases
 

@@ -1,0 +1,67 @@
+name: Rust Continuous Integration
+
+# Continuous integration for the Fedimint-client-uniffi.
+# Builds, tests, and runs clippy linting on the Rust code.
+# Ensures code formatting follows project standards using rustfmt.
+# Runs on changes to fedimint-client-uniffi directory on pushes and pull requests.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fedimint-client-uniffi/**'
+      - '.github/workflows/rust-ci.yaml'
+  pull_request:
+    paths:
+      - 'fedimint-client-uniffi/**'
+      - '.github/workflows/rust-ci.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  test:
+    name: 'Run tests'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: fedimint-client-uniffi
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 'Set up Rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: 'Test'
+        run: cargo test --locked
+
+  check:
+    name: 'Run clippy and fmt'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: fedimint-client-uniffi
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+
+      - name: 'Check fmt'
+        run: cargo fmt --all -- --check
+
+      - name: 'Check clippy'
+        run: cargo clippy --locked --all-targets

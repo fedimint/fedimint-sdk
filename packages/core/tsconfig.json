@@ -11,5 +11,8 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules"]
+  // Tests are excluded so their declarations don't end up in the published
+  // dist and the build doesn't depend on vitest; they are type-checked by
+  // vitest itself when the unit project runs.
+  "exclude": ["node_modules", "src/**/__tests__/**"]
 }

@@ -100,10 +100,45 @@ self.onmessage = async (event) => {
     }
   } catch (e) {
     console.error('ERROR', e)
-    self.postMessage({ type: 'error', error: e.message, request_id: requestId })
+    self.postMessage({
+      type: 'error',
+      error: e instanceof Error ? e.message : String(e),
+      request_id: requestId,
+    })
   }
 }
 
-self.onerror = (e) => {
-  self.postMessage({ type: 'error', error: e.message })
+/** @param {unknown} value */
+function describeError(value) {
+  if (value instanceof Error) {
+    // Prefer the stack: for a wasm panic it names the wasm frames, which is
+    // the only clue to what actually crashed.
+    return value.stack || value.message || String(value)
+  }
+  return String(value) || 'unknown error'
 }
+
+// A crash outside the message handler is otherwise invisible to the main thread and
+// the request that triggered it would just never resolve. The main offender is a
+// panic in the wasm client: it aborts the async task spawned for the RPC, which
+// surfaces here as an unhandled rejection (`RuntimeError: unreachable`). Report such
+// crashes as transport-level errors (no request_id) so the client can fail all
+// in-flight requests with the real error. This deliberately treats every uncaught
+// error/rejection as fatal: the worker's only async work is the wasm client and its
+// storage, and after a wasm trap the instance state cannot be trusted anyway.
+// preventDefault() marks the event handled so it is not additionally re-reported
+// through the parent's `worker.onerror` (which would fail everything a second
+// time); console.error keeps the full text visible in browser/CI logs.
+self.addEventListener('error', (event) => {
+  event.preventDefault()
+  const error = `Uncaught error in wasm worker: ${event.message || describeError(event.error)}`
+  console.error(error)
+  self.postMessage({ type: 'error', error })
+})
+
+self.addEventListener('unhandledrejection', (event) => {
+  event.preventDefault()
+  const error = `Unhandled rejection in wasm worker: ${describeError(event.reason)}`
+  console.error(error)
+  self.postMessage({ type: 'error', error })
+})

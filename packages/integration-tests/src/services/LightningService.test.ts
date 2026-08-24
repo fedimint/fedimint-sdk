@@ -1,4 +1,4 @@
-import { expect } from 'vitest'
+import { expect, vi } from 'vitest'
 import { keyPair } from '../test/crypto'
 import { walletTest } from '../test/fixtures'
 
@@ -282,5 +282,28 @@ walletTest(
       node_pub_key: expect.any(String),
       route_hints: expect.any(Array),
     })
+  },
+)
+
+walletTest(
+  'waitForReceive should reject immediately if canceled state is received',
+  async ({ wallet }) => {
+    expect(wallet).toBeDefined()
+    expect(wallet.isOpen()).toBe(true)
+
+    // Mock subscribeLnReceive to immediately trigger the canceled state
+    const subscribeLnReceiveSpy = vi
+      .spyOn(wallet.lightning, 'subscribeLnReceive')
+      .mockImplementation((operationId, onSuccess, onError) => {
+        // Trigger canceled state immediately
+        onSuccess?.({ canceled: { reason: 'mocked cancellation reason' } })
+        return () => {}
+      })
+
+    await expect(
+      wallet.lightning.waitForReceive('mock-operation-id'),
+    ).rejects.toThrow('Invoice receive canceled: mocked cancellation reason')
+
+    subscribeLnReceiveSpy.mockRestore()
   },
 )

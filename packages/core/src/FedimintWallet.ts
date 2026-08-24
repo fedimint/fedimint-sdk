@@ -17,6 +17,17 @@ export type JoinFederationOptions = {
   forceRecover?: boolean
 }
 
+/**
+ * Provides wallet operations and access to the wallet's services.
+ *
+ * Applications obtain instances from {@link WalletDirector.createWallet};
+ * `FedimintWallet` is exported from `@fedimint/core` as a type, not as a
+ * directly constructible runtime value.
+ *
+ * After creating an instance, call {@link FedimintWallet.open | open} to use
+ * existing client state or {@link FedimintWallet.joinFederation | joinFederation}
+ * to join a federation.
+ */
 export class FedimintWallet {
   public balance: BalanceService
   public mint: MintService
@@ -30,30 +41,14 @@ export class FedimintWallet {
   private _isOpen: boolean = false
 
   /**
-   * Creates a new instance of FedimintWallet.
+   * Creates a wallet facade for a director-owned transport client.
    *
-   * This constructor initializes a FedimintWallet instance, which manages communication
-   * with a Web Worker. The Web Worker is responsible for running WebAssembly code that
-   * handles the core Fedimint Client operations.
+   * Application code should use {@link WalletDirector.createWallet} instead of
+   * calling this constructor. The constructor is exported at
+   * `@fedimint/core/testing` only for SDK tests.
    *
-   * (default) When not in lazy mode, the constructor immediately initializes the
-   * Web Worker and begins loading the WebAssembly module in the background. This
-   * allows for faster subsequent operations but may increase initial load time.
-   *
-   * In lazy mode, the Web Worker and WebAssembly initialization are deferred until
-   * the first operation that requires them, reducing initial overhead at the cost
-   * of a slight delay on the first operation.
-   *
-   * @example
-   * // Create a wallet with immediate initialization
-   * const wallet = new FedimintWallet();
-   * wallet.open();
-   *
-   * // Create a wallet with lazy initialization
-   * const lazyWallet = new FedimintWallet(true);
-   * // Some time later...
-   * lazyWallet.initialize();
-   * lazyWallet.open();
+   * @param _client - The transport client owned and initialized by the director.
+   * @param _clientName - The client name used by the wallet's services.
    */
   constructor(
     private _client: TransportClient,

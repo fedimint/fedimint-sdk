@@ -30,7 +30,8 @@
     "build": "bob build",
     "clean": "rm -rf lib tsconfig.tsbuildinfo",
     "clean:deep": "pnpm run clean && rm -rf node_modules",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@fedimint/core": "workspace:*",
@@ -46,7 +47,7 @@
     "@types/node": "^22.19.11",
     "expo-module-scripts": "^5.0.8",
     "react-native-builder-bob": "^0.40.18",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   },
   "react-native-builder-bob": {
     "source": "src",
