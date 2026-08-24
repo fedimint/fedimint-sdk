@@ -60,7 +60,7 @@ ensure_avd_exists() {
 boot_avd() {
   ensure_avd_exists
   echo "Booting AVD: $AVD_NAME"
-  nohup emulator -avd "$AVD_NAME" -no-snapshot -no-boot-anim -no-window -gpu swiftshader_indirect \
+  nohup emulator -avd "$AVD_NAME" -no-snapshot -no-boot-anim -no-window -wipe-data -gpu swiftshader_indirect \
     >"$LOG_DIR/emulator.log" 2>&1 &
   adb wait-for-device
   # Wait for full boot, not just the adb transport.
