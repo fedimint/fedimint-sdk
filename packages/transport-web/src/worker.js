@@ -111,9 +111,17 @@ self.onmessage = async (event) => {
 /** @param {unknown} value */
 function describeError(value) {
   if (value instanceof Error) {
-    // Prefer the stack: for a wasm panic it names the wasm frames, which is
-    // the only clue to what actually crashed.
-    return value.stack || value.message || String(value)
+    const header = value.message
+      ? `${value.name}: ${value.message}`
+      : value.name
+    // Include the stack: for a wasm panic it names the wasm frames, which is
+    // the only clue to what actually crashed. Chrome-style stacks already
+    // start with the header line; Firefox stacks hold only the frames, so
+    // prepend the header there — never repeat it.
+    const stack = value.stack || ''
+    return stack.startsWith(header)
+      ? stack
+      : [header, stack].filter(Boolean).join('\n')
   }
   return String(value) || 'unknown error'
 }
@@ -131,7 +139,13 @@ function describeError(value) {
 // time); console.error keeps the full text visible in browser/CI logs.
 self.addEventListener('error', (event) => {
   event.preventDefault()
-  const error = `Uncaught error in wasm worker: ${event.message || describeError(event.error)}`
+  // event.error carries the whole picture (message + stack) when the browser
+  // exposes it; event.message is only the fallback, as on its own it drops
+  // the stack — for a wasm trap the only clue to what crashed.
+  const details = event.error
+    ? describeError(event.error)
+    : event.message || 'unknown'
+  const error = `Uncaught error in wasm worker: ${details}`
   console.error(error)
   self.postMessage({ type: 'error', error })
 })
