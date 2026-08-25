@@ -237,6 +237,54 @@ mod tests {
         assert_eq!(responses[0]["data"], json!(true));
     }
 
+    /// Repro for the wasm peg_in-right-after-join crash (issue #330 /
+    /// fedimint#9046): same flow as the TS integration test, natively, so a
+    /// panic yields a symbolized backtrace.
+    #[test]
+    #[ignore = "needs a running devimint federation: set REPRO_INVITE_CODE and run with --ignored"]
+    fn peg_in_right_after_join() {
+        let invite = std::env::var("REPRO_INVITE_CODE")
+            .expect("REPRO_INVITE_CODE must hold a devimint federation invite code");
+
+        for round in 1..=3 {
+            eprintln!("=== round {round}");
+            let dir = tempfile::tempdir().unwrap();
+            let handler = new_handler(&dir);
+            let client_name = format!("{round:0>36}");
+
+            rpc_collect(
+                &handler,
+                json!({ "request_id": 1, "type": "set_mnemonic", "words": TEST_MNEMONIC }),
+            );
+            let responses = rpc_collect(
+                &handler,
+                json!({
+                    "request_id": 2,
+                    "type": "join_federation",
+                    "invite_code": invite,
+                    "force_recover": false,
+                    "client_name": client_name,
+                }),
+            );
+            assert_eq!(responses[0]["type"], "data", "join failed: {responses:?}");
+
+            // Deliberately no delay: this is the race under investigation.
+            let responses = rpc_collect(
+                &handler,
+                json!({
+                    "request_id": 3,
+                    "type": "client_rpc",
+                    "client_name": client_name,
+                    "module": "wallet",
+                    "method": "peg_in",
+                    "payload": { "extra_meta": {} },
+                }),
+            );
+            eprintln!("peg_in responses: {responses:?}");
+            assert_eq!(responses[0]["type"], "data", "peg_in failed: {responses:?}");
+        }
+    }
+
     #[test]
     fn reports_errors_as_responses() {
         let dir = tempfile::tempdir().unwrap();

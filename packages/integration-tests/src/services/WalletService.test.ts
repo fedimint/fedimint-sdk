@@ -28,7 +28,11 @@ walletTest(
   async ({ wallet }) => {
     expect(wallet).toBeDefined()
     expect(wallet.isOpen()).toBe(true)
-    // TODO: @maan2003 Plz help me investigate why we crash without this delay
+    // Works around an upstream crash: peg_in right after joining races the
+    // wallet module's background DB writes and panics on the resulting
+    // WriteConflict (https://github.com/fedimint/fedimint/issues/9046). The
+    // delay shrinks the window but cannot close it; remove once the fix lands
+    // in the pinned wasm.
     await new Promise((resolve) => setTimeout(resolve, 100))
     const response = await wallet.wallet.generateAddress()
 
