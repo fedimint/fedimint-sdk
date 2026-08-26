@@ -2,12 +2,13 @@
 
 set -euo pipefail
 
-# devimint's faucet listens on a fixed port (hard-coded upstream). If a stale or
-# concurrent devimint already occupies it, devimint only logs the bind failure and its
-# startup probe happily connects to the foreign listener — the tests then run against
-# the wrong federation and fail with confusing fetch errors (see issue #340). Wait for
-# the port to be free, and fail fast with a diagnostic if it never frees up.
-faucet_port="${FM_PORT_FAUCET:-15243}"
+# devimint now allocates a free faucet port per run and fails the setup if it cannot
+# bind it, so concurrent runs no longer collide (see issue #340). Only a port pinned
+# through FM_FAUCET_PORT can still be occupied by a stale or concurrent devimint, so
+# wait for that one, and fail fast with a diagnostic if it never frees up. (devimint
+# reports whichever port it ended up with as FM_PORT_FAUCET, which is what the tests
+# read; that one is set by devimint itself, not by whoever runs this script.)
+faucet_port="${FM_FAUCET_PORT:-}"
 
 # The tests fetch from `localhost`, which may resolve to either loopback address, so a
 # squatter on either one counts as occupied. `timeout` bounds a probe that would
@@ -23,7 +24,7 @@ faucet_port_in_use() {
 }
 
 deadline=$((SECONDS + 120))
-while faucet_port_in_use; do
+while [ -n "$faucet_port" ] && faucet_port_in_use; do
   if ((SECONDS >= deadline)); then
     echo "error: faucet port ${faucet_port} is still in use;" \
       "is a stale or concurrent devimint running on this machine?" >&2
