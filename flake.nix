@@ -2,12 +2,16 @@
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     fedimint = {
-      # Devimint input - Should point to a release tag, as it doesn't need to be updated often.
-      url = "github:fedimint/fedimint/v0.10.0";
+      # Devimint input - should point to a release tag, as it doesn't need to be
+      # updated often. On a master revision for now: the fixes for the CI
+      # flakiness this repo tracks (#330, #340) are not in any tag yet.
+      url = "github:fedimint/fedimint?rev=6ba0479a96dfc95b0fa2fbf4f010b6cf9ee976ff";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint?rev=382afc209c80e5445c65ccfabd37edf282669291";
-         
+      # The wasm client is built from this revision; keep it in sync with the
+      # devimint input above, so that the client and the federation it is
+      # tested against come from the same commit.
+      url = "github:fedimint/fedimint?rev=6ba0479a96dfc95b0fa2fbf4f010b6cf9ee976ff";
     };
     # nixpkgs, fenix, flakebox and android-nixpkgs feed the FFI cross-compile
     # derivations in nix/ffi.nix (see #androidBundle / #iosBundle). Pinned to
