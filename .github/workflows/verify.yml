@@ -77,13 +77,6 @@ jobs:
     name: Test
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
-    # devimint's faucet listens on a fixed port (15243, hard-coded upstream), so two of
-    # these jobs on the same host race for it and the loser's tests talk to the winner's
-    # federation. Serialize all devimint-backed test jobs until the port is dynamic.
-    # See https://github.com/fedimint/fedimint-sdk/issues/340.
-    concurrency:
-      group: devimint-tests
-      queue: max
 
     steps:
       - name: Clone repository
