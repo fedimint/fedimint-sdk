@@ -2,12 +2,23 @@
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     fedimint = {
-      # Devimint input - Should point to a release tag, as it doesn't need to be updated often.
-      url = "github:fedimint/fedimint/v0.10.0";
+      # Devimint input - should point to a release tag, as it doesn't need to be
+      # updated often. On a master revision for now: the fixes for the CI
+      # flakiness this repo tracks (#330, #340) are not in any tag yet.
+      url = "github:fedimint/fedimint?rev=6ba0479a96dfc95b0fa2fbf4f010b6cf9ee976ff";
     };
     fedimint-wasm = {
-         url = "github:fedimint/fedimint?rev=382afc209c80e5445c65ccfabd37edf282669291";
-         
+      # The wasm client is built from this revision; keep it in sync with the
+      # devimint input above, so that the client and the federation it is
+      # tested against come from the same commit.
+      url = "github:fedimint/fedimint?rev=6ba0479a96dfc95b0fa2fbf4f010b6cf9ee976ff";
+    };
+    nixpkgs-playwright = {
+      # Playwright browsers have to match the `playwright` version pnpm-lock.yaml
+      # resolves (1.56.1), which is why they get their own pin instead of coming
+      # from whichever nixpkgs the fedimint input happens to carry: bumping that
+      # input moved the browsers to 1.59.1 and the tests could not find them.
+      url = "github:NixOS/nixpkgs/76701a179d3a98b07653e2b0409847499b2a07d3";
     };
     # nixpkgs, fenix, flakebox and android-nixpkgs feed the FFI cross-compile
     # derivations in nix/ffi.nix (see #androidBundle / #iosBundle). Pinned to
@@ -41,6 +52,7 @@
       fedimint,
       fedimint-wasm,
       nixpkgs,
+      nixpkgs-playwright,
       fenix,
       flakebox,
       android-nixpkgs,
@@ -58,6 +70,10 @@
             android_sdk.accept_license = true;
           };
         };
+        # Kept separate from `pkgs` on purpose: these have to match the
+        # `playwright` version in pnpm-lock.yaml, not the fedimint bump.
+        playwrightBrowsers =
+          (import nixpkgs-playwright { inherit system; }).playwright-driver.browsers;
         # No emulator system images: nothing in this repo runs an emulator, and
         # each ABI's image adds gigabytes to the dev shell closure.
         androidSdk = pkgs.androidenv.composeAndroidPackages {
@@ -148,11 +164,11 @@
             pkgs.which
             pkgs.go
             pkgs.libclang
-            pkgs.playwright-driver.browsers
+            playwrightBrowsers
           ];
 
           wasmShellHook = ''
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+            export PLAYWRIGHT_BROWSERS_PATH=${playwrightBrowsers}
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
