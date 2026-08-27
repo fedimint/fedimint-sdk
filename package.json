@@ -28,6 +28,7 @@
     "preview": "pnpm --filter vite-core preview",
     "reset": "pnpm clean && pnpm build && pnpm preview",
     "changeset": "changeset",
+    "changeset:verify-publish-manifests": "node scripts/verify-publish-manifests.mjs",
     "version": "changeset version",
     "typecheck": "pnpm run --r --parallel --filter \"!@fedimint/react-native\" --filter \"!@fedimint/react-native-bindings\" typecheck",
     "coverage": "vitest run --coverage",
