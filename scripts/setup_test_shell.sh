@@ -2,6 +2,18 @@
 
 set -euo pipefail
 
+# This SDK speaks the v1 mint, wallet and lightning modules, and fedimint has
+# made all three opt-in while defaulting to their v2 counterparts, so ask for a
+# federation that has them. The v2 modules are switched off rather than left
+# alongside: in a federation carrying both, devimint's own gateway peg-in never
+# completes and the setup dies with "Polling gateway pegin claim failed".
+export FM_ENABLE_MODULE_MINT=1
+export FM_ENABLE_MODULE_WALLET=1
+export FM_ENABLE_MODULE_LNV1=1
+export FM_ENABLE_MODULE_MINTV2=0
+export FM_ENABLE_MODULE_WALLETV2=0
+export FM_ENABLE_MODULE_LNV2=0
+
 # devimint now allocates a free faucet port per run and fails the setup if it cannot
 # bind it, so concurrent runs no longer collide (see issue #340). Only a port pinned
 # through FM_FAUCET_PORT can still be occupied by a stale or concurrent devimint, so
