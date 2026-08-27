@@ -19,14 +19,6 @@ export default defineConfig({
           name: 'integration-tests',
           include: ['packages/integration-tests/**/*.test.ts'],
           exclude: ['packages/create-fedimint-app/**/*.test.ts'],
-          // These tests run against a live devimint federation and a fresh
-          // wallet per test, so they can hit transient failures — most notably
-          // a wasm client crash when an RPC lands right after joining the
-          // federation (issues #330/#340). Fixtures re-run on retry, so each
-          // attempt gets a fresh worker and wallet. NOTE: config-level retry
-          // works for test.extend-based tests; per-test `{ retry }` options are
-          // silently ignored for them (vitest 3.2.x).
-          retry: 2,
           browser: {
             enabled: true,
             provider: playwright(),
