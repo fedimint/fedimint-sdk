@@ -171,7 +171,7 @@ Repository conventions:
   `pnpm install`.
 - Avoid `any`; use strong types. Prefer `async`/`await` and make sure
   promises are awaited or explicitly handled.
-- User-facing changes to published `packages/*` need a changeset
+- User-facing changes to published packages need a changeset
   (`pnpm changeset`) with an appropriate semver level.
 - Run `pnpm lint:fix` (prettier) after code changes.
 - Run focused checks when practical (`pnpm typecheck`, `pnpm build`, or a

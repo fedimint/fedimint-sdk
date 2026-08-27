@@ -9,7 +9,7 @@ set -euo pipefail
 
 PLATFORM="${1:?usage: $0 (android|ios)}"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-TARGET_DIR="$REPO_ROOT/fedimint-client-uniffi/target"
+TARGET_DIR="$REPO_ROOT/rust/fedimint-client-uniffi/target"
 
 cd "$REPO_ROOT"
 

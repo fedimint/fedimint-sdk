@@ -34,4 +34,4 @@ Unique identifier for the operation
 
 ## Defined in
 
-[types/wallet.ts:5](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/types/wallet.ts#122)
+[types/wallet.ts:5](https://github.com/fedimint/fedimint-sdk/blob/main/shared/core/src/types/wallet.ts#122)

@@ -112,7 +112,7 @@ jobs:
         uses: alexlwn123/compressed-size-action@alex/fix-build
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '{packages/**/dist/**/*.{js,mjs,cjs},packages/**/*.wasm}'
+          pattern: '{shared,web,react-native,tools}/**/{dist/**/*.{js,mjs,cjs},*.wasm}'
           install-script: nix develop --accept-flake-config -c pnpm install
           build-script: nix develop --accept-flake-config -c pnpm build
 

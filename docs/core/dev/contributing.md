@@ -57,7 +57,7 @@ After setting up Nix and entering the shell, you must build the WASM binary:
 pnpm build:wasm
 ```
 
-This command will build the `fedimint-client-wasm` crate and place the resulting binary in the `packages/wasm-bundler` folder.
+This command will build the `fedimint-client-wasm` crate and place the resulting binary in the `web/wasm-bundler` folder.
 
 ## 1. Cloning the repository
 
@@ -111,7 +111,7 @@ pnpm dev:next         # `@fedimint/core` + Next.js app
 pnpm dev:bare         # HTML + VanillaJS app (no framework)
 ```
 
-Once a playground dev server is running, you can make changes to any of the package source files (e.g. `packages/react`) and it will automatically update the playground.
+Once a playground dev server is running, you can make changes to any of the package source files (e.g. `web/react`) and it will automatically update the playground.
 
 ## 5. Running the test suite
 

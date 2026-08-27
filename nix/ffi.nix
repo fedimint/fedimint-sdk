@@ -88,7 +88,7 @@ let
   # config would needlessly invalidate every cross-compile on edits to it.
   src =
     let
-      crateDir = ../fedimint-client-uniffi;
+      crateDir = ../rust/fedimint-client-uniffi;
       filter =
         path: type: baseNameOf path == "sdallocx_stub.c" || craneLib.filterCargoSources path type;
     in
@@ -217,7 +217,7 @@ let
   ##############
 
   # Targets we actually ship .so files for (matches ubrn.config.yaml
-  # in packages/react-native-bindings). The toolchain has more wired
+  # in react-native/react-native-bindings). The toolchain has more wired
   # up so adding more is one entry per row below.
   androidShipped = [
     {

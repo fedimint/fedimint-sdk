@@ -22,7 +22,7 @@ operations. Application code starts with a `WalletDirector`, then obtains a
 For browser applications, pass a `WasmWorkerTransport`. Platform packages may
 provide a specialized director that configures the appropriate transport.
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/WalletDirector.ts)
+[Code](https://github.com/fedimint/fedimint-sdk/blob/main/shared/core/src/WalletDirector.ts)
 
 ## FedimintWallet
 
@@ -33,7 +33,7 @@ a directly constructible production value.
 
 [Creating a FedimintWallet](FedimintWallet/createWallet)
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/FedimintWallet.ts)
+[Code](https://github.com/fedimint/fedimint-sdk/blob/main/shared/core/src/FedimintWallet.ts)
 
 ## TransportClient
 
@@ -45,7 +45,7 @@ errors.
 Application code normally does not need to construct or pass a `TransportClient`;
 the `WalletDirector` creates it and shares it with the wallets it produces.
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/transport/TransportClient.ts)
+[Code](https://github.com/fedimint/fedimint-sdk/blob/main/shared/core/src/transport/TransportClient.ts)
 
 ## Services
 

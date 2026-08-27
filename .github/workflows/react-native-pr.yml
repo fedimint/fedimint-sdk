@@ -6,11 +6,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'packages/react-native/**'
-      - 'packages/react-native-bindings/**'
-      - 'packages/core/**'
-      - 'packages/types/**'
-      - 'fedimint-client-uniffi/**'
+      - 'react-native/react-native/**'
+      - 'react-native/react-native-bindings/**'
+      - 'shared/core/**'
+      - 'shared/types/**'
+      - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
@@ -20,11 +20,11 @@ on:
     # `labeled` so adding the `ci-ios` label starts the gated iOS build.
     types: [opened, synchronize, reopened, labeled]
     paths:
-      - 'packages/react-native/**'
-      - 'packages/react-native-bindings/**'
-      - 'packages/core/**'
-      - 'packages/types/**'
-      - 'fedimint-client-uniffi/**'
+      - 'react-native/react-native/**'
+      - 'react-native/react-native-bindings/**'
+      - 'shared/core/**'
+      - 'shared/types/**'
+      - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'

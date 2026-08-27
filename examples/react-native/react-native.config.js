@@ -1,5 +1,5 @@
 const path = require('path');
-const pkg = require('../../packages/react-native-bindings/package.json');
+const pkg = require('../../react-native/react-native-bindings/package.json');
 
 /**
  * This configuration is only necessary for developing and testing within this monorepo.
@@ -16,7 +16,7 @@ module.exports = {
   },
   dependencies: {
     [pkg.name]: {
-      root: path.join(__dirname, '../../packages/react-native-bindings'),
+      root: path.join(__dirname, '../../react-native/react-native-bindings'),
     },
   },
 };

@@ -2591,7 +2591,7 @@ DEPENDENCIES:
   - ReactAppDependencyProvider (from `build/generated/ios/ReactAppDependencyProvider`)
   - ReactCodegen (from `build/generated/ios/ReactCodegen`)
   - ReactCommon/turbomodule/core (from `../../../node_modules/react-native/ReactCommon`)
-  - ReactNativeBindings (from `../../../packages/react-native-bindings`)
+  - ReactNativeBindings (from `../../../react-native/react-native-bindings`)
   - "RNCClipboard (from `../../../node_modules/@react-native-clipboard/clipboard`)"
   - RNFS (from `../../../node_modules/react-native-fs`)
   - SocketRocket (~> 0.7.1)
@@ -2757,7 +2757,7 @@ EXTERNAL SOURCES:
   ReactCommon:
     :path: "../../../node_modules/react-native/ReactCommon"
   ReactNativeBindings:
-    :path: "../../../packages/react-native-bindings"
+    :path: "../../../react-native/react-native-bindings"
   RNCClipboard:
     :path: "../../../node_modules/@react-native-clipboard/clipboard"
   RNFS:

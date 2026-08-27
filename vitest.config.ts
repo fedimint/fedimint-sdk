@@ -9,7 +9,12 @@ export default defineConfig({
     watch: false,
     coverage: {
       provider: 'v8',
-      include: ['packages/**/*.ts'],
+      include: [
+        'shared/**/*.ts',
+        'web/**/*.ts',
+        'react-native/**/*.ts',
+        'tools/**/*.ts',
+      ],
     },
     projects: [
       {
@@ -17,8 +22,8 @@ export default defineConfig({
         test: {
           environment: 'happy-dom',
           name: 'integration-tests',
-          include: ['packages/integration-tests/**/*.test.ts'],
-          exclude: ['packages/create-fedimint-app/**/*.test.ts'],
+          include: ['web/integration-tests/**/*.test.ts'],
+          exclude: ['tools/create-fedimint-app/**/*.test.ts'],
           browser: {
             enabled: true,
             provider: playwright(),
@@ -48,8 +53,8 @@ export default defineConfig({
         test: {
           name: 'cli',
           environment: 'happy-dom',
-          include: ['packages/create-fedimint-app/__tests__/*.test.ts'],
-          exclude: ['packages/create-fedimint-app/__tests__/subfolder'],
+          include: ['tools/create-fedimint-app/__tests__/*.test.ts'],
+          exclude: ['tools/create-fedimint-app/__tests__/subfolder'],
           isolate: true,
           testTimeout: 20000,
         },
@@ -58,14 +63,14 @@ export default defineConfig({
         test: {
           name: 'unit',
           environment: 'node',
-          include: ['packages/core/**/*.test.ts'],
+          include: ['shared/core/**/*.test.ts'],
         },
         resolve: {
           alias: {
             // Type-only workspace dependency; alias to source so the package
             // does not have to be built before running unit tests.
             '@fedimint/types': fileURLToPath(
-              new URL('./packages/types/src/index.ts', import.meta.url),
+              new URL('./shared/types/src/index.ts', import.meta.url),
             ),
           },
         },
@@ -74,7 +79,7 @@ export default defineConfig({
         test: {
           name: 'react-native',
           environment: 'node',
-          include: ['packages/react-native/**/*.test.ts'],
+          include: ['react-native/react-native/**/*.test.ts'],
         },
         resolve: {
           alias: {
@@ -83,12 +88,12 @@ export default defineConfig({
             // aliased to source so no workspace build is needed beforehand.
             '@fedimint/react-native-bindings': fileURLToPath(
               new URL(
-                './packages/react-native/src/__tests__/rpc-handler-stub.ts',
+                './react-native/react-native/src/__tests__/rpc-handler-stub.ts',
                 import.meta.url,
               ),
             ),
             '@fedimint/types': fileURLToPath(
-              new URL('./packages/types/src/index.ts', import.meta.url),
+              new URL('./shared/types/src/index.ts', import.meta.url),
             ),
           },
         },

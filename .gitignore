@@ -25,7 +25,7 @@ result
 tasks
 
 # Rust
-fedimint-client-uniffi/target/
+rust/fedimint-client-uniffi/target/
 
 .conductor
 .claude
@@ -161,18 +161,18 @@ rust_modules/
 *.so
 
 # React Native Codegen
-packages/react-native-bindings/ios/generated
-packages/react-native-bindings/android/generated
-packages/react-native-bindings/android/src/main/jniLibs
+react-native/react-native-bindings/ios/generated
+react-native/react-native-bindings/android/generated
+react-native/react-native-bindings/android/src/main/jniLibs
 binaries.tar.gz
-packages/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
-packages/react-native-bindings/ios-artifacts.zip
-packages/react-native-bindings/android-artifacts.zip
-packages/react-native-bindings/ReactNativeBindings.podspec.orig
-packages/react-native-bindings/cpp/generated/
-packages/react-native-bindings/src/generated/
-packages/react-native-bindings/android/cpp-adapter.cpp.rej
-packages/react-native-bindings/android/cpp-adapter.cpp.orig
+react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
+react-native/react-native-bindings/ios-artifacts.zip
+react-native/react-native-bindings/android-artifacts.zip
+react-native/react-native-bindings/ReactNativeBindings.podspec.orig
+react-native/react-native-bindings/cpp/generated/
+react-native/react-native-bindings/src/generated/
+react-native/react-native-bindings/android/cpp-adapter.cpp.rej
+react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 
 # examples/react-native
 examples/react-native/vendor

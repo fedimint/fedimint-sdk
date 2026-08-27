@@ -7,8 +7,8 @@
 //     test: {
 //       environment: 'happy-dom',
 //       name: 'core',
-//       include: ['packages/core/**/*.test.ts'],
-//       exclude: ['packages/create-fedimint-app/**/*.test.ts'],
+//       include: ['shared/core/**/*.test.ts'],
+//       exclude: ['tools/create-fedimint-app/**/*.test.ts'],
 //       browser: {
 //         enabled: true,
 //         provider: 'playwright',
@@ -33,8 +33,8 @@
 //     test: {
 //       name: 'cli',
 //       environment: 'happy-dom',
-//       include: ['packages/create-fedimint-app/__tests__/*.test.ts'],
-//       exclude: ['packages/create-fedimint-app/__tests__/subfolder'],
+//       include: ['tools/create-fedimint-app/__tests__/*.test.ts'],
+//       exclude: ['tools/create-fedimint-app/__tests__/subfolder'],
 //       isolate: true,
 //       testTimeout: 20000,
 //     },

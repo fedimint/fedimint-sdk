@@ -1,6 +1,6 @@
 rust:
   directory: ../../
-  manifestPath: fedimint-client-uniffi/Cargo.toml
+  manifestPath: rust/fedimint-client-uniffi/Cargo.toml
 
 bindings:
   name: FedimintReactNativeBindings

@@ -27,12 +27,12 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fedimint/fedimint-sdk.git",
-    "directory": "packages/create-fedimint"
+    "directory": "tools/create-fedimint-app"
   },
   "bugs": {
     "url": "https://github.com/fedimint/fedimint-sdk/issues"
   },
-  "homepage": "https://github.com/fedimint/fedimint-sdk/tree/main/packages/create-fedimint#readme",
+  "homepage": "https://github.com/fedimint/fedimint-sdk/tree/main/tools/create-fedimint-app#readme",
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6",
     "@types/minimist": "^1.2.5",

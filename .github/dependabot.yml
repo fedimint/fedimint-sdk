@@ -5,7 +5,10 @@ updates:
     directories:
       - '/'
       - '/docs'
-      - '/packages/*'
+      - '/shared/*'
+      - '/web/*'
+      - '/react-native/*'
+      - '/tools/*'
     schedule:
       interval: 'weekly'
     commit-message:

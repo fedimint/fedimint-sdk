@@ -56,7 +56,7 @@ bun create fedimint-app my-fedimint-app --template vite-react-ts
 
 :::
 
-See [create-fedimint-app](https://github.com/fedimint/fedimint-sdk/tree/main/packages/create-fedimint-app) for more details on each supported template.
+See [create-fedimint-app](https://github.com/fedimint/fedimint-sdk/tree/main/tools/create-fedimint-app) for more details on each supported template.
 
 You can use `.` for the project name to scaffold in the current directory.
 

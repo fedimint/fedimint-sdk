@@ -26,7 +26,7 @@ A curated list of talks, awesome projects, resources, and tools built with the *
 
 ## Templates
 
-- [Create Fedimint App](https://github.com/fedimint/fedimint-sdk/tree/main/packages/create-fedimint-app) - Official project scaffolding tool
+- [Create Fedimint App](https://github.com/fedimint/fedimint-sdk/tree/main/tools/create-fedimint-app) - Official project scaffolding tool
   - Vite + React
   - Vite + React + TypeScript
   - Vite + React + TypeScript + Hooks
@@ -34,7 +34,7 @@ A curated list of talks, awesome projects, resources, and tools built with the *
 ## Tools & Libraries
 
 - [@fedimint/core](https://sdk.fedimint.org/core/FedimintWallet/) - Core Fedimint web utilities
-- [@fedimint/react](https://github.com/fedimint/fedimint-sdk/tree/main/packages/react) - React contexts and hooks
+- [@fedimint/react](https://github.com/fedimint/fedimint-sdk/tree/main/web/react) - React contexts and hooks
 
 ## Contributing
 

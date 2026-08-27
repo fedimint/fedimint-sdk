@@ -77,13 +77,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-android
-          path: packages/react-native-bindings/
+          path: react-native/react-native-bindings/
 
       - name: Download iOS Artifacts
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-ios
-          path: packages/react-native-bindings/
+          path: react-native/react-native-bindings/
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -99,7 +99,7 @@ jobs:
 
       - name: Re-apply React Native Checksums
         run: |
-          cd packages/react-native-bindings
+          cd react-native/react-native-bindings
           node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
           cd ../..
 
@@ -117,15 +117,15 @@ jobs:
       - name: Get React Native Bindings Version
         if: steps.changesets.outputs.published == 'true'
         id: rn_version
-        run: echo "version=$(node -p 'require("./packages/react-native-bindings/package.json").version')" >> $GITHUB_OUTPUT
+        run: echo "version=$(node -p 'require("./react-native/react-native-bindings/package.json").version')" >> $GITHUB_OUTPUT
 
       - name: Upload Artifacts to Release (Stable)
         if: steps.changesets.outputs.published == 'true'
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            packages/react-native-bindings/android-artifacts.zip
-            packages/react-native-bindings/ios-artifacts.zip
+            react-native/react-native-bindings/android-artifacts.zip
+            react-native/react-native-bindings/ios-artifacts.zip
           tag_name: react-native-v${{ steps.rn_version.outputs.version }}
           prerelease: false
         env:
@@ -148,7 +148,7 @@ jobs:
             pnpm changeset version --no-git-tag --snapshot canary
 
             # Re-apply checksums (action exported them to env)
-            cd packages/react-native-bindings
+            cd react-native/react-native-bindings
             node -e "const pkg = require(\"./package.json\"); pkg.checksums={android:\"$ANDROID_SHA256\",ios:\"$IOS_SHA256\"}; require(\"fs\").writeFileSync(\"package.json\",JSON.stringify(pkg,null,2)+\"\\n\")"
             patch -p0 --forward < patches/snapshot_version.patch || true
             cd ../..
@@ -163,8 +163,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            packages/react-native-bindings/android-artifacts.zip
-            packages/react-native-bindings/ios-artifacts.zip
+            react-native/react-native-bindings/android-artifacts.zip
+            react-native/react-native-bindings/ios-artifacts.zip
           tag_name: canary
           name: Canary Release
           prerelease: true

@@ -8,15 +8,15 @@ it inside a web worker with IndexedDB persistence.
 
 Repository layout:
 
-- `packages/core` — runtime-agnostic core client library
-- `packages/core-web` — browser SDK (web worker + WASM + IndexedDB)
-- `packages/transport-web` — browser transport layer
-- `packages/react` — React hooks/components
-- `packages/types` — shared TypeScript types
-- `packages/wasm-web` / `packages/wasm-bundler` — packaged WASM artifacts
+- `shared/core` — runtime-agnostic core client library
+- `web/core-web` — browser SDK (web worker + WASM + IndexedDB)
+- `web/transport-web` — browser transport layer
+- `web/react` — React hooks/components
+- `shared/types` — shared TypeScript types
+- `web/wasm-web` / `web/wasm-bundler` — packaged WASM artifacts
   built from the Rust `fedimint-client-wasm` crate
-- `packages/create-fedimint-app` — project scaffolding CLI
-- `packages/integration-tests` — vitest tests run against a real devimint
+- `tools/create-fedimint-app` — project scaffolding CLI
+- `web/integration-tests` — vitest tests run against a real devimint
   federation
 - `examples/` — example apps (vite, webpack, next, bare-js, ...)
 - `docs/` — VitePress documentation site
@@ -79,7 +79,8 @@ pure dependency bump):
 
 ## Published-Package Compatibility
 
-The `@fedimint/*` packages under `packages/` are published to npm and consumed
+The `@fedimint/*` packages under `shared/`, `web/` and `react-native/` are
+published to npm and consumed
 by downstream applications (Fedi, wallet apps, integrations). Treat their
 public API surface with the same care as a wire format.
 
@@ -130,7 +131,7 @@ This is the most repeated structural correctness concern for this codebase.
 
 ## Runtime & Bundler Compatibility
 
-- `packages/core` must stay runtime-agnostic — flag browser-only globals
+- `shared/core` must stay runtime-agnostic — flag browser-only globals
   (`window`, `document`, `indexedDB`, `Worker`) leaking into it.
 - Watch for Node-only APIs (`Buffer`, `process`, `fs`) in browser-targeted
   packages; use web-standard equivalents (`Uint8Array`, `crypto.subtle`).
@@ -171,7 +172,7 @@ Prefer and suggest:
 - **`async`/`await` over promise chains**; no `async` executor functions in
   `new Promise`.
 - **Reuse existing helpers** — before accepting a new utility, check whether
-  `packages/core` or `packages/types` already has one.
+  `shared/core` or `shared/types` already has one.
 - **Errors**: throw `Error` (or subclasses), not strings; preserve the cause
   (`new Error(msg, { cause })`) when wrapping.
 - Named constants over magic numbers; a one-line comment if the value itself

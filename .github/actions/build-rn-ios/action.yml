@@ -47,7 +47,7 @@ runs:
     - name: Compress iOS binaries
       id: compress
       shell: bash
-      working-directory: packages/react-native-bindings
+      working-directory: react-native/react-native-bindings
       run: |
         nix develop ../../ -c zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework
         IOS_SHA256=$(shasum -a 256 ios-artifacts.zip | cut -d' ' -f1)
@@ -63,8 +63,8 @@ runs:
       with:
         name: generated-bindings-ios
         path: |
-          packages/react-native-bindings/src
-          packages/react-native-bindings/lib
-          packages/react-native-bindings/cpp
-          packages/react-native-bindings/ios-artifacts.zip
+          react-native/react-native-bindings/src
+          react-native/react-native-bindings/lib
+          react-native/react-native-bindings/cpp
+          react-native/react-native-bindings/ios-artifacts.zip
         if-no-files-found: error

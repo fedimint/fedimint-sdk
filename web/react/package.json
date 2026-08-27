@@ -4,7 +4,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/fedimint/fedimint-sdk",
-    "directory": "packages/react"
+    "directory": "web/react"
   },
   "type": "module",
   "scripts": {

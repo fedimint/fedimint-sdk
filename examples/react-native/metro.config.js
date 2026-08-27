@@ -22,14 +22,14 @@ config.resolver.nodeModulesPaths = [
 config.resolver.extraNodeModules = {
   '@fedimint/react-native-bindings': path.resolve(
     __dirname,
-    '../../packages/react-native-bindings',
+    '../../react-native/react-native-bindings',
   ),
   '@fedimint/react-native': path.resolve(
     __dirname,
-    '../../packages/react-native',
+    '../../react-native/react-native',
   ),
-  '@fedimint/core': path.resolve(__dirname, '../../packages/core'),
-  '@fedimint/types': path.resolve(__dirname, '../../packages/types'),
+  '@fedimint/core': path.resolve(__dirname, '../../shared/core'),
+  '@fedimint/types': path.resolve(__dirname, '../../shared/types'),
 };
 
 module.exports = config;

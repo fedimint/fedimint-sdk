@@ -55,13 +55,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-android
-          path: packages/react-native-bindings/
+          path: react-native/react-native-bindings/
 
       - name: Download iOS Artifacts
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-ios
-          path: packages/react-native-bindings/
+          path: react-native/react-native-bindings/
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -88,7 +88,7 @@ jobs:
           pnpm changeset version --no-git-tag --snapshot \$snapshot
 
           # Re-apply checksums (action exported them to env)
-          cd packages/react-native-bindings
+          cd react-native/react-native-bindings
           node -e \"const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')\"
           # This is required as the snapshot version is string is too long and considered invalid by the xcode.
           patch -p0 --forward < patches/snapshot_version.patch || true
@@ -103,8 +103,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            packages/react-native-bindings/android-artifacts.zip
-            packages/react-native-bindings/ios-artifacts.zip
+            react-native/react-native-bindings/android-artifacts.zip
+            react-native/react-native-bindings/ios-artifacts.zip
           tag_name: snapshot
           name: Snapshot Release
           prerelease: true

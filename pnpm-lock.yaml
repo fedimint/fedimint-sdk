@@ -70,13 +70,13 @@ importers:
     devDependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../packages/core
+        version: link:../shared/core
       '@fedimint/transport-web':
         specifier: workspace:*
-        version: link:../packages/transport-web
+        version: link:../web/transport-web
       '@fedimint/types':
         specifier: workspace:*
-        version: link:../packages/types
+        version: link:../shared/types
       '@shikijs/vitepress-twoslash':
         specifier: 1.4.0
         version: 1.4.0(supports-color@8.1.1)(typescript@6.0.3)
@@ -103,10 +103,10 @@ importers:
         version: 15.0.3(expo-font@55.0.4)(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
-        version: link:../../packages/react-native
+        version: link:../../react-native/react-native
       expo:
         specifier: ~55.0.0
         version: 55.0.9(@babel/core@7.29.0(supports-color@8.1.1))(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.7)(expo-router@55.0.8)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)(supports-color@8.1.1)(typescript@6.0.3)
@@ -195,10 +195,10 @@ importers:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
-        version: link:../../packages/react-native
+        version: link:../../react-native/react-native
       '@react-native-clipboard/clipboard':
         specifier: ^1.16.3
         version: 1.16.3(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
@@ -323,7 +323,7 @@ importers:
         specifier: ^5.2.3
         version: 5.2.3(supports-color@8.1.1)(tslib@2.8.1)(webpack-cli@6.0.1)(webpack@5.105.2)
 
-  packages/core:
+  shared/core:
     dependencies:
       '@fedimint/types':
         specifier: workspace:*
@@ -354,13 +354,13 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/core-web:
+  web/core-web:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../shared/core
 
-  packages/create-fedimint-app:
+  tools/create-fedimint-app:
     devDependencies:
       '@types/cross-spawn':
         specifier: ^6.0.6
@@ -387,11 +387,11 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0(supports-color@8.1.1)(typescript@6.0.3)
 
-  packages/integration-tests:
+  web/integration-tests:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../shared/core
       '@fedimint/transport-web':
         specifier: workspace:*
         version: link:../transport-web
@@ -399,11 +399,11 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1
 
-  packages/react:
+  web/react:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../shared/core
       react:
         specifier: '>=19.2.0'
         version: 19.2.4
@@ -433,17 +433,17 @@ importers:
         specifier: ^3.5.0
         version: 3.5.0(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2))
 
-  packages/react-native:
+  react-native/react-native:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../shared/core
       '@fedimint/react-native-bindings':
         specifier: workspace:*
         version: link:../react-native-bindings
       '@fedimint/types':
         specifier: workspace:*
-        version: link:../types
+        version: link:../../shared/types
       react:
         specifier: '>=18.0.0'
         version: 19.2.4
@@ -467,7 +467,7 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/react-native-bindings:
+  react-native/react-native-bindings:
     dependencies:
       uniffi-bindgen-react-native:
         specifier: 0.29.3-1
@@ -513,17 +513,17 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/transport-web:
+  web/transport-web:
     dependencies:
       '@fedimint/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../shared/core
       '@fedimint/fedimint-client-wasm-bundler':
         specifier: workspace:*
         version: link:../wasm-bundler
       '@fedimint/types':
         specifier: workspace:*
-        version: link:../types
+        version: link:../../shared/types
     devDependencies:
       '@rollup/plugin-terser':
         specifier: ^0.4.4
@@ -550,15 +550,15 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/types:
+  shared/types:
     devDependencies:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/wasm-bundler: {}
+  web/wasm-bundler: {}
 
-  packages/wasm-web: {}
+  web/wasm-web: {}
 
 packages:
 
