@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install-deps
       - name: Run transport unit tests
         run: pnpm --dir js test:reactnative
@@ -57,7 +57,7 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -72,7 +72,7 @@ jobs:
     # other events still always build.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
