@@ -3,17 +3,17 @@ name: Rust Continuous Integration
 # Continuous integration for the Fedimint-client-uniffi.
 # Builds, tests, and runs clippy linting on the Rust code.
 # Ensures code formatting follows project standards using rustfmt.
-# Runs on changes to fedimint-client-uniffi directory on pushes and pull requests.
+# Runs on changes to the rust/fedimint-client-uniffi directory on pushes and pull requests.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'fedimint-client-uniffi/**'
+      - 'rust/fedimint-client-uniffi/**'
       - '.github/workflows/rust-ci.yaml'
   pull_request:
     paths:
-      - 'fedimint-client-uniffi/**'
+      - 'rust/fedimint-client-uniffi/**'
       - '.github/workflows/rust-ci.yaml'
 
 concurrency:
@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: fedimint-client-uniffi
+        working-directory: rust/fedimint-client-uniffi
 
     steps:
       - name: 'Checkout'
@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: fedimint-client-uniffi
+        working-directory: rust/fedimint-client-uniffi
     steps:
       - name: 'Checkout'
         uses: actions/checkout@v4

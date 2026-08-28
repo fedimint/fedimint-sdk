@@ -34,9 +34,9 @@ runs:
     - name: Compress Android binaries
       id: compress
       shell: bash
-      working-directory: packages/react-native-bindings
+      working-directory: js/react-native/react-native-bindings
       run: |
-        nix develop --accept-flake-config ../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
+        nix develop --accept-flake-config ../../../ -c zip -9 -r android-artifacts.zip android/src/main/jniLibs
         ANDROID_SHA256=$(sha256sum android-artifacts.zip | cut -d' ' -f1)
         ANDROID_SIZE=$(du -h android-artifacts.zip | cut -f1)
         echo "sha256=$ANDROID_SHA256" >> $GITHUB_OUTPUT
@@ -50,9 +50,9 @@ runs:
       with:
         name: generated-bindings-android
         path: |
-          packages/react-native-bindings/src
-          packages/react-native-bindings/lib
-          packages/react-native-bindings/cpp
-          packages/react-native-bindings/android
-          packages/react-native-bindings/android-artifacts.zip
+          js/react-native/react-native-bindings/src
+          js/react-native/react-native-bindings/lib
+          js/react-native/react-native-bindings/cpp
+          js/react-native/react-native-bindings/android
+          js/react-native/react-native-bindings/android-artifacts.zip
         if-no-files-found: error

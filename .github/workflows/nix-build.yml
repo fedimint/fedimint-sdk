@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'fedimint-client-uniffi/**'
+      - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
@@ -13,7 +13,7 @@ on:
     # `labeled` so adding the `ci-ios` label starts the gated iOS build.
     types: [opened, synchronize, reopened, labeled]
     paths:
-      - 'fedimint-client-uniffi/**'
+      - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'

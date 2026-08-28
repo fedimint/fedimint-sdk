@@ -39,5 +39,5 @@ runs:
     - name: Copy WASM files
       shell: bash
       run: |
-        cp result/share/fedimint-client-wasm/fedimint_* packages/wasm-bundler/
-        cp result/share/fedimint-client-wasm-web/fedimint_* packages/wasm-web/
+        cp result/share/fedimint-client-wasm/fedimint_* js/web/wasm-bundler/
+        cp result/share/fedimint-client-wasm-web/fedimint_* js/web/wasm-web/

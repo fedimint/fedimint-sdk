@@ -55,13 +55,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-android
-          path: packages/react-native-bindings/
+          path: js/react-native/react-native-bindings/
 
       - name: Download iOS Artifacts
         uses: actions/download-artifact@v4
         with:
           name: generated-bindings-ios
-          path: packages/react-native-bindings/
+          path: js/react-native/react-native-bindings/
 
       - name: Build WASM
         uses: ./.github/actions/build-wasm
@@ -70,7 +70,7 @@ jobs:
 
       - name: Build all packages
         run: |
-          nix develop --accept-flake-config -c bash -c "pnpm install && pnpm build"
+          nix develop --accept-flake-config -c bash -c "pnpm --dir js install && pnpm --dir js build"
 
       - name: Publish Snapshot
         timeout-minutes: 10
@@ -85,26 +85,26 @@ jobs:
           snapshot=\$(echo \$branch | tr -cs '[:alnum:]-' '-' | tr '[:upper:]' '[:lower:]' | sed 's/-$//')
           npm config set '//registry.npmjs.org/:_authToken' '$NPM_TOKEN'
 
-          pnpm changeset version --no-git-tag --snapshot \$snapshot
+          pnpm --dir js changeset version --no-git-tag --snapshot \$snapshot
 
           # Re-apply checksums (action exported them to env)
-          cd packages/react-native-bindings
+          cd js/react-native/react-native-bindings
           node -e \"const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')\"
           # This is required as the snapshot version is string is too long and considered invalid by the xcode.
           patch -p0 --forward < patches/snapshot_version.patch || true
-          cd ../..
+          cd ../../..
 
-          pnpm build
-          pnpm build:reactnative
-          pnpm changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
+          pnpm --dir js build
+          pnpm --dir js build:reactnative
+          pnpm --dir js changeset publish --no-git-tag --snapshot \$snapshot --tag snapshot
           "
 
       - name: Upload Artifacts to Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            packages/react-native-bindings/android-artifacts.zip
-            packages/react-native-bindings/ios-artifacts.zip
+            js/react-native/react-native-bindings/android-artifacts.zip
+            js/react-native/react-native-bindings/ios-artifacts.zip
           tag_name: snapshot
           name: Snapshot Release
           prerelease: true

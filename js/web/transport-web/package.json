@@ -1,0 +1,44 @@
+{
+  "name": "@fedimint/transport-web",
+  "description": "Web worker transport for the Fedimint client",
+  "version": "0.1.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fedimint/fedimint-sdk.git",
+    "directory": "js/web/transport-web"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": [
+    "./dist/worker.js"
+  ],
+  "scripts": {
+    "build": "rollup --config",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "clean:deep": "pnpm run clean && rm -rf node_modules",
+    "typecheck": "tsc --noEmit",
+    "prepare": "rollup --config"
+  },
+  "dependencies": {
+    "@fedimint/fedimint-client-wasm-bundler": "workspace:*",
+    "@fedimint/types": "workspace:*"
+  },
+  "peerDependencies": {
+    "@fedimint/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^11.1.6",
+    "@types/node": "^22.19.11",
+    "rollup": "^4.59.0",
+    "rollup-plugin-dts": "^6.4.1",
+    "rollup-plugin-typescript2": "^0.36.0",
+    "tslib": "^2.8.1",
+    "typescript": "^6.0.3"
+  }
+}

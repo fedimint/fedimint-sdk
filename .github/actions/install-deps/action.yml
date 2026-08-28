@@ -6,13 +6,17 @@ runs:
   steps:
     - name: Set up pnpm
       uses: pnpm/action-setup@v4
+      with:
+        # packageManager lives in the workspace root, not the repo root.
+        package_json_file: js/package.json
 
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
         node-version: 22
         cache: 'pnpm'
+        cache-dependency-path: js/pnpm-lock.yaml
 
     - name: Install dependencies
-      run: pnpm install
+      run: pnpm --dir js install
       shell: bash
