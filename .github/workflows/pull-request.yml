@@ -3,8 +3,8 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths-ignore:
-      - 'react-native/react-native/**'
-      - 'react-native/react-native-bindings/**'
+      - 'js/react-native/react-native/**'
+      - 'js/react-native/react-native-bindings/**'
       - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
   workflow_dispatch:

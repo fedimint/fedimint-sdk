@@ -1,0 +1,35 @@
+{
+  "name": "@fedimint/react",
+  "version": "0.2.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fedimint/fedimint-sdk",
+    "directory": "js/web/react"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --p ./tsconfig.build.json && vite build",
+    "preview": "vite preview"
+  },
+  "files": [
+    "dist",
+    "lib"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@fedimint/core": "workspace:*",
+    "react": ">=19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": ">=19.2.14",
+    "@types/react-dom": ">=19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react-dom": ">=19.2.4",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.1",
+    "vite-plugin-dts": "^4.5.4",
+    "vite-plugin-wasm": "^3.5.0"
+  }
+}

@@ -3,12 +3,12 @@ version: 2
 updates:
   - package-ecosystem: 'npm'
     directories:
-      - '/'
-      - '/docs'
-      - '/shared/*'
-      - '/web/*'
-      - '/react-native/*'
-      - '/tools/*'
+      - '/js'
+      - '/js/docs'
+      - '/js/shared/*'
+      - '/js/web/*'
+      - '/js/react-native/*'
+      - '/js/tools/*'
     schedule:
       interval: 'weekly'
     commit-message:

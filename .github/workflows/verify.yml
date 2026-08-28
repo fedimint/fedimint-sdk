@@ -21,10 +21,10 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Lint repo
-        run: pnpm lint:repo
+        run: pnpm --dir js lint:repo
 
       - name: Lint code
-        run: pnpm lint
+        run: pnpm --dir js lint
 
   build:
     name: Build JS
@@ -39,7 +39,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build
-        run: pnpm build
+        run: pnpm --dir js build
 
   unit:
     name: Unit Tests
@@ -54,7 +54,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Run unit tests
-        run: pnpm test:unit
+        run: pnpm --dir js test:unit
 
   types:
     name: Check Types
@@ -68,10 +68,10 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build types package
-        run: pnpm --filter @fedimint/types build
+        run: pnpm --dir js --filter @fedimint/types build
 
       - name: Check types
-        run: pnpm typecheck
+        run: pnpm --dir js typecheck
 
   test:
     name: Test
@@ -99,22 +99,22 @@ jobs:
             set -euo pipefail
 
             # Install dependencies
-            pnpm install
+            pnpm --dir js install
 
             # Build packages
-            pnpm build
+            pnpm --dir js build
 
             # Run Tests
-            pnpm test
+            pnpm --dir js test
           EOF
 
       - name: Report Size
         uses: alexlwn123/compressed-size-action@alex/fix-build
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '{shared,web,react-native,tools}/**/{dist/**/*.{js,mjs,cjs},*.wasm}'
-          install-script: nix develop --accept-flake-config -c pnpm install
-          build-script: nix develop --accept-flake-config -c pnpm build
+          pattern: 'js/{shared,web,react-native,tools}/**/{dist/**/*.{js,mjs,cjs},*.wasm}'
+          install-script: nix develop --accept-flake-config -c pnpm --dir js install
+          build-script: nix develop --accept-flake-config -c pnpm --dir js build
 
   build-docs:
     name: Build Docs
@@ -128,7 +128,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build Packages (dependency of docs)
-        run: pnpm build
+        run: pnpm --dir js build
 
       - name: Build Docs
-        run: pnpm docs:build
+        run: pnpm --dir js docs:build

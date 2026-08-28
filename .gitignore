@@ -17,8 +17,8 @@ tsconfig.tsbuildinfo
 
 __screenshots__
 
-docs/.vitepress/dist
-docs/.vitepress/cache
+js/docs/.vitepress/dist
+js/docs/.vitepress/cache
 next-env.d.ts
 
 result
@@ -161,31 +161,31 @@ rust_modules/
 *.so
 
 # React Native Codegen
-react-native/react-native-bindings/ios/generated
-react-native/react-native-bindings/android/generated
-react-native/react-native-bindings/android/src/main/jniLibs
+js/react-native/react-native-bindings/ios/generated
+js/react-native/react-native-bindings/android/generated
+js/react-native/react-native-bindings/android/src/main/jniLibs
 binaries.tar.gz
-react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
-react-native/react-native-bindings/ios-artifacts.zip
-react-native/react-native-bindings/android-artifacts.zip
-react-native/react-native-bindings/ReactNativeBindings.podspec.orig
-react-native/react-native-bindings/cpp/generated/
-react-native/react-native-bindings/src/generated/
-react-native/react-native-bindings/android/cpp-adapter.cpp.rej
-react-native/react-native-bindings/android/cpp-adapter.cpp.orig
+js/react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
+js/react-native/react-native-bindings/ios-artifacts.zip
+js/react-native/react-native-bindings/android-artifacts.zip
+js/react-native/react-native-bindings/ReactNativeBindings.podspec.orig
+js/react-native/react-native-bindings/cpp/generated/
+js/react-native/react-native-bindings/src/generated/
+js/react-native/react-native-bindings/android/cpp-adapter.cpp.rej
+js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 
-# examples/react-native
-examples/react-native/vendor
-examples/react-native/ios/Pods
-examples/react-native/**/.xcode.env.local
-examples/react-native/DerivedData
-examples/react-native/*.ipa
-examples/react-native/*.hprof
-examples/react-native/*.iml
-examples/react-native/*.keystore
-!examples/react-native/android/app/debug.keystore
-examples/react-native/*.jsbundle
-examples/react-native/**/fastlane/report.xml
-examples/react-native/**/fastlane/Preview.html
-examples/react-native/**/fastlane/screenshots
-examples/react-native/**/fastlane/test_output
+# js/examples/react-native
+js/examples/react-native/vendor
+js/examples/react-native/ios/Pods
+js/examples/react-native/**/.xcode.env.local
+js/examples/react-native/DerivedData
+js/examples/react-native/*.ipa
+js/examples/react-native/*.hprof
+js/examples/react-native/*.iml
+js/examples/react-native/*.keystore
+!js/examples/react-native/android/app/debug.keystore
+js/examples/react-native/*.jsbundle
+js/examples/react-native/**/fastlane/report.xml
+js/examples/react-native/**/fastlane/Preview.html
+js/examples/react-native/**/fastlane/screenshots
+js/examples/react-native/**/fastlane/test_output

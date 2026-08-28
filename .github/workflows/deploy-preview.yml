@@ -6,7 +6,7 @@ on:
 
   # push:
   # branches: ['main']
-  # paths: ['shared/core/**', 'examples/vite-core/**']
+  # paths: ['js/shared/core/**', 'js/examples/vite-core/**']
   workflow_dispatch:
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
         uses: ./.github/actions/install-deps
 
       - name: Build
-        run: pnpm build && pnpm build:pages
+        run: pnpm --dir js build && pnpm --dir js build:pages
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -42,7 +42,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload dist folder
-          path: 'examples/vite-core/dist'
+          path: 'js/examples/vite-core/dist'
 
       - name: Deploy to GitHub Pages
         id: deployment

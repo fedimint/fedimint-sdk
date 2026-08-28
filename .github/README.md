@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../docs/public/icon.png" alt="Fedimint Logo" width="300" />
+  <img src="../js/docs/public/icon.png" alt="Fedimint Logo" width="300" />
   <!-- Removes the border below the header tag -->
   <div id="toc"><ul align="center" style="list-style: none;"><summary>
     <h1><b>Fedimint Sdk</b></h1>
@@ -36,42 +36,51 @@
 | Package                                                                               | Version                                                                                                                                                                                                       | Description                                                                                                                 |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | [`@fedimint/core-web`](https://www.npmjs.com/package/@fedimint/core-web) (deprecated) | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Fcore-web?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Fcore-web>)                                         | Legacy shim that re-exports `@fedimint/core`; new projects should depend on `@fedimint/core` directly.                      |
-| [`@fedimint/fedimint-client-wasm-web`](../web/wasm-web/README.md)                     | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Ffedimint-client-wasm-web?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Ffedimint-client-wasm-web>)         | Not intended for direct use. Wasm-pack build targeting web environments; consumed by `@fedimint/transport-web`.             |
-| [`@fedimint/fedimint-client-wasm-bundler`](../web/wasm-bundler/README.md)             | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Ffedimint-client-wasm-bundler?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Ffedimint-client-wasm-bundler>) | Not intended for direct use. Wasm-pack build targeting bundler environments; used when bundling custom transports or hosts. |
+| [`@fedimint/fedimint-client-wasm-web`](../js/web/wasm-web/README.md)                  | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Ffedimint-client-wasm-web?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Ffedimint-client-wasm-web>)         | Not intended for direct use. Wasm-pack build targeting web environments; consumed by `@fedimint/transport-web`.             |
+| [`@fedimint/fedimint-client-wasm-bundler`](../js/web/wasm-bundler/README.md)          | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Ffedimint-client-wasm-bundler?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Ffedimint-client-wasm-bundler>) | Not intended for direct use. Wasm-pack build targeting bundler environments; used when bundling custom transports or hosts. |
 | [`@fedimint/types`](https://www.npmjs.com/package/@fedimint/types)                    | ![NPM Version (latest)](<https://img.shields.io/npm/v/%40fedimint%2Ftypes?style=plastic&logo=npm&logoColor=rgb(187%2C%2054%2C%2057)&label=%40fedimint%2Ftypes>)                                               | Shared TypeScript interfaces for transports and other Fedimint client implementations.                                      |
-| [`@fedimint/integration-tests`](../web/integration-tests/README.md) (private)         | —                                                                                                                                                                                                             | Internal Vitest harness for exercising the SDK against embedded nodes.                                                      |
+| [`@fedimint/integration-tests`](../js/web/integration-tests/README.md) (private)      | —                                                                                                                                                                                                             | Internal Vitest harness for exercising the SDK against embedded nodes.                                                      |
 
 ## Structure 🛠️
 
-This monorepo is structured as a pnpm workspace. There are some helpful scripts in the root `package.json` to help manage the workspace.
+This monorepo is structured as a pnpm workspace rooted at `js/`, alongside the Rust crates in `rust/`. There are some helpful scripts in `js/package.json` to help manage the workspace.
 
 ```bash
 fedimint-sdk
-├── docs
-├── examples
-│   ├── vite-core
-│   ├── bare-js
-│   ├── next-js
-│   └── webpack-app
-└── packages
-    ├── core
-    ├── core-web
-    ├── create-fedimint-app
-    ├── integration-tests
-    ├── react
-    ├── transport-web
-    ├── types
-    ├── wasm-bundler
-    └── wasm-web
-├── scripts
+├── js
+│   ├── docs
+│   ├── examples
+│   │   ├── vite-core
+│   │   ├── bare-js
+│   │   ├── next-js
+│   │   └── webpack-app
+│   ├── shared
+│   │   ├── core
+│   │   └── types
+│   ├── web
+│   │   ├── core-web
+│   │   ├── integration-tests
+│   │   ├── react
+│   │   ├── transport-web
+│   │   ├── wasm-bundler
+│   │   └── wasm-web
+│   ├── react-native
+│   │   ├── react-native
+│   │   └── react-native-bindings
+│   └── tools
+│       └── create-fedimint-app
+├── rust
+│   └── fedimint-client-uniffi
+├── nix
+└── scripts
 ```
 
 ### Examples
 
-- [`vite-core`](../examples/vite-core/README.md): React + Vite starter focused on `@fedimint/core` primitives.
-- [`next-js`](../examples/next-js/README.md): Example configuration for a Next.js application.
-- [`webpack-app`](../examples/webpack-app/README.md): Demonstrates configuring webpack for Fedimint applications.
-- [`bare-js`](../examples/bare-js/README.md): Minimal usage of `@fedimint/core` without a bundler.
+- [`vite-core`](../js/examples/vite-core/README.md): React + Vite starter focused on `@fedimint/core` primitives.
+- [`next-js`](../js/examples/next-js/README.md): Example configuration for a Next.js application.
+- [`webpack-app`](../js/examples/webpack-app/README.md): Demonstrates configuring webpack for Fedimint applications.
+- [`bare-js`](../js/examples/bare-js/README.md): Minimal usage of `@fedimint/core` without a bundler.
 
 ### Developer Calls
 

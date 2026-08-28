@@ -217,7 +217,7 @@ let
   ##############
 
   # Targets we actually ship .so files for (matches ubrn.config.yaml
-  # in react-native/react-native-bindings). The toolchain has more wired
+  # in js/react-native/react-native-bindings). The toolchain has more wired
   # up so adding more is one entry per row below.
   androidShipped = [
     {

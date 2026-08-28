@@ -197,6 +197,8 @@ Decision rules:
   and what needs to be fixed in a follow-up.
 - Run `pnpm lint:fix` after code changes when available, plus the smallest
   useful check (`pnpm typecheck`, `pnpm build`, or a targeted vitest run).
+  The pnpm workspace is rooted at `js/`, so run pnpm from there or pass
+  `--dir js`.
   Report any checks that were skipped and why in the issue or PR.
 - Avoid broad refactors and do not change unrelated code.
 - Do not mention secrets or environment variable values in comments, issues,

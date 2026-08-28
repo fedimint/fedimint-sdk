@@ -6,10 +6,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'react-native/react-native/**'
-      - 'react-native/react-native-bindings/**'
-      - 'shared/core/**'
-      - 'shared/types/**'
+      - 'js/react-native/react-native/**'
+      - 'js/react-native/react-native-bindings/**'
+      - 'js/shared/core/**'
+      - 'js/shared/types/**'
       - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
@@ -20,10 +20,10 @@ on:
     # `labeled` so adding the `ci-ios` label starts the gated iOS build.
     types: [opened, synchronize, reopened, labeled]
     paths:
-      - 'react-native/react-native/**'
-      - 'react-native/react-native-bindings/**'
-      - 'shared/core/**'
-      - 'shared/types/**'
+      - 'js/react-native/react-native/**'
+      - 'js/react-native/react-native-bindings/**'
+      - 'js/shared/core/**'
+      - 'js/shared/types/**'
       - 'rust/fedimint-client-uniffi/**'
       - 'nix/**'
       - 'flake.nix'
@@ -45,12 +45,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/install-deps
       - name: Run transport unit tests
-        run: pnpm test:reactnative
+        run: pnpm --dir js test:reactnative
       - name: Type-check transport against the stubbed bindings
         # The package is excluded from the root typecheck because its real
         # bindings types are ubrn-generated; this config maps them to the
         # test stub so the type-level contract still gets checked.
-        run: pnpm --filter @fedimint/react-native typecheck:test
+        run: pnpm --dir js --filter @fedimint/react-native typecheck:test
 
   build-android:
     name: Build Android

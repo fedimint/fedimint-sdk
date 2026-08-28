@@ -168,7 +168,8 @@ Repository conventions:
 - Follow any repository instructions (e.g. `.github/CONTRIBUTING.md`) and
   nested package READMEs.
 - Use `pnpm` (never npm or yarn); dependencies are installed with
-  `pnpm install`.
+  `pnpm install`. The pnpm workspace is rooted at `js/`, not the repo
+  root, so run pnpm from there or pass `--dir js`.
 - Avoid `any`; use strong types. Prefer `async`/`await` and make sure
   promises are awaited or explicitly handled.
 - User-facing changes to published packages need a changeset

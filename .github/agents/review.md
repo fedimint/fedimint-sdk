@@ -8,18 +8,20 @@ it inside a web worker with IndexedDB persistence.
 
 Repository layout:
 
-- `shared/core` — runtime-agnostic core client library
-- `web/core-web` — browser SDK (web worker + WASM + IndexedDB)
-- `web/transport-web` — browser transport layer
-- `web/react` — React hooks/components
-- `shared/types` — shared TypeScript types
-- `web/wasm-web` / `web/wasm-bundler` — packaged WASM artifacts
+- `js/shared/core` — runtime-agnostic core client library
+- `js/web/core-web` — browser SDK (web worker + WASM + IndexedDB)
+- `js/web/transport-web` — browser transport layer
+- `js/web/react` — React hooks/components
+- `js/shared/types` — shared TypeScript types
+- `js/web/wasm-web` / `js/web/wasm-bundler` — packaged WASM artifacts
   built from the Rust `fedimint-client-wasm` crate
-- `tools/create-fedimint-app` — project scaffolding CLI
-- `web/integration-tests` — vitest tests run against a real devimint
+- `js/tools/create-fedimint-app` — project scaffolding CLI
+- `js/web/integration-tests` — vitest tests run against a real devimint
   federation
-- `examples/` — example apps (vite, webpack, next, bare-js, ...)
-- `docs/` — VitePress documentation site
+- `js/examples/` — example apps (vite, webpack, next, bare-js, ...)
+- `js/docs/` — VitePress documentation site
+- `rust/fedimint-client-uniffi` — the uniffi crate the React Native
+  bindings are generated from
 
 ## Review Philosophy
 
@@ -79,13 +81,13 @@ pure dependency bump):
 
 ## Published-Package Compatibility
 
-The `@fedimint/*` packages under `shared/`, `web/` and `react-native/` are
+The `@fedimint/*` packages under `js/shared/`, `js/web/` and `js/react-native/` are
 published to npm and consumed
 by downstream applications (Fedi, wallet apps, integrations). Treat their
 public API surface with the same care as a wire format.
 
 - **Changesets**: user-facing changes to published packages need a changeset
-  (`.changeset/*.md`) with the correct semver level. Removing or renaming an
+  (`js/.changeset/*.md`) with the correct semver level. Removing or renaming an
   export, changing a function signature, or changing observable behavior is
   a breaking change and needs a major changeset — flag PRs that make such
   changes with only a patch/minor changeset, or none at all.
@@ -131,7 +133,7 @@ This is the most repeated structural correctness concern for this codebase.
 
 ## Runtime & Bundler Compatibility
 
-- `shared/core` must stay runtime-agnostic — flag browser-only globals
+- `js/shared/core` must stay runtime-agnostic — flag browser-only globals
   (`window`, `document`, `indexedDB`, `Worker`) leaking into it.
 - Watch for Node-only APIs (`Buffer`, `process`, `fs`) in browser-targeted
   packages; use web-standard equivalents (`Uint8Array`, `crypto.subtle`).
@@ -172,7 +174,7 @@ Prefer and suggest:
 - **`async`/`await` over promise chains**; no `async` executor functions in
   `new Promise`.
 - **Reuse existing helpers** — before accepting a new utility, check whether
-  `shared/core` or `shared/types` already has one.
+  `js/shared/core` or `js/shared/types` already has one.
 - **Errors**: throw `Error` (or subclasses), not strings; preserve the cause
   (`new Error(msg, { cause })`) when wrapping.
 - Named constants over magic numbers; a one-line comment if the value itself
