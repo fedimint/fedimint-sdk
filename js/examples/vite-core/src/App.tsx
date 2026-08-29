@@ -9,6 +9,8 @@ import type {
 const TESTNET_FEDERATION_CODE =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
 
+type AppPhase = 'loading' | 'onboarding' | 'ready'
+
 const useIsOpen = () => {
   const [open, setIsOpen] = useState(false)
 
@@ -46,8 +48,62 @@ const useBalance = (checkIsOpen: () => void) => {
 }
 
 const App = () => {
+  const [phase, setPhase] = useState<AppPhase>('loading')
   const { open, checkIsOpen } = useIsOpen()
   const balance = useBalance(checkIsOpen)
+
+  useEffect(() => {
+    const checkOnboarding = async () => {
+      try {
+        const hasMnemonic = await director.hasMnemonicSet()
+        if (hasMnemonic) {
+          // Mnemonic exists, try to open the wallet
+          try {
+            await wallet?.open()
+          } catch (e) {
+            console.warn(
+              'Wallet has mnemonic but could not open client (may need to join a federation)',
+              e,
+            )
+          }
+          setPhase('ready')
+        } else {
+          setPhase('onboarding')
+        }
+      } catch (e) {
+        console.error('Error checking onboarding state:', e)
+        setPhase('onboarding')
+      }
+    }
+
+    checkOnboarding()
+  }, [])
+
+  const handleOnboardingComplete = useCallback(async () => {
+    try {
+      await wallet?.open()
+    } catch (e) {
+      console.warn(
+        'Wallet could not be opened after onboarding (may need to join a federation)',
+        e,
+      )
+    }
+    checkIsOpen()
+    setPhase('ready')
+  }, [checkIsOpen])
+
+  if (phase === 'loading') {
+    return (
+      <div className="loading-screen">
+        <div className="loading-spinner" />
+        <p>Initializing wallet...</p>
+      </div>
+    )
+  }
+
+  if (phase === 'onboarding') {
+    return <OnboardingScreen onComplete={handleOnboardingComplete} />
+  }
 
   return (
     <>
@@ -78,7 +134,6 @@ const App = () => {
       </header>
       <main>
         <WalletStatus open={open} checkIsOpen={checkIsOpen} balance={balance} />
-        <MnemonicManager />
         <JoinFederation open={open} checkIsOpen={checkIsOpen} />
         <GenerateLightningInvoice />
         <RedeemEcash />
@@ -92,107 +147,121 @@ const App = () => {
   )
 }
 
-const MnemonicManager = () => {
-  const [mnemonicState, setMnemonicState] = useState<string>('')
-  const [inputMnemonic, setInputMnemonic] = useState<string>('')
-  const [activeAction, setActiveAction] = useState<
-    'get' | 'set' | 'generate' | null
-  >(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [message, setMessage] = useState<{
-    text: string
-    type: 'success' | 'error'
-  }>()
+const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
+  const [step, setStep] = useState<'welcome' | 'generate' | 'restore'>(
+    'welcome',
+  )
+  const [generatedMnemonic, setGeneratedMnemonic] = useState('')
+  const [inputMnemonic, setInputMnemonic] = useState('')
   const [showMnemonic, setShowMnemonic] = useState(false)
+  const [backedUp, setBackedUp] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [copyFeedback, setCopyFeedback] = useState('')
 
-  const clearMessage = () => setMessage(undefined)
-
-  // Helper function to extract user-friendly error messages
   const extractErrorMessage = (error: any): string => {
-    let errorMsg = 'Operation failed'
-
-    if (error instanceof Error) {
-      errorMsg = error.message
-    } else if (typeof error === 'object' && error !== null) {
-      // Handle RPC error objects
-      const rpcError = error as any
-      if (rpcError.error) {
-        errorMsg = rpcError.error
-      } else if (rpcError.message) {
-        errorMsg = rpcError.message
-      }
+    if (error instanceof Error) return error.message
+    if (typeof error === 'object' && error !== null) {
+      return error.error || error.message || String(error)
     }
-
-    return errorMsg
+    return String(error)
   }
 
-  const handleAction = async (action: 'get' | 'set' | 'generate') => {
-    if (activeAction === action) {
-      setActiveAction(null)
+  const handleGenerate = async () => {
+    setIsLoading(true)
+    setError('')
+    try {
+      const words = await director.generateMnemonic()
+      setGeneratedMnemonic(words.join(' '))
+      setShowMnemonic(true)
+      setStep('generate')
+    } catch (err) {
+      console.error('Error generating mnemonic:', err)
+      setError(extractErrorMessage(err))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleConfirmGenerated = async () => {
+    if (!backedUp) return
+    setIsLoading(true)
+    setError('')
+    try {
+      const words = generatedMnemonic.split(' ')
+      await director.setMnemonic(words)
+      onComplete()
+    } catch (err) {
+      const msg = extractErrorMessage(err)
+      if (
+        msg.includes('mnemonic already exists') ||
+        msg.includes('already set')
+      ) {
+        // The Rust backend's generateMnemonic saves the mnemonic to the DB immediately.
+        // So setMnemonic will fail with "already exists". But we MUST verify the
+        // stored mnemonic actually matches what the user wrote down, otherwise
+        // they could end up with a wallet backed by a different key than they saved.
+        try {
+          const existing = await director.getMnemonic()
+          if (existing.join(' ') === generatedMnemonic) {
+            onComplete()
+          } else {
+            // CRITICAL: DB has a DIFFERENT mnemonic than what was displayed.
+            // The user wrote down the wrong key. Force a wipe.
+            setError(
+              'CRITICAL: The stored mnemonic does not match the one displayed. ' +
+                'This means stale data exists. You must wipe and start fresh.',
+            )
+            setIsLoading(false)
+          }
+        } catch (verifyErr) {
+          console.error('Failed to verify existing mnemonic:', verifyErr)
+          setError(
+            'Could not verify the stored mnemonic. Please wipe and try again.',
+          )
+          setIsLoading(false)
+        }
+      } else {
+        console.error('Error setting mnemonic:', err)
+        setError(msg)
+        setIsLoading(false)
+      }
+    }
+  }
+
+  const handleRestore = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = inputMnemonic.trim()
+    if (!trimmed) return
+
+    const words = trimmed.split(/\s+/)
+    if (words.length !== 12 && words.length !== 24) {
+      setError('Mnemonic must be exactly 12 or 24 words')
       return
     }
-    setActiveAction(action)
-    clearMessage()
-
-    if (action === 'get') {
-      await handleGetMnemonic()
-    } else if (action === 'generate') {
-      await handleGenerateMnemonic()
-    }
-  }
-
-  const handleGenerateMnemonic = async () => {
-    setIsLoading(true)
-    try {
-      const newMnemonic = await director.generateMnemonic()
-      setMnemonicState(newMnemonic.join(' '))
-      setMessage({ text: 'New mnemonic generated!', type: 'success' })
-      setShowMnemonic(true)
-    } catch (error) {
-      console.error('Error generating mnemonic:', error)
-      const errorMsg = extractErrorMessage(error)
-      setMessage({ text: errorMsg, type: 'error' })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleGetMnemonic = async () => {
-    setIsLoading(true)
-    try {
-      const mnemonic = await director.getMnemonic()
-      if (mnemonic && mnemonic.length > 0) {
-        setMnemonicState(mnemonic.join(' '))
-        setMessage({ text: 'Mnemonic retrieved!', type: 'success' })
-        setShowMnemonic(true)
-      } else {
-        setMessage({ text: 'No mnemonic found', type: 'error' })
-      }
-    } catch (error) {
-      console.error('Error getting mnemonic:', error)
-      const errorMsg = extractErrorMessage(error)
-      setMessage({ text: errorMsg, type: 'error' })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleSetMnemonic = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!inputMnemonic.trim()) return
 
     setIsLoading(true)
+    setError('')
     try {
-      const words = inputMnemonic.trim().split(/\s+/)
       await director.setMnemonic(words)
-      setMessage({ text: 'Mnemonic set successfully!', type: 'success' })
-      setInputMnemonic('')
-      setMnemonicState(words.join(' '))
-      setActiveAction(null)
-    } catch (error) {
-      console.error('Error setting mnemonic:', error)
-      const errorMsg = extractErrorMessage(error)
-      setMessage({ text: errorMsg, type: 'error' })
+      onComplete()
+    } catch (err) {
+      const msg = extractErrorMessage(err)
+      if (msg.includes('Wallet mnemonic already exists')) {
+        try {
+          const existing = await director.getMnemonic()
+          if (existing.join(' ') === words.join(' ')) {
+            // The mnemonic in the DB already matches what they are trying to restore.
+            // This happens if they generated it, went back without wiping, and pasted it here.
+            onComplete()
+            return
+          }
+        } catch (e) {
+          console.error('Failed to get existing mnemonic to compare:', e)
+        }
+      }
+      console.error('Error restoring mnemonic:', err)
+      setError(msg)
     } finally {
       setIsLoading(false)
     }
@@ -200,90 +269,232 @@ const MnemonicManager = () => {
 
   const copyToClipboard = async () => {
     try {
-      await navigator.clipboard.writeText(mnemonicState)
-      setMessage({ text: 'Copied to clipboard!', type: 'success' })
-    } catch (error) {
-      setMessage({ text: 'Failed to copy', type: 'error' })
+      await navigator.clipboard.writeText(generatedMnemonic)
+      setCopyFeedback('Copied!')
+    } catch {
+      setCopyFeedback('Failed to copy')
+    } finally {
+      setTimeout(() => setCopyFeedback(''), 2000)
     }
   }
 
-  return (
-    <div className="section mnemonic-section">
-      <h3>🔑 Mnemonic Manager</h3>
+  const handleWipe = (skipConfirm = false) => {
+    if (
+      !skipConfirm &&
+      !window.confirm(
+        'Are you sure you want to wipe all wallet data? This cannot be undone.',
+      )
+    )
+      return
+    localStorage.setItem('pendingWipe', 'true')
+    window.location.reload()
+  }
 
-      <div className="mnemonic-buttons">
-        <button
-          onClick={() => handleAction('get')}
-          disabled={isLoading}
-          className={`btn ${activeAction === 'get' ? 'active' : ''}`}
-        >
-          Get
-        </button>
-        <button
-          onClick={() => handleAction('set')}
-          disabled={isLoading}
-          className={`btn ${activeAction === 'set' ? 'active' : ''}`}
-        >
-          Set
-        </button>
-        <button
-          onClick={() => handleAction('generate')}
-          disabled={isLoading}
-          className={`btn ${activeAction === 'generate' ? 'active' : ''}`}
-        >
-          Generate
-        </button>
+  if (step === 'welcome') {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-card">
+          <h1>Welcome to Fedimint</h1>
+          <p className="onboarding-subtitle">
+            Set up your wallet to get started. You can create a new wallet or
+            restore an existing one from a mnemonic phrase.
+          </p>
+          <div className="onboarding-actions">
+            <button
+              className="btn btn-primary btn-large"
+              onClick={handleGenerate}
+              disabled={isLoading}
+            >
+              {isLoading ? 'Generating...' : 'Create New Wallet'}
+            </button>
+            <button
+              className="btn btn-secondary btn-large"
+              onClick={() => setStep('restore')}
+              disabled={isLoading}
+            >
+              Restore from Mnemonic
+            </button>
+          </div>
+          {error && (
+            <div className="onboarding-error">
+              {error}
+              <div style={{ marginTop: '0.75rem', textAlign: 'center' }}>
+                <button
+                  className="btn btn-small"
+                  onClick={() => handleWipe()}
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: '#ff4444',
+                    border: '1px solid #ff4444',
+                  }}
+                >
+                  Wipe Data & Reset
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+    )
+  }
 
-      {activeAction === 'set' && (
-        <form onSubmit={handleSetMnemonic} className="mnemonic-form">
-          <textarea
-            placeholder="Enter 12 or 24 words separated by spaces"
-            value={inputMnemonic}
-            onChange={(e) => setInputMnemonic(e.target.value)}
-            rows={2}
-            className="mnemonic-input"
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !inputMnemonic.trim()}
-            className="btn btn-primary"
-          >
-            {isLoading ? 'Setting...' : 'Set Mnemonic'}
-          </button>
-        </form>
-      )}
+  if (step === 'generate') {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-card">
+          <h2>Your Recovery Phrase</h2>
+          <p className="onboarding-subtitle">
+            Write down these words in order and store them somewhere safe. This
+            is the only way to recover your wallet.
+          </p>
 
-      {mnemonicState && (
-        <div className="mnemonic-display">
-          <div className="mnemonic-output">
-            <span className={showMnemonic ? '' : 'blurred'}>
-              {mnemonicState}
-            </span>
-            <div className="mnemonic-actions">
+          <div className="mnemonic-display-grid">
+            <div className={`mnemonic-words ${showMnemonic ? '' : 'blurred'}`}>
+              {generatedMnemonic.split(' ').map((word, i) => (
+                <div key={i} className="mnemonic-word">
+                  <span className="word-index">{i + 1}.</span>
+                  <span>{word}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mnemonic-controls">
               <button
+                className="btn btn-small"
                 onClick={() => setShowMnemonic(!showMnemonic)}
-                className="btn btn-small"
-                title={showMnemonic ? 'Hide mnemonic' : 'Show mnemonic'}
               >
-                {showMnemonic ? '👁️' : '👁️‍🗨️'}
+                {showMnemonic ? '🙈 Hide' : '👁️ Reveal'}
               </button>
               <button
-                onClick={copyToClipboard}
                 className="btn btn-small"
-                disabled={!showMnemonic}
-                title="Copy to clipboard"
+                onClick={copyToClipboard}
+                disabled={!showMnemonic || !!copyFeedback}
               >
-                📋
+                📋 Copy
               </button>
+              {copyFeedback && (
+                <span className="copy-feedback">{copyFeedback}</span>
+              )}
             </div>
           </div>
-        </div>
-      )}
 
-      {message && (
-        <div className={`message ${message.type}`}>{message.text}</div>
-      )}
+          <label className="backup-checkbox">
+            <input
+              type="checkbox"
+              checked={backedUp}
+              onChange={(e) => setBackedUp(e.target.checked)}
+            />
+            I have written down my recovery phrase and stored it safely
+          </label>
+
+          <div className="onboarding-actions">
+            <button
+              className="btn btn-primary btn-large"
+              onClick={handleConfirmGenerated}
+              disabled={!backedUp || isLoading}
+            >
+              {isLoading ? 'Setting up...' : 'Continue'}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                // generateMnemonic saves to the DB immediately. Going back requires
+                // a full reload to wipe the saved key, otherwise the user is stuck.
+                if (
+                  window.confirm(
+                    'Going back requires a full app reload to clear the generated key. Proceed?',
+                  )
+                ) {
+                  handleWipe(true)
+                }
+              }}
+            >
+              ← Back
+            </button>
+          </div>
+          {error && (
+            <div className="onboarding-error">
+              {error}
+              <div style={{ marginTop: '0.75rem', textAlign: 'center' }}>
+                <button
+                  className="btn btn-small"
+                  onClick={() => handleWipe()}
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: '#ff4444',
+                    border: '1px solid #ff4444',
+                  }}
+                >
+                  Wipe Data & Reset
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // step === 'restore'
+  return (
+    <div className="onboarding">
+      <div className="onboarding-card">
+        <h2>Restore Wallet</h2>
+        <p className="onboarding-subtitle">
+          Enter your 12 or 24 word recovery phrase to restore your wallet.
+        </p>
+
+        <form onSubmit={handleRestore}>
+          <textarea
+            className="mnemonic-textarea"
+            placeholder="Enter your recovery phrase (12 or 24 words separated by spaces)"
+            value={inputMnemonic}
+            onChange={(e) => {
+              setInputMnemonic(e.target.value)
+              setError('')
+            }}
+            rows={3}
+          />
+          <div className="onboarding-actions">
+            <button
+              className="btn btn-primary btn-large"
+              type="submit"
+              disabled={isLoading || !inputMnemonic.trim()}
+            >
+              {isLoading ? 'Restoring...' : 'Restore Wallet'}
+            </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => {
+                setStep('welcome')
+                setInputMnemonic('')
+                setError('')
+              }}
+            >
+              ← Back
+            </button>
+          </div>
+          {error && (
+            <div className="onboarding-error">
+              {error}
+              <div style={{ marginTop: '0.75rem', textAlign: 'center' }}>
+                <button
+                  className="btn btn-small"
+                  type="button"
+                  onClick={() => handleWipe()}
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: '#ff4444',
+                    border: '1px solid #ff4444',
+                  }}
+                >
+                  Wipe Data & Reset
+                </button>
+              </div>
+            </div>
+          )}
+        </form>
+      </div>
     </div>
   )
 }
@@ -426,29 +637,32 @@ const JoinFederation = ({
             <details className="preview-details">
               <summary>Guardian Endpoints</summary>
               <div className="guardian-list">
-                {Object.entries(previewData.config.global.api_endpoints).map(
-                  ([id, peer]) => (
-                    <div key={id} className="guardian-item">
-                      <div>
-                        <strong>{peer.name}</strong>
-                      </div>
-                      <div className="url">{peer.url}</div>
+                {Object.entries(
+                  previewData.config.global.api_endpoints as Record<
+                    string,
+                    any
+                  >,
+                ).map(([id, peer]) => (
+                  <div key={id} className="guardian-item">
+                    <div>
+                      <strong>{peer.name}</strong>
                     </div>
-                  ),
-                )}
+                    <div className="url">{peer.url}</div>
+                  </div>
+                ))}
               </div>
             </details>
 
             <details className="preview-details">
               <summary>Module Configuration</summary>
               <div className="module-list">
-                {Object.entries(previewData.config.modules).map(
-                  ([id, module]) => (
-                    <div key={id} className="module-item">
-                      <strong>{module.kind}</strong>
-                    </div>
-                  ),
-                )}
+                {Object.entries(
+                  previewData.config.modules as Record<string, any>,
+                ).map(([id, module]) => (
+                  <div key={id} className="module-item">
+                    <strong>{module.kind}</strong>
+                  </div>
+                ))}
               </div>
             </details>
 

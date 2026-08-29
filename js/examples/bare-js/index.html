@@ -50,6 +50,24 @@
     let wallet;
     const TESTNET_INVITE_CODE = 'fed11qgqzc2nhwden5te0vejkg6tdd9h8gepwvejkg6tdd9h8garhduhx6at5d9h8jmn9wshxxmmd9uqqzgxg6s3evnr6m9zdxr6hxkdkukexpcs3mn7mj3g5pc5dfh63l4tj6g9zk4er';
 
+    const actionsDiv = document.getElementById('actions');
+
+    const enableActions = () => {
+      // Set up event listeners for buttons
+      document.getElementById('getBalance').disabled = false;
+      document.getElementById('createInvoice').disabled = false;
+
+      document.getElementById('getBalance').addEventListener('click', async () => {
+        const balance = await wallet.balance.getBalance();
+        console.log('Balance Response:', balance);
+      });
+
+      document.getElementById('createInvoice').addEventListener('click', async () => {
+        const createInvoice = await wallet.lightning.createInvoice(1000, "Test Invoice");
+        console.log('Invoice Response:', createInvoice);
+      });
+    };
+
     (async () => {
       try {
         wallet = new FedimintWallet();
@@ -59,27 +77,39 @@
 
         wallet.setLogLevel('debug')
 
-        // Tries to open the wallet. If it's not open (new user), it joins the federation
+        // Disable action buttons until wallet is open
+        document.getElementById('getBalance').disabled = true;
+        document.getElementById('createInvoice').disabled = true;
+
+        // Tries to open the wallet. If it's not open (new user), show join prompt
         const isOpen = await wallet.open()
-        if (!isOpen) {
-          const joinRes = await wallet.joinFederation(TESTNET_INVITE_CODE)
+        if (isOpen) {
+          console.log('Wallet opened successfully — existing session found.');
+          enableActions();
+        } else {
+          console.log('No existing wallet found. Joining testnet federation...');
+
+          // Show join prompt in the UI
+          const joinBtn = document.createElement('button');
+          joinBtn.textContent = 'Join Testnet Federation';
+          joinBtn.id = 'joinFederation';
+          actionsDiv.insertBefore(joinBtn, actionsDiv.firstChild);
+
+          joinBtn.addEventListener('click', async () => {
+            joinBtn.disabled = true;
+            joinBtn.textContent = 'Joining...';
+            try {
+              await wallet.joinFederation(TESTNET_INVITE_CODE);
+              console.log('Joined federation successfully!');
+              joinBtn.remove();
+              enableActions();
+            } catch (e) {
+              console.error('Failed to join federation:', e);
+              joinBtn.disabled = false;
+              joinBtn.textContent = 'Join Testnet Federation (Retry)';
+            }
+          });
         }
-        
-
-      /////////////////////////////////
-      ////////// UI Actions //////////
-      ////////////////////////////////
-
-        // Set up event listeners for buttons
-        document.getElementById('getBalance').addEventListener('click', async () => {
-          const balance = await wallet.balance.getBalance();
-          console.log('Balance Response:', balance);
-        });
-
-        document.getElementById('createInvoice').addEventListener('click', async () => {
-          const createInvoice = await wallet.lightning.createInvoice(1000, "Test Invoice");
-          console.log('Invoice Response:', createInvoice);
-        });
 
       } catch (e) {
         console.error(e);
