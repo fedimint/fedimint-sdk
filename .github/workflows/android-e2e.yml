@@ -44,7 +44,7 @@ jobs:
   android-e2e:
     name: Android E2E
     needs: build-android-bindings
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     # No devimint/faucet dependency yet (the v1 mnemonic test is local-only),
     # so this doesn't join the shared `devimint-tests` concurrency group from
@@ -62,6 +62,16 @@ jobs:
         uses: ./.github/actions/setup-nix
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # GitHub-hosted Ubuntu runners have /dev/kvm but it isn't
+      # world-accessible by default; without this the emulator falls back to
+      # (very slow) software virtualization. Standard reactivecircus/
+      # android-emulator-runner incantation.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Download prebuilt Android bindings
         uses: actions/download-artifact@v4
