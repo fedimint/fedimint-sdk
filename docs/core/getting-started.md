@@ -122,6 +122,56 @@ Check out the [nextjs sample app](https://github.com/fedimint/fedimint-sdk/tree/
 
 :::
 
+### React Native & Expo (Mobile Native FFI)
+
+::: details React Native & Expo Setup
+
+To use the Fedimint SDK in mobile applications, use `@fedimint/react-native`, which bundles native UniFFI FFI binaries for iOS and Android:
+
+#### 1. Bare React Native
+
+```bash
+npm install @fedimint/react-native react-native-fs
+```
+
+```typescript
+import WalletDirector from '@fedimint/react-native'
+import RNFS from 'react-native-fs'
+
+const dbPath = `${RNFS.DocumentDirectoryPath}/fedimint_db`
+const director = new WalletDirector(dbPath)
+const wallet = await director.createWallet()
+```
+
+#### 2. Expo (SDK 52+)
+
+```bash
+npx expo install @fedimint/react-native expo-file-system
+```
+
+Add the plugin to your `app.json`:
+
+```json
+{
+  "expo": {
+    "plugins": ["@fedimint/react-native"]
+  }
+}
+```
+
+```typescript
+import WalletDirector from '@fedimint/react-native'
+import { Paths } from 'expo-file-system'
+
+const rustPath = (Paths.document.uri + 'fedimint_db').replace(/^file:\/\//, '')
+const director = new WalletDirector(rustPath)
+const wallet = await director.createWallet()
+```
+
+Check out the [expo sample app](https://github.com/fedimint/fedimint-sdk/tree/main/examples/expo-app) for a full working example.
+
+:::
+
 ### React
 
 ::: details React.js Setup

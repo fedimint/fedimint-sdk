@@ -1,60 +1,61 @@
 # Architecture
 
-The Fedimint SDK separates platform and transport lifecycle concerns from wallet
-operations. Application code starts with a `WalletDirector`, then obtains a
-`FedimintWallet` through `createWallet()`.
+The Fedimint SDK separates platform transport and runtime lifecycle concerns from high-level wallet operations. Application code starts with a `WalletDirector`, which configures the underlying transport and creates a `FedimintWallet` via `createWallet()`.
 
 <img
   src="/architecture-diagram.svg"
   alt="WalletDirector owns the TransportClient and creates FedimintWallet instances, which expose wallet services"
 />
 
-## WalletDirector
+## Core Abstractions
 
-`WalletDirector` is the public creation and configuration entry point. It:
+### 1. WalletDirector
 
-- accepts or configures the platform-specific transport;
-- owns and initializes the `TransportClient`;
-- creates `FedimintWallet` instances;
-- provides utilities that do not require an open wallet, such as parsing,
-  federation previews, mnemonic management, and logging configuration.
+`WalletDirector` is the public creation and platform configuration entry point. It:
 
-For browser applications, pass a `WasmWorkerTransport`. Platform packages may
-provide a specialized director that configures the appropriate transport.
+- Accepts and initializes the platform-specific transport (`WasmWorkerTransport` for Web or `ReactNativeTransport` for Mobile);
+- Owns and initializes the `TransportClient`;
+- Produces `FedimintWallet` instances;
+- Provides offline utilities (mnemonic generation, invite code parsing, invoice validation, and logging configuration) without requiring an open wallet.
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/WalletDirector.ts)
+```ts
+// Web Browser setup (WASM Worker)
+import { WalletDirector } from '@fedimint/core'
+import { WasmWorkerTransport } from '@fedimint/transport-web'
+const director = new WalletDirector(new WasmWorkerTransport())
 
-## FedimintWallet
+// React Native setup (Native UniFFI FFI)
+import WalletDirector from '@fedimint/react-native'
+const director = new WalletDirector(databasePath)
+```
 
-`FedimintWallet` is returned by `WalletDirector.createWallet()`. It manages the
-open or join lifecycle for an individual wallet client and exposes the wallet's
-domain services. It is exported from `@fedimint/core` as a TypeScript type, not as
-a directly constructible production value.
+### 2. TransportClient & Platform Transports
 
-[Creating a FedimintWallet](FedimintWallet/createWallet)
+`TransportClient` manages JSON-RPC communication between JavaScript and the underlying Rust client runtime. It handles request serialization, streaming subscription multiplexing, and error normalization.
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/FedimintWallet.ts)
+The SDK provides two official transport implementations:
 
-## TransportClient
+- **`WasmWorkerTransport` (`@fedimint/transport-web`)**:
+  - Connects to `fedimint-client-wasm` running in a dedicated browser Web Worker.
+  - Keeps heavy Chaumian crypto and networking off the browser main thread.
+  - Persists wallet databases to the Origin Private File System (OPFS) or memory storage.
 
-`TransportClient` manages communication between JavaScript and the
-environment-dependent transport, such as the browser WASM worker or a native
-module. It handles initialization, request routing, subscriptions, and transport
-errors.
+- **`ReactNativeTransport` (`@fedimint/react-native`)**:
+  - Connects to `fedimint-client-uniffi` compiled directly into native iOS (`.xcframework`) and Android (`.aar`) binaries.
+  - Uses UniFFI C/JNI boundaries with persistent asynchronous callbacks for streaming subscriptions.
+  - Persists wallet database files to standard mobile app storage paths.
 
-Application code normally does not need to construct or pass a `TransportClient`;
-the `WalletDirector` creates it and shares it with the wallets it produces.
+### 3. FedimintWallet
 
-[Code](https://github.com/fedimint/fedimint-sdk/blob/main/packages/core/src/transport/TransportClient.ts)
+`FedimintWallet` is returned by `WalletDirector.createWallet()`. It manages the active federation connection (`open()` or `joinFederation()`) and exposes focused domain services.
 
-## Services
+## Domain Services
 
-`FedimintWallet` groups operations into focused services:
+`FedimintWallet` groups functionality into modular services:
 
-- `FederationService`: federation configuration, metadata, operations, and
-  transactions;
-- `MintService`: ecash redemption, spending, parsing, and note queries;
-- `LightningService`: invoice creation and payment;
-- `BalanceService`: balance queries and subscriptions;
-- `RecoveryService`: recovery status and progress;
-- `WalletService`: on-chain wallet operations.
+- **`FederationService` (`wallet.federation`)**: Federation configuration, consensus metadata, gateway lists, and operation history.
+- **`MintService` (`wallet.mint`)**: Ecash note spending, out-of-band note reissue, and note validation.
+- **`LightningService` (`wallet.lightning`)**: Bolt11 invoice generation, invoice decoding, and outgoing payments.
+- **`BalanceService` (`wallet.balance`)**: Balance queries and real-time push update subscriptions.
+- **`RecoveryService` (`wallet.recovery`)**: Mnemonic recovery progress, wallet restoration, and backup status.
+- **`WalletService` (`wallet.wallet`)**: On-chain Bitcoin peg-in address generation and safe deposit monitoring.
