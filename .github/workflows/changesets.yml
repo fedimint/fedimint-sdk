@@ -105,7 +105,7 @@ jobs:
 
       - name: PR or Publish to NPM
         id: changesets
-        uses: changesets/action@v2
+        uses: changesets/action@v1
         timeout-minutes: 10
         with:
           # package.json and .changeset/ live in the workspace root. The publish
