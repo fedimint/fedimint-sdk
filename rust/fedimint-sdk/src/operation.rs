@@ -299,11 +299,14 @@ impl AnyOperation {
         unimplemented!()
     }
 
-    // There is deliberately no `as_recovery` accessor: the recovery state
-    // type is not part of the stable surface, so an accessor returning it
-    // could not exist in a default-feature build. `kind()` still reports
-    // `OperationKind::Recovery`, which is what an activity list needs.
-    // Revisit when recovery stabilises.
+    // The seventh accessor, `as_recovery`, is feature-gated: it returns
+    // `Operation<RecoveryState>`, and `RecoveryState` exists only behind the
+    // off-by-default `experimental` feature. It is therefore defined in
+    // `recovery.rs`, in an `impl AnyOperation` block alongside that module's
+    // `impl Sdk`, so the default build's `AnyOperation` is exactly the six
+    // accessors above. `kind()` reports `OperationKind::Recovery` in either
+    // build, which is what an activity list needs. Fold the accessor in here
+    // when recovery stabilises.
 }
 
 /// What kind of work an operation is doing.

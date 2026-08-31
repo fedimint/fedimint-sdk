@@ -33,9 +33,12 @@ use crate::{Federation, FederationId, FederationPreview, InviteCode, Mnemonic, R
 /// ([`Sdk::join`]), stopped while keeping their data
 /// ([`Sdk::close_federation`]), or erased ([`Sdk::forget_federation`]).
 /// Any [`Federation`] handle for a federation that has been closed — and
-/// every handle at all after [`Sdk::shutdown`] — fails its calls with
+/// every handle at all after [`Sdk::shutdown`] — fails its **fallible**
+/// calls with
 /// [`ErrorCode::FederationClosed`](crate::ErrorCode::FederationClosed)
-/// rather than panicking or silently doing nothing.
+/// rather than panicking or silently doing nothing. Its infallible
+/// accessors keep answering; see [`Federation`] for exactly what each of
+/// them reports once closed.
 #[derive(Debug, Clone)]
 pub struct Sdk {
     inner: Arc<SdkInner>,
@@ -151,11 +154,13 @@ impl Sdk {
     /// federation; [`Sdk::forget_federation`] is the destructive half.
     ///
     /// Any [`Federation`] handle an application still holds for this
-    /// federation keeps existing but stops working: its calls fail with
+    /// federation keeps existing but stops doing work: its fallible calls
+    /// fail with
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), as do
     /// pending [`BalanceUpdates::next`](crate::BalanceUpdates::next) and
     /// [`OperationUpdates::next`](crate::OperationUpdates::next) calls
-    /// against it.
+    /// against it. Its infallible accessors cannot fail and do not pretend
+    /// to — [`Federation`] documents what each returns once closed.
     ///
     /// Closing is idempotent: an id that names no open federation is not an
     /// error, because the postcondition — the federation is not running and
@@ -240,12 +245,15 @@ impl Sdk {
     /// Flushes everything to storage, stops all background work, and
     /// releases the storage lock.
     ///
-    /// After this returns, the instance is finished: every [`Sdk`] and
-    /// [`Federation`] handle, and every subscriber obtained from one,
-    /// fails with
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). Another
-    /// instance may then open the same storage. Shutdown is idempotent —
-    /// calling it twice is not an error.
+    /// After this returns, the instance is finished: every fallible call on
+    /// every [`Sdk`] and [`Federation`] handle, and every subscriber
+    /// obtained from one, fails with
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) — with
+    /// [`Sdk::export_mnemonic`] the deliberate exception, as noted there.
+    /// The infallible accessors on [`Federation`] behave as they do after
+    /// [`Sdk::close_federation`], documented on that type. Another instance
+    /// may then open the same storage. Shutdown is idempotent — calling it
+    /// twice is not an error.
     ///
     /// **On mobile this call is required before the process can die.**
     /// Both iOS and Android terminate backgrounded applications without

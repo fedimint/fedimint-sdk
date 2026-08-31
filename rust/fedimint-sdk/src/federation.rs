@@ -24,10 +24,45 @@ use crate::{
 /// A handle keeps working until the federation is closed with
 /// [`Sdk::close_federation`](crate::Sdk::close_federation), erased with
 /// [`Sdk::forget_federation`](crate::Sdk::forget_federation), or the whole
-/// instance is shut down. After any of those, calls on it fail with
-/// [`ErrorCode::FederationClosed`](crate::ErrorCode::FederationClosed)
-/// instead of panicking, so an application holding a stale handle degrades
-/// into a reportable error rather than a crash.
+/// instance is shut down. An application holding a stale handle degrades
+/// into a reportable error rather than a crash: nothing here panics after a
+/// close.
+///
+/// # What a closed handle does
+///
+/// "Fails with
+/// [`FederationClosed`](crate::ErrorCode::FederationClosed)" applies to the
+/// **fallible** calls — [`balance`](Federation::balance),
+/// [`operation`](Federation::operation),
+/// [`activity`](Federation::activity), [`backup`](Federation::backup), and
+/// every call made through a facade. The rest of this type returns plain
+/// values and has no way to report a failure, so each has a defined closed
+/// behaviour instead:
+///
+/// - **The descriptive accessors keep answering.**
+///   [`id`](Federation::id), [`name`](Federation::name),
+///   [`network`](Federation::network),
+///   [`invite_code`](Federation::invite_code) and
+///   [`capabilities`](Federation::capabilities) go on returning the
+///   configuration last known for this federation. A history screen can
+///   still label rows with a federation that has been closed underneath it.
+/// - **The facade accessors keep returning `Some`.**
+///   [`ecash`](Federation::ecash), [`lightning`](Federation::lightning) and
+///   [`onchain`](Federation::onchain) return a facade whenever the
+///   federation had that module, closed or not, and the failure surfaces
+///   from the facade call as
+///   [`FederationClosed`](crate::ErrorCode::FederationClosed). Returning
+///   `None` instead would be a lie with a specific documented meaning —
+///   "this federation has no mint module" — and would make a closed
+///   federation indistinguishable from one that never supported ecash at
+///   all. [`meta`](Federation::meta), which is unconditional, behaves the
+///   same way.
+/// - **[`balance_updates`](Federation::balance_updates) still hands out a
+///   subscriber**, whose very first
+///   [`next`](BalanceUpdates::next) yields
+///   [`FederationClosed`](crate::ErrorCode::FederationClosed). The error is
+///   where a caller can act on it, rather than being swallowed by an
+///   accessor that cannot return one.
 #[derive(Debug, Clone)]
 pub struct Federation {
     inner: Arc<FederationInner>,
@@ -51,10 +86,12 @@ impl Federation {
 
     /// The Bitcoin network this federation operates on.
     ///
-    /// On-chain addresses are validated against this at quote and send
-    /// time, failing with
+    /// On-chain addresses are validated against this when an on-chain quote
+    /// is requested, failing with
     /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on
-    /// disagreement.
+    /// disagreement. There is no second check at send time, because
+    /// [`Onchain::send`](crate::Onchain::send) takes only a quote — the
+    /// address is bound into the quote when it is issued.
     pub fn network(&self) -> Network {
         unimplemented!()
     }
@@ -90,6 +127,11 @@ impl Federation {
     /// Each call returns its own cursor, exactly like
     /// [`Operation::updates`](crate::Operation::updates): two subscribers
     /// both see every change and neither consumes the other's updates.
+    ///
+    /// This cannot fail, so it hands out a subscriber even for a closed
+    /// federation; that subscriber's first
+    /// [`next`](BalanceUpdates::next) yields
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub fn balance_updates(&self) -> BalanceUpdates {
         unimplemented!()
     }
@@ -121,6 +163,12 @@ impl Federation {
     /// exists, but only for the narrow residual case: a facade that was
     /// obtained while the module was present, then used after the
     /// federation's configuration changed to drop it.
+    ///
+    /// `None` therefore means one thing only, and it is not "closed": a
+    /// closed federation that has a mint module still returns `Some`, and
+    /// the facade's calls fail with
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). See the
+    /// type documentation.
     pub fn ecash(&self) -> Option<Ecash> {
         unimplemented!()
     }

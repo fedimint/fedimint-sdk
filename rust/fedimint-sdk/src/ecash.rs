@@ -109,7 +109,8 @@ pub struct EcashSend {
 impl Operation<EcashSendState> {
     /// Asks for the notes back, before the receiver redeems them.
     ///
-    /// `Ok(())` means the *request* was accepted, not that the notes were
+    /// `Ok(())` means the *request* was accepted — or that there was nothing
+    /// left to cancel, see below — never that the notes were
     /// reclaimed. Redemption and cancellation genuinely race — the receiver
     /// may be redeeming at the same moment — and only the federation
     /// decides who wins. The outcome therefore arrives where every other
@@ -122,10 +123,26 @@ impl Operation<EcashSendState> {
     /// place where cancelling is a real protocol action rather than an
     /// attempt to un-send money that has already moved.
     ///
+    /// # Requesting a cancel on a settled send is not an error
+    ///
+    /// If the send has already reached a final state — the notes came back
+    /// ([`EcashSendState::Canceled`]), the receiver redeemed them
+    /// ([`EcashSendState::Redeemed`]), or the send failed
+    /// ([`EcashSendState::Failed`]) — this returns `Ok(())` and does
+    /// nothing. The postcondition the call promises already holds: no
+    /// cancellation is pending, and the outcome is recorded in the state,
+    /// where the caller reads it. This is the same idempotent framing
+    /// [`Sdk::close_federation`](crate::Sdk::close_federation) and
+    /// [`Sdk::forget_federation`](crate::Sdk::forget_federation) use.
+    ///
+    /// It is also unavoidable in practice: the request and the redemption
+    /// race, so a caller that checks the state and then cancels can always
+    /// be beaten between the two calls. Failing that race would make an
+    /// ordinary, correct sequence look broken, and would tell the caller
+    /// nothing that reading the state does not already tell them.
+    ///
     /// # Errors
     ///
-    /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation) if
-    /// the operation has already reached a final state,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
     /// [`Storage`](crate::ErrorCode::Storage), and
@@ -139,7 +156,7 @@ impl Operation<EcashSendState> {
 ///
 /// # Relationship to the upstream state machine
 ///
-/// Upstream `fedimint-client` models this as `SpendOOBState`, whose
+/// Upstream `fedimint-mint-client` models this as `SpendOOBState`, whose
 /// variants are `Created`, `UserCanceledProcessing`, `UserCanceledSuccess`,
 /// `UserCanceledFailure`, `Success`, and `Refunded`. Two of those names
 /// mean the opposite of what they suggest when read in isolation, because
@@ -212,7 +229,7 @@ impl OperationState for EcashSendState {
 
 /// The lifecycle of redeeming out-of-band ecash notes.
 ///
-/// This maps one-to-one onto upstream `fedimint-client`'s
+/// This maps one-to-one onto upstream `fedimint-mint-client`'s
 /// `ReissueExternalNotesState` (`Created`, `Issuing`, `Done`,
 /// `Failed(String)`); there is no collapsing or renaming here beyond
 /// carrying the failure reason as a named field so it crosses a

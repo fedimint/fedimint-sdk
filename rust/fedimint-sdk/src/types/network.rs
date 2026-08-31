@@ -5,8 +5,8 @@
 /// Every federation operates on exactly one network; this value is read
 /// from federation configuration and reported on
 /// [`FederationPreview`](crate::FederationPreview) and the federation handle.
-/// It is also what an [`Address`](crate::Address) is checked against at
-/// on-chain quote/send time, failing with
+/// It is also what an [`Address`](crate::Address) is checked against when an
+/// on-chain quote is requested, failing with
 /// [`ErrorCode::NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on
 /// disagreement.
 ///

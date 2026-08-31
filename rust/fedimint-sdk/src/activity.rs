@@ -103,10 +103,63 @@ pub enum Direction {
 /// payment failed and the money is back" and "you took your ecash back" are
 /// outcomes users understand and expect to see distinguished, and both are
 /// ordinary rather than alarming.
+///
+/// # Which operation state lands in which bucket
+///
+/// Every non-final state maps to [`Pending`](Self::Pending), so only the
+/// final ones are listed. There is no unmapped state: if a state is not
+/// here, it is not final.
+///
+/// | operation state | bucket |
+/// | --- | --- |
+/// | [`EcashSendState::Redeemed`](crate::EcashSendState::Redeemed) | [`Success`](Self::Success) |
+/// | [`EcashSendState::Canceled`](crate::EcashSendState::Canceled) | [`Canceled`](Self::Canceled) |
+/// | [`EcashSendState::Failed`](crate::EcashSendState::Failed) | [`Failed`](Self::Failed) |
+/// | [`EcashReceiveState::Done`](crate::EcashReceiveState::Done) | [`Success`](Self::Success) |
+/// | [`EcashReceiveState::Failed`](crate::EcashReceiveState::Failed) | [`Failed`](Self::Failed) |
+/// | [`LnSendState::Success`](crate::LnSendState::Success) | [`Success`](Self::Success) |
+/// | [`LnSendState::Refunded`](crate::LnSendState::Refunded) | [`Refunded`](Self::Refunded) |
+/// | [`LnSendState::Failed`](crate::LnSendState::Failed) | [`Failed`](Self::Failed) |
+/// | [`LnReceiveState::Claimed`](crate::LnReceiveState::Claimed) | [`Success`](Self::Success) |
+/// | [`LnReceiveState::Canceled`](crate::LnReceiveState::Canceled) | [`Canceled`](Self::Canceled) |
+/// | [`LnReceiveState::Expired`](crate::LnReceiveState::Expired) | [`Canceled`](Self::Canceled) |
+/// | [`OnchainSendState::Succeeded`](crate::OnchainSendState::Succeeded) | [`Success`](Self::Success) |
+/// | [`OnchainSendState::Failed`](crate::OnchainSendState::Failed) | [`Failed`](Self::Failed) |
+/// | [`OnchainReceiveState::Claimed`](crate::OnchainReceiveState::Claimed) | [`Success`](Self::Success) |
+/// | [`OnchainReceiveState::Failed`](crate::OnchainReceiveState::Failed) | [`Failed`](Self::Failed) |
+/// | `RecoveryState::Done` (experimental) | [`Success`](Self::Success) |
+/// | `RecoveryState::Failed` (experimental) | [`Failed`](Self::Failed) |
+///
+/// The one placement that is a judgement rather than a reading is
+/// [`LnReceiveState::Expired`](crate::LnReceiveState::Expired). An invoice
+/// that simply lapsed unpaid is not [`Failed`](Self::Failed) — nothing
+/// broke, and that variant exists precisely because lapsing unpaid is the
+/// commonest way a receive ends and is not worth alarming a user about — so
+/// it joins the withdrawn-invoice case under
+/// [`Canceled`](Self::Canceled).
+///
+/// # An `Unknown` row
+///
+/// A row whose
+/// [`kind`](crate::ActivityItem::kind) is
+/// [`OperationKind::Unknown`](crate::OperationKind::Unknown) was written by
+/// a version of the SDK that understood something this one does not, so its
+/// state cannot be interpreted and must not be guessed at. Such a row
+/// reports [`Pending`](Self::Pending) for
+/// [`status`](crate::ActivityItem::status) — the honest answer is "this SDK
+/// cannot tell that it finished" — and `None` for
+/// [`amount`](crate::ActivityItem::amount),
+/// [`fee`](crate::ActivityItem::fee) and
+/// [`direction`](crate::ActivityItem::direction). An application should
+/// render it as an opaque entry rather than as a stalled payment; the fields
+/// are absent precisely so it has nothing to render wrongly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ActivityStatus {
-    /// Still in flight — the operation has not reached a final state.
+    /// Still in flight — the operation has not reached a final state. Also
+    /// what an uninterpretable
+    /// [`OperationKind::Unknown`](crate::OperationKind::Unknown) row
+    /// reports, since this SDK version cannot tell that it finished.
     Pending,
     /// Completed as intended.
     Success,
@@ -116,8 +169,13 @@ pub enum ActivityStatus {
     /// Ended without completing, with the value returned to the balance —
     /// a lightning payment that could not be routed, for example.
     Refunded,
-    /// Ended because it was called off — reclaimed out-of-band ecash, or a
-    /// lightning receive that was withdrawn before it was paid.
+    /// Ended without the value moving, because it was called off or simply
+    /// lapsed — reclaimed out-of-band ecash, a lightning receive withdrawn
+    /// before it was paid, or an invoice whose expiry passed unpaid.
+    ///
+    /// None of these is alarming, and none of them is
+    /// [`Failed`](Self::Failed): nothing went wrong, the transfer just did
+    /// not happen.
     Canceled,
 }
 
@@ -126,7 +184,7 @@ pub enum ActivityStatus {
 /// Returned by [`Federation::activity`](crate::Federation::activity). Pages
 /// run newest first; carry [`ActivityPage::next`] into the following call
 /// to continue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActivityPage {
     /// The rows in this page, newest first. May contain fewer items than

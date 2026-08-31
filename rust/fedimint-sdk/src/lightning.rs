@@ -245,11 +245,34 @@ pub struct LnReceive {
 /// [`Created`](Self::Created) and [`Funded`](Self::Funded), all the
 /// preimage-obtained states onto [`Success`](Self::Success), all the
 /// refund-completed states onto [`Refunded`](Self::Refunded), and the
-/// error and refund-failure states onto [`Failed`](Self::Failed). Because
-/// that is a judgement about which upstream distinctions matter to an
-/// application rather than a one-to-one mapping, this variant set is
-/// provisional and will be reconciled against the lightning client when
-/// this facade is implemented.
+/// error and refund-failure states onto [`Failed`](Self::Failed).
+///
+/// Two upstream variants fall outside those four buckets, and are called
+/// out rather than left to be discovered:
+///
+/// - **`LnPayState::Canceled`.** The payment was called off before the
+///   gateway took it on, so the funds never left and no refund was needed.
+///   Nothing was paid, so it is not [`Success`](Self::Success); the money is
+///   in the balance, which is exactly what [`Refunded`](Self::Refunded)
+///   promises, so that is where it lands. There is no `Canceled` variant
+///   here: an outgoing payment offers no cancellation to a caller of this
+///   SDK (the only cancellation in the crate is
+///   [`Operation::request_cancel`](crate::Operation::request_cancel) for
+///   out-of-band ecash), so a distinct variant would name something no
+///   application could ever have asked for.
+/// - **lnv2's `SendOperationState::Refunding`.** A refund that is *in
+///   progress*, not one that completed — the money is neither paid nor back
+///   yet. It is therefore **not final**, and maps onto
+///   [`Funded`](Self::Funded), the crate's other non-final in-flight state,
+///   rather than onto [`Refunded`](Self::Refunded), which promises the funds
+///   are already spendable again. A subscriber sees it as the payment still
+///   running and then the terminal [`Refunded`](Self::Refunded) when the
+///   refund lands.
+///
+/// Because these are judgements about which upstream distinctions matter to
+/// an application rather than a one-to-one mapping, this variant set is
+/// provisional and will be reconciled against the lightning client when this
+/// facade is implemented.
 ///
 /// # An obligation this enum places on the implementation
 ///

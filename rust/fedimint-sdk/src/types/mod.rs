@@ -1,10 +1,23 @@
 //! Plain data types shared across the crate's facades.
 //!
-//! Every type here is either a small `Copy` value type (amounts, timestamps)
-//! or an opaque, string-shaped handle that round-trips through `Display` and
-//! `FromStr` (ids, invite codes, ecash notes, invoices, addresses). Keeping
-//! them in one module lets the facade modules (`federation`, `ecash`,
-//! `lightning`, `onchain`, ...) depend on a single, stable vocabulary.
+//! Most types here are either a small `Copy` value type (amounts,
+//! timestamps) or an opaque, string-shaped handle that round-trips through
+//! `Display` and `FromStr` (ids, invite codes, ecash notes, invoices,
+//! addresses). Three are deliberately neither:
+//!
+//! - [`Mnemonic`] parses with `FromStr` but has **no `Display`**, and no
+//!   `Debug` either. That is a central safety contract of this crate rather
+//!   than an omission — a seed phrase must not be formattable into a log
+//!   line — and the words come out only through the explicit
+//!   [`Mnemonic::words`]. See that type for the full rationale.
+//! - [`Network`] is a small `Copy` enum, matched on rather than printed or
+//!   parsed.
+//! - [`FederationPreview`] is a plain data record with public fields, not a
+//!   handle: it exists to be read field by field to render a screen.
+//!
+//! Keeping them in one module lets the facade modules (`federation`,
+//! `ecash`, `lightning`, `onchain`, ...) depend on a single, stable
+//! vocabulary.
 
 mod address;
 mod amount;

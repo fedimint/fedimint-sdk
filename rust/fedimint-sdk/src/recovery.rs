@@ -21,7 +21,7 @@
 //! upstream fixes have landed and those tests pass, so that the default
 //! build never offers an API it cannot yet stand behind.
 
-use crate::{Federation, InviteCode, Operation, OperationState, Result, Sdk};
+use crate::{AnyOperation, Federation, InviteCode, Operation, OperationState, Result, Sdk};
 
 impl Sdk {
     /// Joins a federation and restores this seed's wallet in it from the
@@ -49,6 +49,37 @@ impl Sdk {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn recover(&self, invite: &InviteCode) -> Result<Recovery> {
+        unimplemented!()
+    }
+}
+
+impl AnyOperation {
+    /// Recovers a typed handle if this is a seed recovery, and `None`
+    /// otherwise. **Experimental**, see the module documentation.
+    ///
+    /// This is the seventh accessor on
+    /// [`AnyOperation`](crate::AnyOperation), and the only feature-gated
+    /// one: it returns [`Operation<RecoveryState>`](crate::Operation), and
+    /// [`RecoveryState`] exists only behind the `experimental` feature. It
+    /// is defined here, next to [`Sdk::recover`], for exactly the reason
+    /// that method is — an inherent method may be added to a stable type
+    /// from a gated module, so the default build sees the other six
+    /// accessors and nothing else.
+    ///
+    /// Without it a recovery would be the one operation an application
+    /// could not reattach to after a restart. A process that dies mid-rescan
+    /// leaves a persisted recovery running; on the next build,
+    /// [`Federation::operation`](crate::Federation::operation) finds it and
+    /// [`kind`](crate::AnyOperation::kind) reports
+    /// [`OperationKind::Recovery`](crate::OperationKind::Recovery), but
+    /// without this accessor there would be no way to observe its progress —
+    /// the application would have to infer the state by attempting a spend
+    /// and catching [`Recovering`](crate::ErrorCode::Recovering), which is
+    /// precisely the error-driven discovery this crate rejects.
+    ///
+    /// Returns `None` for every other kind, like the accessors it sits
+    /// beside.
+    pub fn as_recovery(&self) -> Option<Operation<RecoveryState>> {
         unimplemented!()
     }
 }

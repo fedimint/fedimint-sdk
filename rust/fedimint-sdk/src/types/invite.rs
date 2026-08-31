@@ -52,7 +52,7 @@ impl core::str::FromStr for InviteCode {
 /// This type is `#[non_exhaustive]`: new fields may be added in future
 /// releases, so construct it only through the SDK and match it only with a
 /// `..` pattern or by field access, never by exhaustive destructuring.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FederationPreview {
     /// The federation's identifier.
@@ -64,11 +64,19 @@ pub struct FederationPreview {
     pub network: Network,
     /// The number of guardians in the federation.
     pub guardians: u16,
-    /// The kind names of the modules this federation runs, e.g. `"mint"`,
-    /// `"ln"`, `"wallet"`. Presence here does not by itself imply a
-    /// corresponding facade will be available after joining — that also
-    /// depends on the module passing the single-generation validation
-    /// described above.
+    /// The kind names of *every* module this federation runs, e.g.
+    /// `"mint"`, `"ln"`, `"wallet"`.
+    ///
+    /// Presence here does not imply a corresponding facade after joining.
+    /// The SDK exposes facades for the mint, lightning and wallet modules
+    /// only, while this list is the federation's full module set — a
+    /// federation may run modules this SDK has no facade for, and they
+    /// appear here all the same.
+    ///
+    /// The single-generation rule is not a per-module gate and plays no
+    /// part in this: it is federation-wide, and any preview that was
+    /// returned at all has already satisfied it (see the type
+    /// documentation).
     pub modules: Vec<String>,
     /// Config-level metadata (for example, a welcome message), keyed by
     /// arbitrary string keys as defined by the federation's configuration.

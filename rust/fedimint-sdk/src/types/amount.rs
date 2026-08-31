@@ -102,6 +102,10 @@ impl core::fmt::Display for Amount {
 /// [`Amount::sats_floor`]); converting a `Sats` up to an [`Amount`] is
 /// [`Sats::to_amount`].
 ///
+/// As with [`Amount`], all arithmetic is checked: [`Sats::checked_add`] and
+/// [`Sats::checked_sub`] return `None` on overflow or underflow instead of
+/// panicking or wrapping, and there is no `+`/`-` operator overload.
+///
 /// Like [`Amount`], this crosses a wasm foreign-function boundary as a
 /// `BigInt`, never a native JS `number`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,6 +128,31 @@ impl Sats {
     pub const fn to_amount(self) -> Option<Amount> {
         match self.0.checked_mul(1_000) {
             Some(msats) => Some(Amount(msats)),
+            None => None,
+        }
+    }
+
+    /// Adds two satoshi amounts, returning `None` on overflow.
+    ///
+    /// Like [`Amount::checked_add`], and for the same reason: arithmetic on
+    /// a money type is checked, so a caller adding a withdrawal to its fee
+    /// never has to drop to raw `u64` and never silently wraps.
+    pub const fn checked_add(self, rhs: Sats) -> Option<Sats> {
+        match self.0.checked_add(rhs.0) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
+    }
+
+    /// Subtracts `rhs` from `self`, returning `None` if the result would be
+    /// negative.
+    ///
+    /// Like [`Amount::checked_sub`]. `None` rather than a saturating zero,
+    /// so that "the fee exceeds the deposit" is a case the caller has to
+    /// handle rather than one that quietly reports nothing owed.
+    pub const fn checked_sub(self, rhs: Sats) -> Option<Sats> {
+        match self.0.checked_sub(rhs.0) {
+            Some(v) => Some(Self(v)),
             None => None,
         }
     }
@@ -198,6 +227,28 @@ mod tests {
         assert_eq!(
             Sats::from_sats(3).to_amount(),
             Some(Amount::from_msats(3_000))
+        );
+    }
+
+    #[test]
+    fn sats_checked_add_overflows_to_none() {
+        let a = Sats::from_sats(u64::MAX);
+        let b = Sats::from_sats(1);
+        assert_eq!(a.checked_add(b), None);
+        assert_eq!(
+            Sats::from_sats(1).checked_add(Sats::from_sats(2)),
+            Some(Sats::from_sats(3))
+        );
+    }
+
+    #[test]
+    fn sats_checked_sub_underflows_to_none() {
+        let a = Sats::from_sats(1);
+        let b = Sats::from_sats(2);
+        assert_eq!(a.checked_sub(b), None);
+        assert_eq!(
+            Sats::from_sats(5).checked_sub(Sats::from_sats(2)),
+            Some(Sats::from_sats(3))
         );
     }
 

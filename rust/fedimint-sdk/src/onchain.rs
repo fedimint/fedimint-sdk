@@ -180,10 +180,10 @@ pub struct OnchainReceive {
 
 /// The lifecycle of an on-chain withdrawal.
 ///
-/// This maps one-to-one onto upstream `fedimint-client`'s `WithdrawState`
-/// (`Created`, `Succeeded(Txid)`, `Failed(String)`); the only change is
-/// that the payloads are named fields rather than positional ones, so they
-/// cross a foreign-function boundary as records.
+/// This maps one-to-one onto upstream `fedimint-wallet-client`'s
+/// `WithdrawState` (`Created`, `Succeeded(Txid)`, `Failed(String)`); the
+/// only change is that the payloads are named fields rather than positional
+/// ones, so they cross a foreign-function boundary as records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainSendState {
@@ -219,14 +219,37 @@ impl OperationState for OnchainSendState {
 
 /// The lifecycle of an on-chain deposit.
 ///
-/// This follows upstream `fedimint-client`'s `DepositStateV2` variant for
-/// variant — `WaitingForTransaction`,
-/// `WaitingForConfirmation { btc_deposited, btc_out_point }`, `Confirmed`,
-/// `Claimed`, `Failed(String)` — with the payloads projected into the
-/// SDK's own vocabulary: upstream identifies the funding transaction by an
-/// outpoint, of which the [`Txid`](crate::Txid) reported here is the
-/// transaction half, and amounts are reported as whole
-/// [`Sats`](crate::Sats).
+/// This follows upstream `fedimint-wallet-client`'s `DepositStateV2` variant
+/// for variant, but not payload for payload. Upstream's variants are
+/// `WaitingForTransaction`,
+/// `WaitingForConfirmation { btc_deposited, btc_out_point }`,
+/// `Confirmed { btc_deposited, btc_out_point }`,
+/// `Claimed { btc_deposited, btc_out_point }`, and `Failed(String)` — note
+/// that all three of the middle variants carry the same pair, not just
+/// `WaitingForConfirmation`. This enum differs from that in two deliberate
+/// ways:
+///
+/// - **Only the transaction half of the outpoint is carried, and only while
+///   it is actionable.** Upstream identifies the funding transaction by an
+///   outpoint; the [`Txid`](crate::Txid) reported by
+///   [`WaitingForConfirmation`](Self::WaitingForConfirmation) and
+///   [`Confirmed`](Self::Confirmed) is its transaction half, which is what
+///   a receipt or a block-explorer link needs. The vout is dropped because
+///   nothing in this API takes one. [`Claimed`](Self::Claimed) deliberately
+///   carries no outpoint at all: once the value is in the balance the
+///   deposit is an ordinary credit, and an application that wants the
+///   transaction has already seen it in the two preceding states.
+/// - **`Claimed.amount` is a net figure this SDK computes, not upstream's
+///   gross one.** Upstream's `btc_deposited` is the amount that arrived on
+///   chain, before the federation's peg-in fee. What
+///   [`Claimed`](Self::Claimed) reports is the amount actually credited to
+///   the balance — deposited less that fee — because that is the number a
+///   user sees their balance move by. Upstream never reports that figure,
+///   so the SDK derives it; an application needing the gross amount must
+///   record it from an earlier state.
+///
+/// Amounts are reported as whole [`Sats`](crate::Sats) throughout, like the
+/// rest of this facade.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
@@ -250,6 +273,10 @@ pub enum OnchainReceiveState {
     Claimed {
         /// The amount credited, which is the deposited amount less the
         /// federation's peg-in fee.
+        ///
+        /// This is computed by the SDK. It is **not** upstream's
+        /// `btc_deposited`, which is the gross amount that arrived on chain
+        /// with no fee deducted.
         amount: Sats,
     },
     /// Final: the deposit could not be claimed.
@@ -297,7 +324,7 @@ mod tests {
     // constructed from this module: its field is private to
     // `crate::types::ids` and its only public constructor,
     // `FromStr::from_str`, is `unimplemented!()`. So this variant cannot be
-    // built in a test without panicking; see the task report.
+    // built in a test without panicking.
 
     #[test]
     fn onchain_send_state_failed_is_final() {
@@ -316,8 +343,7 @@ mod tests {
 
     // `OnchainReceiveState::WaitingForConfirmation` and `::Confirmed` both
     // carry a `Txid`, which cannot be constructed from this module for the
-    // same reason as `OnchainSendState::Succeeded` above; see the task
-    // report.
+    // same reason as `OnchainSendState::Succeeded` above.
 
     #[test]
     fn onchain_receive_state_claimed_is_final() {

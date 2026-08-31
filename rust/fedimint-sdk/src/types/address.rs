@@ -6,10 +6,12 @@
 /// address for *some* Bitcoin network — it does not yet know which
 /// federation it will be used with, so it cannot check network agreement at
 /// parse time. That check happens later, when the address is used to
-/// request an on-chain quote or send against a specific federation: if the
+/// request an on-chain quote against a specific federation: if the
 /// address's network does not match that federation's network, the call
 /// fails with [`ErrorCode::NetworkMismatch`](crate::ErrorCode::NetworkMismatch)
-/// rather than silently sending to the wrong chain.
+/// rather than silently sending to the wrong chain. Sending needs no second
+/// check, because [`Onchain::send`](crate::Onchain::send) takes only the
+/// quote the address was bound into.
 ///
 /// `Address` is opaque and round-trips through
 /// [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr) with

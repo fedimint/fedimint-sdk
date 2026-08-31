@@ -51,8 +51,8 @@
 //! ) -> fedimint_sdk::Result<()> {
 //!     // One storage, one seed, as many federations as the user joins.
 //!     // Parsing the phrase validates it; leaving `.mnemonic(..)` off
-//!     // entirely would generate a fresh seed and persist it instead of
-//!     // restoring this one.
+//!     // entirely would use the seed already in this storage, or — if the
+//!     // storage is empty — generate a fresh one.
 //!     let mnemonic: Mnemonic = phrase.parse()?;
 //!     let sdk = Sdk::builder()
 //!         .storage(Storage::at(data_dir)?)
@@ -309,10 +309,11 @@
 //!   survive the crossing.
 //! - **Quotes are consumed semantically.** [`Lightning::send`] and
 //!   [`Onchain::send`] take a quote by value; in a binding the quote crosses
-//!   as an object whose second use fails
-//!   ([`ErrorCode::QuoteExpired`] or [`ErrorCode::QuoteChanged`]) rather
-//!   than paying twice. The type system stops it in Rust; the runtime stops
-//!   it everywhere else.
+//!   as an object whose second use fails with
+//!   [`ErrorCode::QuoteExpired`] rather than paying twice — that code covers
+//!   a quote that is no longer valid *because it was already executed*, not
+//!   only one whose validity window lapsed. The type system stops it in
+//!   Rust; the runtime stops it everywhere else.
 //! - **Maps cross as maps.** A [`BTreeMap`](std::collections::BTreeMap)
 //!   becomes the binding's native dictionary. Rust keeps `BTreeMap` rather
 //!   than `HashMap` so that iteration order is deterministic — metadata
@@ -390,8 +391,10 @@
 // Skeleton-phase allowances — remove both when implementation starts. Parameters
 // are deliberately named (they are rustdoc-visible API contract) but unused, and
 // the private placeholder `inner` fields are never constructed or read while
-// every body is unimplemented!(). CI runs with RUSTFLAGS="-D warnings"
-// (section 3), so these must be in-source allows, not tolerated warnings:
+// every body is unimplemented!(). CI builds this crate through
+// actions-rust-lang/setup-rust-toolchain, which defaults RUSTFLAGS to
+// "-D warnings", so these must be in-source allows rather than warnings
+// tolerated at the command line:
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
