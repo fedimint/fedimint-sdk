@@ -161,10 +161,9 @@ async function runTests(testNames: string[]): Promise<void> {
       try {
         await test.initialize()
 
-        // Recorded for every test, but only ever saved to disk on failure
-        // (below) — same cost model as the screenshot/page-source capture.
-        // A passing run pays for start+stop, not for writing/uploading a
-        // video nobody needs.
+        // Recorded and saved for every test, pass or fail — see the failure
+        // path below for the equivalent on that side. Real cost: every run
+        // now produces and uploads a video, not just failing ones.
         try {
           await test.driver.startRecordingScreen()
         } catch (recError) {
@@ -175,9 +174,20 @@ async function runTests(testNames: string[]): Promise<void> {
         await test.execute()
 
         try {
-          await test.driver.stopRecordingScreen()
-        } catch {
-          // Nothing to clean up if it never started.
+          const video = await test.driver.stopRecordingScreen()
+          if (video) {
+            const videoPath = path.join(
+              process.cwd(),
+              'screenshots',
+              `${testName}-passed-${Date.now()}.mp4`,
+            )
+            const dir = path.dirname(videoPath)
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+            fs.writeFileSync(videoPath, video, 'base64')
+            console.log(`Recording saved to: ${videoPath}`)
+          }
+        } catch (recError) {
+          console.warn('Could not save screen recording:', recError)
         }
 
         for (const state of TestClass.produces) currentState.add(state)
