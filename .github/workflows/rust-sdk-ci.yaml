@@ -48,6 +48,11 @@ jobs:
 
       - name: 'Set up Rust'
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # The crate is not at the repo root, and `defaults.run` does not
+          # reach inside a composite action, so the build cache would key off
+          # a non-existent root workspace and silently cache nothing.
+          cache-workspaces: rust/fedimint-sdk
 
       - name: 'Test'
         run: cargo test --locked --all-features
@@ -69,6 +74,7 @@ jobs:
         with:
           components: clippy, rustfmt
           target: wasm32-unknown-unknown
+          cache-workspaces: rust/fedimint-sdk
 
       - name: 'Check fmt'
         run: cargo fmt --all -- --check
@@ -81,6 +87,14 @@ jobs:
 
       - name: 'Check docs'
         run: cargo doc --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # Default features too: this is what catches an intra-doc link from an
+      # ungated item into one behind `experimental`, which the all-features
+      # run cannot see.
+      - name: 'Check docs (default features)'
+        run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
