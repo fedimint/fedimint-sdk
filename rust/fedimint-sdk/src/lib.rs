@@ -10,3 +10,12 @@
 // (section 3), so these must be in-source allows, not tolerated warnings:
 #![allow(unused_variables)]
 #![allow(dead_code)]
+
+mod error;
+mod types;
+
+pub use error::{Error, ErrorCode, Result};
+pub use types::{
+    Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
+    Mnemonic, Network, Notes, OperationId, Sats, Timestamp, Txid,
+};
