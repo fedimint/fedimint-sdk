@@ -21,6 +21,16 @@ pub struct Notes {
 }
 
 impl Notes {
+    /// Wraps an already-validated ecash note string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { notes: raw }
+    }
+
     /// Returns the total value carried by these notes.
     ///
     /// This reads the value encoded in the notes themselves and does not

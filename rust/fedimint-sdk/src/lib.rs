@@ -197,8 +197,8 @@
 //!
 //! ## Everything string-shaped parses and prints
 //!
-//! Invite codes, invoices, addresses, ecash notes, every id, and the activity
-//! [`Cursor`] are opaque types that implement
+//! Invite codes, invoices, addresses, ecash notes, payment preimages, every
+//! id, and the activity [`Cursor`] are opaque types that implement
 //! [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), with
 //! a parse that validates rather than merely storing. Nothing in the public
 //! API asks a caller to hand over a pre-parsed structure or to know a wire
@@ -428,5 +428,5 @@ pub use sdk::{Sdk, SdkBuilder};
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
-    Mnemonic, Network, Notes, OperationId, Sats, Timestamp, Txid,
+    Mnemonic, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
 };

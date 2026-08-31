@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::{Amount, Bolt11Invoice, GatewayId, Operation, OperationState, Result, Timestamp};
+use crate::{
+    Amount, Bolt11Invoice, GatewayId, Operation, OperationState, Preimage, Result, Timestamp,
+};
 
 /// The lightning facade for one federation, backed by its lightning
 /// module.
@@ -247,6 +249,10 @@ pub struct LnReceive {
 /// refund-completed states onto [`Refunded`](Self::Refunded), and the
 /// error and refund-failure states onto [`Failed`](Self::Failed).
 ///
+/// The preimage those success states carry is normalised on the way
+/// through: v1 reports it as a hex string and lnv2 reports it as raw bytes,
+/// and both arrive at a caller as one [`Preimage`].
+///
 /// Two upstream variants fall outside those four buckets, and are called
 /// out rather than left to be discovered:
 ///
@@ -294,11 +300,11 @@ pub enum LnSendState {
     /// The payment is funded and in flight — handed to the gateway, or
     /// committed internally.
     Funded,
-    /// Final: the payee was paid and the preimage proves it.
+    /// Final: the payee was paid and the [`Preimage`] proves it.
     Success {
-        /// The payment preimage, hex-encoded. This is the receipt: it
-        /// proves to anyone holding the invoice that it was paid.
-        preimage: String,
+        /// The payment preimage. This is the receipt: it proves to anyone
+        /// holding the invoice that it was paid.
+        preimage: Preimage,
         /// The fee actually charged, carried forward from the executed
         /// quote.
         fee: Amount,
@@ -425,7 +431,9 @@ mod tests {
     fn ln_send_state_success_is_final() {
         assert!(
             LnSendState::Success {
-                preimage: String::new(),
+                preimage: Preimage::from_raw(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
                 fee: Amount::from_msats(0),
                 route: LightningRoute::Internal,
             }

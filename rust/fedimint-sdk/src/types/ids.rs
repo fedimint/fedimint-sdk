@@ -21,6 +21,18 @@ pub struct FederationId {
     id: String,
 }
 
+impl FederationId {
+    /// Wraps an already-validated federation id string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { id: raw }
+    }
+}
+
 impl core::fmt::Display for FederationId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.id;
@@ -54,6 +66,18 @@ pub struct OperationId {
     id: String,
 }
 
+impl OperationId {
+    /// Wraps an already-validated operation id string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { id: raw }
+    }
+}
+
 impl core::fmt::Display for OperationId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.id;
@@ -85,6 +109,18 @@ pub struct GatewayId {
     id: String,
 }
 
+impl GatewayId {
+    /// Wraps an already-validated gateway id string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { id: raw }
+    }
+}
+
 impl core::fmt::Display for GatewayId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.id;
@@ -114,6 +150,18 @@ impl core::str::FromStr for GatewayId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Txid {
     id: String,
+}
+
+impl Txid {
+    /// Wraps an already-validated transaction id string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { id: raw }
+    }
 }
 
 impl core::fmt::Display for Txid {
@@ -149,6 +197,18 @@ impl core::str::FromStr for Txid {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cursor {
     token: String,
+}
+
+impl Cursor {
+    /// Wraps an already-validated cursor token.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { token: raw }
+    }
 }
 
 impl core::fmt::Display for Cursor {

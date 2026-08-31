@@ -19,6 +19,18 @@ pub struct InviteCode {
     code: String,
 }
 
+impl InviteCode {
+    /// Wraps an already-validated invite code string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { code: raw }
+    }
+}
+
 impl core::fmt::Display for InviteCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.code;

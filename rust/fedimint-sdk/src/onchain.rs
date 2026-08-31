@@ -320,11 +320,17 @@ mod tests {
         assert!(!OnchainSendState::Created.is_final());
     }
 
-    // `OnchainSendState::Succeeded` carries a `Txid`, which cannot be
-    // constructed from this module: its field is private to
-    // `crate::types::ids` and its only public constructor,
-    // `FromStr::from_str`, is `unimplemented!()`. So this variant cannot be
-    // built in a test without panicking.
+    #[test]
+    fn onchain_send_state_succeeded_is_final() {
+        assert!(
+            OnchainSendState::Succeeded {
+                txid: Txid::from_raw(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
+            }
+            .is_final()
+        );
+    }
 
     #[test]
     fn onchain_send_state_failed_is_final() {
@@ -341,9 +347,29 @@ mod tests {
         assert!(!OnchainReceiveState::WaitingForTransaction.is_final());
     }
 
-    // `OnchainReceiveState::WaitingForConfirmation` and `::Confirmed` both
-    // carry a `Txid`, which cannot be constructed from this module for the
-    // same reason as `OnchainSendState::Succeeded` above.
+    #[test]
+    fn onchain_receive_state_waiting_for_confirmation_is_not_final() {
+        assert!(
+            !OnchainReceiveState::WaitingForConfirmation {
+                txid: Txid::from_raw(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn onchain_receive_state_confirmed_is_not_final() {
+        assert!(
+            !OnchainReceiveState::Confirmed {
+                txid: Txid::from_raw(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
+            }
+            .is_final()
+        );
+    }
 
     #[test]
     fn onchain_receive_state_claimed_is_final() {

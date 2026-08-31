@@ -21,6 +21,18 @@ pub struct Address {
     address: String,
 }
 
+impl Address {
+    /// Wraps an already-validated Bitcoin address string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { address: raw }
+    }
+}
+
 impl core::fmt::Display for Address {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.address;

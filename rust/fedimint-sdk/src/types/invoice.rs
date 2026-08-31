@@ -16,6 +16,16 @@ pub struct Bolt11Invoice {
 }
 
 impl Bolt11Invoice {
+    /// Wraps an already-validated bolt11 invoice string.
+    ///
+    /// Crate-internal: this performs no validation of its own, so it is not
+    /// part of the public API. Validation belongs in
+    /// [`FromStr`](core::str::FromStr), which is the only way a caller
+    /// outside this crate can build one.
+    pub(crate) fn from_raw(raw: String) -> Self {
+        Self { invoice: raw }
+    }
+
     /// The amount encoded in the invoice, or `None` if the invoice is
     /// amountless (the payer chooses the amount).
     ///
