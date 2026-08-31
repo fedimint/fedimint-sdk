@@ -1,0 +1,21 @@
+[package]
+name = "fedimint-sdk"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "MIT"
+authors = ["The Fedimint Developers"]
+description = "High-level Fedimint client SDK: one ergonomic API over fedimint-client, and the single surface every binding generates from"
+repository = "https://github.com/fedimint/fedimint-sdk"
+publish = false   # flip when the name is reserved and the API settles
+
+[features]
+# Unstable APIs, excluded from the 0.1 stability contract. Currently: recovery
+# (gated on upstream fedimint#8908 / fedimint#8934 and crash-recovery tests).
+experimental = []
+
+[dependencies]
+# Intentionally empty. The skeleton defines the full public API with
+# unimplemented!() bodies; fedimint-* et al. arrive with the implementation.
+# No foreign error-type crates may ever appear here — the public error surface
+# is crate-owned (see fedimint/fedimint#8821 for the upstream structured-error
+# work this stays decoupled from).

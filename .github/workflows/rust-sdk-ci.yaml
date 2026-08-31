@@ -1,0 +1,88 @@
+name: Rust SDK Continuous Integration
+
+# Continuous integration for the fedimint-sdk crate.
+# Builds, tests, and runs clippy linting, rustfmt, doc, and wasm-target checks
+# on the Rust code.
+# Ensures code formatting follows project standards using rustfmt.
+# Runs on changes to the rust/fedimint-sdk directory on pushes and pull requests.
+#
+# This crate has its own workflow file rather than being matrixed into
+# rust-ci.yaml: GitHub Actions path filters are workflow-level, so folding it
+# in there would build the unrelated fedimint-client-uniffi crate on every
+# sdk-only change (and vice versa), and disambiguating the shared job names
+# would silently unmatch any branch-protection rule pinned to rust-ci.yaml's
+# existing check contexts. A separate file keeps those names stable and lets
+# each crate be path-filtered independently.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/fedimint-sdk/**'
+      - '.github/workflows/rust-sdk-ci.yaml'
+  pull_request:
+    paths:
+      - 'rust/fedimint-sdk/**'
+      - '.github/workflows/rust-sdk-ci.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  test:
+    name: 'Run tests'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust/fedimint-sdk
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Set up Rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: 'Test'
+        run: cargo test --locked --all-features
+
+  check:
+    name: 'Run clippy, fmt, docs and wasm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust/fedimint-sdk
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+          target: wasm32-unknown-unknown
+
+      - name: 'Check fmt'
+        run: cargo fmt --all -- --check
+
+      - name: 'Check clippy'
+        run: cargo clippy --locked --all-targets
+
+      - name: 'Check clippy (all features)'
+        run: cargo clippy --locked --all-targets --all-features
+
+      - name: 'Check docs'
+        run: cargo doc --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: 'Check wasm'
+        run: cargo check --locked --target wasm32-unknown-unknown --all-features
