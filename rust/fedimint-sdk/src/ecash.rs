@@ -201,7 +201,12 @@ impl crate::operation::sealed::Sealed for EcashSendState {}
 
 impl OperationState for EcashSendState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            EcashSendState::Created | EcashSendState::CancelRequested => false,
+            EcashSendState::Canceled | EcashSendState::Redeemed | EcashSendState::Failed { .. } => {
+                true
+            }
+        }
     }
 }
 
@@ -235,10 +240,73 @@ impl crate::operation::sealed::Sealed for EcashReceiveState {}
 
 impl OperationState for EcashReceiveState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            EcashReceiveState::Created | EcashReceiveState::Issuing => false,
+            EcashReceiveState::Done | EcashReceiveState::Failed { .. } => true,
+        }
     }
 }
 
 /// Placeholder for the mint-module state this facade operates on.
 #[derive(Debug)]
 struct EcashInner;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ecash_send_state_created_is_not_final() {
+        assert!(!EcashSendState::Created.is_final());
+    }
+
+    #[test]
+    fn ecash_send_state_cancel_requested_is_not_final() {
+        assert!(!EcashSendState::CancelRequested.is_final());
+    }
+
+    #[test]
+    fn ecash_send_state_canceled_is_final() {
+        assert!(EcashSendState::Canceled.is_final());
+    }
+
+    #[test]
+    fn ecash_send_state_redeemed_is_final() {
+        assert!(EcashSendState::Redeemed.is_final());
+    }
+
+    #[test]
+    fn ecash_send_state_failed_is_final() {
+        assert!(
+            EcashSendState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn ecash_receive_state_created_is_not_final() {
+        assert!(!EcashReceiveState::Created.is_final());
+    }
+
+    #[test]
+    fn ecash_receive_state_issuing_is_not_final() {
+        assert!(!EcashReceiveState::Issuing.is_final());
+    }
+
+    #[test]
+    fn ecash_receive_state_done_is_final() {
+        assert!(EcashReceiveState::Done.is_final());
+    }
+
+    #[test]
+    fn ecash_receive_state_failed_is_final() {
+        assert!(
+            EcashReceiveState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+}

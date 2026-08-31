@@ -303,7 +303,12 @@ impl crate::operation::sealed::Sealed for LnSendState {}
 
 impl OperationState for LnSendState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            LnSendState::Created | LnSendState::Funded => false,
+            LnSendState::Success { .. } | LnSendState::Refunded | LnSendState::Failed { .. } => {
+                true
+            }
+        }
     }
 }
 
@@ -357,7 +362,14 @@ impl crate::operation::sealed::Sealed for LnReceiveState {}
 
 impl OperationState for LnReceiveState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            LnReceiveState::Created
+            | LnReceiveState::WaitingForPayment
+            | LnReceiveState::Funded => false,
+            LnReceiveState::Claimed | LnReceiveState::Canceled { .. } | LnReceiveState::Expired => {
+                true
+            }
+        }
     }
 }
 
@@ -371,3 +383,80 @@ struct LightningInner;
 /// owned by one caller and consumed once, never shared.
 #[derive(Debug)]
 struct LnQuoteInner;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ln_send_state_created_is_not_final() {
+        assert!(!LnSendState::Created.is_final());
+    }
+
+    #[test]
+    fn ln_send_state_funded_is_not_final() {
+        assert!(!LnSendState::Funded.is_final());
+    }
+
+    #[test]
+    fn ln_send_state_success_is_final() {
+        assert!(
+            LnSendState::Success {
+                preimage: String::new(),
+                fee: Amount::from_msats(0),
+                route: LightningRoute::Internal,
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn ln_send_state_refunded_is_final() {
+        assert!(LnSendState::Refunded.is_final());
+    }
+
+    #[test]
+    fn ln_send_state_failed_is_final() {
+        assert!(
+            LnSendState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn ln_receive_state_created_is_not_final() {
+        assert!(!LnReceiveState::Created.is_final());
+    }
+
+    #[test]
+    fn ln_receive_state_waiting_for_payment_is_not_final() {
+        assert!(!LnReceiveState::WaitingForPayment.is_final());
+    }
+
+    #[test]
+    fn ln_receive_state_funded_is_not_final() {
+        assert!(!LnReceiveState::Funded.is_final());
+    }
+
+    #[test]
+    fn ln_receive_state_claimed_is_final() {
+        assert!(LnReceiveState::Claimed.is_final());
+    }
+
+    #[test]
+    fn ln_receive_state_canceled_is_final() {
+        assert!(
+            LnReceiveState::Canceled {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn ln_receive_state_expired_is_final() {
+        assert!(LnReceiveState::Expired.is_final());
+    }
+}

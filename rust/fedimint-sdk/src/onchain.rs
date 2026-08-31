@@ -210,7 +210,10 @@ impl crate::operation::sealed::Sealed for OnchainSendState {}
 
 impl OperationState for OnchainSendState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            OnchainSendState::Created => false,
+            OnchainSendState::Succeeded { .. } | OnchainSendState::Failed { .. } => true,
+        }
     }
 }
 
@@ -261,7 +264,12 @@ impl crate::operation::sealed::Sealed for OnchainReceiveState {}
 
 impl OperationState for OnchainReceiveState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            OnchainReceiveState::WaitingForTransaction
+            | OnchainReceiveState::WaitingForConfirmation { .. }
+            | OnchainReceiveState::Confirmed { .. } => false,
+            OnchainReceiveState::Claimed { .. } | OnchainReceiveState::Failed { .. } => true,
+        }
     }
 }
 
@@ -275,3 +283,59 @@ struct OnchainInner;
 /// consumed once, never shared.
 #[derive(Debug)]
 struct OnchainQuoteInner;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn onchain_send_state_created_is_not_final() {
+        assert!(!OnchainSendState::Created.is_final());
+    }
+
+    // `OnchainSendState::Succeeded` carries a `Txid`, which cannot be
+    // constructed from this module: its field is private to
+    // `crate::types::ids` and its only public constructor,
+    // `FromStr::from_str`, is `unimplemented!()`. So this variant cannot be
+    // built in a test without panicking; see the task report.
+
+    #[test]
+    fn onchain_send_state_failed_is_final() {
+        assert!(
+            OnchainSendState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn onchain_receive_state_waiting_for_transaction_is_not_final() {
+        assert!(!OnchainReceiveState::WaitingForTransaction.is_final());
+    }
+
+    // `OnchainReceiveState::WaitingForConfirmation` and `::Confirmed` both
+    // carry a `Txid`, which cannot be constructed from this module for the
+    // same reason as `OnchainSendState::Succeeded` above; see the task
+    // report.
+
+    #[test]
+    fn onchain_receive_state_claimed_is_final() {
+        assert!(
+            OnchainReceiveState::Claimed {
+                amount: Sats::from_sats(0),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn onchain_receive_state_failed_is_final() {
+        assert!(
+            OnchainReceiveState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+}

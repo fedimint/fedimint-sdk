@@ -126,6 +126,34 @@ impl crate::operation::sealed::Sealed for RecoveryState {}
 
 impl OperationState for RecoveryState {
     fn is_final(&self) -> bool {
-        unimplemented!()
+        match self {
+            RecoveryState::Running => false,
+            RecoveryState::Done | RecoveryState::Failed { .. } => true,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "experimental"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_state_running_is_not_final() {
+        assert!(!RecoveryState::Running.is_final());
+    }
+
+    #[test]
+    fn recovery_state_done_is_final() {
+        assert!(RecoveryState::Done.is_final());
+    }
+
+    #[test]
+    fn recovery_state_failed_is_final() {
+        assert!(
+            RecoveryState::Failed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
     }
 }
