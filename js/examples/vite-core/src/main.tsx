@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { clearClientStorage } from './utils/storage'
+import { clearClientStorage } from '@fedimint/transport-web'
 import './index.css'
 
 // ── React Error Boundary ──────────────────────────────────────────────
