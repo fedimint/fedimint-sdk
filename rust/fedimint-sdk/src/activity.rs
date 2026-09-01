@@ -55,9 +55,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///    user approved. What the balance finally did — how much a refund or a
 ///    reclaim actually gave back, what an accepted transaction actually
 ///    charged — is recorded on the operation's own details record, not here.
-///    The one exception is an on-chain deposit, which has no quoted terms:
-///    its row reports the observed gross and the realized claim fee, per the
-///    table below.
+///    The one exception is an on-chain deposit, whose costs no quote or fee
+///    schedule predicts up front: its row reports the observed gross and the
+///    realized claim fee, per the table below.
 ///
 /// A receive row is gross, then: the payer paid `amount`, and the credit
 /// expected to land is `amount - fee`. A send row's `amount` is what the
@@ -71,14 +71,16 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee the executed quote quoted: what the payment was funded with, which is not necessarily what the payment finally cost |
 /// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee, taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated as realized — the peg-in fee plus the primary module's output fees and denomination dust, per [`OnchainReceiveDetails::realized_fee`](crate::OnchainReceiveDetails::realized_fee); a deposit has no quote step, so `None` until a claim is accepted |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated as realized — the peg-in fee plus the primary module's output fees and denomination dust, per [`OnchainReceiveDetails::realized_fee`](crate::OnchainReceiveDetails::realized_fee); nothing predicts these costs up front, so `None` until a claim is accepted |
 /// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
 ///
 /// ## The identity describes the attempt, and a return costs money
 ///
 /// A row's numbers describe the transfer the operation set out to make, on
-/// the terms it was quoted. [`Success`](ActivityStatus::Success) on
+/// the terms it was quoted — every kind but an on-chain deposit, whose
+/// numbers are the realized ones and are the one pair that does reconcile.
+/// [`Success`](ActivityStatus::Success) on
 /// [`status`](ActivityItem::status) says that transfer completed as intended
 /// — not that these two numbers are what the balance did. A quote is not a
 /// ceiling, so even a successful send's realized debit can come out either
@@ -127,7 +129,7 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// reads the operation's own realized figures, whatever the bucket —
 /// including a [`Success`](ActivityStatus::Success). `amount ± fee` is what
 /// was attempted and what the user approved, which is what a list wants and
-/// never a statement of what the balance did.
+/// — the deposit row excepted — never a statement of what the balance did.
 ///
 /// ## Requested is not actual
 ///
@@ -179,7 +181,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// value the details record already holds and holds more precisely — a
 /// restored amount, a realized fee and an aggregate net cost do not compress
 /// into one number without lying about one of the endings. The row says what
-/// was attempted; the operation says what happened.
+/// was attempted; the operation says what happened. An on-chain deposit,
+/// with nothing attempted to report, is the one row built from the happened
+/// figures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActivityItem {
@@ -213,8 +217,9 @@ pub struct ActivityItem {
     /// row differently.
     ///
     /// Like [`fee`](ActivityItem::fee), it describes the transfer as
-    /// attempted: it is what the counterparty was to receive or did send, not
-    /// a statement that the value stayed with them. A
+    /// attempted — observed, for an on-chain deposit: it is what the
+    /// counterparty was to receive or did send, not a statement that the
+    /// value stayed with them. A
     /// [`Refunded`](ActivityStatus::Refunded) or
     /// [`Canceled`](ActivityStatus::Canceled) row reports the attempt and the
     /// bucket says the value came back.
@@ -226,10 +231,10 @@ pub struct ActivityItem {
     /// starts `None` and becomes known is written once and never changes
     /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee this wallet was quoted for the transfer, when it is known —
-    /// or, for an on-chain deposit, the one kind with no quote step, the
-    /// realized claim fee. Which figure it is for each kind is fixed by the
-    /// table in [What the numbers
+    /// The fee this wallet was quoted for the transfer, when it is known.
+    /// For an on-chain deposit, whose costs no quote or fee schedule
+    /// predicts, it is the realized claim fee instead. Which figure it is
+    /// for each kind is fixed by the table in [What the numbers
     /// mean](ActivityItem#what-the-numbers-mean).
     ///
     /// Always a separate field from [`ActivityItem::amount`] and never folded
@@ -238,8 +243,9 @@ pub struct ActivityItem {
     /// number the user typed or the payee received rather than a
     /// fee-inclusive total that matches neither.
     ///
-    /// It is the fee for the transfer as attempted, and not necessarily what
-    /// the operation finally cost. A refunded or reclaimed transfer paid this
+    /// For every kind but that deposit it is the fee for the transfer as
+    /// attempted, and not necessarily what the operation finally cost. A
+    /// refunded or reclaimed transfer paid this
     /// *and then* paid to have its value returned; the aggregate is on the
     /// operation's details record, per [What the numbers
     /// mean](ActivityItem#what-the-numbers-mean).
