@@ -194,15 +194,32 @@ impl Ecash {
     /// debiting the balance, with the step that turns its outputs into
     /// usable notes failing afterwards. No bearer notes exist then, so
     /// there is nothing to hand over and nothing to reclaim, but real value
-    /// moved. The call returns an error — and the error is not the whole
-    /// story: the operation this call persisted *before* submitting
-    /// anything ends at [`FundingFailed`](EcashSendState::FundingFailed),
-    /// and its [`EcashSendDetails`] receipts what is known of the movement.
-    /// That pre-submission persistence is an implementation obligation
-    /// rather than an optimisation, because upstream runs the funding under
-    /// an id it discards and reports failure without saying whether
-    /// acceptance happened — a record created only on success would leave
-    /// an accepted debit with no trace at all.
+    /// moved. The call fails with
+    /// [`FundingFailed`](crate::ErrorCode::FundingFailed), and the error is
+    /// not the whole story: the operation this call persisted *before*
+    /// submitting anything remains at [`Funding`](EcashSendState::Funding)
+    /// until reconciliation finishes and then ends at
+    /// [`FundingFailed`](EcashSendState::FundingFailed), whose
+    /// [`EcashSendDetails`] receipts the movement. The error's
+    /// [`ErrorDetails::FundingFailed`](crate::ErrorDetails::FundingFailed)
+    /// carries that operation's id, which is the caller's only
+    /// deterministic route to the record — the failed call returns no
+    /// handle, and scanning activity cannot disambiguate concurrent
+    /// identical sends.
+    ///
+    /// Pre-submission persistence is an implementation obligation rather
+    /// than an optimisation, and it is also what makes the outcome fully
+    /// determinable: upstream runs the funding under an id it discards and
+    /// its error says nothing about acceptance, but the correlation
+    /// persisted before the call finds the reissue operation upstream
+    /// committed — whose own records can then be followed through
+    /// rejection or acceptance to the fees charged and the outputs that
+    /// materialised — while finding *no* correlated operation proves no
+    /// submission committed and nothing moved. Reconciliation therefore
+    /// always resolves, and the realized figures on the record are always
+    /// established once [`FundingFailed`](EcashSendState::FundingFailed) is
+    /// reached; "acceptance unknowable" is not an ending this contract
+    /// permits.
     ///
     /// # Automatic reclaim
     ///
@@ -240,8 +257,13 @@ impl Ecash {
     /// was obtained,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage), and
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    /// [`Storage`](crate::ErrorCode::Storage),
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), and
+    /// [`FundingFailed`](crate::ErrorCode::FundingFailed) — the one error
+    /// that reports an *outcome* rather than a refusal, carrying the
+    /// persisted operation's id in
+    /// [`ErrorDetails::FundingFailed`](crate::ErrorDetails::FundingFailed);
+    /// see *A funding failure is an outcome* above.
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
         unimplemented!()
     }
@@ -669,7 +691,11 @@ pub enum EcashSendState {
     /// send needs no transaction and reaches [`Created`](Self::Created)
     /// within the same call. It exists so that a send interrupted
     /// mid-funding reads as what it is — an attempt whose money question is
-    /// still open — rather than as a send that never happened.
+    /// still open — and a failed funding *stays* here, still non-final,
+    /// until reconciliation against the pre-persisted correlation has
+    /// established the movement; only then does it settle at
+    /// [`FundingFailed`](Self::FundingFailed) with the figures on the
+    /// record (see [`Ecash::send`]).
     Funding,
     /// The notes have been issued and handed to the caller. The value has
     /// left the spendable balance; nobody has redeemed or reclaimed it
@@ -698,14 +724,16 @@ pub enum EcashSendState {
     /// and the step that turns its outputs into usable notes fail
     /// afterwards.
     ///
-    /// What is known of the movement is on [`EcashSendDetails`]: the
-    /// realized figures fill in together where the implementation could
-    /// establish whether acceptance happened, and stay absent — all of them
-    /// — where upstream's opaque failure reporting made that
-    /// undeterminable; [`Ecash::send`] names the upstream gap.
-    /// [`EcashSendDetails::notes`] is `None` exactly here, the one ending
-    /// with no artifact to record. See the enum's *There is no failure
-    /// state* section for why this variant does not contradict it.
+    /// The movement is on [`EcashSendDetails`], and it is always
+    /// established by the time this state is reached: the correlation
+    /// persisted before upstream was invoked finds the committed reissue —
+    /// or proves none committed — so reconciliation resolves acceptance,
+    /// fees, and what materialised in every case, and the operation stays
+    /// at [`Funding`](Self::Funding) until it has. [`Ecash::send`] gives
+    /// the mechanism. [`EcashSendDetails::notes`] is `None` exactly here,
+    /// the one ending with no artifact to record. See the enum's *There is
+    /// no failure state* section for why this variant does not contradict
+    /// it.
     FundingFailed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -840,14 +868,15 @@ impl OperationState for EcashSendState {
 ///
 /// For a [`FundingFailed`](EcashSendState::FundingFailed) send, `delivered`
 /// is zero and [`notes`](EcashSendDetails::notes) is `None` — nothing was
-/// issued. The realized trio obeys the both-or-neither rule as one unit:
-/// written together where the implementation established whether the
-/// funding transaction was accepted — `restored_amount` then reporting what
-/// remained usable and `realized_fee` the rest — and absent together where
-/// it could not, because upstream reports this failure without an id, a
-/// txid, or a pre-versus-post-acceptance distinction. A structured upstream
-/// error, or the funding operation's id returned to its caller, is the
-/// named prerequisite for promising the figures in every case.
+/// issued. The realized trio is written together, as one unit, when the
+/// state is reached — and it is always reachable with the figures
+/// established, because the correlation persisted before upstream was
+/// invoked lets reconciliation follow a committed reissue through
+/// rejection or acceptance to its fees and materialised outputs, and read
+/// the absence of a correlated operation as proof that nothing was
+/// submitted (see [`Ecash::send`]). `restored_amount` reports what
+/// remained usable and `realized_fee` the rest; a funding that never
+/// committed writes the trio as zeros, the movement that did not happen.
 ///
 /// A caller reconciling a receipt against the balance should read
 /// `realized_total_debited` as the movement at creation and `restored_amount`
@@ -974,9 +1003,13 @@ pub struct EcashSendDetails {
     /// the figure the record's reconciliation identity is written against — not
     /// [`quoted_total_debited`](EcashSendDetails::quoted_total_debited).
     ///
-    /// Zero and absent are different answers, as everywhere else in this crate:
-    /// `Some(0)` would say the send was funded without moving anything, absent
-    /// says the funding has not happened yet.
+    /// Zero and absent are different answers, as everywhere else in this
+    /// crate: absent says the funding question is still open — the send is
+    /// at [`Funding`](EcashSendState::Funding) or awaiting its
+    /// reconciliation — while `Some(0)` says it is settled that nothing
+    /// moved, which is what a
+    /// [`FundingFailed`](EcashSendState::FundingFailed) send whose
+    /// submission never committed records.
     pub realized_total_debited: Option<Amount>,
     /// Realized: what a reclaim actually put back into the spendable
     /// balance.
@@ -1055,11 +1088,28 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 
 /// The lifecycle of redeeming out-of-band ecash notes.
 ///
-/// This maps one-to-one onto upstream `fedimint-mint-client`'s
-/// `ReissueExternalNotesState` (`Created`, `Issuing`, `Done`,
-/// `Failed(String)`); there is no collapsing or renaming here beyond
-/// carrying the failure reason as a named field so it crosses a
+/// Under the first mint module this maps one-to-one onto upstream
+/// `fedimint-mint-client`'s `ReissueExternalNotesState` (`Created`,
+/// `Issuing`, `Done`, `Failed(String)`); there is no collapsing or renaming
+/// here beyond carrying the failure reason as a named field so it crosses a
 /// foreign-function boundary as a record rather than a positional tuple.
+/// That upstream machine awaits every output's finalization before
+/// reporting done, so its terminal states carry this enum's meanings as
+/// they are.
+///
+/// The second mint module needs one obligation added, because its own
+/// receive reports success at transaction *acceptance*, while the notes
+/// are minted by output machines that are still running then — success
+/// there does not yet mean spendable. The implementation therefore holds
+/// this operation at [`Issuing`](Self::Issuing) after upstream's
+/// acceptance and awaits the finalization of every output the operation's
+/// recorded outpoint range names; only all of them succeeding is
+/// [`Done`](Self::Done), so that state keeps its guarantee — the value is
+/// spendable — on both generations. A finalization that fails is
+/// [`Failed`](Self::Failed), with the partial-credit consequence the
+/// details record documents: the second generation commits each verified
+/// note before a later one can fail, so what landed is a measurement, not
+/// an assumption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashReceiveState {
@@ -1144,19 +1194,21 @@ impl OperationState for EcashReceiveState {
 ///   what the balance actually rose by. It may be smaller or larger than
 ///   `expected_net_credit`; that difference is the whole reason both pairs
 ///   are here.
-/// - For a [`Failed`](EcashReceiveState::Failed) one, `realized_net_credit`
-///   is zero: nothing became spendable, whatever else happened. The fee is
-///   not so simple, because v1 can fail *after* its reissue transaction was
-///   accepted — the acceptance charged its fee, then producing the notes
-///   failed — as well as before, when a rejected transaction charges
-///   nothing. So `realized_fee` is zero for a pre-acceptance rejection and
-///   the accepted fee for an accepted-then-failed reissue — and it is
-///   always establishable, because upstream's per-operation fee accounting
-///   answers for both cases, with zero when nothing was accepted. The
-///   both-or-neither rule above therefore holds for `Failed` too: the pair
-///   is written together at settlement, never one without the other. The
-///   `Done` identity does not apply either way, because no credit exists
-///   for it to describe.
+/// - For a [`Failed`](EcashReceiveState::Failed) one, both figures are
+///   *measurements*, and both are establishable. `realized_net_credit` is
+///   zero under the first mint module by construction — its finalizer
+///   verifies every note before inserting any — but under the second it is
+///   the sum of the notes that finalized before one failed, which the
+///   implementation knows exactly because it drives those awaits itself:
+///   possibly zero, possibly a partial credit that is permanently in the
+///   balance. `realized_fee` is zero for a pre-acceptance rejection and
+///   the accepted fee for an accepted-then-failed reissue, always
+///   establishable because upstream's per-operation fee accounting answers
+///   for both cases. The both-or-neither rule above therefore holds for
+///   `Failed` too: the pair is written together at settlement, never one
+///   without the other. The `Done` identity does not apply, because the
+///   credit here is measured note by note rather than derived from the
+///   fee.
 ///
 /// `Debug` is derived, for the reason given on [`EcashSendDetails`]: [`Notes`]
 /// redacts itself, and a derive inherits that.
@@ -1237,9 +1289,12 @@ pub struct EcashReceiveDetails {
     ///   [`realized_fee`](EcashReceiveDetails::realized_fee), which may sit a
     ///   little above or below
     ///   [`expected_net_credit`](EcashReceiveDetails::expected_net_credit).
-    /// - [`Failed`](EcashReceiveState::Failed) — zero. The notes were not
-    ///   reissued, so their value never entered the balance; this is not
-    ///   `notes_value` minus a zero fee.
+    /// - [`Failed`](EcashReceiveState::Failed) — the measured credit, not a
+    ///   presumed zero. Zero under the first mint module, whose finalizer
+    ///   inserts nothing before failing; under the second, the value of the
+    ///   notes that finalized before one failed, which stays in the balance
+    ///   for good. Never `notes_value` minus a zero fee, and never a number
+    ///   assumed rather than counted.
     pub realized_net_credit: Option<Amount>,
     /// When the redemption was created.
     ///
@@ -1603,20 +1658,36 @@ mod tests {
     }
 
     #[test]
-    fn ecash_receive_details_a_failed_reissue_credited_nothing() {
+    fn ecash_receive_details_a_rejected_reissue_credited_nothing() {
         let details = failed_receive_details();
 
-        // Nothing became spendable, so the credit is zero — explicitly not
-        // `notes_value` minus a fee. The fee is a separate question: this
-        // rejection happened before acceptance, so it charged nothing, but
-        // an accepted-then-failed reissue would report its accepted fee
-        // here instead.
+        // A pre-acceptance rejection: nothing was inserted, so the measured
+        // credit is zero — explicitly not `notes_value` minus a fee — and a
+        // rejected transaction charged nothing.
         assert_eq!(details.realized_net_credit, Some(NOTHING));
         assert_eq!(details.realized_fee, Some(NOTHING));
         assert_ne!(details.realized_net_credit, Some(details.notes_value));
         // And zero is not absence: the redemption settled, and this is the
         // answer.
         assert_ne!(details.realized_net_credit, None);
+    }
+
+    #[test]
+    fn ecash_receive_details_a_failed_v2_reissue_may_keep_a_partial_credit() {
+        // The second mint generation commits each verified note before a
+        // later one fails, so a Failed redemption's measured credit can be
+        // positive — smaller than the face value, alongside the accepted
+        // fee the reissue was charged.
+        let details = EcashReceiveDetails {
+            realized_fee: Some(Amount::from_msats(40)),
+            realized_net_credit: Some(Amount::from_msats(512)),
+            ..failed_receive_details()
+        };
+        assert!(details.realized_net_credit > Some(NOTHING));
+        assert!(
+            details.realized_net_credit < Some(details.notes_value),
+            "a partial credit is less than the notes' face value"
+        );
     }
 
     #[test]

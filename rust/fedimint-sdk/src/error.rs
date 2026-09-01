@@ -191,8 +191,10 @@ impl Error {
     ///
     /// The same constructor as [`Error::new`] and for the same audience —
     /// including the out-of-crate binding layers — for the case where the
-    /// numbers behind the failure are known. The envelope's kind and version
-    /// come from the case itself, so nothing else has to be stated.
+    /// numbers behind the failure are known. This is the *local* form: the
+    /// producer of the detail is this build, so the envelope records
+    /// [`CURRENT_VERSION`](RawErrorDetails::CURRENT_VERSION) as the declared
+    /// producer version.
     ///
     /// `details` should describe the same failure as `code`; the pairing
     /// documented on each [`ErrorDetails`] case is the intended one. Nothing
@@ -200,20 +202,47 @@ impl Error {
     /// caller branches on `code` and reads `details` only to enrich what it
     /// shows.
     ///
-    /// A decoder rebuilding an error that crossed a boundary reaches for this
-    /// when it recognised the kind, and for [`Error::with_raw_details`] when it
-    /// did not.
+    /// A decoder rebuilding an error that crossed a boundary reaches for
+    /// [`Error::with_projected_details`] when it recognised the kind —
+    /// preserving the version the far side declared — and for
+    /// [`Error::with_raw_details`] when it did not. Using this constructor
+    /// there would misreport the producer as this build.
     pub fn with_details(
         code: ErrorCode,
         message: impl Into<String>,
         details: ErrorDetails,
+    ) -> Error {
+        Error::with_projected_details(
+            code,
+            message,
+            details,
+            RawErrorDetails::CURRENT_VERSION,
+        )
+    }
+
+    /// Constructs an error whose detail was projected off a received raw
+    /// envelope, preserving the envelope version the producing side
+    /// declared.
+    ///
+    /// This is the constructor a boundary decoder uses on its happy path:
+    /// it read a [`RawErrorDetails`], recognised the kind, decoded the
+    /// payload into `details`, and passes `raw.version` through as
+    /// `producer_version` — so that "how far ahead is the other side" stays
+    /// answerable from the envelope even when interpretation succeeded. A
+    /// locally-originated detail uses [`Error::with_details`], which is
+    /// this with [`CURRENT_VERSION`](RawErrorDetails::CURRENT_VERSION).
+    pub fn with_projected_details(
+        code: ErrorCode,
+        message: impl Into<String>,
+        details: ErrorDetails,
+        producer_version: u32,
     ) -> Error {
         Error {
             code,
             message: message.into(),
             details: Some(DetailEnvelope::Interpreted {
                 detail: details,
-                producer_version: RawErrorDetails::CURRENT_VERSION,
+                producer_version,
             }),
         }
     }
@@ -402,17 +431,42 @@ impl Diagnostic {
     /// `details` should describe the same situation as `code`; the pairing
     /// documented on each [`ErrorDetails`] case is the intended one. Nothing
     /// enforces it, because `code` stays authoritative either way.
+    ///
+    /// As with [`Error::with_details`], this is the local form and records
+    /// this build's [`CURRENT_VERSION`](RawErrorDetails::CURRENT_VERSION) as
+    /// the producer version; a decoder projecting a received raw envelope
+    /// uses [`Diagnostic::with_projected_details`] to preserve the version
+    /// the far side declared.
     pub fn with_details(
         code: ErrorCode,
         message: impl Into<String>,
         details: ErrorDetails,
+    ) -> Diagnostic {
+        Diagnostic::with_projected_details(
+            code,
+            message,
+            details,
+            RawErrorDetails::CURRENT_VERSION,
+        )
+    }
+
+    /// The projection counterpart of [`Diagnostic::with_details`]: builds a
+    /// diagnostic whose detail was decoded off a received raw envelope,
+    /// carrying `producer_version` through from
+    /// [`RawErrorDetails::version`] exactly as
+    /// [`Error::with_projected_details`] does for an error.
+    pub fn with_projected_details(
+        code: ErrorCode,
+        message: impl Into<String>,
+        details: ErrorDetails,
+        producer_version: u32,
     ) -> Diagnostic {
         Diagnostic {
             code,
             message: message.into(),
             details: Some(DetailEnvelope::Interpreted {
                 detail: details,
-                producer_version: RawErrorDetails::CURRENT_VERSION,
+                producer_version,
             }),
         }
     }
@@ -557,6 +611,7 @@ impl From<Diagnostic> for Error {
 /// | `MixedModuleGenerations` | 1 | `modules: list<record { kind: str, generation: u32 }>` |
 /// | `QuoteExpired` | 1 | `expires_at: u64` — epoch milliseconds, `already_executed: bool` |
 /// | `QuoteTermsChanged` | 1 | `quoted_total: u64`, `current_total: u64` — millisatoshis |
+/// | `FundingFailed` | 1 | `operation_id: str` |
 /// | `BalanceNotEmpty` | 1 | `remaining: u64` — millisatoshis |
 /// | `StorageInUse` | 1 | `location: str` |
 /// | `SeedMismatch` | 1 | `location: str` |
@@ -995,6 +1050,19 @@ pub enum ErrorDetails {
         /// The total debit the same payment would cost now.
         current_total: Amount,
     },
+    /// An ecash send's funding failed after its operation was durably
+    /// recorded. Accompanies [`ErrorCode::FundingFailed`].
+    ///
+    /// The id is the payload's whole point: the failed call returns no
+    /// handle, so this detail is the caller's only deterministic route to
+    /// the persisted operation that receipts whatever the funding moved —
+    /// activity scanning cannot disambiguate concurrent identical sends.
+    FundingFailed {
+        /// The id of the send operation the failed call had persisted,
+        /// resolvable with
+        /// [`Federation::operation`](crate::Federation::operation).
+        operation_id: crate::OperationId,
+    },
     /// A federation was asked to be permanently forgotten while spendable
     /// balance remained in it. Accompanies [`ErrorCode::BalanceNotEmpty`].
     BalanceNotEmpty {
@@ -1094,6 +1162,7 @@ impl ErrorDetails {
             ErrorDetails::MixedModuleGenerations { .. } => "MixedModuleGenerations",
             ErrorDetails::QuoteExpired { .. } => "QuoteExpired",
             ErrorDetails::QuoteTermsChanged { .. } => "QuoteTermsChanged",
+            ErrorDetails::FundingFailed { .. } => "FundingFailed",
             ErrorDetails::BalanceNotEmpty { .. } => "BalanceNotEmpty",
             ErrorDetails::StorageInUse { .. } => "StorageInUse",
             ErrorDetails::SeedMismatch { .. } => "SeedMismatch",
@@ -1121,6 +1190,7 @@ impl ErrorDetails {
             | ErrorDetails::MixedModuleGenerations { .. }
             | ErrorDetails::QuoteExpired { .. }
             | ErrorDetails::QuoteTermsChanged { .. }
+            | ErrorDetails::FundingFailed { .. }
             | ErrorDetails::BalanceNotEmpty { .. }
             | ErrorDetails::StorageInUse { .. }
             | ErrorDetails::SeedMismatch { .. }
@@ -1348,6 +1418,21 @@ pub enum ErrorCode {
     /// [`ErrorDetails::QuoteTermsChanged`] carries the total debit that was
     /// quoted and the total it moved to.
     QuoteChanged,
+    /// An ecash send's funding failed after the attempt was durably
+    /// recorded, and the persisted operation — not this error — is the
+    /// receipt for whatever moved.
+    ///
+    /// This is not a refusal but a report about money possibly in motion:
+    /// the funding transaction may have been accepted before note
+    /// production failed, so the caller must not treat the failed call as
+    /// "nothing happened". [`ErrorDetails::FundingFailed`] carries the
+    /// operation id, which is the *only* deterministic route to the record
+    /// — the call that failed returned no handle, and scanning activity is
+    /// ambiguous under concurrent identical sends. Resolve it with
+    /// [`Federation::operation`](crate::Federation::operation) and read the
+    /// realized figures from the details once the operation settles at
+    /// [`FundingFailed`](crate::EcashSendState::FundingFailed).
+    FundingFailed,
     /// The bolt11 invoice specifies no amount, and such an invoice cannot be
     /// paid.
     ///
@@ -1450,6 +1535,9 @@ mod tests {
             ErrorDetails::QuoteTermsChanged {
                 quoted_total: Amount::from_msats(101_000),
                 current_total: Amount::from_msats(103_500),
+            },
+            ErrorDetails::FundingFailed {
+                operation_id: crate::OperationId::from_raw("op-0123".to_owned()),
             },
             ErrorDetails::BalanceNotEmpty {
                 remaining: Amount::from_msats(7_000),
@@ -2113,16 +2201,37 @@ mod tests {
     }
 
     /// Builds the error a boundary would hand on: the typed case when the
-    /// projection succeeded, the raw envelope kept opaque when it did not.
+    /// projection succeeded — with the producer's declared version carried
+    /// through, never this build's — and the raw envelope kept opaque when
+    /// it did not.
     fn project_or_keep_raw(raw: RawErrorDetails) -> Error {
         match project(&raw) {
-            Some(detail) => {
-                Error::with_details(ErrorCode::InsufficientBalance, "balance is short", detail)
-            }
+            Some(detail) => Error::with_projected_details(
+                ErrorCode::InsufficientBalance,
+                "balance is short",
+                detail,
+                raw.version,
+            ),
             None => {
                 Error::with_raw_details(ErrorCode::InsufficientBalance, "balance is short", raw)
             }
         }
+    }
+
+    #[test]
+    fn projection_preserves_the_producer_version_through_the_decoder_path() {
+        // A version-7 producer emitting the version-1 kind, decoded through
+        // the canonical path: what the envelope reports afterwards is the
+        // producer's declared version, not this build's and not the case's
+        // introduction version.
+        let payload = [0u8, 0, 0, 0, 0, 0, 0x05, 0xDC, 0, 0, 0, 0, 0, 0, 0x04, 0xB0];
+        let raw = RawErrorDetails::new(7, "InsufficientBalance", payload);
+
+        let err = project_or_keep_raw(raw);
+        let envelope = err.details.expect("projected");
+        assert!(envelope.is_interpreted());
+        assert_eq!(envelope.version(), 7);
+        assert_eq!(envelope.typed().expect("interpreted").version(), 1);
     }
 
     #[test]

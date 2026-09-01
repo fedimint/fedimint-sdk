@@ -1099,10 +1099,15 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// [`ClaimRetrying`](Self::ClaimRetrying) through a child's non-terminal
 /// states and moves only on its terminal one. Success is
 /// [`Claimed`](Self::Claimed). Another `ClaimRejected` is another attempt —
-/// made only after confirming the contract still holds value, because an
-/// exhausted contract answers every further claim with the same rejection,
-/// and that check is what turns "spent by someone else" into a reachable
-/// determination instead of an endless retry. `Rejected` or
+/// made only after reconciling every child in the upstream operation log
+/// tagged with this operation (a crash can leave one running unrecorded;
+/// see [`ClaimRetrying`](Self::ClaimRetrying)) and then confirming the
+/// contract still holds value, because an exhausted contract answers every
+/// further claim with the same rejection, and reconciliation-then-check is
+/// what turns "spent by someone else" into a reachable determination
+/// instead of an endless retry — or a false one, since the spender may
+/// have been our own unrecorded child, which is a
+/// [`Claimed`](Self::Claimed), not a failure. `Rejected` or
 /// `InvalidPreimage` is [`Failed`](Self::Failed). And a child's `Timeout`
 /// is [`Failed`](Self::Failed) too, never [`Expired`](Self::Expired): it
 /// reports that no contract was ever funded for the payment hash, the
@@ -1171,15 +1176,25 @@ pub enum LnReceiveState {
     /// The first lightning module leaves the contract in place with this
     /// wallet's claim key still valid when a claim is rejected, and exposes
     /// a call that retries exactly such a claim. The implementation drives
-    /// those retries under this same operation id, persistently, so
-    /// restarts resume them: on success the operation proceeds to
-    /// [`Claimed`](Self::Claimed), and only a determination that no path
-    /// remains moves it to [`Failed`](Self::Failed) — the contract's value
-    /// already spent by an earlier attempt this wallet lost track of, which
-    /// the implementation detects by checking the contract's remaining
-    /// value before each reclaim rather than by waiting for a record to
-    /// disappear, since a funded contract's record is never deleted. Being
-    /// non-final, an operation here also
+    /// those retries under this same operation id, persistently and
+    /// crash-safely. Crash-safety is not free here: upstream commits each
+    /// reclaim child — tagged in its metadata with this operation's id —
+    /// *before* returning the child's id, and a committed child runs
+    /// autonomously, so a crash in that gap can leave a child the SDK never
+    /// recorded claiming the contract on its own. The implementation
+    /// therefore persists an intent before each reclaim call, and — before
+    /// starting another attempt or reading anything into the contract's
+    /// remaining value — enumerates the upstream operation log for every
+    /// child tagged with this operation and reconciles it: a successful
+    /// child, recorded or not, moves this operation to
+    /// [`Claimed`](Self::Claimed) with the credit it produced, and a
+    /// zero-value contract is *not* proof of failure until that
+    /// reconciliation says no such child succeeded. Only after it does an
+    /// exhausted contract — its value spent with no surviving child of ours
+    /// to have spent it — move the operation to [`Failed`](Self::Failed);
+    /// a funded contract's record itself is never deleted, so exhaustion
+    /// is read from its remaining value, never from a record disappearing.
+    /// Being non-final, an operation here also
     /// blocks [`forget_federation`](crate::Sdk::forget_federation): the
     /// local receive keys the retry depends on live in exactly the state an
     /// erase would delete.
@@ -1214,12 +1229,21 @@ pub enum LnReceiveState {
     /// - **An accepted claim failed to produce notes** (v1's post-`Funded`
     ///   `Rejected`, or a reclaim chain ending without a path). Somebody
     ///   *did* pay, this wallet's claim transaction was accepted and the
-    ///   contract is spent, yet the amount is **not in the balance** and
-    ///   will not arrive by waiting. The realized credit is a known zero;
-    ///   the cost may not be establishable, so `realized_fee` may honestly
-    ///   stay `None`. This is the road that needs an operator's attention.
+    ///   contract is spent, yet the full amount is **not in the balance**
+    ///   and will not arrive by waiting. Neither realized figure may be
+    ///   assumed here: the cost may not be establishable, so
+    ///   `realized_fee` may honestly stay `None` — and the credit is not a
+    ///   known zero either, because the second mint generation commits
+    ///   each note it verifies before a later one fails, so a failed
+    ///   issuance can leave a *partial* credit permanently in the balance.
+    ///   The implementation reports the measured partial figure where it
+    ///   reconciles what actually landed, and `None` where it cannot;
+    ///   `Some(0)` is a measurement like any other, never a default. This
+    ///   is the road that needs an operator's attention.
     /// - **lnv2's failure state**: the payment was confirmed and issuance
-    ///   failed, with no reclaim call to fall back on.
+    ///   failed, with no reclaim call to fall back on — and with the same
+    ///   partial-credit possibility, since its issuance is the second mint
+    ///   generation's.
     ///
     /// Render it as an error the user should report, not as an expired
     /// invoice. Carries no payload beyond what a diagnostic needs; see the
@@ -1330,7 +1354,7 @@ impl OperationState for LnReceiveState {
 /// | [`Expired`](LnReceiveState::Expired) | `Some(0)` | `Some(0)` |
 /// | [`Canceled`](LnReceiveState::Canceled) | `Some(0)` | `Some(0)` |
 /// | [`Failed`](LnReceiveState::Failed), invalid preimage | `Some(0)` — no claim was ever attempted | `Some(0)` — the payer was made whole, nothing landed |
-/// | [`Failed`](LnReceiveState::Failed), accepted claim without notes | `None` — the cost may not be establishable | `Some(0)` — nothing landed, and nothing will |
+/// | [`Failed`](LnReceiveState::Failed), accepted claim | `None` — the cost may not be establishable | the measured credit — possibly a partial one, per the state's docs — or `None` where it cannot be established |
 ///
 /// `Some(0)` and `None` are different answers and must not be rendered the
 /// same way: zero is a measurement — the invoice lapsed, the balance did not
@@ -1431,16 +1455,22 @@ pub struct LnReceiveDetails {
     /// refers to, so a receipt built from the record and one built from the
     /// state cannot disagree.
     ///
-    /// `Some(0)` for every other ending, and that zero is the point of this
-    /// field: an [`Expired`](LnReceiveState::Expired) or
-    /// [`Canceled`](LnReceiveState::Canceled) invoice was never paid, and a
-    /// [`Failed`](LnReceiveState::Failed) one was paid without the ecash ever
-    /// being issued — in none of the three did the spendable balance rise, and
-    /// [`expected_net_credit`](LnReceiveDetails::expected_net_credit) must not
-    /// be read as though it had.
+    /// `Some(0)` for an [`Expired`](LnReceiveState::Expired) or
+    /// [`Canceled`](LnReceiveState::Canceled) invoice — never paid, so the
+    /// balance provably did not rise — and for the invalid-preimage
+    /// [`Failed`](LnReceiveState::Failed) road, where no claim was ever
+    /// attempted. For the accepted-claim `Failed` road the honest answer
+    /// is a *measurement*: a failed issuance under the second mint
+    /// generation can leave part of the notes permanently in the balance,
+    /// so this reports the reconciled partial credit — possibly zero,
+    /// possibly not — or stays `None` where the implementation cannot
+    /// establish it. In no ending may
+    /// [`expected_net_credit`](LnReceiveDetails::expected_net_credit) be
+    /// read as though it landed.
     ///
-    /// `None` only while the receive is still in flight: nobody has paid yet,
-    /// or the payment has not settled.
+    /// `None` therefore means "not established" — a receive still in
+    /// flight, or a failure whose partial credit could not be reconciled —
+    /// and never doubles as a zero.
     pub realized_net_credit: Option<Amount>,
     /// The gateway that agreed to take the payment in, if there was one.
     ///
@@ -1833,17 +1863,37 @@ mod tests {
     }
 
     #[test]
-    fn ln_receive_details_of_a_failed_receive_know_no_credit_landed_but_not_the_cost() {
-        // Somebody paid and the ecash was never issued: the credit is a known
-        // zero, the cost is unknown — and unknown is `None`, never `Some(0)`.
+    fn ln_receive_details_of_an_invalid_preimage_failure_are_provable_zeros() {
+        // The gateway reclaimed its funding and the payer's HTLC failed
+        // back; this wallet never attempted a claim. Both figures are
+        // measurements, and both are provably zero.
         let details = LnReceiveDetails {
-            realized_fee: None,
+            realized_fee: Some(Amount::from_msats(0)),
             realized_net_credit: Some(Amount::from_msats(0)),
             ..receive_details()
         };
         assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_fee, Some(Amount::from_msats(0)));
+        assert!(LnReceiveState::Failed.is_final());
+    }
+
+    #[test]
+    fn ln_receive_details_of_a_failed_accepted_claim_may_carry_a_partial_credit() {
+        // The claim transaction was accepted, and the second mint
+        // generation committed the notes it verified before a later one
+        // failed: part of the credit landed for good, the cost could not be
+        // established — and unknown is `None`, never `Some(0)`.
+        let details = LnReceiveDetails {
+            realized_fee: None,
+            realized_net_credit: Some(Amount::from_msats(700)),
+            ..receive_details()
+        };
+        assert!(details.realized_net_credit > Some(Amount::from_msats(0)));
+        assert!(
+            details.realized_net_credit < Some(details.expected_net_credit),
+            "a partial credit is less than the receive expected to land"
+        );
         assert_eq!(details.realized_fee, None);
-        assert_ne!(details.realized_fee, Some(Amount::from_msats(0)));
         assert!(LnReceiveState::Failed.is_final());
     }
 

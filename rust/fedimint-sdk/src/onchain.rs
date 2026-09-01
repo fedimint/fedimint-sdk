@@ -276,12 +276,31 @@ impl Onchain {
     /// and progresses normally, and — like every receive with a transaction
     /// seen — blocks
     /// [`forget_federation`](crate::Sdk::forget_federation). An output that
-    /// currently cannot fund its claim sits in
+    /// cannot *currently* fund its claim sits in
     /// [`ClaimRetrying`](OnchainReceiveState::ClaimRetrying) rather than a
-    /// terminal state, because nothing about the skip is permanent: the
-    /// claim fee tracks the fee market, the claim call accepts any unspent
-    /// output by index, and a deposit uneconomical today can be claimed
-    /// when conditions ease.
+    /// terminal state, with two obligations attached.
+    ///
+    /// First, the retries are the SDK's own to drive. The reference
+    /// scanner evaluates each output exactly once and advances past it for
+    /// good, and upstream exposes no public call to claim an output by
+    /// index, so waiting for upstream to come back is waiting forever: the
+    /// implementation reconstructs and submits the claim transaction
+    /// itself, through the generic client transaction APIs, as fee
+    /// conditions change.
+    ///
+    /// Second, *currently* has a floor under it, and the floor decides
+    /// which state is honest. The claim's costs have fixed minimums that no
+    /// fee-market easing goes below — the sweep fee at the wallet module's
+    /// base feerate, its fixed per-input processing fee, and the primary
+    /// module's own issuance costs — so an output whose value cannot cover
+    /// those minimums is not waiting for anything: it is **provably
+    /// permanently unclaimable**, and it maps to
+    /// [`Failed`](OnchainReceiveState::Failed), whose "no further attempt
+    /// will be made" is exactly true of it. Keeping it non-final would
+    /// promise a retry that cannot succeed and block the erase forever on
+    /// it. Above the floor, [`ClaimRetrying`](
+    /// OnchainReceiveState::ClaimRetrying) is the truth: uneconomical
+    /// today, claimable when conditions ease.
     ///
     /// # Errors
     ///
@@ -1005,7 +1024,12 @@ pub enum OnchainReceiveState {
     },
     /// The deposit is live but not yet claimed, and claiming will be tried
     /// again: a claim attempt was aborted, or the output cannot currently
-    /// fund its own claim fee and is waiting for the fee market to ease.
+    /// fund its own claim fee and is waiting for the fee market to ease —
+    /// a genuinely temporary condition, and only that: an output at or
+    /// below the claim's fixed minimum costs can never become claimable
+    /// and is [`Failed`](Self::Failed) instead, per
+    /// [`Onchain::receive`]. The retries here are driven by the SDK
+    /// itself; upstream's scanner does not return to a skipped output.
     ///
     /// Reachable only under the second wallet module — see the enum's own
     /// documentation for why it exists and why an abort is not a failure.
@@ -1083,14 +1107,20 @@ pub enum OnchainReceiveState {
     /// Carries no transaction and no amount even when one was seen. What
     /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
     /// only ever saw this state reads it — and so is what the failure cost,
-    /// when it cost something. Failure comes in two shapes under the first
-    /// wallet module: the claim transaction may have been rejected outright,
-    /// in which case nothing was charged, or it may have been **accepted** —
-    /// the peg-in spent, its fees incurred — with the primary module's note
-    /// finalization failing afterwards, in which case a real fee was paid
-    /// for notes that never became spendable. The state does not distinguish
-    /// them; [`OnchainReceiveDetails::realized_fee`] does, by being absent
-    /// for the first and recorded for the second.
+    /// when it cost something. Failure comes in two shapes, under *both*
+    /// wallet modules: the claim transaction may have been rejected
+    /// outright, in which case nothing was charged, or it may have been
+    /// **accepted** — the peg-in spent, its fees incurred — with the
+    /// primary module's note finalization failing afterwards. The state
+    /// does not distinguish them;
+    /// [`OnchainReceiveDetails::realized_fee`] does, by being absent for
+    /// the first and recorded for the second. And on the accepted shape
+    /// the credit is not assumed lost outright: the second mint generation
+    /// commits each note it verifies before a later one fails, so a failed
+    /// finalization can leave a *partial* credit permanently in the
+    /// balance — [`OnchainReceiveDetails::realized_net_credit`] reports
+    /// the measured figure where the implementation reconciles it, and
+    /// stays absent where it cannot.
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -1283,10 +1313,13 @@ pub struct OnchainReceiveDetails {
     /// establishes it: a deposit that
     /// [`Failed`](OnchainReceiveState::Failed) *before* any claim
     /// transaction was accepted never establishes it — nothing was charged —
-    /// but the first wallet module can accept the claim and then fail note
+    /// but either wallet module can accept the claim and then fail note
     /// finalization, and that deposit was charged this fee for notes that
-    /// never became spendable. `Some` on such a failure is the record
-    /// telling the truth about a cost with no credit to show for it.
+    /// mostly or entirely never became spendable. `Some` on such a failure
+    /// is the record telling the truth about a cost with little or no
+    /// credit to show for it — how much credit is
+    /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit)'s
+    /// question, per [`Failed`](OnchainReceiveState::Failed).
     /// Millisatoshi-denominated, like every other fee in this facade.
     pub realized_fee: Option<Amount>,
     /// **Realized.** [`realized_fee`](OnchainReceiveDetails::realized_fee),
@@ -1309,13 +1342,17 @@ pub struct OnchainReceiveDetails {
     /// [`realized_fee`](OnchainReceiveDetails::realized_fee) — the aggregate,
     /// not a peg-in fee alone.
     ///
-    /// `None` until the claim completes. Equal to the
-    /// [`Claimed`](OnchainReceiveState::Claimed) state's own net figure —
-    /// the same value in both places, so a receipt built from the record and
-    /// one built from the state cannot disagree — and an
-    /// [`Amount`](crate::Amount) for the same reason it is one there: the
-    /// fees deducted are millisatoshi-denominated, so the credit need not be
-    /// a whole number of satoshis.
+    /// `None` until the claim settles. For a claim that completes it
+    /// equals the [`Claimed`](OnchainReceiveState::Claimed) state's own net
+    /// figure — the same value in both places, so a receipt built from the
+    /// record and one built from the state cannot disagree. For a deposit
+    /// that [`Failed`](OnchainReceiveState::Failed) after its claim was
+    /// accepted, it is the *measured* credit the partial note finalization
+    /// left behind — possibly zero, possibly not, per that state's docs —
+    /// or stays `None` where the implementation cannot reconcile it. An
+    /// [`Amount`](crate::Amount) for the same reason the state's figure is
+    /// one: the fees deducted are millisatoshi-denominated, so the credit
+    /// need not be a whole number of satoshis.
     pub realized_net_credit: Option<Amount>,
     /// When the deposit address was allocated, by this device's clock.
     ///
