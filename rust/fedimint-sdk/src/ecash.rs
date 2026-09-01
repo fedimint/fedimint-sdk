@@ -108,11 +108,13 @@ impl Ecash {
     ///   published mint generations expose a send fee quote for exactly this
     ///   reason.
     ///
-    /// The returned [`EcashQuote`] is that plan, frozen: it binds the
-    /// requested amount, the note value that will actually be produced, the
-    /// fee, the total debit, and the note inventory and federation
-    /// configuration all of those were computed against. Show it, then hand
-    /// it back to [`Ecash::send`], which executes that plan or refuses it.
+    /// The returned [`EcashQuote`] is that plan. It binds the requested
+    /// amount and the note value that will be produced — the one figure
+    /// execution deterministically honours — and records the fee, the total
+    /// debit, and the inventory and configuration context they were computed
+    /// against. Show it, then hand it back to [`Ecash::send`], which checks
+    /// it for *visible* staleness before spending: a preflight, not an
+    /// execution guarantee, for the reason [`EcashQuote::total`] sets out.
     ///
     /// The fee and total it names are **quoted** figures — what the send is
     /// expected to debit, and what the user approves — not a bound on what
@@ -127,9 +129,11 @@ impl Ecash {
     /// user beside [`EcashQuote::fee`] and [`EcashQuote::total`].
     ///
     /// Quoting neither debits the balance nor records anything: it plans.
-    /// Quotes expire, and a plan that is no longer executable is refused by
-    /// [`Ecash::send`] rather than silently re-derived — see
-    /// [`EcashQuote::expires_at`].
+    /// Quotes expire, and a plan whose staleness is visible at preflight is
+    /// refused by [`Ecash::send`] rather than silently accepted — see
+    /// [`EcashQuote::expires_at`]. What execution itself re-derives against
+    /// the live inventory, refusal cannot cover; [`EcashQuote::total`] draws
+    /// that line.
     ///
     /// # Errors
     ///
@@ -155,8 +159,7 @@ impl Ecash {
     /// out-of-band notes.
     ///
     /// The quote is consumed: it describes one send and can fund one send.
-    /// Execution delivers the quoted note value — that much is deterministic
-    /// — or it does not happen:
+    /// Two pre-flight refusals protect the terms the user approved:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
@@ -183,6 +186,23 @@ impl Ecash {
     /// [`EcashSendDetails::realized_total_debited`]. Until someone
     /// redeems the notes the value is in limbo: it is no longer spendable by
     /// the sender, and it is not yet the receiver's either.
+    ///
+    /// # A funding failure is an outcome, not just an error
+    ///
+    /// When exact change is not held, this call funds the send with a
+    /// federation transaction — and that transaction can be **accepted**,
+    /// debiting the balance, with the step that turns its outputs into
+    /// usable notes failing afterwards. No bearer notes exist then, so
+    /// there is nothing to hand over and nothing to reclaim, but real value
+    /// moved. The call returns an error — and the error is not the whole
+    /// story: the operation this call persisted *before* submitting
+    /// anything ends at [`FundingFailed`](EcashSendState::FundingFailed),
+    /// and its [`EcashSendDetails`] receipts what is known of the movement.
+    /// That pre-submission persistence is an implementation obligation
+    /// rather than an optimisation, because upstream runs the funding under
+    /// an id it discards and reports failure without saying whether
+    /// acceptance happened — a record created only on success would leave
+    /// an accepted debit with no trace at all.
     ///
     /// # Automatic reclaim
     ///
@@ -443,11 +463,14 @@ impl EcashQuote {
     ///
     /// Past this point [`Ecash::send`] fails with
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired). Expiry is not the
-    /// only way a quote can stop being executable: it is bound to the note
-    /// inventory it planned against, so notes spent by another operation in
-    /// the meantime invalidate it too, reported as
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged). The remedy for both
-    /// is the same — quote again and re-confirm.
+    /// only way a quote can go stale: it planned against the note inventory
+    /// as it stood, so notes spent by another operation in the meantime
+    /// stale it too, reported as
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) when the preflight
+    /// can see it. That detection is a check at the moment of `send`, with
+    /// the window [`EcashQuote::total`] describes — not a watch on the
+    /// inventory. The remedy for both is the same — quote again and
+    /// re-confirm.
     pub fn expires_at(&self) -> Timestamp {
         unimplemented!()
     }
@@ -589,8 +612,13 @@ impl Operation<EcashSendState> {
 /// happened to the money. An application asking "did my notes come back?"
 /// needs the second question answered, and gets one variant per answer.
 ///
-/// The mapping is total: every upstream variant lands somewhere here, and
-/// there is no variant here without an upstream counterpart.
+/// The mapping is total on upstream's set: every upstream variant lands
+/// somewhere here. Two variants have deliberately *no* upstream
+/// counterpart, because they describe the funding step that precedes the
+/// upstream operation: [`Funding`](Self::Funding) and
+/// [`FundingFailed`](Self::FundingFailed) belong to the SDK's own record of
+/// the attempt, which exists before upstream is invoked at all — see
+/// [`Ecash::send`] on why it must.
 ///
 /// # There is no failure state, and that is the point
 ///
@@ -620,9 +648,29 @@ impl Operation<EcashSendState> {
 /// [`Sdk::forget_federation`](crate::Sdk::forget_federation) refuses while
 /// reclaimable outgoing value remains — could let a federation's local state
 /// be deleted while notes it could still have reclaimed were outstanding.
+///
+/// [`FundingFailed`](Self::FundingFailed) does not reopen this decision; it
+/// sits on the other side of the line the decision drew. It is reachable
+/// only *before* [`Created`](Self::Created), when no bearer note exists to
+/// be redeemed or reclaimed, so the two-outcome argument above has nothing
+/// to protect — and the money question it answers is real, because funding
+/// can debit the balance and then fail to produce the notes. Once notes
+/// exist, failure still surfaces as `Err` from the observing call and never
+/// as a terminal state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashSendState {
+    /// The funding is under way: the quote has been consumed, the operation
+    /// is durably recorded, and the mint is being asked to produce the
+    /// notes. Nothing has been handed out yet — but the balance may already
+    /// have moved, because online funding takes a federation transaction.
+    ///
+    /// The initial state, and often unobservably brief: an exact-change
+    /// send needs no transaction and reaches [`Created`](Self::Created)
+    /// within the same call. It exists so that a send interrupted
+    /// mid-funding reads as what it is — an attempt whose money question is
+    /// still open — rather than as a send that never happened.
+    Funding,
     /// The notes have been issued and handed to the caller. The value has
     /// left the spendable balance; nobody has redeemed or reclaimed it
     /// yet.
@@ -644,6 +692,25 @@ pub enum EcashSendState {
     /// Final: the receiver redeemed the notes. The value is theirs; a
     /// cancellation request, if one was made, lost the race.
     Redeemed,
+    /// Final: funding failed before any notes existed. Nothing was handed
+    /// out, so nothing can be redeemed or reclaimed — but the balance may
+    /// have moved anyway, because the funding transaction can be accepted
+    /// and the step that turns its outputs into usable notes fail
+    /// afterwards.
+    ///
+    /// What is known of the movement is on [`EcashSendDetails`]: the
+    /// realized figures fill in together where the implementation could
+    /// establish whether acceptance happened, and stay absent — all of them
+    /// — where upstream's opaque failure reporting made that
+    /// undeterminable; [`Ecash::send`] names the upstream gap.
+    /// [`EcashSendDetails::notes`] is `None` exactly here, the one ending
+    /// with no artifact to record. See the enum's *There is no failure
+    /// state* section for why this variant does not contradict it.
+    FundingFailed {
+        /// Human-readable explanation. Diagnostic only — not a stable
+        /// contract, and not something to match on.
+        reason: String,
+    },
 }
 
 impl crate::operation::sealed::Sealed for EcashSendState {}
@@ -651,8 +718,12 @@ impl crate::operation::sealed::Sealed for EcashSendState {}
 impl OperationState for EcashSendState {
     fn is_final(&self) -> bool {
         match self {
-            EcashSendState::Created | EcashSendState::CancelRequested => false,
-            EcashSendState::Canceled | EcashSendState::Redeemed => true,
+            EcashSendState::Funding
+            | EcashSendState::Created
+            | EcashSendState::CancelRequested => false,
+            EcashSendState::Canceled
+            | EcashSendState::Redeemed
+            | EcashSendState::FundingFailed { .. } => true,
         }
     }
 }
@@ -767,6 +838,17 @@ impl OperationState for EcashSendState {
 ///   own contract; under any non-zero fee schedule, which is the ordinary
 ///   case, a reclaim strictly restores less than the send debited.
 ///
+/// For a [`FundingFailed`](EcashSendState::FundingFailed) send, `delivered`
+/// is zero and [`notes`](EcashSendDetails::notes) is `None` — nothing was
+/// issued. The realized trio obeys the both-or-neither rule as one unit:
+/// written together where the implementation established whether the
+/// funding transaction was accepted — `restored_amount` then reporting what
+/// remained usable and `realized_fee` the rest — and absent together where
+/// it could not, because upstream reports this failure without an id, a
+/// txid, or a pre-versus-post-acceptance distinction. A structured upstream
+/// error, or the funding operation's id returned to its caller, is the
+/// named prerequisite for promising the figures in every case.
+///
 /// A caller reconciling a receipt against the balance should read
 /// `realized_total_debited` as the movement at creation and `restored_amount`
 /// as the movement at settlement. `realized_fee` is the number to show as
@@ -787,7 +869,14 @@ pub struct EcashSendDetails {
     /// spendable value for as long as the notes are unredeemed, which is what
     /// makes it useful — it is the caller's own bearer artifact, not a
     /// secret they did not already have.
-    pub notes: Notes,
+    ///
+    /// `Some` from the moment [`Created`](EcashSendState::Created) is
+    /// reached, and `None` for exactly one ending:
+    /// [`FundingFailed`](EcashSendState::FundingFailed), the send whose
+    /// funding never produced the artifact. Absence here never means the
+    /// notes were lost from the record — a send that issued notes always
+    /// has them.
+    pub notes: Option<Notes>,
     /// Quoted: what the caller asked [`Ecash::quote`] for.
     ///
     /// Kept so that a receipt can show what was requested beside what was
@@ -857,20 +946,27 @@ pub struct EcashSendDetails {
     ///   — `Some(notes_value)`, with a funding fee of zero. Gating it on a
     ///   transaction that never exists would leave the record asserting an
     ///   unfunded send forever while the balance had visibly fallen.
-    /// - **A reissue was needed.** The debit is what the accepted reissue
-    ///   transaction charged, written when that transaction is accepted. It
-    ///   can differ from
+    /// - **Reissuing was needed.** The debit is
+    ///   [`notes_value`](EcashSendDetails::notes_value) plus the sum of the
+    ///   fees of **every** accepted reissue the funding took — plural on
+    ///   purpose, because upstream reissues and then *recurses*, so a
+    ///   concurrent operation consuming the inventory in between can force
+    ///   a second accepted, fee-bearing reissue before the exact spend
+    ///   lands. The figure is written once, when the final exact spend
+    ///   commits. It can differ from
     ///   [`quoted_total_debited`](EcashSendDetails::quoted_total_debited) in
     ///   **either** direction: the mint decides which notes to spend, which
     ///   to reissue, what change to make and what dust it cannot represent
-    ///   when it assembles the transaction, and it takes no maximum from
+    ///   when it assembles each transaction, and it takes no maximum from
     ///   this SDK. [`EcashQuote::total`] sets out why that gap cannot be
-    ///   closed from here. Establishing the figure carries an implementation
-    ///   obligation worth naming: upstream runs the reissue under an
-    ///   internal operation id it generates and discards, unrelated to the
-    ///   operation it hands back, so the implementation must persist its own
-    ///   correlation to that reissue at the moment it makes it — the fee is
-    ///   not recoverable afterwards from the returned operation alone.
+    ///   closed from here. Establishing the figure carries an
+    ///   implementation obligation worth naming: upstream runs each reissue
+    ///   under an internal operation id it generates and discards,
+    ///   unrelated to the operation it hands back, so the implementation
+    ///   must persist a correlation token *before* invoking upstream and
+    ///   tie every reissue it causes to that token — including recovering
+    ///   the set after a restart — because none of those fees is
+    ///   recoverable afterwards from the returned operation alone.
     ///
     /// Written once and never revised, in both cases.
     ///
@@ -1053,11 +1149,14 @@ impl OperationState for EcashReceiveState {
 ///   not so simple, because v1 can fail *after* its reissue transaction was
 ///   accepted — the acceptance charged its fee, then producing the notes
 ///   failed — as well as before, when a rejected transaction charges
-///   nothing. So `realized_fee` is zero for a pre-acceptance rejection,
-///   the accepted fee for an accepted-then-failed reissue, and absent where
-///   an implementation cannot establish which. The `Done` identity above
-///   does not apply either way, because no credit exists for it to
-///   describe.
+///   nothing. So `realized_fee` is zero for a pre-acceptance rejection and
+///   the accepted fee for an accepted-then-failed reissue — and it is
+///   always establishable, because upstream's per-operation fee accounting
+///   answers for both cases, with zero when nothing was accepted. The
+///   both-or-neither rule above therefore holds for `Failed` too: the pair
+///   is written together at settlement, never one without the other. The
+///   `Done` identity does not apply either way, because no credit exists
+///   for it to describe.
 ///
 /// `Debug` is derived, for the reason given on [`EcashSendDetails`]: [`Notes`]
 /// redacts itself, and a derive inherits that.
@@ -1118,10 +1217,13 @@ pub struct EcashReceiveDetails {
     /// On a [`Failed`](EcashReceiveState::Failed) redemption this reports
     /// what the failure cost, which is not always nothing: zero when the
     /// transaction was rejected outright — a rejected transaction is not
-    /// charged for — but the accepted fee when v1 accepted the reissue and
-    /// then failed to produce the notes, and absent where the
-    /// implementation cannot establish which happened. The rule is "what
-    /// actually moved", never "zero on failure".
+    /// charged for — and the accepted fee when v1 accepted the reissue and
+    /// then failed to produce the notes. Never absent once the redemption
+    /// settles: upstream's per-operation fee accounting answers in both
+    /// cases, so this fills in alongside
+    /// [`realized_net_credit`](EcashReceiveDetails::realized_net_credit)
+    /// for `Failed` exactly as for `Done`. The rule is "what actually
+    /// moved", never "zero on failure".
     pub realized_fee: Option<Amount>,
     /// Realized: what the balance actually rose by.
     ///
@@ -1158,11 +1260,12 @@ impl crate::operation::DetailedOperationState for EcashReceiveState {
 #[derive(Debug)]
 struct EcashInner;
 
-/// Placeholder for a quote's frozen plan: the requested amount, the notes
-/// selected to satisfy it and the denominations they will be issued in, the
-/// fee, and the note inventory and configuration context all of those were
-/// computed against. Held by value rather than behind an `Arc`, because a
-/// quote is owned by one caller and consumed once, never shared.
+/// Placeholder for a quote's plan: the requested amount, the note value it
+/// resolves to, the fee, and the note inventory and configuration context
+/// those were computed against — context kept for staleness detection, not
+/// a reservation, since the mint selects notes and denominations at
+/// execution. Held by value rather than behind an `Arc`, because a quote is
+/// owned by one caller and consumed once, never shared.
 #[derive(Debug)]
 struct EcashQuoteInner;
 
@@ -1190,7 +1293,7 @@ mod tests {
     /// the notes and no reclaim has run.
     fn send_details() -> EcashSendDetails {
         EcashSendDetails {
-            notes: Notes::from_raw(TOKEN.to_owned()),
+            notes: Some(Notes::from_raw(TOKEN.to_owned())),
             requested_amount: Amount::from_msats(1_234),
             notes_value: Amount::from_msats(1_536),
             quoted_fee: Amount::from_msats(64),
@@ -1541,8 +1644,23 @@ mod tests {
     }
 
     #[test]
+    fn ecash_send_state_funding_is_not_final() {
+        assert!(!EcashSendState::Funding.is_final());
+    }
+
+    #[test]
     fn ecash_send_state_created_is_not_final() {
         assert!(!EcashSendState::Created.is_final());
+    }
+
+    #[test]
+    fn ecash_send_state_funding_failed_is_final() {
+        assert!(
+            EcashSendState::FundingFailed {
+                reason: String::new(),
+            }
+            .is_final()
+        );
     }
 
     #[test]

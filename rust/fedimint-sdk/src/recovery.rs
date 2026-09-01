@@ -101,7 +101,12 @@
 //!
 //! 1. **It kept the [`OperationId`](crate::OperationId).**
 //!    [`Federation::operation`](crate::Federation::operation) then
-//!    [`AnyOperation::as_recovery`] gives back the typed handle.
+//!    [`AnyOperation::as_recovery`] gives back the typed handle — to *that
+//!    attempt*, which is not always the current one: if it reads
+//!    [`RecoveryState::Failed`], a reopen may already have started a newer
+//!    attempt under a different id (see below), so check
+//!    [`Sdk::recovery_status`] as in case 2 before concluding the recovery
+//!    is stuck.
 //! 2. **It kept only the [`FederationId`].** [`Sdk::recovery_status`] to
 //!    read the state, [`Sdk::resume_recovery`] to get a handle back.
 //! 3. **It kept nothing.**
@@ -127,8 +132,14 @@
 //! observable instead: an open that finds the federation's last recorded
 //! attempt at [`RecoveryState::Failed`] mints the new attempt itself —
 //! a new [`OperationId`](crate::OperationId), exactly as
-//! [`Sdk::resume_recovery`] would — records it durably before the open
-//! returns, and points [`Sdk::recovery_status`] at it. The stopped attempt
+//! [`Sdk::resume_recovery`] would — records it durably *before the
+//! underlying open is asked to do anything*, and points
+//! [`Sdk::recovery_status`] at it. Before invoking, not merely before
+//! returning: the underlying open spawns the recovery tasks while it runs,
+//! so a rescan can be advancing — or finished — while the open call is
+//! still in flight, and a crash in that window must not leave an unlogged
+//! attempt running with the SDK's own record still naming the old one, or
+//! the next boot would mint a third. The stopped attempt
 //! stays in the operation log untouched. `Failed` is therefore a statement
 //! about one attempt, never a promise that nothing is running now: after
 //! any reopen, the state to trust is [`Sdk::recovery_status`]'s, and
@@ -255,8 +266,12 @@ impl Sdk {
     /// carries the recovery on. A retry of *this* call after such an error
     /// reports [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) — the
     /// signpost to those two calls, not a dead end. An intent written for a
-    /// join that never committed is inert and harmless: the next `recover`
-    /// for the same federation supersedes it.
+    /// join that never committed is inert and harmless: only the underlying
+    /// client's own durable recovery marker, not the intent alone, makes a
+    /// federation count as recovering, so the next `recover` for the same
+    /// federation supersedes the leftover and a plain
+    /// [`Sdk::join`](crate::Sdk::join) discards it in the same transaction
+    /// that joins.
     ///
     /// # Errors
     ///
@@ -322,7 +337,12 @@ impl Sdk {
     /// only way the record can be missing: `recover` persists its recovery
     /// intent *before* it lets upstream join (see its docs), so a
     /// federation a failed `recover` call left joined still carries the
-    /// record, and this call accepts it. Resuming a
+    /// record, and this call accepts it. The converse holds too: an intent
+    /// whose upstream join never committed is not a record — it is
+    /// discarded by the next plain join and superseded by the next
+    /// `recover` — so presence of a *corroborated* record is what this call
+    /// keys on, and a plainly joined federation cannot ride in on a
+    /// leftover. Resuming a
     /// recovery is a different request from starting the first one, and
     /// this call deliberately does not do the second: turning a plainly
     /// joined federation into a recovering one would re-derive its client
@@ -349,8 +369,24 @@ impl Sdk {
     /// and [`Timeout`](crate::ErrorCode::Timeout) when the guardians cannot
     /// be reached to fetch the backup a new attempt starts from, and
     /// [`Storage`](crate::ErrorCode::Storage) if the attempt cannot be
-    /// recorded durably. None of these releases the lock or changes the
-    /// federation's recovery state; the call can simply be made again.
+    /// recorded durably. None of these releases the lock or unwinds the
+    /// recovery record — but they are not all equally clean to retry,
+    /// because of how a new attempt has to start. The underlying client
+    /// only derives and spawns recoveries when it is built, so retrying a
+    /// *stopped* attempt on an open federation means shutting the live
+    /// client down and rebuilding it — and the shutdown comes first, before
+    /// the step that can still fail. An error from that rebuild therefore
+    /// leaves the federation with no live handle: it transitions to
+    /// [`Quarantined`](crate::FederationStatus::Quarantined) carrying the
+    /// error as its diagnostic, this call reports
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) until
+    /// [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings the
+    /// federation back, and — because the new attempt's id was persisted
+    /// durably before the rebuild was attempted — that id survives as the
+    /// current attempt, which the reopen then resumes itself rather than
+    /// minting another. An error raised *before* the rebuild begins leaves
+    /// the running client untouched, and there the call can simply be made
+    /// again.
     pub async fn resume_recovery(&self, id: &FederationId) -> Result<Recovery> {
         unimplemented!()
     }

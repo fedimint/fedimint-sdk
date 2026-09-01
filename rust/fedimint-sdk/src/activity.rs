@@ -340,6 +340,7 @@ pub enum Direction {
 /// | --- | --- |
 /// | [`EcashSendState::Redeemed`](crate::EcashSendState::Redeemed) | [`Success`](Self::Success) |
 /// | [`EcashSendState::Canceled`](crate::EcashSendState::Canceled) | [`Canceled`](Self::Canceled) |
+/// | [`EcashSendState::FundingFailed`](crate::EcashSendState::FundingFailed) | [`Failed`](Self::Failed) |
 /// | [`EcashReceiveState::Done`](crate::EcashReceiveState::Done) | [`Success`](Self::Success) |
 /// | [`EcashReceiveState::Failed`](crate::EcashReceiveState::Failed) | [`Failed`](Self::Failed) |
 /// | [`LnSendState::Success`](crate::LnSendState::Success) | [`Success`](Self::Success) |
@@ -627,7 +628,7 @@ mod tests {
         // issued, and 1408 came back once the reclaim's own transaction had
         // been paid for.
         let details = crate::EcashSendDetails {
-            notes: crate::Notes::from_raw("notes".to_owned()),
+            notes: Some(crate::Notes::from_raw("notes".to_owned())),
             requested_amount: Amount::from_msats(1_234),
             notes_value: Amount::from_msats(1_536),
             quoted_fee: Amount::from_msats(64),

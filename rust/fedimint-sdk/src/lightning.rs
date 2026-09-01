@@ -1026,8 +1026,8 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// *after* a claim has already succeeded, so both `ClaimRejected` and
 /// `InvalidPreimage` are always observed before this enum's
 /// [`Funded`](Self::Funded) — that is the normal ordering, not an edge case
-/// — and by the time either fires, the payer's money is already locked in
-/// the incoming contract. What separates them is who can still take it:
+/// — and by the time either fires, the payer's money has already reached
+/// the incoming contract. Where it goes next is what separates them:
 ///
 /// - `ClaimRejected` leaves the contract in place with **this wallet's**
 ///   claim key valid, and upstream provides a call that retries exactly
@@ -1035,10 +1035,13 @@ impl crate::operation::DetailedOperationState for LnSendState {
 ///   [`ClaimRetrying`](Self::ClaimRetrying), never to a terminal state and
 ///   never to a benign one.
 /// - `InvalidPreimage` means the preimage the contract settled with was not
-///   the one offered, and the federation resolves the contract to the
-///   **gateway's** claim key: this wallet was never entitled to the funds,
-///   and no retry changes that. It maps to [`Failed`](Self::Failed), whose
-///   docs carry the distinct economics.
+///   the one offered. The federation resolves the contract to the
+///   **gateway's** claim key, the gateway reclaims its funding and fails
+///   the payer's HTLC back, and this wallet — which never attempts a claim
+///   on this road — was never entitled to the funds. Nobody ends up
+///   paying; but a wrong preimage is a protocol anomaly, not a benign
+///   refusal, so it maps to [`Failed`](Self::Failed), whose docs carry the
+///   distinct economics.
 ///
 /// Only `Rejected` needs a second key, because upstream emits it at two
 /// entirely different moments: for an offer the federation refused before
@@ -1070,9 +1073,9 @@ impl crate::operation::DetailedOperationState for LnSendState {
 ///    respectively — independent of any observed phase. An earlier revision
 ///    of this table routed the pre-`Funded` occurrences of both to
 ///    [`Canceled`](Self::Canceled) as an "unexpected ordering" fallback;
-///    upstream's ordering makes pre-`Funded` the *only* occurrence, and
-///    both fire with the payment already taken, so that fallback mapped
-///    real money to "nothing moved".
+///    upstream's ordering makes pre-`Funded` the *only* occurrence, so
+///    that fallback buried a recoverable paid claim — and a protocol
+///    anomaly — under "nothing moved".
 /// 3. `Rejected` alone is arbitrated by phase: before
 ///    [`Funded`](Self::Funded) it is a genuine refusal with nothing owed —
 ///    [`Canceled`](Self::Canceled) — and at or after, a paid receive whose
@@ -1087,6 +1090,24 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// are indistinguishable, which is precisely the bug this mapping fixes. The
 /// realized fields of [`LnReceiveDetails`] are not a substitute: they answer
 /// what moved, not how far the operation got.
+///
+/// **The table maps the original attempt; a reclaim folds into it.** A
+/// retry made through upstream's reclaim call runs as a *fresh* upstream
+/// operation whose own stream re-emits the early states — `Created`,
+/// `WaitingForPayment` — about an invoice this operation already knows was
+/// paid. None of that is surfaced: the parent keeps reporting
+/// [`ClaimRetrying`](Self::ClaimRetrying) through a child's non-terminal
+/// states and moves only on its terminal one. Success is
+/// [`Claimed`](Self::Claimed). Another `ClaimRejected` is another attempt —
+/// made only after confirming the contract still holds value, because an
+/// exhausted contract answers every further claim with the same rejection,
+/// and that check is what turns "spent by someone else" into a reachable
+/// determination instead of an endless retry. `Rejected` or
+/// `InvalidPreimage` is [`Failed`](Self::Failed). And a child's `Timeout`
+/// is [`Failed`](Self::Failed) too, never [`Expired`](Self::Expired): it
+/// reports that no contract was ever funded for the payment hash, the
+/// parent's own persisted phase proves one was, and an inconsistency is
+/// something to surface, not a lapse to normalise.
 ///
 /// lnv2 needs none of this arbitration, because it draws the distinction
 /// itself: its `ReceiveOperationState` has explicit pending and claiming
@@ -1153,8 +1174,12 @@ pub enum LnReceiveState {
     /// those retries under this same operation id, persistently, so
     /// restarts resume them: on success the operation proceeds to
     /// [`Claimed`](Self::Claimed), and only a determination that no path
-    /// remains — the contract gone, or spent by someone else — moves it to
-    /// [`Failed`](Self::Failed). Being non-final, an operation here also
+    /// remains moves it to [`Failed`](Self::Failed) — the contract's value
+    /// already spent by an earlier attempt this wallet lost track of, which
+    /// the implementation detects by checking the contract's remaining
+    /// value before each reclaim rather than by waiting for a record to
+    /// disappear, since a funded contract's record is never deleted. Being
+    /// non-final, an operation here also
     /// blocks [`forget_federation`](crate::Sdk::forget_federation): the
     /// local receive keys the retry depends on live in exactly the state an
     /// erase would delete.
@@ -1169,30 +1194,32 @@ pub enum LnReceiveState {
         /// only — not a stable contract, and not something to match on.
         reason: String,
     },
-    /// Final: the payment arrived but the ecash for it was never issued, and
-    /// **no further attempt will be made**.
+    /// Final: the ecash was never issued, and **no further attempt will be
+    /// made**.
     ///
-    /// This is the one genuinely bad outcome of a receive, and it is not the
-    /// ordinary "nobody paid" ending — somebody *did* pay. The payment was
-    /// confirmed and then the step that turns it into spendable notes did
-    /// not complete, so the amount is **not in the balance** and will not
-    /// arrive by waiting. The second clause is as much of the contract as
-    /// the first: a rejected claim that can still be retried is
+    /// The second clause is as much of the contract as the first: a
+    /// rejected claim that can still be retried is
     /// [`ClaimRetrying`](Self::ClaimRetrying), not this, and reaching here
-    /// means no retry can change the answer. Two roads lead in, with
-    /// different economics: a v1 receive whose preimage was invalid — the
-    /// federation resolves the contract to the *gateway's* key, so this
-    /// wallet was never entitled to the funds — or whose accepted claim
-    /// failed to produce notes with the contract spent; and lnv2's failure
-    /// state, where the payment was confirmed and issuance failed with no
-    /// reclaim call to fall back on. Where the money went differs; that it
-    /// is not coming here by any action of this SDK does not.
+    /// means no retry can change the answer. Three roads lead in, and they
+    /// do not share economics — the realized fields of [`LnReceiveDetails`]
+    /// tell them apart:
     ///
-    /// [`LnReceiveDetails::realized_net_credit`] reads zero here — nothing
-    /// landed, and nothing will — while
-    /// [`LnReceiveDetails::realized_fee`] may be absent: a claim that was
-    /// accepted and then failed to produce notes did cost something, and this
-    /// is the one ending where how much may not be establishable.
+    /// - **The preimage was invalid** (v1). The federation resolves the
+    ///   contract to the *gateway's* key, the gateway reclaims its funding
+    ///   and fails the payer's HTLC back, and this wallet never attempts a
+    ///   claim. Nobody's payment survives: the payer is made whole, and
+    ///   both realized figures are provably zero — `Some(0)`, known, not
+    ///   merely absent. It is final because it is an anomaly, not because
+    ///   money is stuck.
+    /// - **An accepted claim failed to produce notes** (v1's post-`Funded`
+    ///   `Rejected`, or a reclaim chain ending without a path). Somebody
+    ///   *did* pay, this wallet's claim transaction was accepted and the
+    ///   contract is spent, yet the amount is **not in the balance** and
+    ///   will not arrive by waiting. The realized credit is a known zero;
+    ///   the cost may not be establishable, so `realized_fee` may honestly
+    ///   stay `None`. This is the road that needs an operator's attention.
+    /// - **lnv2's failure state**: the payment was confirmed and issuance
+    ///   failed, with no reclaim call to fall back on.
     ///
     /// Render it as an error the user should report, not as an expired
     /// invoice. Carries no payload beyond what a diagnostic needs; see the
@@ -1302,7 +1329,8 @@ impl OperationState for LnReceiveState {
 /// | [`Claimed`](LnReceiveState::Claimed) | `Some` — what the accepted claim charged | `Some` — the invoice amount less that |
 /// | [`Expired`](LnReceiveState::Expired) | `Some(0)` | `Some(0)` |
 /// | [`Canceled`](LnReceiveState::Canceled) | `Some(0)` | `Some(0)` |
-/// | [`Failed`](LnReceiveState::Failed) | `None` — a failed claim's cost may not be establishable | `Some(0)` — nothing landed, and nothing will |
+/// | [`Failed`](LnReceiveState::Failed), invalid preimage | `Some(0)` — no claim was ever attempted | `Some(0)` — the payer was made whole, nothing landed |
+/// | [`Failed`](LnReceiveState::Failed), accepted claim without notes | `None` — the cost may not be establishable | `Some(0)` — nothing landed, and nothing will |
 ///
 /// `Some(0)` and `None` are different answers and must not be rendered the
 /// same way: zero is a measurement — the invoice lapsed, the balance did not
@@ -1387,9 +1415,12 @@ pub struct LnReceiveDetails {
     /// or was refused before payment: no claim was assembled, so nothing was
     /// charged.
     ///
-    /// `None` while the receive is still running, and `None` for a
-    /// [`Failed`](LnReceiveState::Failed) receive, where a claim may have been
-    /// accepted before the notes failed to materialise and the cost may not be
+    /// `None` while the receive is still running. For a
+    /// [`Failed`](LnReceiveState::Failed) receive the answer depends on the
+    /// road taken, per that state's docs: a known `Some(0)` for an invalid
+    /// preimage, where this wallet never attempted a claim and the payer
+    /// was made whole, and `None` where a claim may have been accepted
+    /// before the notes failed to materialise, so the cost may not be
     /// establishable. Never zero as a stand-in for unknown.
     pub realized_fee: Option<Amount>,
     /// Realized half. What the balance actually gained.

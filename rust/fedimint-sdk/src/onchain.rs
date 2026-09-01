@@ -261,21 +261,27 @@ impl Onchain {
     /// the returned handle knows — it is half of the correlation key, not
     /// just something to render.
     ///
-    /// One funded case falls outside what the state machine can report
-    /// under the second wallet module, and it is stated rather than hidden:
-    /// an output too small to cover the claim's own fees is skipped by the
-    /// upstream scanner, which advances past it without recording any
-    /// persistent event. Nothing remains for the implementation to observe,
-    /// so the operation stays in
+    /// Observation does not lean on the reference scanner's own events,
+    /// because those are not the whole truth. The reference client under
+    /// the second wallet module skips an output too small to fund its own
+    /// claim — advancing its scan cursor past it without recording any
+    /// event — but the federation itself keeps a permanent, index-addressed
+    /// log of every output that matched its receive filter, queryable by
+    /// range, script, value, outpoint and spent-flag included. The
+    /// implementation therefore maintains its **own** persisted output
+    /// cursor against that log and binds a matching output from it, so a
+    /// deposit the reference scanner declined to claim is still *seen*:
+    /// the operation leaves
     /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
-    /// — indistinguishable from an address nobody has paid, even though
-    /// coins arrived and will not be claimed — and, like any unpaid
-    /// receive, it does not block
-    /// [`forget_federation`](crate::Sdk::forget_federation). Mapping this
-    /// case to a terminal [`Failed`](OnchainReceiveState::Failed) needs an
-    /// upstream persistent skipped-output event to key on, and that event
-    /// is a named prerequisite this API documents rather than pretends to
-    /// have.
+    /// and progresses normally, and — like every receive with a transaction
+    /// seen — blocks
+    /// [`forget_federation`](crate::Sdk::forget_federation). An output that
+    /// currently cannot fund its claim sits in
+    /// [`ClaimRetrying`](OnchainReceiveState::ClaimRetrying) rather than a
+    /// terminal state, because nothing about the skip is permanent: the
+    /// claim fee tracks the fee market, the claim call accepts any unspent
+    /// output by index, and a deposit uneconomical today can be claimed
+    /// when conditions ease.
     ///
     /// # Errors
     ///
@@ -997,8 +1003,9 @@ pub enum OnchainReceiveState {
         /// anything the federation charges to claim it.
         gross_deposited: Sats,
     },
-    /// A claim attempt was aborted and the deposit is still live: another
-    /// attempt for the same output is expected.
+    /// The deposit is live but not yet claimed, and claiming will be tried
+    /// again: a claim attempt was aborted, or the output cannot currently
+    /// fund its own claim fee and is waiting for the fee market to ease.
     ///
     /// Reachable only under the second wallet module — see the enum's own
     /// documentation for why it exists and why an abort is not a failure.
@@ -1021,10 +1028,11 @@ pub enum OnchainReceiveState {
         /// anything the federation charges to claim it. Unchanged by an
         /// aborted attempt — what arrived on chain arrived.
         gross_deposited: Sats,
-        /// Human-readable explanation of the attempt that was aborted.
-        /// Diagnostic only — not a stable contract, and not something to
-        /// match on. Reports the most recent abort; earlier ones are not
-        /// retained.
+        /// Human-readable explanation of why the claim has not landed yet:
+        /// the attempt that was aborted, or the output being currently
+        /// unable to fund its own claim fee. Diagnostic only — not a stable
+        /// contract, and not something to match on. Reports the most recent
+        /// reason; earlier ones are not retained.
         last_abort: String,
     },
     /// Final: the deposit is in the spendable balance.
@@ -1180,15 +1188,20 @@ impl OperationState for OnchainReceiveState {
 /// # The aggregate, and the arithmetic these fields satisfy
 ///
 /// [`realized_fee`](OnchainReceiveDetails::realized_fee) is the
-/// **aggregate** of everything the federation charged to bring the deposit
-/// into the balance, and it is deliberately not the wallet module's peg-in
-/// fee on its own. Claiming a deposit balances the wallet input into
-/// primary-module outputs; the primary module's fees — on those outputs, and
-/// on any existing notes it consolidates into the same transaction — and the
-/// denomination dust the split leaves behind, reduce the credit exactly as
-/// the peg-in fee does, and
-/// upstream's own accounting reports an accepted transaction's costs as one
-/// aggregate for that reason.
+/// **aggregate** of everything claiming the deposit cost, and it is
+/// deliberately not the wallet module's peg-in fee on its own. Claiming a
+/// deposit balances the wallet input into primary-module outputs; the
+/// primary module's fees — on those outputs, and on any existing notes it
+/// consolidates into the same transaction — and the denomination dust the
+/// split leaves behind, reduce the credit exactly as the peg-in fee does.
+/// Under the second wallet module one more cost precedes all of those: the
+/// on-chain sweep deduction taken off the gross *before* the federation
+/// transaction's amount is even formed, which the per-operation fee
+/// accounting therefore never sees and the implementation must read from
+/// upstream's receive event instead —
+/// [`OnchainReceiveFeeBreakdown::network_claim`] names it, and an
+/// aggregate computed from the transaction's accounting alone silently
+/// omits it.
 ///
 /// So the identity is:
 /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
@@ -1254,7 +1267,9 @@ pub struct OnchainReceiveDetails {
     /// balances the wallet input into primary-module outputs, and the
     /// primary module's fees — output and input alike, if it consolidated
     /// notes along the way — and the denomination dust left over reduce the
-    /// credit too.
+    /// credit too, as does the second wallet module's off-transaction
+    /// network sweep deduction
+    /// ([`network_claim`](OnchainReceiveFeeBreakdown::network_claim)).
     /// This field is the sum of all of it, which makes it the figure to read
     /// and the figure
     /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
@@ -1330,8 +1345,16 @@ impl crate::operation::DetailedOperationState for OnchainReceiveState {
 /// [`OnchainReceiveDetails::realized_fee`], with no rounding and no residue.
 ///
 /// Unlike [`OnchainSendFeeBreakdown`], which explains a quote, this explains
-/// an outcome: every field is read from the claim transaction the federation
-/// accepted, so the parts are measurements rather than predictions.
+/// an outcome: the parts are measurements rather than predictions. Not
+/// every measurement comes from the same ledger, though, and that is an
+/// implementation trap this type names:
+/// [`network_claim`](OnchainReceiveFeeBreakdown::network_claim) is deducted
+/// from the gross *before* the federation transaction's own amount is
+/// formed, so it is invisible to the per-operation fee accounting that
+/// supplies the other components — an implementation that reads only that
+/// accounting silently understates the aggregate and overstates the
+/// credit. Upstream records the deduction alongside its receive event,
+/// which is where it must be read from.
 ///
 /// # Read the aggregate; use these to explain it
 ///
@@ -1347,13 +1370,26 @@ impl crate::operation::DetailedOperationState for OnchainReceiveState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct OnchainReceiveFeeBreakdown {
-    /// The wallet module's own charge for accepting the peg-in.
+    /// The wallet module's own in-transaction charge for accepting the
+    /// peg-in: the first wallet module's flat peg-in fee, or the second's
+    /// consensus input fee on the amount the transaction carries.
     ///
     /// The component a user means by "the federation's deposit fee", and the
     /// only one an earlier draft of this record reported. On its own it is
-    /// not what reduced the credit, which is exactly why the other two fields
+    /// not what reduced the credit, which is exactly why the other fields
     /// exist rather than being folded silently into this one.
     pub peg_in: Amount,
+    /// What sweeping the deposit costs on the Bitcoin network: the on-chain
+    /// consolidation cost the second wallet module deducts from the gross
+    /// **before** it forms the federation transaction's amount.
+    ///
+    /// Zero under the first wallet module, which claims the full gross and
+    /// charges only in-transaction fees. Under the second it is a real,
+    /// fee-market-driven cost — and the one component the per-operation fee
+    /// accounting structurally cannot see, because the value it was
+    /// deducted from never entered the transaction. The type-level docs
+    /// name the reading obligation this creates.
+    pub network_claim: Amount,
     /// What it costs to turn the peg-in into spendable notes: everything the
     /// primary (mint) module charged on the transaction that balances the
     /// wallet input into notes — the output fees on the notes issued, and
@@ -1660,6 +1696,7 @@ mod tests {
     fn a_receive_breakdown() -> OnchainReceiveFeeBreakdown {
         OnchainReceiveFeeBreakdown {
             peg_in: Amount::from_msats(1_000),
+            network_claim: Amount::from_msats(2_567),
             primary_module: Amount::from_msats(400),
             dust: Amount::from_msats(100),
         }
@@ -1668,7 +1705,8 @@ mod tests {
     fn aggregate_of(breakdown: &OnchainReceiveFeeBreakdown) -> Amount {
         breakdown
             .peg_in
-            .checked_add(breakdown.primary_module)
+            .checked_add(breakdown.network_claim)
+            .and_then(|partial| partial.checked_add(breakdown.primary_module))
             .and_then(|partial| partial.checked_add(breakdown.dust))
             .expect("no overflow at this magnitude")
     }
@@ -1749,7 +1787,7 @@ mod tests {
             .expect("100 000 sat is representable in msat");
         let breakdown = a_receive_breakdown();
         let aggregate = aggregate_of(&breakdown);
-        assert_eq!(aggregate, Amount::from_msats(1_500));
+        assert_eq!(aggregate, Amount::from_msats(4_067));
         assert!(aggregate > breakdown.peg_in);
 
         let net = gross_msats
@@ -1768,7 +1806,7 @@ mod tests {
         // The identity this record documents.
         assert_eq!(
             claimed.realized_net_credit,
-            Some(Amount::from_msats(99_998_500))
+            Some(Amount::from_msats(99_995_933))
         );
         // And the identity it explicitly does not: `gross - peg_in` is a
         // different, larger number, which is the whole reason the field is
@@ -1807,10 +1845,11 @@ mod tests {
     fn receive_fee_breakdown_components_sum_to_the_aggregate() {
         let breakdown = OnchainReceiveFeeBreakdown {
             peg_in: Amount::from_msats(1_000_000),
+            network_claim: Amount::from_msats(4_000_000),
             primary_module: Amount::from_msats(234_000),
             dust: Amount::from_msats(567),
         };
-        assert_eq!(aggregate_of(&breakdown), Amount::from_msats(1_234_567));
+        assert_eq!(aggregate_of(&breakdown), Amount::from_msats(5_234_567));
         // As on the withdrawal side, the parts do not add up to a whole
         // number of satoshis.
         assert_eq!(aggregate_of(&breakdown).to_sats_exact(), None);

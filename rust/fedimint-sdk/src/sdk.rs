@@ -321,6 +321,21 @@ impl Sdk {
     /// still being deleted is the one outcome that must not happen, since a
     /// resumed erase would then delete part of the new federation too.
     ///
+    /// # A stale recovery intent does not survive a plain join
+    ///
+    /// The experimental seed-recovery entry point persists its intent to
+    /// recover — and the operation id of the first attempt — *before*
+    /// asking the underlying client to join, so a failure between those two
+    /// writes can leave an intent for a federation that never actually
+    /// joined. This call treats such an intent as the leftover it is:
+    /// unless the underlying client's own durable state corroborates that a
+    /// recovery was committed, the intent is discarded in the same
+    /// transaction that records the plain join. A federation joined here
+    /// can therefore never be misclassified as recovery-locked by a write
+    /// an abandoned recovery attempt left behind — a distinction with
+    /// teeth, because the erase path deliberately bypasses the balance
+    /// guard for recovery-locked federations.
+    ///
     /// # Errors
     ///
     /// [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) when this

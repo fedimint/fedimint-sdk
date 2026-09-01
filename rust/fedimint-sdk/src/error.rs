@@ -211,7 +211,10 @@ impl Error {
         Error {
             code,
             message: message.into(),
-            details: Some(DetailEnvelope::Interpreted { detail: details }),
+            details: Some(DetailEnvelope::Interpreted {
+                detail: details,
+                producer_version: RawErrorDetails::CURRENT_VERSION,
+            }),
         }
     }
 
@@ -407,7 +410,10 @@ impl Diagnostic {
         Diagnostic {
             code,
             message: message.into(),
-            details: Some(DetailEnvelope::Interpreted { detail: details }),
+            details: Some(DetailEnvelope::Interpreted {
+                detail: details,
+                producer_version: RawErrorDetails::CURRENT_VERSION,
+            }),
         }
     }
 
@@ -676,10 +682,23 @@ pub enum DetailEnvelope {
     /// This side knew the kind and read the payload, so the detail is
     /// available as a typed [`ErrorDetails`] case.
     Interpreted {
-        /// The typed detail. Its [`kind`](ErrorDetails::kind) and
-        /// [`version`](ErrorDetails::version) are what the envelope reports,
-        /// so nothing has to be carried alongside it.
+        /// The typed detail. Its [`kind`](ErrorDetails::kind) is what the
+        /// envelope reports.
         detail: ErrorDetails,
+        /// The envelope version the producing side declared — preserved from
+        /// [`RawErrorDetails::version`] when this was projected off a raw
+        /// envelope, and this build's
+        /// [`CURRENT_VERSION`](RawErrorDetails::CURRENT_VERSION) when it was
+        /// constructed locally.
+        ///
+        /// Kept because projection must not erase it: the typed case only
+        /// knows the version that *introduced* it
+        /// ([`ErrorDetails::version`]), and a version-7 producer emitting a
+        /// version-1 kind would otherwise be logged as a version-1 producer
+        /// — the "how far ahead is the other side" question this envelope
+        /// promises to keep answerable would be answered wrongly exactly
+        /// when interpretation succeeds.
+        producer_version: u32,
     },
     /// This side could not project the detail — an unrecognized kind, or a
     /// payload that did not decode — so the raw envelope is kept as it
@@ -707,23 +726,27 @@ impl DetailEnvelope {
     /// empty, where the producing side stated none.
     pub fn kind(&self) -> &str {
         match self {
-            DetailEnvelope::Interpreted { detail } => detail.kind(),
+            DetailEnvelope::Interpreted { detail, .. } => detail.kind(),
             DetailEnvelope::Opaque { raw } => &raw.kind,
         }
     }
 
-    /// The envelope version this detail belongs to.
+    /// The envelope version the producing side declared it speaks.
     ///
-    /// For [`Interpreted`](DetailEnvelope::Interpreted) that is the version
-    /// which introduced the case, from [`ErrorDetails::version`] — never later
-    /// than [`RawErrorDetails::CURRENT_VERSION`], since this build could only
-    /// project a case it knows. For [`Opaque`](DetailEnvelope::Opaque) it is
-    /// the version the producing side declared it speaks, or `0` where it
-    /// declared none, which is what makes "this came from something newer than
-    /// me" a statement rather than a guess.
+    /// The same answer for both cases — preserved through projection for
+    /// [`Interpreted`](DetailEnvelope::Interpreted), read straight off the
+    /// raw envelope for [`Opaque`](DetailEnvelope::Opaque) — or `0` where
+    /// the producer declared none. That uniformity is what makes "this came
+    /// from something newer than me" a statement rather than a guess,
+    /// whether or not the projection happened to succeed. The version that
+    /// *introduced* an interpreted case is a different number, and it stays
+    /// available as [`ErrorDetails::version`] on
+    /// [`typed`](DetailEnvelope::typed).
     pub fn version(&self) -> u32 {
         match self {
-            DetailEnvelope::Interpreted { detail } => detail.version(),
+            DetailEnvelope::Interpreted {
+                producer_version, ..
+            } => *producer_version,
             DetailEnvelope::Opaque { raw } => raw.version,
         }
     }
@@ -731,7 +754,7 @@ impl DetailEnvelope {
     /// The typed detail, where this side could project one.
     pub fn typed(&self) -> Option<&ErrorDetails> {
         match self {
-            DetailEnvelope::Interpreted { detail } => Some(detail),
+            DetailEnvelope::Interpreted { detail, .. } => Some(detail),
             DetailEnvelope::Opaque { .. } => None,
         }
     }
@@ -1987,19 +2010,22 @@ mod tests {
     }
 
     #[test]
-    fn an_interpreted_envelope_reports_the_kind_and_version_of_its_case() {
+    fn an_interpreted_envelope_keeps_the_producer_version_through_projection() {
+        // A version-7 producer emitting a version-1 kind: the case's own
+        // introduction version must not overwrite how far ahead the producer
+        // declared itself to be.
         let envelope = DetailEnvelope::Interpreted {
             detail: ErrorDetails::BalanceNotEmpty {
                 remaining: Amount::from_msats(7_000),
             },
+            producer_version: 7,
         };
-        // Kind and version come from the case, so nothing is carried beside it
-        // and nothing can drift out of step with it.
         assert_eq!(envelope.kind(), "BalanceNotEmpty");
-        assert_eq!(envelope.version(), 1);
-        assert!(envelope.version() <= RawErrorDetails::CURRENT_VERSION);
+        assert_eq!(envelope.version(), 7);
+        // The introduction version is a different question, still answerable
+        // from the typed case.
+        assert_eq!(envelope.typed().expect("interpreted").version(), 1);
         assert!(envelope.is_interpreted());
-        assert!(envelope.typed().is_some());
         // The bytes were spent decoding it; the boundary encoder re-derives
         // them from the typed case if it ever crosses again.
         assert!(envelope.raw().is_none());
@@ -2059,25 +2085,23 @@ mod tests {
         assert_ne!(0, RawErrorDetails::CURRENT_VERSION);
     }
 
-    #[test]
-    fn a_payload_that_a_reader_understood_projects_to_the_typed_case() {
-        // The decoder's happy path, spelled out against the documented
-        // encoding: `InsufficientBalance` is two big-endian u64 millisatoshi
-        // fields, required then available.
-        let payload = [0u8, 0, 0, 0, 0, 0, 0x05, 0xDC, 0, 0, 0, 0, 0, 0, 0x04, 0xB0];
-        let raw = RawErrorDetails::new(
-            RawErrorDetails::CURRENT_VERSION,
-            "InsufficientBalance",
-            payload,
-        );
-        assert_eq!(raw.payload.len(), 16);
-
-        // What a boundary's projection does with it, by hand: dispatch on the
-        // kind, read the fields in order.
-        let projected = match raw.kind.as_str() {
+    /// The canonical hand-written projection the docs describe: dispatch on
+    /// the kind, then perform **exact, checked consumption** of the frozen
+    /// layout. A payload that is short, or that has bytes left over, does
+    /// not match the kind's frozen layout and is not projected — the caller
+    /// keeps the raw envelope as `Opaque` instead. Nothing here can panic
+    /// on boundary input, per the crate's no-panic rule.
+    fn project(raw: &RawErrorDetails) -> Option<ErrorDetails> {
+        match raw.kind.as_str() {
+            // `InsufficientBalance` is exactly two big-endian u64
+            // millisatoshi fields, required then available — 16 bytes, no
+            // more and no fewer, checked before anything is read.
             "InsufficientBalance" => {
-                let required = u64::from_be_bytes(raw.payload[..8].try_into().unwrap());
-                let available = u64::from_be_bytes(raw.payload[8..16].try_into().unwrap());
+                if raw.payload.len() != 16 {
+                    return None;
+                }
+                let required = u64::from_be_bytes(raw.payload[..8].try_into().ok()?);
+                let available = u64::from_be_bytes(raw.payload[8..16].try_into().ok()?);
                 Some(ErrorDetails::InsufficientBalance {
                     required: Amount::from_msats(required),
                     available: Amount::from_msats(available),
@@ -2085,18 +2109,34 @@ mod tests {
             }
             // An unknown kind never looks inside the payload at all.
             _ => None,
-        };
+        }
+    }
 
-        let err = match projected {
+    /// Builds the error a boundary would hand on: the typed case when the
+    /// projection succeeded, the raw envelope kept opaque when it did not.
+    fn project_or_keep_raw(raw: RawErrorDetails) -> Error {
+        match project(&raw) {
             Some(detail) => {
                 Error::with_details(ErrorCode::InsufficientBalance, "balance is short", detail)
             }
-            None => Error::with_raw_details(
-                ErrorCode::InsufficientBalance,
-                "balance is short",
-                raw.clone(),
-            ),
-        };
+            None => {
+                Error::with_raw_details(ErrorCode::InsufficientBalance, "balance is short", raw)
+            }
+        }
+    }
+
+    #[test]
+    fn a_payload_that_a_reader_understood_projects_to_the_typed_case() {
+        let payload = [0u8, 0, 0, 0, 0, 0, 0x05, 0xDC, 0, 0, 0, 0, 0, 0, 0x04, 0xB0];
+        let raw = RawErrorDetails::new(
+            RawErrorDetails::CURRENT_VERSION,
+            "InsufficientBalance",
+            payload,
+        );
+        assert_eq!(raw.payload.len(), 16);
+        let kind = raw.kind.clone();
+
+        let err = project_or_keep_raw(raw);
         match err.detail() {
             Some(ErrorDetails::InsufficientBalance {
                 required,
@@ -2108,7 +2148,49 @@ mod tests {
             other => panic!("expected an InsufficientBalance detail, got {other:?}"),
         }
         // The kind the projection dispatched on is the kind the case reports.
-        assert_eq!(err.details.expect("a detail").kind(), raw.kind);
+        assert_eq!(err.details.expect("a detail").kind(), kind);
+    }
+
+    #[test]
+    fn a_short_payload_for_a_known_kind_stays_opaque_without_panicking() {
+        // Half a field short: uninterpretable. The decoder must neither
+        // guess at the missing value nor panic — it keeps the envelope raw.
+        let raw = RawErrorDetails::new(
+            RawErrorDetails::CURRENT_VERSION,
+            "InsufficientBalance",
+            vec![0u8; 12],
+        );
+        let err = project_or_keep_raw(raw);
+        assert_eq!(err.detail(), None);
+        let envelope = err.details.expect("the raw envelope is kept");
+        assert!(!envelope.is_interpreted());
+        assert_eq!(
+            envelope.raw().expect("opaque keeps its bytes").payload.len(),
+            12
+        );
+    }
+
+    #[test]
+    fn a_trailing_payload_for_a_known_kind_stays_opaque() {
+        // One byte too many: the layout is frozen, so this payload is not a
+        // valid instance of the kind. Projecting it anyway would silently
+        // discard the surplus — the reader rules require it to stay opaque,
+        // with every byte intact.
+        let mut payload = vec![0u8; 16];
+        payload.push(0xFF);
+        let raw = RawErrorDetails::new(
+            RawErrorDetails::CURRENT_VERSION,
+            "InsufficientBalance",
+            payload,
+        );
+        let err = project_or_keep_raw(raw);
+        assert_eq!(err.detail(), None);
+        let envelope = err.details.expect("the raw envelope is kept");
+        assert!(!envelope.is_interpreted());
+        assert_eq!(
+            envelope.raw().expect("opaque keeps its bytes").payload.len(),
+            17
+        );
     }
 
     #[test]
