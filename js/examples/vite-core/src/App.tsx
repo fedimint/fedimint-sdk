@@ -41,10 +41,7 @@ const useIsOpen = (wallet: FedimintWallet | null) => {
   return { open, checkIsOpen }
 }
 
-const useBalance = (
-  wallet: FedimintWallet | null,
-  checkIsOpen: () => void,
-) => {
+const useBalance = (wallet: FedimintWallet | null, checkIsOpen: () => void) => {
   const [balance, setBalance] = useState(0)
 
   useEffect(() => {
@@ -257,7 +254,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
             // The user wrote down the wrong key. Force a wipe.
             setError(
               'CRITICAL: The stored mnemonic does not match the one displayed. ' +
-              'This means stale data exists. You must wipe and start fresh.',
+                'This means stale data exists. You must wipe and start fresh.',
             )
             setIsLoading(false)
           }

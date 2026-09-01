@@ -29,7 +29,13 @@ class AppErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       return (
-        <div style={{ color: '#ff6b6b', padding: '2rem', fontFamily: 'sans-serif' }}>
+        <div
+          style={{
+            color: '#ff6b6b',
+            padding: '2rem',
+            fontFamily: 'sans-serif',
+          }}
+        >
           <h2>Something went wrong</h2>
           <p>{this.state.error.message}</p>
           <button
