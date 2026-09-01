@@ -106,9 +106,9 @@ const downloadAndVerify = (url, dest, expectedChecksum) => {
 const unzip = (file, dest) => {
     try {
         if (process.platform === 'win32') {
-            execSync(`tar -xf ${file} -C ${dest}`);
+            execSync(`tar -xf "${file}" -C "${dest}"`);
         } else {
-            execSync(`unzip -o ${file} -d ${dest}`);
+            execSync(`unzip -o "${file}" -d "${dest}"`);
         }
     } catch (e) {
         console.error(`Failed to unzip ${file}: ${e.message}`);
