@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react'
-import { wallet, director } from './wallet'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { director, getWallet } from './wallet'
 import type {
+  FedimintWallet,
   ParsedInviteCode,
   ParsedBolt11Invoice,
   PreviewFederation,
@@ -11,15 +12,28 @@ const TESTNET_FEDERATION_CODE =
 
 type AppPhase = 'loading' | 'onboarding' | 'ready'
 
-const useIsOpen = () => {
+// ── Wallet Context ────────────────────────────────────────────────────
+// Instead of importing a mutable module-level variable, components
+// receive the initialized wallet via a hook that guarantees it is ready.
+
+const WalletContext = React.createContext<FedimintWallet | null>(null)
+
+function useWallet(): FedimintWallet | null {
+  return React.useContext(WalletContext)
+}
+
+// ── Hooks ─────────────────────────────────────────────────────────────
+
+const useIsOpen = (wallet: FedimintWallet | null) => {
   const [open, setIsOpen] = useState(false)
 
   const checkIsOpen = useCallback(() => {
-    if (wallet && open !== wallet?.isOpen()) {
+    if (wallet) {
       setIsOpen(wallet.isOpen())
     }
-  }, [open])
+  }, [wallet])
 
+  // Re-check whenever wallet reference changes
   useEffect(() => {
     checkIsOpen()
   }, [checkIsOpen])
@@ -27,70 +41,89 @@ const useIsOpen = () => {
   return { open, checkIsOpen }
 }
 
-const useBalance = (checkIsOpen: () => void) => {
+const useBalance = (
+  wallet: FedimintWallet | null,
+  checkIsOpen: () => void,
+) => {
   const [balance, setBalance] = useState(0)
 
   useEffect(() => {
-    const unsubscribe = wallet?.balance.subscribeBalance((balance) => {
-      // checks if the wallet is open when the first
-      // subscription event fires.
-      // TODO: make a subscription to the wallet open status
+    if (!wallet) return
+
+    const unsubscribe = wallet.balance.subscribeBalance((bal) => {
       checkIsOpen()
-      setBalance(balance)
+      setBalance(bal)
     })
 
     return () => {
       unsubscribe?.()
     }
-  }, [checkIsOpen])
+  }, [wallet, checkIsOpen])
 
   return balance
 }
 
+// ── App ───────────────────────────────────────────────────────────────
+
 const App = () => {
   const [phase, setPhase] = useState<AppPhase>('loading')
-  const { open, checkIsOpen } = useIsOpen()
-  const balance = useBalance(checkIsOpen)
+  const [wallet, setWallet] = useState<FedimintWallet | null>(null)
 
   useEffect(() => {
+    let cancelled = false
+
     const checkOnboarding = async () => {
       try {
         const hasMnemonic = await director.hasMnemonicSet()
+        if (cancelled) return
+
         if (hasMnemonic) {
           // Mnemonic exists, try to open the wallet
           try {
-            await wallet?.open()
+            const w = await getWallet()
+            if (cancelled) return
+            await w.open()
+            setWallet(w)
           } catch (e) {
             console.warn(
               'Wallet has mnemonic but could not open client (may need to join a federation)',
               e,
             )
+            // Still set wallet so user can joinFederation
+            const w = await getWallet()
+            if (!cancelled) setWallet(w)
           }
-          setPhase('ready')
+          if (!cancelled) setPhase('ready')
         } else {
-          setPhase('onboarding')
+          if (!cancelled) setPhase('onboarding')
         }
       } catch (e) {
         console.error('Error checking onboarding state:', e)
-        setPhase('onboarding')
+        if (!cancelled) setPhase('onboarding')
       }
     }
 
     checkOnboarding()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const handleOnboardingComplete = useCallback(async () => {
     try {
-      await wallet?.open()
+      const w = await getWallet()
+      await w.open()
+      setWallet(w)
     } catch (e) {
       console.warn(
         'Wallet could not be opened after onboarding (may need to join a federation)',
         e,
       )
+      const w = await getWallet()
+      setWallet(w)
     }
-    checkIsOpen()
     setPhase('ready')
-  }, [checkIsOpen])
+  }, [])
 
   if (phase === 'loading') {
     return (
@@ -104,6 +137,20 @@ const App = () => {
   if (phase === 'onboarding') {
     return <OnboardingScreen onComplete={handleOnboardingComplete} />
   }
+
+  return (
+    <WalletContext.Provider value={wallet}>
+      <AppContent />
+    </WalletContext.Provider>
+  )
+}
+
+// ── Main Content (rendered only when wallet is initialized) ───────────
+
+const AppContent = () => {
+  const wallet = useWallet()
+  const { open, checkIsOpen } = useIsOpen(wallet)
+  const balance = useBalance(wallet, checkIsOpen)
 
   return (
     <>
@@ -210,7 +257,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
             // The user wrote down the wrong key. Force a wipe.
             setError(
               'CRITICAL: The stored mnemonic does not match the one displayed. ' +
-                'This means stale data exists. You must wipe and start fresh.',
+              'This means stale data exists. You must wipe and start fresh.',
             )
             setIsLoading(false)
           }
@@ -532,6 +579,7 @@ const JoinFederation = ({
   open: boolean
   checkIsOpen: () => void
 }) => {
+  const wallet = useWallet()
   const [inviteCode, setInviteCode] = useState(TESTNET_FEDERATION_CODE)
   const [previewData, setPreviewData] = useState<PreviewFederation | null>(null)
   const [previewing, setPreviewing] = useState(false)
@@ -682,6 +730,7 @@ const JoinFederation = ({
 }
 
 const RedeemEcash = () => {
+  const wallet = useWallet()
   const [ecashInput, setEcashInput] = useState('')
   const [redeemResult, setRedeemResult] = useState('')
   const [redeemError, setRedeemError] = useState('')
@@ -720,6 +769,7 @@ const RedeemEcash = () => {
 }
 
 const SendLightning = () => {
+  const wallet = useWallet()
   const [lightningInput, setLightningInput] = useState('')
   const [lightningResult, setLightningResult] = useState('')
   const [lightningError, setLightningError] = useState('')
@@ -757,6 +807,7 @@ const SendLightning = () => {
 }
 
 const GenerateLightningInvoice = () => {
+  const wallet = useWallet()
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [invoice, setInvoice] = useState('')
@@ -949,6 +1000,7 @@ const ParseLightningInvoice = () => {
 }
 
 const Deposit = () => {
+  const wallet = useWallet()
   const [address, setAddress] = useState<string>('')
   const [addressError, setAddressError] = useState('')
   const [addressStatus, setAddressStatus] = useState(false)
@@ -986,6 +1038,7 @@ const Deposit = () => {
 }
 
 const SendOnchain = () => {
+  const wallet = useWallet()
   const [address, setAddress] = useState('')
   const [amount, setAmount] = useState(0)
   const [withdrawalResult, setWithdrawalResult] = useState('')
