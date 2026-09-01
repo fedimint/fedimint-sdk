@@ -234,6 +234,27 @@ impl Onchain {
     /// aggregate of every federation-side cost rather than the wallet
     /// module's peg-in fee alone.
     ///
+    /// # The returned operation id outlives the attempts underneath it
+    ///
+    /// The id on the returned [`OnchainReceive`] is the SDK's own, and it is
+    /// stable for the life of the deposit — from the address being displayed
+    /// to the credit landing — no matter how many upstream operations the
+    /// federation's wallet module runs to get there. Under the second wallet
+    /// module that is more than one: a claim attempt can be aborted and the
+    /// same output claimed again under a different upstream operation. See
+    /// [`OnchainReceiveState`] for what that does to the state machine.
+    ///
+    /// The implementation therefore persists, in the same storage transaction
+    /// that creates the operation, a correlation from the deposit address and
+    /// the funding output to this operation id, and resolves every subsequent
+    /// upstream attempt for that output back through it. Two properties follow
+    /// that a caller may rely on: an operation id obtained here never stops
+    /// resolving because the attempt behind it was abandoned, and the same
+    /// output never surfaces as two operations. This is also why the address
+    /// is a persisted field on [`OnchainReceiveDetails`] rather than a value
+    /// only the returned handle knows — it is half of the correlation key, not
+    /// just something to render.
+    ///
     /// # Errors
     ///
     /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
@@ -833,7 +854,7 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// `Confirmed { btc_deposited, btc_out_point }`,
 /// `Claimed { btc_deposited, btc_out_point }`, and `Failed(String)` — note
 /// that all three of the middle variants carry the same pair, not just
-/// `WaitingForConfirmation`. This enum differs from that in three deliberate
+/// `WaitingForConfirmation`. This enum differs from that in four deliberate
 /// ways:
 ///
 /// - **Only the transaction half of the outpoint is carried.** Upstream
@@ -859,6 +880,50 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 ///   [`Amount`](crate::Amount) rather than [`Sats`](crate::Sats) because
 ///   those fees are charged in millisatoshis and can leave the credit with
 ///   sub-satoshi precision; see the [unit note](Onchain).
+/// - **One state has no upstream counterpart at all.**
+///   [`ClaimRetrying`](Self::ClaimRetrying) exists because the second wallet
+///   module can fail an individual claim attempt and then succeed on a later
+///   one for the same output. See the next section.
+///
+/// # Two wallet modules, and why the mapping is not one table
+///
+/// A federation runs one of two on-chain modules, and their claim paths differ
+/// in a way that changes what this enum has to be able to say. The variants
+/// above are the v1 shape; the correspondence is exact there, one upstream
+/// `DepositStateV2` variant to one state here, and
+/// [`ClaimRetrying`](Self::ClaimRetrying) is never produced.
+///
+/// The second module claims a deposit by recording persistent events, and an
+/// individual claim attempt may be **aborted** — after which the same output
+/// can be claimed again, successfully, under a *different* underlying
+/// operation. Its own receive subscription is written for exactly that: it
+/// ignores an aborted attempt and keeps waiting for a success. So an abort
+/// there is not the deposit failing; it is one attempt failing while the
+/// deposit is still live.
+///
+/// Two consequences, both of which this API is shaped by.
+///
+/// **An abort must not map to [`Failed`](Self::Failed).** That state is final,
+/// which ends the operation and closes its subscription. A caller told a
+/// deposit failed, whose balance then moves by that very deposit, has been
+/// told something false about their money — the one outcome this crate's
+/// state machines are meant to make impossible. An aborted attempt that can
+/// be retried therefore maps to [`ClaimRetrying`](Self::ClaimRetrying), which
+/// is not final, and the operation stays open across as many aborts as the
+/// module makes. Only an outcome the module will not retry — one that leaves
+/// no path by which this output can still be claimed — reaches
+/// [`Failed`](Self::Failed).
+///
+/// **One SDK operation spans several upstream ones.** Because each retry runs
+/// under its own upstream operation id, an SDK deposit is not a view onto a
+/// single upstream operation the way an SDK withdrawal is. It is a persisted
+/// correlation — see [`Onchain::receive`] — keyed on the deposit address and
+/// the funding output, under which every attempt for that output is the same
+/// operation as far as this API is concerned. That correlation is what makes
+/// [`ClaimRetrying`](Self::ClaimRetrying) → [`Claimed`](Self::Claimed) a
+/// transition of *one* operation rather than the death of one and the birth of
+/// another, and it is what lets a caller keep a single operation id from the
+/// address it displayed to the credit it eventually saw.
 ///
 /// # The final state is self-contained
 ///
@@ -910,6 +975,36 @@ pub enum OnchainReceiveState {
         /// anything the federation charges to claim it.
         gross_deposited: Sats,
     },
+    /// A claim attempt was aborted and the deposit is still live: another
+    /// attempt for the same output is expected.
+    ///
+    /// Reachable only under the second wallet module — see the enum's own
+    /// documentation for why it exists and why an abort is not a failure.
+    /// **Not final.** An operation may pass through this state any number of
+    /// times, and each visit may carry a different
+    /// [`last_abort`](Self::ClaimRetrying::last_abort). The terminal states
+    /// remain [`Claimed`](Self::Claimed) and [`Failed`](Self::Failed); this
+    /// one only says that neither has been reached yet.
+    ///
+    /// A caller should treat it as it treats [`Confirmed`](Self::Confirmed) —
+    /// an incoming credit still in flight — and may surface
+    /// `last_abort` to explain a deposit that is taking longer
+    /// than expected. What it must not do is present it as an outcome: the
+    /// deposit has not failed, and the amount it will credit is not yet
+    /// established.
+    ClaimRetrying {
+        /// The funding transaction.
+        txid: Txid,
+        /// The gross amount that transaction paid to the address, before
+        /// anything the federation charges to claim it. Unchanged by an
+        /// aborted attempt — what arrived on chain arrived.
+        gross_deposited: Sats,
+        /// Human-readable explanation of the attempt that was aborted.
+        /// Diagnostic only — not a stable contract, and not something to
+        /// match on. Reports the most recent abort; earlier ones are not
+        /// retained.
+        last_abort: String,
+    },
     /// Final: the deposit is in the spendable balance.
     ///
     /// Self-contained on purpose — see the enum's own documentation. A
@@ -943,7 +1038,17 @@ pub enum OnchainReceiveState {
         /// a deposit has no quoted terms, because there is no quote for one.
         net_credit: Amount,
     },
-    /// Final: the deposit could not be claimed.
+    /// Final: the deposit could not be claimed, and no further attempt will
+    /// be made.
+    ///
+    /// The second clause is the whole of this state's contract. Under the
+    /// second wallet module a single aborted claim attempt is *not* this
+    /// state — it is [`ClaimRetrying`](Self::ClaimRetrying) — and reaching
+    /// here requires that no path remains by which the output can still be
+    /// claimed. Being final, this state ends the operation and closes its
+    /// subscription, so an implementation that guessed wrong here would leave
+    /// a caller believing a deposit was lost that later credits their
+    /// balance.
     ///
     /// Carries no transaction and no amount even when one was seen. What
     /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
@@ -965,7 +1070,8 @@ impl OperationState for OnchainReceiveState {
         match self {
             OnchainReceiveState::WaitingForTransaction
             | OnchainReceiveState::WaitingForConfirmation { .. }
-            | OnchainReceiveState::Confirmed { .. } => false,
+            | OnchainReceiveState::Confirmed { .. }
+            | OnchainReceiveState::ClaimRetrying { .. } => false,
             OnchainReceiveState::Claimed { .. } | OnchainReceiveState::Failed { .. } => true,
         }
     }
@@ -1348,6 +1454,45 @@ mod tests {
             }
             .is_final()
         );
+    }
+
+    /// The non-finality that keeps a retried deposit observable: under the
+    /// second wallet module an aborted claim attempt can be followed by a
+    /// successful one for the same output, so this state must not end the
+    /// operation.
+    #[test]
+    fn onchain_receive_state_claim_retrying_is_not_final() {
+        assert!(
+            !OnchainReceiveState::ClaimRetrying {
+                txid: a_txid(),
+                gross_deposited: Sats::from_sats(100_000),
+                last_abort: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    /// An abort leaves what arrived on chain untouched, so a caller can still
+    /// render the deposit while it is being retried.
+    #[test]
+    fn claim_retrying_keeps_the_gross_and_the_transaction() {
+        let state = OnchainReceiveState::ClaimRetrying {
+            txid: a_txid(),
+            gross_deposited: Sats::from_sats(100_000),
+            last_abort: "peer rejected the claim transaction".to_owned(),
+        };
+        match state {
+            OnchainReceiveState::ClaimRetrying {
+                txid,
+                gross_deposited,
+                last_abort,
+            } => {
+                assert_eq!(txid, a_txid());
+                assert_eq!(gross_deposited, Sats::from_sats(100_000));
+                assert!(!last_abort.is_empty());
+            }
+            other => panic!("expected ClaimRetrying, got {other:?}"),
+        }
     }
 
     #[test]

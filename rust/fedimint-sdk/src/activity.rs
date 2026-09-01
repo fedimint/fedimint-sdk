@@ -63,9 +63,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// | kind | `amount` — what the counterparty sent or received | `fee` — quoted or expected, unless said otherwise |
 /// | --- | --- | --- |
-/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes actually handed over, which the mint may have rounded **up** from the amount requested | what the quote fixed for issuing those notes, which is the whole cost of a send the receiver redeems and only part of the cost of one that is reclaimed |
+/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes actually handed over, which the mint may have rounded **up** from the amount requested | what the quote fixed for issuing those notes: the quoted cost of a send the receiver redeems, and only part of the quoted cost of one that is reclaimed. The realized cost is on the operation's record |
 /// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes redeemed | the reissuance fee expected from the fee schedule, taken out of that value rather than added to it |
-/// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee bound by the executed quote: what the payment was funded with, which is not what a refunded payment finally cost |
+/// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee the executed quote quoted: what the payment was funded with, which is not necessarily what the payment finally cost |
 /// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee, taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
 /// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before the peg-in fee; `None` until a transaction is seen | the peg-in fee; `None` until it is known |
@@ -75,11 +75,14 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// ## The identity describes the attempt, and a return costs money
 ///
 /// A row's numbers describe the transfer the operation set out to make, on
-/// the terms it was quoted. They are *also* the realized balance movement
-/// exactly when [`status`](ActivityItem::status) is
-/// [`Success`](ActivityStatus::Success). That is the only bucket where this
-/// row alone reconciles with the balance. For the others it is still the
-/// right thing to render and the wrong thing to reconcile with:
+/// the terms it was quoted. [`Success`](ActivityStatus::Success) on
+/// [`status`](ActivityItem::status) says that transfer completed as intended
+/// — not that these two numbers are what the balance did. A quote is not a
+/// ceiling, so even a successful send's realized debit can come out either
+/// side of `amount + fee`, and the *realized* movement is read from the
+/// operation's own details record in every case, success included. So this
+/// row is the right thing to render in every bucket and the wrong thing to
+/// reconcile with in any of them:
 ///
 /// - [`Refunded`](ActivityStatus::Refunded) and
 ///   [`Canceled`](ActivityStatus::Canceled): the value left the balance and
@@ -118,9 +121,10 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///   identity to reconcile and nothing to render wrongly.
 ///
 /// A UI that must show a single truthful figure for a settled row therefore
-/// reads the bucket first: `amount ± fee` for a
-/// [`Success`](ActivityStatus::Success), and the operation's own realized
-/// figures for anything that came back.
+/// reads the operation's own realized figures, whatever the bucket —
+/// including a [`Success`](ActivityStatus::Success). `amount ± fee` is what
+/// was attempted and what the user approved, which is what a list wants and
+/// never a statement of what the balance did.
 ///
 /// ## Requested is not actual
 ///
@@ -250,10 +254,10 @@ pub struct ActivityItem {
     /// It also selects which half of the accounting identity applies:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) was to credit `amount - fee` — in
-    /// both cases for the transfer as attempted, which is the realized
-    /// movement only for a [`Success`](ActivityStatus::Success) row. A row
-    /// with no direction has no identity to reconcile, and both figures are
-    /// `None`.
+    /// both cases for the transfer as attempted, and never a claim about what
+    /// the balance finally did, which the operation's details record holds
+    /// even for a [`Success`](ActivityStatus::Success) row. A row with no
+    /// direction has no identity to reconcile, and both figures are `None`.
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
     pub status: ActivityStatus,
@@ -603,17 +607,19 @@ mod tests {
             ActivityStatus::Canceled,
             true,
         );
-        // The same operation as its details record has it: 1600 msat left the
-        // balance when the notes were issued, and 1408 came back once the
-        // reclaim's own transaction had been paid for.
+        // The same operation as its details record has it: 1600 msat was the
+        // quoted debit, 1604 actually left the balance when the notes were
+        // issued, and 1408 came back once the reclaim's own transaction had
+        // been paid for.
         let details = crate::EcashSendDetails {
             notes: crate::Notes::from_raw("notes".to_owned()),
             requested_amount: Amount::from_msats(1_234),
             notes_value: Amount::from_msats(1_536),
             quoted_fee: Amount::from_msats(64),
-            total_debited: Amount::from_msats(1_600),
+            quoted_total_debited: Amount::from_msats(1_600),
+            realized_total_debited: Some(Amount::from_msats(1_604)),
             restored_amount: Some(Amount::from_msats(1_408)),
-            realized_fee: Some(Amount::from_msats(192)),
+            realized_fee: Some(Amount::from_msats(196)),
             reclaim_at: Timestamp::from_epoch_millis(1_700_086_400_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         };
@@ -623,17 +629,17 @@ mod tests {
         let debited = reclaimed
             .amount
             .and_then(|amount| reclaimed.fee.and_then(|fee| amount.checked_add(fee)));
-        assert_eq!(debited, Some(details.total_debited));
+        assert_eq!(debited, Some(details.quoted_total_debited));
 
         // It is not the movement. Reading "canceled" as "the debit came back"
         // overstates the balance by what the reclaim cost, and this row
         // carries no number that corrects it — the record does.
         let restored = details.restored_amount.expect("the reclaim settled");
-        assert!(restored < details.total_debited);
-        assert_eq!(
-            details.total_debited.checked_sub(restored),
-            details.realized_fee
-        );
+        let realized_debit = details
+            .realized_total_debited
+            .expect("the funding transaction was accepted");
+        assert!(restored < realized_debit);
+        assert_eq!(realized_debit.checked_sub(restored), details.realized_fee);
         // The sunk cost is strictly more than the fee this row reports.
         assert!(details.realized_fee > reclaimed.fee);
     }

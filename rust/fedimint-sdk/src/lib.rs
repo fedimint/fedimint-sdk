@@ -106,8 +106,9 @@
 //!         println!("resume with {}", sent.operation.id());
 //!     }
 //!
-//!     // Lightning: quote first, then execute exactly that quote, so the
-//!     // number the user agreed to is the number that gets paid.
+//!     // Lightning: quote first, so the user sees the expected cost before
+//!     // agreeing to it, and `send` refuses a quote whose terms have moved.
+//!     // What finally left the balance is read from the operation's details.
 //!     if let Some(lightning) = federation.lightning() {
 //!         let invoice: Bolt11Invoice = invoice.parse()?;
 //!         // An invoice states its own amount. One that does not cannot be
@@ -468,7 +469,8 @@ pub use ecash::{
     EcashSendState,
 };
 pub use error::{
-    DetailEnvelope, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails, Result,
+    DetailEnvelope, Diagnostic, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails,
+    Result,
 };
 pub use federation::{BalanceUpdates, Capabilities, Federation};
 pub use lightning::{
@@ -482,7 +484,7 @@ pub use onchain::{
 };
 pub use operation::{
     AnyOperation, DetailedOperationState, Operation, OperationDetails, OperationKind,
-    OperationState, OperationUpdates, RawOperationKind,
+    OperationState, OperationSupport, OperationUpdates, RawOperationKind,
 };
 // Behind the off-by-default `experimental` feature, and excluded from the
 // crate's stability contract; see the module's own documentation.

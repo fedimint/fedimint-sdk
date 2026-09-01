@@ -75,8 +75,14 @@ impl Lightning {
     /// verified gateway (or the discovery that no gateway is needed at all),
     /// the aggregate fee, the total debit, and the federation configuration
     /// those were computed against. Show it, then hand it back to
-    /// [`Lightning::send`] to execute exactly what was shown. A user cannot
-    /// be quoted one fee and charged another.
+    /// [`Lightning::send`], which executes that plan or refuses it.
+    ///
+    /// The fee and total it names are **quoted** figures — what the payment
+    /// is expected to cost, and what the user approves — not a bound on what
+    /// will be debited. [`LnQuote::total`] explains where the gap comes from
+    /// and why this SDK cannot close it; what the payment actually cost is
+    /// reported afterwards on [`LnSendDetails::realized_total_debited`] and
+    /// [`LnSendDetails::realized_fee`].
     ///
     /// The amount is the invoice's own, always. This call takes no amount
     /// parameter, and the section below is why.
@@ -156,7 +162,7 @@ impl Lightning {
     /// [`GatewayUnavailable`](crate::ErrorCode::GatewayUnavailable) when no
     /// gateway can be selected and verified,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance) when
-    /// the balance cannot cover [`LnQuote::total`],
+    /// the balance cannot cover the quoted [`LnQuote::total`],
     /// [`Recovering`](crate::ErrorCode::Recovering) while the federation's
     /// recovery is incomplete,
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
@@ -170,15 +176,25 @@ impl Lightning {
     /// Executes a quoted payment.
     ///
     /// The quote is consumed: it describes one payment and can fund one
-    /// payment. Execution follows the plan — same amount, same route, and a
-    /// debit that never exceeds the quoted [`LnQuote::total`] — or it does not
-    /// happen:
+    /// payment. Execution follows the plan — same invoice, same amount, same
+    /// route — or it does not happen:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
     /// quote depends on moved underneath it (the gateway withdrew, its fee
     /// changed, the federation configuration was updated). Both mean the
-    /// same thing to a caller: quote again and re-confirm with the user.
+    /// same thing to a caller: quote again and re-confirm with the user. That
+    /// refusal is worth having: a user is not charged against terms they never
+    /// saw.
+    ///
+    /// That refusal is **not** a spending ceiling, though an earlier draft of
+    /// this documentation said it was. [`LnQuote::total`] is the debit this
+    /// payment was quoted at, not a maximum this call is authorised against:
+    /// published Fedimint offers no way to bind a total inside the funding
+    /// transaction that finally commits, so the realized debit can land above
+    /// the quoted one and refusing a visibly stale quote does not stop it.
+    /// [`LnQuote::total`] gives the mechanism in full and names what upstream
+    /// would have to add before a ceiling could be promised.
     ///
     /// The returned operation tracks the payment from funding to preimage;
     /// a payment that fails ends in a final state, not an error from this
@@ -190,8 +206,9 @@ impl Lightning {
     /// [`Operation::details`](crate::Operation::details) for the life of the
     /// operation — after a restart, and however the payment ends. What the
     /// balance *actually* did is added to that same record as the payment
-    /// settles; the two halves are described on
-    /// [`LnSendDetails`], and for a refunded payment they differ.
+    /// settles — [`LnSendDetails::realized_total_debited`] is what a "you
+    /// paid" line must read from — and the two halves are described on
+    /// [`LnSendDetails`], where for a refunded payment they differ.
     ///
     /// # Errors
     ///
@@ -273,10 +290,15 @@ impl Lightning {
 /// ends.
 ///
 /// Everything here is a **quoted** term: the numbers the user approved,
-/// fixed when this quote was executed. What the balance actually did is a
-/// separate matter, recorded on [`LnSendDetails`] as the payment settles —
-/// see the quoted-versus-realized split described there. The one guarantee
-/// that binds the two is [`LnQuote::total`]: the real debit never exceeds it.
+/// fixed when this quote was executed, and a prediction of what the payment
+/// will cost rather than a measurement of what it did — see the
+/// quoted-versus-realized split described on [`LnSendDetails`] and, for the
+/// reason the distinction cannot be engineered away, [`LnQuote::total`]. The
+/// realized counterparts live on [`LnSendDetails`].
+///
+/// What an executed quote *does* bind is the plan: the invoice, the amount,
+/// and the gateway the payment is routed through. What it cannot bind is the
+/// debit.
 #[derive(Debug)]
 pub struct LnQuote {
     inner: LnQuoteInner,
@@ -292,11 +314,11 @@ impl LnQuote {
         unimplemented!()
     }
 
-    /// The aggregate fee this payment will cost, on top of
+    /// The quoted aggregate cost of this payment, over and above
     /// [`LnQuote::invoice_amount`].
     ///
-    /// **Every debit that funding this payment incurs is in this one
-    /// number**, not just the gateway's cut. Paying an invoice out of ecash
+    /// **Every debit that funding this payment incurs is accounted for in
+    /// this one number**, not just the gateway's cut. Paying an invoice out of ecash
     /// is a federation transaction, and that transaction has costs of its
     /// own: the fee on the lightning output that funds the payment, the fees
     /// the primary module charges on the ecash inputs it spends and on the
@@ -316,11 +338,14 @@ impl LnQuote {
     /// screen that wants to show the parts. This accessor stays
     /// authoritative: the breakdown sums to it exactly.
     ///
-    /// It is a **quoted** figure, and the federation's share of it is chosen
-    /// for real only when the funding transaction is assembled and accepted.
-    /// This is the number to show and to charge against; what the balance
-    /// finally moved by is [`LnSendDetails::realized_fee`], which is recorded
-    /// as the payment settles and can be smaller.
+    /// "Quoted" is the other half. The gateway's share is refetched when the
+    /// payment is sent, and the mint-side components are chosen when the
+    /// funding transaction is assembled — which happens after this quote has
+    /// been discarded — so this is the figure the user approves and not a
+    /// measurement of what the payment cost; see [`LnQuote::total`] for the
+    /// mechanism. What it actually cost is [`LnSendDetails::realized_fee`],
+    /// recorded as the payment settles, and it can land on either side of
+    /// this number. That is the figure a receipt shows.
     pub fn fee(&self) -> Amount {
         unimplemented!()
     }
@@ -335,27 +360,76 @@ impl LnQuote {
         unimplemented!()
     }
 
-    /// The whole debit this payment will make against the balance:
-    /// [`LnQuote::invoice_amount`] plus [`LnQuote::fee`], with nothing further
-    /// to be added afterwards.
+    /// The total this payment is quoted at: [`LnQuote::invoice_amount`] plus
+    /// [`LnQuote::fee`].
     ///
-    /// This is the number to show as "you will pay", and it is more than a
-    /// display value: it is **the ceiling execution is authorised not to
-    /// exceed**. [`Lightning::send`] funds the payment for at most this much
-    /// or does not run at all — anything that would push the real debit above
-    /// it means the plan no longer holds, and the answer is
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) with
+    /// This is the number to show as "you will pay" on an approval screen, and
+    /// it is exact in the sense that matters there — the point of aggregating
+    /// the fee in millisatoshis is that the figure the user says yes to does
+    /// not have to be approximated.
+    ///
+    /// # It is an estimate, not an enforced ceiling
+    ///
+    /// An earlier draft of this API called this a ceiling that
+    /// [`Lightning::send`] was authorised against and could not exceed, with
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) as the enforcement.
+    /// That claim is **retracted**: published Fedimint cannot enforce it, and
+    /// no amount of care inside this SDK can supply the enforcement from
+    /// outside. The mechanism is worth stating precisely, because its shape is
+    /// what decides whether it can be worked around.
+    ///
+    /// - **The gateway's terms are refetched during the send, not carried
+    ///   from the quote.** 0.12's lnv2 send path asks the gateway for its
+    ///   routing info again as part of paying, and pays on whatever comes
+    ///   back. Nothing in that path takes the figure this quote agreed as an
+    ///   argument, so nothing there can compare against it.
+    /// - **Funding is finalized without any caller-provided maximum.**
+    ///   Assembling the funding transaction takes no expected-total or
+    ///   maximum-total argument on either module generation. The mint input
+    ///   fees, the output fee on the contract, the change fees and the
+    ///   denomination dust — every component
+    ///   [`LnQuote::fee_breakdown`] itemises except the gateway's — are chosen
+    ///   at that moment, and can differ from the ones this quote implied.
+    /// - **Re-checking the terms immediately before submitting does not close
+    ///   the gap, it only narrows the window.** Between the check and the
+    ///   commit the gateway's terms and the note inventory can still move — a
+    ///   time-of-check to time-of-use race — and a check that leaves a race is
+    ///   not a guarantee. Saying so is more useful than implying one.
+    ///
+    /// So the realized debit can land **above** this figure as well as below
+    /// it. Neither direction is an error, and neither is a broken promise,
+    /// because no promise of a maximum is being made.
+    ///
+    /// What would turn this into a real ceiling is an upstream change, not an
+    /// SDK one: either an atomic maximum-total (or expected-fee) guard
+    /// *inside* funding finalization, so that assembly itself refuses to
+    /// exceed a figure the caller named, or a persisted reservation of the
+    /// gateway's terms and the notes with defined drop, expiry and restart
+    /// semantics, so that the terms quoted are the terms held. Either is a
+    /// prerequisite this API is documenting rather than pretending to have.
+    ///
+    /// # What a caller gets instead
+    ///
+    /// Two things, and between them they cover the honest cases.
+    ///
+    /// [`Lightning::send`] still refuses a quote whose terms have visibly
+    /// moved — [`QuoteExpired`](crate::ErrorCode::QuoteExpired) once the
+    /// validity window has passed, and
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), with
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
-    /// naming this total and the one the payment would now cost. A larger
-    /// charge against a smaller approval is never an outcome.
+    /// naming this total beside the one the payment would now cost, when the
+    /// gateway or the federation configuration has moved underneath it. So a
+    /// stale quote is never executed silently. That is a genuine protection
+    /// against staleness; it is not a bound on the commit. The plan itself
+    /// *is* bound: the invoice, the amount and the gateway are the ones that
+    /// were shown.
     ///
-    /// The one component that cannot be pinned to the millisatoshi before the
-    /// funding transaction is assembled is denomination dust, which depends on
-    /// the notes actually spent. The quote resolves it upwards, so the bound
-    /// errs in the direction that protects the user: the debit is never more
-    /// than this, and may be a hair less. What it actually was is
-    /// [`LnSendDetails::realized_total_debited`], recorded once the funding
-    /// transaction is accepted.
+    /// And the receipt reports the truth.
+    /// [`LnSendDetails::realized_total_debited`] is what the balance actually
+    /// paid, recorded from the accepted funding transaction's own fees, and it
+    /// is what a "you paid" line must read from. A caller that renders this
+    /// quoted total after the fact will eventually render a number that is not
+    /// what happened.
     pub fn total(&self) -> Amount {
         unimplemented!()
     }
@@ -386,12 +460,21 @@ impl LnQuote {
 ///
 /// This is a view of one number, never a second opinion about it: **the
 /// components sum to [`LnQuote::fee`] exactly**, and that accessor — with
-/// [`LnQuote::total`] — is what a caller charges the user and what execution
-/// is bound by. A caller that only shows the total can ignore this type
-/// completely; a caller that shows the parts must still take the total from
-/// [`LnQuote::fee`] rather than adding these up itself, so that the number on
-/// screen is the number the quote committed to even if a later release
-/// itemises the same fee more finely.
+/// [`LnQuote::total`] — is what a caller charges the user. A caller that only
+/// shows the total can ignore this type completely; a caller that shows the
+/// parts must still take the total from [`LnQuote::fee`] rather than adding
+/// these up itself, so that the number on screen is the number the quote
+/// named even if a later release itemises the same fee more finely.
+///
+/// # This explains a quote, not an outcome
+///
+/// These are quoted components, and they inherit everything
+/// [`LnQuote::total`] says about quoted figures: the gateway's share is
+/// refetched during the send and every other line is re-decided when the
+/// funding transaction is assembled. A payment's realized cost is reported as
+/// a single aggregate on [`LnSendDetails::realized_fee`] and is deliberately
+/// not broken down this way — splitting the accepted transactions' cost along
+/// these lines after the fact would be presenting a guess as a measurement.
 ///
 /// Any component may be zero — on [`LightningRoute::Internal`] the gateway
 /// one always is, because no gateway takes part. Zero components are
@@ -425,10 +508,10 @@ pub struct LnFeeBreakdown {
     ///
     /// Nobody charges it and it appears in no fee schedule, but it leaves the
     /// balance and does not come back, so it belongs in the number a user
-    /// approves rather than in a footnote. It is also the one component that
-    /// depends on the notes actually spent, which is why
-    /// [`LnQuote::total`] is a bound resolved upwards rather than a
-    /// prediction.
+    /// approves rather than in a footnote. Like the two module components
+    /// beside it, it depends on the notes the funding transaction actually
+    /// spends, which are selected long after this quote was built — one of the
+    /// reasons [`LnQuote::total`] is a prediction and not a bound.
     pub dust: Amount,
 }
 
@@ -593,16 +676,18 @@ pub enum LnSendState {
         /// copying it into [`LnSendDetails`] would duplicate a value that can
         /// never be missed.
         preimage: Preimage,
-        /// The aggregate fee the payment was **quoted and executed on** —
-        /// [`LnQuote::fee`], the whole debit and not only the gateway's cut.
+        /// The aggregate fee the payment was **quoted at** —
+        /// [`LnQuote::fee`], every component of the debit and not only the
+        /// gateway's cut.
         ///
         /// This is the number the user approved, not a measurement of what the
-        /// balance did. The two can differ: the quote resolves denomination
-        /// dust upwards and the federation's share is fixed only when the
-        /// funding transaction is accepted, so the real cost of this payment
-        /// is [`LnSendDetails::realized_fee`], which is `Some` by the time
-        /// this state is reached. A receipt that wants one number should show
-        /// that one; a receipt that wants to explain itself shows both.
+        /// balance did. The two can differ in either direction: the gateway's
+        /// terms are refetched during the send and the federation's share is
+        /// fixed only when the funding transaction is accepted, so the real
+        /// cost of this payment is [`LnSendDetails::realized_fee`], which is
+        /// `Some` by the time this state is reached. A receipt that wants one
+        /// number should show that one; a receipt that wants to explain itself
+        /// shows both.
         ///
         /// Also in [`LnSendDetails::quoted_fee`], and the duplication is
         /// deliberate: it is placement-rule case 3, the one case that licenses
@@ -713,11 +798,15 @@ impl OperationState for LnSendState {
 ///   actually did. `Option`, absent until the fact is established by an
 ///   accepted federation transaction, then written once and never revised.
 ///
-/// They can differ, and for anything but a plain success they usually do.
-/// Fedimint fixes a payment's federation-side fees — the mint's input and
-/// output fees, the change it reissues, the value too small for any note
-/// denomination — only when a transaction is assembled and accepted; a fee
-/// quote is an explicitly non-committable dry run. And a
+/// They can differ — in either direction, and for anything but a plain
+/// success they usually do. Fedimint refetches the gateway's terms during the
+/// send rather than honouring the ones the quote agreed, and it fixes a
+/// payment's federation-side fees — the mint's input and output fees, the
+/// change it reissues, the value too small for any note denomination — only
+/// when a transaction is assembled and accepted; a fee quote is an explicitly
+/// non-committable dry run, and funding is finalized without any
+/// caller-provided maximum. [`LnQuote::total`] sets out that mechanism in full
+/// and retracts the claim that the quoted total was a ceiling. And a
 /// [`Refunded`](LnSendState::Refunded) send runs a *second* transaction to
 /// claim its funding back, which costs money of its own: the gateway's cut may
 /// come back with the contract while the fees that funded the attempt stay
@@ -771,14 +860,15 @@ pub struct LnSendDetails {
     /// still a term of the attempt: a payment that was refunded delivered
     /// nothing, and this number says what it would have delivered.
     pub invoice_amount: Amount,
-    /// Quoted half. The aggregate fee the executed quote committed to —
-    /// [`LnQuote::fee`], every cost of funding the payment and not only the
-    /// gateway's cut.
+    /// Quoted half. The aggregate fee the executed quote named —
+    /// [`LnQuote::fee`], every component of the cost of funding the payment
+    /// and not only the gateway's cut.
     ///
     /// The number the user approved. It is **not** a measurement of what the
     /// payment cost: that is [`realized_fee`](LnSendDetails::realized_fee),
-    /// and the two differ whenever dust resolved differently than quoted or
-    /// the payment was refunded.
+    /// and the two differ, in either direction, whenever the gateway's
+    /// refetched terms or the mint's assembly-time components came out other
+    /// than quoted, or the payment was refunded.
     ///
     /// Also on [`LnSendState::Success`], which is placement-rule case 3 and
     /// the one licensed duplication: the quoted fee is announced by that state
@@ -786,15 +876,15 @@ pub struct LnSendDetails {
     /// failed endings that most need a number to show. Both copies are the
     /// same value from the same quote, written once and never revised.
     pub quoted_fee: Amount,
-    /// Quoted half. What the payment was authorised for:
+    /// Quoted half. What the payment was quoted to debit from the balance:
     /// [`LnQuote::total`], equal to
     /// [`invoice_amount`](LnSendDetails::invoice_amount) plus
     /// [`quoted_fee`](LnSendDetails::quoted_fee).
     ///
-    /// This is a ceiling, not a receipt: it says what the balance was
-    /// authorised to move by, not what it moved by. Execution is bound not to
-    /// exceed it and may come in a hair under, so the figure that says what
-    /// actually left is
+    /// It is an estimate, not a ceiling — [`LnQuote::total`] retracts that
+    /// claim and explains why it cannot be made — so it answers "what did you
+    /// agree to", never "what did you pay". The figure that says what actually
+    /// left is
     /// [`realized_total_debited`](LnSendDetails::realized_total_debited) — the
     /// same noun with the other prefix, and the distinction a refund makes
     /// unavoidable.
@@ -816,10 +906,16 @@ pub struct LnSendDetails {
     ///
     /// `None` until that transaction is accepted — the transition to
     /// [`Funded`](LnSendState::Funded) — because before then no such figure
-    /// exists: the federation's fees and the dust depend on the notes actually
-    /// spent. Never greater than
-    /// [`quoted_total_debited`](LnSendDetails::quoted_total_debited), which
-    /// execution is bound by, and often a little less.
+    /// exists: the gateway's terms are refetched during the send, and the
+    /// federation's fees and the dust depend on the notes actually spent.
+    ///
+    /// It can differ from
+    /// [`quoted_total_debited`](LnSendDetails::quoted_total_debited) in
+    /// **either** direction, and an earlier draft of this field promised it
+    /// could only come in at or under. It could not: funding is finalized
+    /// without any caller-provided maximum, so nothing enforces that bound;
+    /// [`LnQuote::total`] gives the mechanism. This is the figure a "you paid"
+    /// line must read from.
     ///
     /// `Some(0)` is possible and means something precise: the attempt ended
     /// without a funding transaction ever being assembled, so nothing moved.
@@ -1315,8 +1411,8 @@ mod tests {
 
     /// A send record as [`Lightning::send`] writes it: the quoted terms of one
     /// plausible payment — 100,000 msat to the payee, 1,050 msat of quoted
-    /// aggregate fee, 101,050 msat authorised — and no realized figure yet,
-    /// because nothing has been accepted.
+    /// aggregate fee, 101,050 msat of quoted debit — and no realized figure
+    /// yet, because nothing has been accepted.
     fn send_details() -> LnSendDetails {
         LnSendDetails {
             invoice: Bolt11Invoice::from_raw("lnbcrt1000n1pexample".to_owned()),
@@ -1434,16 +1530,14 @@ mod tests {
 
     #[test]
     fn ln_send_details_reconcile_a_successful_payment() {
-        // Settled successfully: the debit came in a little under the quoted
-        // ceiling, nothing came back, and the realized fee is everything that
-        // left the balance without reaching the payee.
+        // Settled successfully: nothing came back, and the realized fee is
+        // everything that left the balance without reaching the payee.
         let details = LnSendDetails {
             realized_total_debited: Some(Amount::from_msats(101_048)),
             restored_amount: Some(Amount::from_msats(0)),
             realized_fee: Some(Amount::from_msats(1_048)),
             ..send_details()
         };
-        assert!(details.realized_total_debited <= Some(details.quoted_total_debited));
         // realized_total_debited == delivered + restored + fee, delivered
         // being the invoice amount for a payment that succeeded.
         let reconciled = [
@@ -1454,6 +1548,68 @@ mod tests {
         .into_iter()
         .try_fold(Amount::from_msats(0), Amount::checked_add);
         assert_eq!(reconciled, details.realized_total_debited);
+    }
+
+    /// The assertion the retraction of the ceiling claim rests on: the debit
+    /// that actually lands can exceed the one that was quoted, because the
+    /// gateway's terms are refetched during the send and the mint-side
+    /// components are chosen when the funding transaction is assembled. An
+    /// earlier revision asserted `realized <= quoted` here, which published
+    /// 0.12 cannot enforce.
+    #[test]
+    fn ln_send_details_realized_may_exceed_quoted() {
+        let details = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(101_400)),
+            restored_amount: Some(Amount::from_msats(0)),
+            realized_fee: Some(Amount::from_msats(1_400)),
+            ..send_details()
+        };
+        assert!(details.realized_fee > Some(details.quoted_fee));
+        assert!(details.realized_total_debited > Some(details.quoted_total_debited));
+        // Settlement does not revise the quoted half: it is still exactly what
+        // the user approved, which is what makes the pair worth keeping.
+        assert_eq!(details.quoted_fee, send_details().quoted_fee);
+        assert_eq!(
+            details.quoted_total_debited,
+            send_details().quoted_total_debited
+        );
+        // And it still reconciles, on the same identity.
+        let reconciled = [
+            details.invoice_amount,
+            details.restored_amount.expect("restored"),
+            details.realized_fee.expect("fee"),
+        ]
+        .into_iter()
+        .try_fold(Amount::from_msats(0), Amount::checked_add);
+        assert_eq!(reconciled, details.realized_total_debited);
+    }
+
+    /// And it can land below the quote, or at zero for an attempt that never
+    /// assembled a funding transaction at all.
+    #[test]
+    fn ln_send_details_realized_may_be_below_quoted_or_zero() {
+        let cheaper = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(100_900)),
+            restored_amount: Some(Amount::from_msats(0)),
+            realized_fee: Some(Amount::from_msats(900)),
+            ..send_details()
+        };
+        assert!(cheaper.realized_fee < Some(cheaper.quoted_fee));
+        assert!(cheaper.realized_total_debited < Some(cheaper.quoted_total_debited));
+
+        let unfunded = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(0)),
+            restored_amount: Some(Amount::from_msats(0)),
+            realized_fee: Some(Amount::from_msats(0)),
+            ..send_details()
+        };
+        assert_eq!(unfunded.realized_total_debited, Some(Amount::from_msats(0)));
+        // A payment that moved nothing still has terms to show on a receipt.
+        assert_eq!(
+            unfunded.quoted_total_debited,
+            send_details().quoted_total_debited
+        );
+        assert!(LnSendState::Refunded.is_final());
     }
 
     #[test]

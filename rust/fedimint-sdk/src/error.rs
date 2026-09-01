@@ -23,6 +23,15 @@ use crate::{Amount, Network, Timestamp};
 ///   wording can change in any release without that being a breaking
 ///   change.
 ///
+/// Those same three fields, with those same three contracts, also travel as a
+/// value where a failure is *reported as state* instead of raised — the reason
+/// a federation sits in
+/// [`FederationStatus::Quarantined`](crate::FederationStatus::Quarantined),
+/// for instance. That is [`Diagnostic`], which is deliberately a separate type
+/// from this one and converts both ways; it exists so that a failure a caller
+/// reads off a status is exactly as machine-readable, envelope and all, as the
+/// same failure returned from a call.
+///
 /// The full underlying failure (the source chain from `fedimint-client`,
 /// storage, or the network) is captured for diagnostics but stays internal to
 /// the crate: it surfaces through logging and through [`Error`]'s `Debug`
@@ -270,6 +279,207 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// A failure described as a **value to read** rather than an error to raise: a
+/// stable [`ErrorCode`], a human-readable message, and the same optional
+/// [`DetailEnvelope`] an [`Error`] carries.
+///
+/// This is the type a state that means "something went wrong here" holds. The
+/// case it exists for today is
+/// [`FederationStatus::Quarantined`](crate::FederationStatus::Quarantined):
+/// the SDK could not or would not open a stored federation, and rather than
+/// failing the whole instance it records why, for an application to read later
+/// with [`Sdk::federation_status`](crate::Sdk::federation_status) or
+/// [`Sdk::stored_federations`](crate::Sdk::stored_federations). The same shape
+/// fits any later status with a reason attached.
+///
+/// # Why it is not just an `Error`
+///
+/// Because a quarantine reason is not a failed call, and the differences are
+/// load-bearing rather than cosmetic:
+///
+/// - **It is compared, not thrown.** A status is diffed to decide whether
+///   anything changed — that is what
+///   [`Sdk::federation_status_updates`](crate::Sdk::federation_status_updates)
+///   emits on — so the type inside it must be `PartialEq` and `Eq`. [`Error`]
+///   is not and should not be: it carries the underlying failure's source
+///   chain internally for diagnostics, an opaque thing that has no meaningful
+///   equality and would make two identical-looking failures compare unequal.
+///   `Diagnostic` holds only the three public fields, so equality means
+///   exactly what a reader expects.
+/// - **It is not the thing a call throws.** [`Error`] implements
+///   [`core::error::Error`] and is what every fallible call returns;
+///   `Diagnostic` deliberately does not, because a value sitting in a status
+///   field is not an in-flight failure. Converting is how it becomes one:
+///   `Error::from(diagnostic)` (or `.into()`), and `Diagnostic::from(error)`
+///   in the other direction, which is how the SDK records the error that
+///   stopped a federation opening.
+/// - **It outlives the call that produced it.** A quarantine can have been
+///   decided by an earlier build, in an earlier process, and is read back long
+///   after; nothing about it is tied to the stack frame that raised it.
+///
+/// Keeping them apart also keeps [`Error`] the size it is. `Error` is the
+/// error half of every `Result` in this crate, which
+/// [`clippy::result_large_err`] polices at 128 bytes, so it does not gain
+/// fields or nest a record inside itself for the benefit of a status enum.
+///
+/// # Shape
+///
+/// A plain record of a fieldless [`Copy`] enum, a string, and an optional
+/// envelope: no generics, no tuples, no borrowed data. It generates
+/// mechanically into a Swift or Kotlin record and a TypeScript interface, and
+/// a binding decodes the `details` field here with the very same projection it
+/// uses for [`Error::details`] — one mechanism, one hand-written map per
+/// target, both places served.
+///
+/// Like [`Error`], and for the reason set out there, this record **does not
+/// grow fields**: more structured detail about a diagnosed situation arrives
+/// as a new kind inside the envelope, never as a fourth field. It is
+/// `#[non_exhaustive]` so the compiler enforces construction through
+/// [`Diagnostic::new`], [`Diagnostic::with_details`] and
+/// [`Diagnostic::with_raw_details`], which is what would make such an addition
+/// non-breaking if one ever proved unavoidable.
+///
+/// [`clippy::result_large_err`]: https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Diagnostic {
+    /// Stable, machine-readable failure category — the same taxonomy, with
+    /// the same meanings, as [`Error::code`]. Safe to match on, and the only
+    /// field a caller *has* to look at.
+    pub code: ErrorCode,
+    /// Human-readable context for logs and diagnostics. Not part of the
+    /// stability contract: never match on this field's contents.
+    pub message: String,
+    /// Structured, machine-readable detail for this failure, where it has
+    /// any — identical in meaning, and in every rule that governs it, to
+    /// [`Error::details`].
+    ///
+    /// This field is the point of the type. Without it, an application that
+    /// wanted to name the modules whose generations conflict in a quarantined
+    /// federation had to parse `message`, which the contract forbids; with it,
+    /// the quarantine carries
+    /// [`ErrorDetails::MixedModuleGenerations`] and the modules are readable.
+    ///
+    /// `None` means no detail was attached, and never that the diagnosis is
+    /// less real: `code` is authoritative on its own. `Some` is either
+    /// [`Interpreted`](DetailEnvelope::Interpreted) or
+    /// [`Opaque`](DetailEnvelope::Opaque) — an envelope written by a newer SDK
+    /// than the one reading it stays a value, not a failure. Most callers want
+    /// [`Diagnostic::detail`]; match the typed case with a wildcard arm.
+    pub details: Option<DetailEnvelope>,
+}
+
+impl Diagnostic {
+    /// Records a diagnosis from a code and a human-readable message, with no
+    /// structured detail.
+    ///
+    /// The counterpart of [`Error::new`], and available to binding layers for
+    /// the same reason: whatever produces a status must be able to state why
+    /// without inventing a parallel reason type. Pick the `code` that
+    /// describes the situation from the reader's point of view;
+    /// [`ErrorCode::Internal`] only where nothing else fits.
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Diagnostic {
+        Diagnostic {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Records a diagnosis from a code, a human-readable message, and the
+    /// structured [`ErrorDetails`] for it.
+    ///
+    /// The counterpart of [`Error::with_details`], and the constructor that
+    /// makes a quarantine machine-readable: a federation refused for mixed
+    /// module generations is diagnosed with
+    /// [`ErrorCode::UnsupportedFederation`] and
+    /// [`ErrorDetails::MixedModuleGenerations`], so an application can name
+    /// the modules that disagree instead of scraping them out of a sentence.
+    ///
+    /// `details` should describe the same situation as `code`; the pairing
+    /// documented on each [`ErrorDetails`] case is the intended one. Nothing
+    /// enforces it, because `code` stays authoritative either way.
+    pub fn with_details(
+        code: ErrorCode,
+        message: impl Into<String>,
+        details: ErrorDetails,
+    ) -> Diagnostic {
+        Diagnostic {
+            code,
+            message: message.into(),
+            details: Some(DetailEnvelope::Interpreted { detail: details }),
+        }
+    }
+
+    /// Records a diagnosis from a code, a human-readable message, and a
+    /// [`RawErrorDetails`] this side could not project into a typed case.
+    ///
+    /// The counterpart of [`Error::with_raw_details`], and what a decoder
+    /// reaches for when the envelope's kind came from a newer SDK: the detail
+    /// survives as an observable value with a version and a kind, rather than
+    /// being dropped or turned into a failure of its own.
+    pub fn with_raw_details(
+        code: ErrorCode,
+        message: impl Into<String>,
+        raw: RawErrorDetails,
+    ) -> Diagnostic {
+        Diagnostic {
+            code,
+            message: message.into(),
+            details: Some(DetailEnvelope::Opaque { raw }),
+        }
+    }
+
+    /// The typed detail attached to this diagnosis, where there is one this
+    /// build can interpret.
+    ///
+    /// Exactly [`Error::detail`], on the other type: `None` covers "no detail
+    /// was attached", "the kind is unknown to this build", and "the payload did
+    /// not decode", and the [`details`](Diagnostic::details) field tells those
+    /// apart where the difference matters.
+    pub fn detail(&self) -> Option<&ErrorDetails> {
+        self.details.as_ref()?.typed()
+    }
+}
+
+impl core::fmt::Display for Diagnostic {
+    /// Formats as `Code: message`, the same as [`Error`], so a log line reads
+    /// identically whether the failure was raised or read off a status.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.message)
+    }
+}
+
+impl From<Error> for Diagnostic {
+    /// Records a failure that already happened as the diagnosis of a state:
+    /// the code, message and details envelope carry over unchanged, and the
+    /// error's internal source chain — which is not part of the public
+    /// surface — is dropped, since a status value is compared and stored
+    /// rather than propagated.
+    fn from(error: Error) -> Diagnostic {
+        Diagnostic {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+        }
+    }
+}
+
+impl From<Diagnostic> for Error {
+    /// Raises a recorded diagnosis as an error, unchanged: the code, message
+    /// and details envelope carry over, and the result is an ordinary
+    /// [`Error`] that a caller can return or a binding can throw. Nothing is
+    /// added — in particular no source chain, because there is no live failure
+    /// underneath a diagnosis that was read back from a status.
+    fn from(diagnostic: Diagnostic) -> Error {
+        Error {
+            code: diagnostic.code,
+            message: diagnostic.message,
+            details: diagnostic.details,
+        }
+    }
+}
+
 /// The raw, length-delimited form of an error's structured detail: the only
 /// form that ever crosses a language boundary.
 ///
@@ -344,6 +554,7 @@ impl core::error::Error for Error {}
 /// | `BalanceNotEmpty` | 1 | `remaining: u64` — millisatoshis |
 /// | `StorageInUse` | 1 | `location: str` |
 /// | `SeedMismatch` | 1 | `location: str` |
+/// | `StorageOrphaned` | 1 | `location: str`, `seed_present: bool` |
 ///
 /// ## What a reader must do
 ///
@@ -401,6 +612,11 @@ impl RawErrorDetails {
     /// that exists neither changes meaning nor changes payload layout, so
     /// nothing else can change what this number means. `0` is not a version:
     /// it is reserved for "the producer declared none".
+    ///
+    /// Bumping starts with the first release: kinds added while this crate is
+    /// still unreleased all belong to version 1, since no consumer can have
+    /// been generated against a narrower set. See *Versioning* on
+    /// [`ErrorDetails`].
     pub const CURRENT_VERSION: u32 = 1;
 
     /// Records a raw envelope, as a decoder read it or as an encoder is about
@@ -585,6 +801,14 @@ impl DetailEnvelope {
 /// that version: never redefined, never given a wider or narrower reading,
 /// never repurposed. Adding cases bumps `CURRENT_VERSION`; nothing else does.
 ///
+/// The version a case is frozen at is the one that **first released it**,
+/// which is why every case here is version 1 including the ones added late in
+/// this crate's pre-release skeleton: no build outside this crate has yet been
+/// generated against a narrower version-1 set, so there is no consumer for
+/// whom a case added now is newer than the envelope it arrived in. The first
+/// release freezes that set; a case added after it is version 2, and
+/// `CURRENT_VERSION` moves with it.
+///
 /// A producer ahead of its consumer may emit a kind the consumer has no
 /// projection for, and the consumer keeps the raw envelope as
 /// [`DetailEnvelope::Opaque`] — which is why a version mismatch degrades to
@@ -750,10 +974,12 @@ pub enum ErrorDetails {
     /// Accompanies [`ErrorCode::StorageInUse`].
     StorageInUse {
         /// The location that could not be locked, as it was given to
-        /// [`Storage::at`](crate::Storage::at). Echoed back so that a host
-        /// juggling more than one location — a mobile app and its
+        /// [`Storage::at`](crate::Storage::at) or
+        /// [`Storage::in_browser`](crate::Storage::in_browser) — a native
+        /// filesystem path or an origin-scoped namespace. Echoed back so that
+        /// a host juggling more than one location — a mobile app and its
         /// notification-service extension, say — can report which one is
-        /// held. A path, never a credential.
+        /// held. A path or a namespace, never a credential.
         location: String,
     },
     /// Storage already held a seed and it did not match the mnemonic
@@ -766,8 +992,57 @@ pub enum ErrorDetails {
     /// none) rather than to compare seeds.
     SeedMismatch {
         /// The storage location whose seed disagrees, as it was given to
-        /// [`Storage::at`](crate::Storage::at).
+        /// [`Storage::at`](crate::Storage::at) or
+        /// [`Storage::in_browser`](crate::Storage::in_browser) — a native
+        /// filesystem path or an origin-scoped namespace.
         location: String,
+    },
+    /// Storage held state belonging to this SDK but no usable seed, so it was
+    /// refused without being opened. Accompanies
+    /// [`ErrorCode::StorageOrphaned`].
+    ///
+    /// Two fields, because there are exactly two things a host can say
+    /// something true and useful about: *which* location was refused, and
+    /// *which* of the two conditions was met — a seed entry that was absent
+    /// altogether, or one that was there and unusable. Those two need
+    /// different words in front of a user, and the remedy for the second may
+    /// be no more than upgrading the app, so flattening them into "no seed"
+    /// would lose the distinction that matters most.
+    ///
+    /// Nothing derived from key material is here, for the reason given on
+    /// [`ErrorDetails`]: no seed, no mnemonic, no fingerprint or hash of
+    /// either, and no quoted bytes of an unreadable entry. There was no usable
+    /// seed to describe in the first place, and this is an error a host will
+    /// log.
+    StorageOrphaned {
+        /// The storage location that was refused, as it was given to
+        /// [`Storage::at`](crate::Storage::at) or
+        /// [`Storage::in_browser`](crate::Storage::in_browser) — a native
+        /// filesystem path or an origin-scoped namespace. Echoed back so a
+        /// host juggling more than one location can report which one is
+        /// orphaned — and so the "you may be pointing at the wrong place"
+        /// remedy can name the place. A path or a namespace, never a
+        /// credential.
+        location: String,
+        /// Whether a seed entry existed at all beside the state that was
+        /// found.
+        ///
+        /// `false` — there was no seed entry. The state came from a seed that
+        /// is not here: the location is not the one that state was written to,
+        /// or the entry was lost or deleted independently of it.
+        ///
+        /// `true` — an entry was there and this build could not use it:
+        /// truncated, corrupt, or written in a format only a newer SDK
+        /// understands. This is emphatically **not** a licence to overwrite
+        /// it. The bytes may be a perfectly good seed that a newer build reads
+        /// fine, so the first thing to try is a newer build; the entry is left
+        /// exactly as it was found either way.
+        ///
+        /// A `bool` rather than an enum because the dichotomy is complete —
+        /// an entry either existed or it did not — and a third thing worth
+        /// distinguishing would arrive as a new, more specific case under the
+        /// rules on [`ErrorDetails`], never as another field here.
+        seed_present: bool,
     },
 }
 
@@ -789,6 +1064,7 @@ impl ErrorDetails {
             ErrorDetails::BalanceNotEmpty { .. } => "BalanceNotEmpty",
             ErrorDetails::StorageInUse { .. } => "StorageInUse",
             ErrorDetails::SeedMismatch { .. } => "SeedMismatch",
+            ErrorDetails::StorageOrphaned { .. } => "StorageOrphaned",
         }
     }
 
@@ -814,7 +1090,8 @@ impl ErrorDetails {
             | ErrorDetails::QuoteTermsChanged { .. }
             | ErrorDetails::BalanceNotEmpty { .. }
             | ErrorDetails::StorageInUse { .. }
-            | ErrorDetails::SeedMismatch { .. } => 1,
+            | ErrorDetails::SeedMismatch { .. }
+            | ErrorDetails::StorageOrphaned { .. } => 1,
         }
     }
 }
@@ -945,9 +1222,17 @@ pub enum ErrorCode {
     /// occurs when a facade obtained earlier is used after the federation's
     /// configuration changed to drop that module.
     NotSupported,
-    /// A persisted operation exists but this SDK version or module set
-    /// cannot interpret it. The operation is still observable (its kind and
-    /// id are readable) but not actionable.
+    /// A persisted operation exists but this build cannot interpret it —
+    /// because of its SDK version, its cargo features, or its module set. The
+    /// operation is still observable (its kind and id are readable) but not
+    /// actionable.
+    ///
+    /// The features clause is not hypothetical: a build without the
+    /// `experimental` feature knows exactly what an
+    /// [`OperationKind::Recovery`](crate::OperationKind::Recovery) record is
+    /// and has no accessor compiled in for it, which is
+    /// [`OperationSupport::NotCompiledIn`](crate::OperationSupport::NotCompiledIn)
+    /// and reaches a caller as this code.
     UnsupportedOperation,
     /// Storage already holds a seed and it does not match the mnemonic
     /// supplied to open it. [`ErrorDetails::SeedMismatch`] names the
@@ -956,6 +1241,47 @@ pub enum ErrorCode {
     /// The storage location is already open, in this process or another.
     /// [`ErrorDetails::StorageInUse`] names the location.
     StorageInUse,
+    /// Storage holds federation or client state but no usable seed, so it
+    /// cannot be opened. The seed entry is either **absent** altogether, or
+    /// **present and unusable** — truncated, corrupt, or written in a format
+    /// this build does not understand. [`ErrorDetails::StorageOrphaned`] names
+    /// the location and says which of the two it was.
+    ///
+    /// **Permanent, not transient.** This is the whole reason it is not
+    /// [`Storage`](ErrorCode::Storage), which means a read or a write failed
+    /// and is worth retrying. Nothing about a store whose state has no seed to
+    /// go with it changes by asking again, so the two need opposite handling —
+    /// back off and retry one, stop and tell a human about the other — and
+    /// telling them apart has to be possible from `code` alone, because
+    /// [`Error::message`] may never be parsed.
+    ///
+    /// **Nothing was mutated.** The refusal happens under the storage lock and
+    /// strictly before any write the open would make (see
+    /// [`SdkBuilder::build`](crate::SdkBuilder::build) for the exact order),
+    /// so the backend is byte-identical to how it was found. That is what
+    /// leaves the condition recoverable: establishing a fresh seed over
+    /// existing state would bind that state to a derivation root it did not
+    /// come from — the wallet would open, look empty, and the real funds would
+    /// be unreachable — while overwriting the only local trace of which seed
+    /// the state belonged to.
+    ///
+    /// **What a caller can do.** Not retry, and not repair it automatically;
+    /// there is no safe automatic repair. Report it and offer the ways out, in
+    /// this order:
+    ///
+    /// 1. Where the entry was present but unusable, **update the SDK or the
+    ///    app** — a newer build may read a format this one cannot, and that
+    ///    costs nothing and risks nothing.
+    /// 2. **Open the same location with the mnemonic that state came from**,
+    ///    which restores the seed beside its state instead of replacing it.
+    /// 3. **Point at a different location.** The everyday cause is a path
+    ///    that moved, or storage belonging to another app, profile, or user.
+    /// 4. **Abandon the location deliberately**, by deleting its contents,
+    ///    which makes it provably empty and therefore openable. This destroys
+    ///    any funds whose only backup was that seed, so it is a last resort a
+    ///    person chooses explicitly — never a step an application takes on
+    ///    their behalf.
+    StorageOrphaned,
     /// The quote passed to `send` is no longer valid: either its validity
     /// window has passed, or it has already been executed and a quote funds
     /// exactly one payment. Both are the same situation from a caller's
@@ -1025,6 +1351,20 @@ pub enum ErrorCode {
     /// substitute entropy of your own.
     Entropy,
     /// The local storage backend failed to read or write.
+    ///
+    /// A fault in the backend itself — the I/O failed, the browser store
+    /// rejected the operation, the device is out of space — and therefore
+    /// potentially **transient**: retrying, or retrying once the underlying
+    /// condition is gone, is a reasonable thing for a caller to do.
+    ///
+    /// It does **not** cover a store whose contents are wrong. Storage that
+    /// holds state but no usable seed is [`StorageOrphaned`], which is
+    /// permanent and needs a human;
+    /// [`SeedMismatch`](ErrorCode::SeedMismatch) and
+    /// [`StorageInUse`](ErrorCode::StorageInUse) are the other two conditions
+    /// that are about the store rather than the backend.
+    ///
+    /// [`StorageOrphaned`]: ErrorCode::StorageOrphaned
     Storage,
     /// An internal error that does not fit any other category. Its presence
     /// generally indicates a bug; `message` carries what diagnostic detail
@@ -1075,6 +1415,10 @@ mod tests {
             },
             ErrorDetails::SeedMismatch {
                 location: "/var/app/wallet".to_owned(),
+            },
+            ErrorDetails::StorageOrphaned {
+                location: "/var/app/wallet".to_owned(),
+                seed_present: false,
             },
         ]
     }
@@ -1382,6 +1726,218 @@ mod tests {
     }
 
     #[test]
+    fn orphaned_storage_has_its_own_code_distinct_from_a_backend_fault() {
+        // The point of the code: "state with no usable seed" is permanent and
+        // needs a human, a failed read or write is transient and worth
+        // retrying, and a caller separates them on `code` alone — never by
+        // reading `message`.
+        fn worth_retrying(err: &Error) -> bool {
+            // A backend fault may be gone next time; nothing else here is.
+            matches!(err.code, ErrorCode::Storage)
+        }
+
+        let orphaned = Error::with_details(
+            ErrorCode::StorageOrphaned,
+            "storage holds federation state but no usable seed",
+            ErrorDetails::StorageOrphaned {
+                location: "/var/app/wallet".to_owned(),
+                seed_present: false,
+            },
+        );
+        let backend_fault = Error::new(ErrorCode::Storage, "write failed: device is full");
+
+        assert_ne!(orphaned.code, backend_fault.code);
+        assert!(!worth_retrying(&orphaned));
+        assert!(worth_retrying(&backend_fault));
+    }
+
+    #[test]
+    fn storage_orphaned_detail_names_the_location_and_which_condition() {
+        // No seed entry at all: the state came from a seed that is not here.
+        let absent = Error::with_details(
+            ErrorCode::StorageOrphaned,
+            "no seed beside the state",
+            ErrorDetails::StorageOrphaned {
+                location: "/var/app/wallet".to_owned(),
+                seed_present: false,
+            },
+        );
+        match absent.detail() {
+            Some(ErrorDetails::StorageOrphaned {
+                location,
+                seed_present,
+            }) => {
+                assert_eq!(location, "/var/app/wallet");
+                assert!(!seed_present);
+            }
+            other => panic!("expected a StorageOrphaned detail, got {other:?}"),
+        }
+
+        // An entry that exists and this build cannot use — possibly a newer
+        // on-disk format, which is why the two conditions are told apart: the
+        // first thing to try here is a newer build, not a fresh seed.
+        let unreadable = Error::with_details(
+            ErrorCode::StorageOrphaned,
+            "the seed entry did not decode",
+            ErrorDetails::StorageOrphaned {
+                location: "/var/app/wallet".to_owned(),
+                seed_present: true,
+            },
+        );
+        match unreadable.detail() {
+            Some(ErrorDetails::StorageOrphaned {
+                location,
+                seed_present,
+            }) => {
+                assert_eq!(location, "/var/app/wallet");
+                assert!(seed_present);
+            }
+            other => panic!("expected a StorageOrphaned detail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_carries_the_same_structured_detail_an_error_would() {
+        // What a quarantined federation records: the code an equivalent
+        // `Error` would carry, and the very same details envelope — so the
+        // modules that disagree are readable without parsing `message`, which
+        // is the requirement the free-form-text version could not meet.
+        let why = Diagnostic::with_details(
+            ErrorCode::UnsupportedFederation,
+            "mixed module generations",
+            ErrorDetails::MixedModuleGenerations {
+                modules: vec![
+                    ModuleGeneration::new("mint", 1),
+                    ModuleGeneration::new("ln", 2),
+                ],
+            },
+        );
+        assert_eq!(why.code, ErrorCode::UnsupportedFederation);
+        assert_eq!(
+            why.to_string(),
+            "UnsupportedFederation: mixed module generations"
+        );
+        match why.detail() {
+            Some(ErrorDetails::MixedModuleGenerations { modules }) => {
+                let named: Vec<(&str, u32)> = modules
+                    .iter()
+                    .map(|m| (m.kind.as_str(), m.generation))
+                    .collect();
+                assert_eq!(named, vec![("mint", 1), ("ln", 2)]);
+            }
+            other => panic!("expected a MixedModuleGenerations detail, got {other:?}"),
+        }
+
+        // The envelope's own accessors read the same on a diagnostic as on an
+        // error, which is what lets one boundary projection serve both.
+        let envelope = why.details.as_ref().expect("a detail");
+        assert_eq!(envelope.kind(), "MixedModuleGenerations");
+        assert_eq!(envelope.version(), 1);
+        assert!(envelope.is_interpreted());
+
+        // And a diagnosis with nothing structured to add is still a complete
+        // one: `code` is authoritative on its own.
+        let bare = Diagnostic::new(ErrorCode::FederationUnreachable, "no guardian answered");
+        assert!(bare.details.is_none());
+        assert!(bare.detail().is_none());
+    }
+
+    #[test]
+    fn a_diagnostic_and_an_error_convert_both_ways_unchanged() {
+        let err = Error::with_details(
+            ErrorCode::UnsupportedFederation,
+            "mixed module generations",
+            ErrorDetails::MixedModuleGenerations {
+                modules: vec![
+                    ModuleGeneration::new("mint", 1),
+                    ModuleGeneration::new("ln", 2),
+                ],
+            },
+        );
+        let details = err.details.clone();
+
+        // How the SDK records the failure that stopped a federation opening.
+        let recorded = Diagnostic::from(err);
+        assert_eq!(recorded.code, ErrorCode::UnsupportedFederation);
+        assert_eq!(recorded.message, "mixed module generations");
+        assert_eq!(recorded.details, details);
+
+        // And how a caller raises a recorded diagnosis back as an error.
+        let raised: Error = recorded.clone().into();
+        assert_eq!(raised.code, recorded.code);
+        assert_eq!(raised.message, recorded.message);
+        assert_eq!(raised.details, recorded.details);
+        assert_eq!(raised.to_string(), recorded.to_string());
+
+        // A round trip is lossless in the public surface, which is what makes
+        // the two types one mechanism rather than two taxonomies.
+        assert_eq!(Diagnostic::from(raised), recorded);
+    }
+
+    #[test]
+    fn diagnostics_compare_by_their_public_fields() {
+        // A status holding one of these is diffed to decide whether anything
+        // changed, so equality has to mean what a reader expects — the reason
+        // the shared piece is this type and not `Error`, which carries an
+        // internal source chain and is deliberately not comparable.
+        let one = Diagnostic::with_details(
+            ErrorCode::StorageOrphaned,
+            "storage holds state but no usable seed",
+            ErrorDetails::StorageOrphaned {
+                location: "/var/app/wallet".to_owned(),
+                seed_present: false,
+            },
+        );
+        assert_eq!(one, one.clone());
+        assert_ne!(
+            one,
+            Diagnostic::new(
+                ErrorCode::StorageOrphaned,
+                "storage holds state but no usable seed"
+            )
+        );
+        assert_ne!(
+            one,
+            Diagnostic::with_details(
+                ErrorCode::StorageOrphaned,
+                "storage holds state but no usable seed",
+                ErrorDetails::StorageOrphaned {
+                    location: "/var/app/wallet".to_owned(),
+                    seed_present: true,
+                },
+            )
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_keeps_an_uninterpretable_detail_as_a_value() {
+        // The skippable-payload property has to hold here too: a quarantine
+        // written by a newer SDK degrades to "there is a detail I cannot
+        // interpret", stated with a kind and a version, and the code and
+        // message still describe the situation completely.
+        let why = Diagnostic::with_raw_details(
+            ErrorCode::UnsupportedFederation,
+            "this federation's configuration is refused",
+            RawErrorDetails::new(9, "SomethingNewerThanThisBuild", vec![0x01, 0x02]),
+        );
+        assert_eq!(why.code, ErrorCode::UnsupportedFederation);
+        assert!(why.detail().is_none());
+
+        let envelope = why.details.expect("the detail is preserved, not dropped");
+        assert!(!envelope.is_interpreted());
+        assert_eq!(envelope.kind(), "SomethingNewerThanThisBuild");
+        assert_eq!(envelope.version(), 9);
+        assert!(envelope.version() > RawErrorDetails::CURRENT_VERSION);
+        assert_eq!(
+            envelope
+                .raw()
+                .expect("an opaque envelope keeps its bytes")
+                .payload,
+            vec![0x01, 0x02]
+        );
+    }
+
+    #[test]
     fn every_known_detail_belongs_to_a_shipped_envelope_version() {
         for detail in every_known_detail() {
             let version = detail.version();
@@ -1551,6 +2107,16 @@ mod tests {
             core::mem::size_of::<Error>() <= CLIPPY_LARGE_ERR_THRESHOLD,
             "Error grew to {} bytes, over clippy::result_large_err's {CLIPPY_LARGE_ERR_THRESHOLD}",
             core::mem::size_of::<Error>()
+        );
+
+        // `Diagnostic` is those same three fields as a value, so it is the same
+        // size, and a status that holds one costs no more than an error does.
+        // Keeping them two types is what lets a status carry the envelope
+        // without `Error` nesting a record inside itself to provide it.
+        assert_eq!(
+            core::mem::size_of::<Diagnostic>(),
+            core::mem::size_of::<Error>(),
+            "Diagnostic is meant to be Error's three fields and nothing more"
         );
     }
 

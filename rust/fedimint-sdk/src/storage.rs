@@ -21,27 +21,64 @@
 ///
 /// # Choosing a constructor
 ///
-/// - [`Storage::at`] — persistent, native targets. Takes a directory path.
-/// - [`Storage::in_browser`] — persistent, wasm targets. Takes a store name
-///   within the page's origin.
+/// - [`Storage::at`] — persistent, native targets. Takes a **native
+///   filesystem path**: a directory on a real file system, with all the
+///   directory semantics that implies.
+/// - [`Storage::in_browser`] — persistent, wasm targets. Takes an
+///   **origin-scoped namespace**: a bare name within the page's origin,
+///   which is *not* a path and has no directory semantics at all — no
+///   hierarchy, no parent, no separators, nothing resolved relative to
+///   anything.
 /// - [`Storage::in_memory`] — ephemeral, every target. Takes nothing.
 ///
-/// The two persistent constructors are separate rather than one call that
-/// interprets its argument per target, and each exists only on the target it
-/// serves. That is not ceremony; it is the only honest shape. A browser has
-/// no filesystem and no path namespace, so a path handed to a browser build
-/// could only be mangled into something else — and a native process has no
-/// origin, so an origin-scoped store name means nothing to it. Overloading
-/// one constructor would produce a signature that silently means a different
-/// thing on each target and is wrong on whichever one the caller was not
-/// thinking about. Two constructors, each present only where it works, means
-/// a wasm binding cannot reach for a path-based API that could never have
-/// functioned, and a mistake is a compile error instead of a runtime
-/// surprise.
+/// That path/namespace difference is why the two persistent constructors are
+/// separate rather than one call that interprets its argument per target,
+/// and why each exists only on the target it serves. It is not ceremony; it
+/// is the only honest shape. A browser has no filesystem and no path
+/// namespace, so a path handed to a browser build could only be mangled into
+/// something else — and a native process has no origin, so an origin-scoped
+/// namespace means nothing to it. Overloading one constructor would produce
+/// a signature that silently means a different thing on each target and is
+/// wrong on whichever one the caller was not thinking about. Two
+/// constructors, each present only where it works, means a wasm binding
+/// cannot reach for a path-based API that could never have functioned, and a
+/// mistake is a compile error instead of a runtime surprise.
 ///
-/// Everything downstream of construction — the seed rules, the single-opener
-/// rule, the durability guarantees — is identical on both, and is stated
-/// once below rather than per constructor.
+/// What the two *do* share is everything downstream of construction — the
+/// two-step lifecycle immediately below, the seed rules, the single-opener
+/// rule, the durability guarantees. Those are stated once here rather than
+/// per constructor, so this type is one model with two entry points and not
+/// two stories.
+///
+/// # Construction describes a place; `build` opens it
+///
+/// Both persistent constructors are **descriptors**. Constructing a
+/// `Storage` names a location and validates that name locally — that, and
+/// nothing more. No directory is created, no origin-private file system is
+/// asked for, no byte is read or written, and no lock is taken. A `Storage`
+/// value is a description of where state should live, not an open handle to
+/// it. ([`Storage::in_memory`] is the same shape with nothing to validate:
+/// it describes a store that comes into existence when the instance is
+/// built.)
+///
+/// Everything that needs the environment happens in
+/// [`SdkBuilder::build`](crate::SdkBuilder::build), the one place a location
+/// is actually opened: creating or locating it, discovering that the
+/// platform will not provide it, finding it already open somewhere else,
+/// reading or establishing the seed, reopening federations, finishing a
+/// committed erase. That method documents the order those steps run in and
+/// which error each produces.
+///
+/// The split is not tidiness, it is what keeps the contract honest. `build`
+/// is `async` and a constructor is not, and in a browser every one of those
+/// environment questions is asynchronous: whether the origin has a usable
+/// file system, whether a context provides one at all, whether storage
+/// access is granted or denied, whether another tab already holds the store
+/// — each is an answer that only arrives after an `await`. A synchronous
+/// constructor cannot obtain those answers, so it must not promise them.
+/// Holding the native constructor to the same rule is what makes the two
+/// targets one model: on either target, a constructor rejects a name it can
+/// see is unusable, and every other failure belongs to `build`.
 ///
 /// # Why `&str` and not `&Path`
 ///
@@ -52,14 +89,16 @@
 /// conversion. A string is what those hosts already hand out (an
 /// application-support directory, a documents directory, a name chosen for a
 /// browser store), and keeping the SDK's own signature a string means one
-/// validating parse on the Rust side instead of one per language.
+/// validating parse on the Rust side instead of one per language. It is also
+/// the only type that can carry both a filesystem path and a namespace that
+/// is not one.
 ///
 /// # Seed and storage lifecycle
 ///
 /// The rules below are enforced by [`SdkBuilder::build`](crate::SdkBuilder::build),
-/// which is where a `Storage` is actually opened; they are stated here
-/// because they are properties of the storage, not of the builder call. That
-/// method documents the exact order the checks run in.
+/// which per the section above is where a `Storage` is actually opened; they
+/// are stated here because they are properties of the storage, not of the
+/// builder call. That method documents the exact order the checks run in.
 ///
 /// - **A seed is established only over a backend proven to hold nothing
 ///   else.** "No seed found" is *not* the condition for writing one. The
@@ -77,11 +116,18 @@
 ///   refused.** If a federation record or client state is present while the
 ///   seed entry is missing, truncated, corrupt, or written in a format this
 ///   build cannot read, the open fails with
-///   [`ErrorCode::Storage`](crate::ErrorCode::Storage) and *nothing is
-///   written*. Establishing a fresh seed there would bind existing state to
-///   a derivation root it did not come from — the wallet would open, appear
-///   empty, and the real funds would be unreachable — while overwriting the
-///   only local trace of which seed that state belonged to. A refusal is
+///   [`ErrorCode::StorageOrphaned`](crate::ErrorCode::StorageOrphaned) —
+///   carrying
+///   [`ErrorDetails::StorageOrphaned`](crate::ErrorDetails::StorageOrphaned),
+///   which names the location and says whether a seed entry was there at all
+///   — and *nothing is written*. That is its own code rather than
+///   [`ErrorCode::Storage`](crate::ErrorCode::Storage) because the condition
+///   is permanent and human-actionable, where a backend read or write fault
+///   may well be transient. Establishing a fresh seed there would bind
+///   existing state to a derivation root it did not come from — the wallet
+///   would open, appear empty, and the real funds would be unreachable —
+///   while overwriting the only local trace of which seed that state
+///   belonged to. A refusal is
 ///   recoverable by pointing at the right location or restoring the right
 ///   phrase; a wrong write is not recoverable at all.
 /// - **A different seed is a refusal, not a migration.** Opening storage
@@ -174,28 +220,43 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// Persistent storage rooted at `path`. **Native targets only** — a
-    /// wasm build has [`Storage::in_browser`] instead.
+    /// Names persistent storage rooted at the **native filesystem path**
+    /// `path`. **Native targets only** — a wasm build has
+    /// [`Storage::in_browser`] instead.
     ///
-    /// `path` names a directory the SDK owns outright: it creates it if it
-    /// does not exist and treats everything inside it as its own. Do not
-    /// point two SDK instances at the same directory, and do not put other
-    /// application files in it.
+    /// `path` is a directory on a real file system, and it names a directory
+    /// the SDK owns outright: the SDK creates it when the instance is built
+    /// if it does not exist by then, and treats everything inside it as its
+    /// own. Do not point two SDK instances at the same directory, and do not
+    /// put other application files in it.
     ///
-    /// This call validates and prepares the location; it does not yet take
-    /// the single-opener lock described on the type, which is acquired when
+    /// This is a descriptor, exactly as described on the type: it validates
+    /// `path` as a location string and records it. It does not touch the
+    /// file system — it creates nothing, reads nothing, writes nothing, and
+    /// takes no lock. The directory is created and checked, and the
+    /// single-opener lock is acquired, when
     /// [`SdkBuilder::build`](crate::SdkBuilder::build) opens the storage.
-    /// A location already in use therefore fails at `build` with
-    /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse), not
-    /// here.
     ///
     /// # Errors
     ///
-    /// Fails with [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput)
-    /// if `path` is not a usable location string (empty, or not a path this
-    /// target can express), and with
-    /// [`ErrorCode::Storage`](crate::ErrorCode::Storage) if the directory
-    /// cannot be created or is not readable and writable.
+    /// Only [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput), for
+    /// a `path` that is not a usable location string — empty, or not a path
+    /// this target can express.
+    ///
+    /// Everything that needs the file system itself is reported by
+    /// [`SdkBuilder::build`](crate::SdkBuilder::build) instead: a directory
+    /// that cannot be created, or is not readable and writable, as
+    /// [`ErrorCode::Storage`](crate::ErrorCode::Storage), and a location
+    /// already open as
+    /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse).
+    ///
+    /// This stays fallible rather than becoming infallible because that one
+    /// check is real and is best made at the call site, where the offending
+    /// string is: a caller who mistypes a location learns it here rather
+    /// than several builder calls later, and a binding gets a validating
+    /// parse in the same place it gets one for every other string-shaped
+    /// input. [`Storage::in_browser`] is fallible for exactly that reason
+    /// and no other.
     // `doc` keeps both persistent constructors visible in one rendering of the
     // docs, so a reviewer or a binding author reads the whole surface without
     // having to build the crate twice.
@@ -204,8 +265,9 @@ impl Storage {
         unimplemented!()
     }
 
-    /// Persistent storage in the browser, in the store named `name`.
-    /// **Wasm targets only** — a native build has [`Storage::at`] instead.
+    /// Names persistent browser storage in the **origin-scoped namespace**
+    /// `name`. **Wasm targets only** — a native build has [`Storage::at`]
+    /// instead.
     ///
     /// This is the browser counterpart of [`Storage::at`], and it is what
     /// makes a durable wasm binding possible at all: a page has no
@@ -214,21 +276,32 @@ impl Storage {
     /// [`Storage::in_memory`], which loses the seed and every joined
     /// federation on reload.
     ///
-    /// # The namespace
+    /// Like `at`, it is a descriptor and nothing more: it validates `name`
+    /// and records it. Nothing in the browser is consulted here — the store
+    /// is located or created, and the single-opener lock taken, when
+    /// [`SdkBuilder::build`](crate::SdkBuilder::build) opens the storage.
     ///
-    /// `name` is a namespace, not a path. It selects a subtree of the
-    /// browser's origin-private file system that the SDK owns outright,
-    /// exactly as `at` owns a directory: the SDK creates it on first use and
-    /// treats everything inside it as its own.
+    /// # The namespace is not a path
     ///
-    /// The naming is deliberately narrow. `name` must be non-empty, short,
-    /// and made only of characters that cannot be read as structure —
-    /// letters, digits, `-`, `_`, `.`, with no path separators, no `..`, and
-    /// no leading or trailing separator-like characters. Anything else is
-    /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput). A name is
-    /// not a place to encode a hierarchy, and accepting one that looked like
-    /// a path would invite exactly the traversal-shaped bugs the browser
-    /// sandbox is there to prevent.
+    /// `name` is a namespace, and it has no directory semantics whatsoever.
+    /// It does not name a folder, it cannot express a hierarchy, it has no
+    /// parent and no children, it is never resolved relative to anything,
+    /// and there is no navigating out of it. What it does is select a
+    /// subtree of the browser's origin-private file system that the SDK owns
+    /// outright — the same ownership `at` has over a directory, held over a
+    /// namespace instead of a path — which the SDK creates on first use and
+    /// treats everything inside as its own.
+    ///
+    /// The naming is deliberately narrow, and the check is local: `name`
+    /// must be non-empty, short, and made only of characters that cannot be
+    /// read as structure — letters, digits, `-`, `_`, `.`, with no path
+    /// separators, no `..`, and no leading or trailing separator-like
+    /// characters. Anything else is
+    /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput), decided
+    /// by reading the string and nothing else. A name is not a place to
+    /// encode a hierarchy, and accepting one that looked like a path would
+    /// both invite the traversal-shaped bugs the browser sandbox exists to
+    /// prevent and imply a directory model this namespace does not have.
     ///
     /// Scoping follows the browser's own boundary, which the SDK cannot
     /// widen or narrow: the store belongs to the page's **origin**. The same
@@ -284,16 +357,32 @@ impl Storage {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
-    /// `name` that is empty, too long, or not restricted to the characters
-    /// above, and
-    /// [`ErrorCode::Storage`](crate::ErrorCode::Storage) if the origin has no
-    /// usable file system at all — a context that does not provide one, or
-    /// one where storage access is denied — since there is nothing to
-    /// prepare in that case. As with [`Storage::at`], the single-opener lock
-    /// is taken later, so
-    /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse) comes from
-    /// [`SdkBuilder::build`](crate::SdkBuilder::build) rather than from here.
+    /// Only [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput), for
+    /// a `name` that is empty, too long, or not restricted to the characters
+    /// above. That check is local, synchronous and deterministic — it reads
+    /// the string and consults nothing — which is both why this constructor
+    /// can make it and the only reason it is fallible at all.
+    ///
+    /// Nothing else is reported here, and the omissions are the point. In a
+    /// browser, whether the origin has a usable file system, whether the
+    /// calling context provides one at all, whether storage access is
+    /// granted or denied, and whether another tab, iframe or worker already
+    /// holds this namespace are all *asynchronous* facts about the
+    /// environment. A synchronous constructor cannot learn them, so it does
+    /// not claim to; they belong to
+    /// [`SdkBuilder::build`](crate::SdkBuilder::build), which is `async` and
+    /// which is where the store is opened:
+    ///
+    /// - no usable origin-private file system — a context that does not
+    ///   provide one, or one where storage access is denied — is
+    ///   [`ErrorCode::Storage`](crate::ErrorCode::Storage) from `build`;
+    /// - this origin and this `name` already open in another tab, iframe or
+    ///   worker is
+    ///   [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse) from
+    ///   `build`, as described above.
+    ///
+    /// This is the same division [`Storage::at`] follows, for the same
+    /// reason.
     #[cfg(any(target_family = "wasm", doc))]
     pub fn in_browser(name: &str) -> crate::Result<Storage> {
         unimplemented!()
@@ -305,8 +394,13 @@ impl Storage {
     /// SDK instance built on it is dropped, which makes it the right choice
     /// for tests and for throwaway instances used only to
     /// [preview](crate::Sdk::preview) a federation before deciding whether
-    /// to join it. Each call produces an independent store, so in-memory
-    /// instances never contend for the single-opener lock with each other.
+    /// to join it. Each value names a store of its own that no other value
+    /// can name, so in-memory instances never contend for the single-opener
+    /// lock with each other.
+    ///
+    /// It is infallible, and it is the one constructor for which that costs
+    /// nothing: there is no location string to validate, so the local check
+    /// the two persistent constructors are fallible for does not exist here.
     ///
     /// Because nothing survives, an SDK instance built on in-memory storage
     /// always starts from a backend that is trivially empty: a supplied

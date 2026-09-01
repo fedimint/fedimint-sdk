@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    ErrorCode, Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Network, Result,
+    Diagnostic, Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Network, Result,
     Storage,
 };
 
@@ -63,14 +63,20 @@ use crate::{
 ///   intact, but not running, because the SDK could not or would not
 ///   operate on it: its configuration is one this SDK refuses, its local
 ///   state could not be read, or no guardian answered when it was opened.
-///   Nothing has been deleted, and the state carries the [`ErrorCode`] and
-///   message that explain why.
+///   Nothing has been deleted, and the state carries the
+///   [`ErrorCode`](crate::ErrorCode) and message that explain why.
 /// - **[`Closed`](FederationStatus::Closed)** — stored and intact, not
 ///   running, because the application asked for exactly that with
 ///   [`Sdk::close_federation`].
 /// - **[`Forgetting`](FederationStatus::Forgetting)** — an erase has been
-///   committed and is being carried out or waiting to be finished; see
-///   [`Sdk::forget_federation`].
+///   committed and is being carried out, or is waiting to be finished by a
+///   retry or by a later [`SdkBuilder::build`]; see
+///   [`Sdk::forget_federation`]. This one is a dead end by design. The
+///   federation is never opened again, never handed a handle and never
+///   resurrected — [`Sdk::reopen_federation`] refuses it — and as far as
+///   this API is concerned its balance, its history and its local state are
+///   already gone. The only way out of this state is out of the storage
+///   entirely.
 ///
 /// Three rules hold across all of them, and they are what keep this from
 /// being a pile of special cases:
@@ -85,12 +91,18 @@ use crate::{
 /// itself, with a reason, instead of as a wallet that quietly vanished
 /// between two runs.
 ///
-/// **A federation that will not open does not take the instance down with
-/// it.** [`SdkBuilder::build`] fails only when the *root* storage or the
-/// seed is unsound; a federation that cannot be opened is quarantined and
-/// reported, because refusing to build would deny the user access to every
-/// healthy federation and to [`Sdk::export_mnemonic`] — the one call that
-/// gets their money out of a broken installation.
+/// **No single federation takes the instance down with it.**
+/// [`SdkBuilder::build`] fails only when the *root* storage or the seed is
+/// unsound; a federation that cannot be opened is quarantined and reported,
+/// because refusing to build would deny the user access to every healthy
+/// federation and to [`Sdk::export_mnemonic`] — the one call that gets their
+/// money out of a broken installation. A federation that will not finish
+/// *being erased* is treated by the same rule: `build` attempts every
+/// committed erase, and one that cannot be completed leaves that federation
+/// in [`Forgetting`](FederationStatus::Forgetting), reported as such and
+/// retried by a later build, rather than failing the instance. Anything
+/// scoped to one federation is that federation's status; a top-level `Err`
+/// is reserved for what makes the whole instance unsound.
 ///
 /// **Getting a stored federation open again takes one call and no invite
 /// code.** [`Sdk::reopen_federation`] moves a federation out of
@@ -288,15 +300,38 @@ impl Sdk {
     /// SDK keeps retrying in the background. Quarantine is for a federation
     /// the SDK will not operate on until something changes.
     ///
+    /// # Joining a federation whose erase is committed
+    ///
+    /// An id in [`Forgetting`](FederationStatus::Forgetting) is not "already
+    /// joined" — it is on its way out of the storage — so joining it again is
+    /// allowed, and it produces a *new* federation rather than reviving the
+    /// old one. The committed erase is finished first, and only then does the
+    /// join proceed exactly as a first-time join: the invite code is
+    /// required, the configuration and client state are written fresh, and
+    /// there is no balance, no operation log and no activity history carried
+    /// over from before. Nothing of the erased federation survives its
+    /// tombstone; the id being the same is a coincidence of the federation's
+    /// identity, not continuity of local state.
+    ///
+    /// If that erase cannot be finished, the join fails with
+    /// [`Storage`](crate::ErrorCode::Storage) and writes nothing: the
+    /// federation stays [`Forgetting`](FederationStatus::Forgetting), to be
+    /// retried by a later [`SdkBuilder::build`] or
+    /// [`Sdk::forget_federation`]. Layering new state over state that is
+    /// still being deleted is the one outcome that must not happen, since a
+    /// resumed erase would then delete part of the new federation too.
+    ///
     /// # Errors
     ///
     /// [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) when this
     /// instance already holds the federation — including when it holds it
     /// closed or quarantined, where [`Sdk::reopen_federation`] rather than a
-    /// second join is the call that wants making — plus every error
-    /// [`Sdk::preview`] can produce, and
+    /// second join is the call that wants making, and excluding an id in
+    /// [`Forgetting`](FederationStatus::Forgetting), which is handled as
+    /// above — plus every error [`Sdk::preview`] can produce, and
     /// [`Storage`](crate::ErrorCode::Storage) if the join cannot be
-    /// persisted.
+    /// persisted or a committed erase for the same id cannot be finished
+    /// first.
     pub async fn join(&self, invite: &InviteCode) -> Result<Federation> {
         unimplemented!()
     }
@@ -309,9 +344,14 @@ impl Sdk {
     /// [`Recovering`](FederationStatus::Recovering) — the two open states of
     /// the lifecycle above — so the SDK is holding a live client for it, its
     /// facades work, and it answers calls rather than reporting itself stale.
-    /// Federations that are closed, quarantined, or being erased are not
-    /// listed, because they have no live handle to hand out, and forgotten
-    /// ones are gone entirely. The order is unspecified.
+    /// Federations that are closed, quarantined, or
+    /// [`Forgetting`](FederationStatus::Forgetting) are not listed, because
+    /// they have no live handle to hand out, and forgotten ones are gone
+    /// entirely. A `Forgetting` federation is absent for as long as it stays
+    /// in that state — including one whose erase stalled and is waiting for a
+    /// later [`SdkBuilder::build`] to retry it, which never reappears here
+    /// however long that takes, because a committed erase is never
+    /// resurrected. The order is unspecified.
     ///
     /// A [`Recovering`](FederationStatus::Recovering) entry is a real, usable
     /// handle and not a placeholder. Its descriptive accessors —
@@ -398,6 +438,18 @@ impl Sdk {
     /// [`FederationStatus`] names as stored appears here, and only a
     /// federation that has been fully forgotten appears in neither.
     ///
+    /// A [`Forgetting`](FederationStatus::Forgetting) row is the one entry
+    /// here that is not an offer of anything. It says "this id is on its way
+    /// out": the erase is committed, the federation will never open again,
+    /// [`Sdk::reopen_federation`] refuses it, and its balance and history are
+    /// gone as far as this API is concerned — so render it as "removing…" and
+    /// never as a wallet with a reconnect button. It stays listed, rather
+    /// than vanishing the moment the tombstone lands, so that a stalled erase
+    /// is visible instead of silent, and it disappears from this list exactly
+    /// when the erase completes (announced once as
+    /// [`Forgotten`](FederationStatus::Forgotten) to
+    /// [`Sdk::federation_status_updates`] subscribers).
+    ///
     /// It also closes a gap that would otherwise be unrecoverable. Closing a
     /// federation keeps all of its data but takes away its handle; without a
     /// listing like this one, and without [`Sdk::reopen_federation`], the
@@ -430,9 +482,18 @@ impl Sdk {
     /// point of this accessor existing alongside [`Sdk::federation`], which
     /// deliberately collapses them.
     ///
+    /// The boundary between those two answers is the erase, not the
+    /// tombstone. A federation whose erase is committed answers
+    /// `Some(`[`Forgetting`](FederationStatus::Forgetting)`)` for as long as
+    /// the erase is unfinished — across a stalled attempt, across a restart,
+    /// across as many builds as it takes — and flips to `None` only once the
+    /// state is actually gone. So `None` here is always safe to read as "this
+    /// storage has nothing of that federation left", and `Some(Forgetting)`
+    /// always as "the bytes are still going away", never as a wallet.
+    ///
     /// This is the observable side of quarantine, and the reason quarantine
     /// is not something an application has to discover by provoking an
-    /// error: the [`ErrorCode`] and message inside
+    /// error: the [`ErrorCode`](crate::ErrorCode) and message inside
     /// [`Quarantined`](FederationStatus::Quarantined) say why the federation
     /// is not running, without any call having to fail first. It follows the
     /// same principle as [`Federation::capabilities`](crate::Federation::capabilities)
@@ -516,20 +577,23 @@ impl Sdk {
     ///
     /// A failed reopen leaves the federation
     /// [`Quarantined`](FederationStatus::Quarantined) with the same
-    /// [`ErrorCode`] this call returns, so the failure is both reported to
-    /// the caller and recorded for anything reading statuses later. That
-    /// also means later builds will retry it: the application asked for this
-    /// federation to be running, and quarantine records "meant to run,
-    /// currently cannot" rather than "deliberately stopped".
+    /// [`ErrorCode`](crate::ErrorCode) this call returns, so the failure is
+    /// both reported to the caller and recorded for anything reading statuses
+    /// later. That also means later builds will retry it: the application
+    /// asked for this federation to be running, and quarantine records "meant
+    /// to run, currently cannot" rather than "deliberately stopped".
     /// [`Sdk::close_federation`] is how to give up on it.
     ///
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when this storage
-    /// holds no federation with that id, or holds one whose erase has
-    /// already been committed — a committed erase is never resurrected, and
-    /// both cases mean the same thing to a caller, that the id names nothing
-    /// openable. (This mirrors
+    /// holds no federation with that id, or holds one in
+    /// [`Forgetting`](FederationStatus::Forgetting) — a committed erase is
+    /// never resurrected, however unfinished it is and however long it stays
+    /// that way, because resurrecting one would defeat the tombstone that
+    /// makes the erase crash-safe in the first place and would hand back a
+    /// client whose state has holes in it. Both cases mean the same thing to
+    /// a caller: the id names nothing openable. (This mirrors
     /// [`Federation::activity`](crate::Federation::activity), which reports
     /// a cursor it did not issue the same way.) Then
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
@@ -571,6 +635,16 @@ impl Sdk {
     /// quarantined federation, which closing turns into a deliberate
     /// [`Closed`](FederationStatus::Closed) so that later builds stop
     /// retrying it.
+    ///
+    /// One id is accepted and deliberately changes nothing: one in
+    /// [`Forgetting`](FederationStatus::Forgetting). It is already not
+    /// running, so this returns `Ok(())`, but its status stays `Forgetting`
+    /// and the committed erase still proceeds. A committed erase is never
+    /// turned back into a stored, closed federation — that would resurrect
+    /// state the tombstone has already given away — so an application that
+    /// wants to know what it now has reads
+    /// [`Sdk::federation_status`] rather than assuming this call produced a
+    /// [`Closed`](FederationStatus::Closed).
     ///
     /// A [`Recovering`](FederationStatus::Recovering) federation closes like
     /// any other, and closing it is not a way out of the reconstruction it is
@@ -713,17 +787,40 @@ impl Sdk {
     ///
     /// # 3. Commit the erase before performing it
     ///
-    /// "The deletion failed partway" is not an acceptable outcome: a
-    /// half-erased federation is neither reopenable nor safely retryable,
-    /// and reopening one would resurrect a client whose state has holes in
-    /// it. So the erase is made atomic with respect to crashes by
+    /// "The deletion failed partway, and nothing records that it was meant
+    /// to happen" is the outcome that must not exist. Such a federation is
+    /// neither reopenable — doing so would resurrect a client whose state has
+    /// holes in it — nor safely retryable, since nothing says what the
+    /// half-deleted state was on its way to. Note that this is a statement
+    /// about the missing *record*, not about the partial deletion: a
+    /// half-finished erase whose decision is recorded is a perfectly
+    /// well-defined state, and it is the third of the three below. So the
+    /// erase is made atomic with respect to crashes and failures alike by
     /// committing the *decision* first. A durable tombstone is written in a
     /// single step, and only then is any state removed. From the moment the
-    /// tombstone lands, the deletion will happen: either this call finishes
-    /// it, or a later [`Sdk::forget_federation`] with the same id resumes
-    /// it, or the next [`SdkBuilder::build`] completes it before returning.
-    /// A tombstoned federation is never opened, never handed a handle, and
-    /// never resurrected.
+    /// tombstone lands, the federation is gone as far as this API is
+    /// concerned and the deletion is owed: this call finishes it, or a later
+    /// [`Sdk::forget_federation`] with the same id resumes it, or the next
+    /// [`SdkBuilder::build`] attempts it before the federation could be
+    /// opened. A tombstoned federation is never opened, never handed a
+    /// handle, and never resurrected, no matter how many of those attempts
+    /// fail — [`Sdk::reopen_federation`] refuses it with
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput), and a fresh
+    /// [`Sdk::join`] of the same id finishes the erase first and then joins
+    /// from nothing.
+    ///
+    /// What is *not* promised is a deadline. An erase whose completion keeps
+    /// failing — a backend that will not delete, a file the platform is
+    /// holding — stays committed and unfinished, and the federation sits in
+    /// [`Forgetting`](FederationStatus::Forgetting), visible in
+    /// [`Sdk::stored_federations`] and answering
+    /// [`Sdk::federation_status`], until an attempt succeeds. That is the
+    /// deliberate choice: a stalled erase is reported per federation rather
+    /// than escalated into a failure of the whole instance, exactly as a
+    /// federation that will not open is quarantined rather than sinking
+    /// [`SdkBuilder::build`]. One undeletable federation must not lock a
+    /// user out of the others, of their history, or of
+    /// [`Sdk::export_mnemonic`].
     ///
     /// (A tombstone rather than a backend transaction because this crate has
     /// to make the same promise on two very different backends — see
@@ -741,12 +838,25 @@ impl Sdk {
     /// - **Committed but unfinished.** The tombstone landed and the erase
     ///   did not complete. The status is
     ///   [`Forgetting`](FederationStatus::Forgetting), so an application can
-    ///   show "removing…" instead of a phantom wallet, and the call is
-    ///   safely retryable with the same id.
+    ///   show "removing…" instead of a phantom wallet: the id is listed by
+    ///   [`Sdk::stored_federations`] and answered by
+    ///   [`Sdk::federation_status`], absent from [`Sdk::federations`] and
+    ///   from [`Sdk::federation`], and refused by
+    ///   [`Sdk::reopen_federation`]. The call is safely retryable with the
+    ///   same id, and a later [`SdkBuilder::build`] retries it too.
     ///
     /// Forgetting is idempotent: an id with no local state is not an error,
     /// and an id that is already tombstoned finishes the erase and returns
-    /// `Ok(())`.
+    /// `Ok(())` — or, if it still cannot be finished, returns
+    /// [`Storage`](crate::ErrorCode::Storage) and leaves it
+    /// [`Forgetting`](FederationStatus::Forgetting) again.
+    ///
+    /// The status does not carry *why* an erase stalled. That is not an
+    /// oversight but the limit of a state that must stay a bare variant: the
+    /// reason belongs in logs and in the [`Error`](crate::Error) this call
+    /// returns, and if it turns out applications need it as a value, the
+    /// additive route is a new, more specific status variant rather than a
+    /// field grown on this one — see the note on [`FederationStatus`].
     ///
     /// # Errors
     ///
@@ -865,10 +975,12 @@ impl Sdk {
     ///   that device; [`StorageInUse`](crate::ErrorCode::StorageInUse) means
     ///   genuinely concurrent use, never a stale lock. A single crash must
     ///   not be able to make a wallet permanently unopenable.
-    /// - **A committed erase completes.** A federation whose tombstone
-    ///   landed before the kill is finished off during the next build,
-    ///   rather than reopening half-erased. See
-    ///   [`Sdk::forget_federation`].
+    /// - **A committed erase stays committed.** A federation whose tombstone
+    ///   landed before the kill is never reopened half-erased: the next
+    ///   build finishes the deletion off, and if that attempt fails the
+    ///   federation stays [`Forgetting`](FederationStatus::Forgetting) and
+    ///   is retried later — it does not come back as a wallet, and it does
+    ///   not fail the build. See [`Sdk::forget_federation`].
     ///
     /// Shutting down does not cancel operations in the sense of undoing
     /// them: an operation that was running is persisted mid-flight and
@@ -906,9 +1018,13 @@ impl SdkBuilder {
     /// Sets where the instance persists its state.
     ///
     /// Required: [`SdkBuilder::build`] fails without it rather than
-    /// guessing a location. Use [`Storage::at`] for a real location on a
-    /// native target, [`Storage::in_browser`] for one in a browser, or
-    /// [`Storage::in_memory`] for a throwaway one.
+    /// guessing a location. Use [`Storage::at`] for a native filesystem
+    /// path, [`Storage::in_browser`] for an origin-scoped namespace in a
+    /// browser, or [`Storage::in_memory`] for a throwaway store.
+    ///
+    /// A [`Storage`] is a descriptor and not an open handle, so setting one
+    /// here still touches nothing: the location is opened, and every failure
+    /// that needs the environment reported, by [`SdkBuilder::build`].
     pub fn storage(mut self, storage: Storage) -> Self {
         self.storage = Some(storage);
         self
@@ -941,15 +1057,33 @@ impl SdkBuilder {
         self
     }
 
-    /// Opens the storage, loads or establishes the seed, reopens every
-    /// federation the storage remembers, and resumes their pending
-    /// operations.
+    /// Opens the storage, loads or establishes the seed, attempts to finish
+    /// any erase that was left committed, reopens every federation the
+    /// storage remembers, and resumes their pending operations.
     ///
     /// The order of those steps is part of the contract, because it is what
-    /// makes the failure modes safe:
+    /// makes the failure modes safe. Two of them are *attempts* whose failure
+    /// is scoped to one federation rather than to this call — finishing an
+    /// erase, and opening a federation — and both say so below.
     ///
-    /// 1. **Take the storage lock.** If the location is already open, in
-    ///    this process or another, the call fails with
+    /// 1. **Open the location and take its lock.** The [`Storage`] given to
+    ///    [`SdkBuilder::storage`] is only a descriptor — a validated name for
+    ///    a place, per that type — so this is the first moment the place
+    ///    itself is touched, and it is where every failure that needs the
+    ///    environment is reported. Two things happen, in this order:
+    ///
+    ///    *The location is created or found.* A native directory that cannot
+    ///    be created, or is not readable and writable, fails with
+    ///    [`Storage`](crate::ErrorCode::Storage). So does a browser origin
+    ///    with no usable origin-private file system — a context that does not
+    ///    provide one, or one where storage access is denied or refused by
+    ///    the user. None of those can be known synchronously in a browser,
+    ///    which is why they are reported by this `async` call rather than by
+    ///    [`Storage::in_browser`].
+    ///
+    ///    *Then the single-opener lock is taken.* If the location is already
+    ///    open — in this process or another, or in another tab, iframe or
+    ///    worker of the same origin — the call fails with
     ///    [`StorageInUse`](crate::ErrorCode::StorageInUse) and nothing has
     ///    been touched. A lock left behind by a process that died without
     ///    [`Sdk::shutdown`] is reclaimed rather than treated as contention;
@@ -975,11 +1109,14 @@ impl SdkBuilder {
     ///      written.
     ///    - *There is no usable seed but there is other state.* The storage
     ///      is **orphaned**, and the call fails with
-    ///      [`Storage`](crate::ErrorCode::Storage) without writing anything.
+    ///      [`StorageOrphaned`](crate::ErrorCode::StorageOrphaned) without
+    ///      writing anything, carrying
+    ///      [`ErrorDetails::StorageOrphaned`](crate::ErrorDetails::StorageOrphaned)
+    ///      with the location and `seed_present: false`.
     ///    - *The seed entry exists but cannot be read* — truncated,
     ///      corrupt, or written in a format this build does not understand.
-    ///      Also a refusal, with the same code, and again without writing
-    ///      anything.
+    ///      Also a refusal, with the same code and detail case but
+    ///      `seed_present: true`, and again without writing anything.
     ///
     ///    The last two cases are why "no seed" must never be read as "fresh
     ///    storage". Writing a new seed over storage that already holds
@@ -999,18 +1136,28 @@ impl SdkBuilder {
     ///    reconciliation happen under the lock taken in step 1 and strictly
     ///    before any write this call makes. If step 2 fails for any reason,
     ///    the backend is byte-identical to how it was found.
+    /// 3. **Attempt every committed erase, and keep a failure to the one
+    ///    federation.** A federation whose tombstone was written but whose
+    ///    deletion did not complete (see [`Sdk::forget_federation`]) is
+    ///    erased now, before it could be opened. A committed erase is never
+    ///    resurrected, whatever the outcome of this step: step 4 does not
+    ///    open a tombstoned federation and no handle is ever handed out for
+    ///    one.
     ///
-    ///    (`Storage` is the closest code this version has for an orphaned or
-    ///    unreadable-seed backend; both cases carry a message and structured
-    ///    diagnostics that identify them. A dedicated code for "this backend
-    ///    holds state but no usable seed" would be better, because it is a
-    ///    permanent, human-actionable condition — restore from the phrase,
-    ///    or point at a different location — rather than the transient
-    ///    read/write failure `Storage` otherwise describes.)
-    /// 3. **Finish any committed erase.** A federation whose tombstone was
-    ///    written but whose deletion did not complete (see
-    ///    [`Sdk::forget_federation`]) is erased now, before it could be
-    ///    opened. A committed erase is never resurrected.
+    ///    A deletion that fails here **does not fail this call.** That
+    ///    federation stays [`Forgetting`](FederationStatus::Forgetting): it
+    ///    is absent from [`Sdk::federations`] and [`Sdk::federation`],
+    ///    present and labelled in [`Sdk::stored_federations`], answered as
+    ///    `Some(Forgetting)` by [`Sdk::federation_status`], refused by
+    ///    [`Sdk::reopen_federation`], and attempted again by the next build
+    ///    or by another [`Sdk::forget_federation`] with the same id. The
+    ///    reasoning is step 4's reasoning, applied to the same class of
+    ///    problem: a single federation whose bytes will not go away must not
+    ///    deny the user every other federation, all of their history, and
+    ///    [`Sdk::export_mnemonic`]. So this call *attempts* to finish a
+    ///    committed erase and reports the one it could not finish as that
+    ///    federation's status — it does not promise that no `Forgetting`
+    ///    federation exists once it returns.
     /// 4. **Reopen the federations, and quarantine the ones that will not
     ///    open.** Each federation the storage remembers, and that was not
     ///    closed with [`Sdk::close_federation`], is revalidated (including
@@ -1029,9 +1176,9 @@ impl SdkBuilder {
     ///
     ///    A federation that cannot be opened **does not fail this call**. It
     ///    is put into [`Quarantined`](FederationStatus::Quarantined) with
-    ///    the [`ErrorCode`] and message that explain why, it is absent from
-    ///    [`Sdk::federations`], and it is present and labelled in
-    ///    [`Sdk::stored_federations`]. Later builds retry it.
+    ///    the [`ErrorCode`](crate::ErrorCode) and message that explain why,
+    ///    it is absent from [`Sdk::federations`], and it is present and
+    ///    labelled in [`Sdk::stored_federations`]. Later builds retry it.
     ///
     ///    This is a deliberate reversal of the obvious design. Failing the
     ///    build is worse than it looks: one federation whose guardians are
@@ -1047,8 +1194,10 @@ impl SdkBuilder {
     ///    start.
     ///
     /// Top-level `Err` is therefore reserved for the root storage and the
-    /// seed: things that make the whole instance unsound. Anything scoped to
-    /// one federation is reported as that federation's status.
+    /// seed: things that make the whole instance unsound — steps 1 and 2.
+    /// Anything scoped to one federation, whether it is a federation that
+    /// will not open or an erase that will not finish, is reported as that
+    /// federation's status by a call that returns `Ok`.
     ///
     /// # Errors
     ///
@@ -1056,16 +1205,30 @@ impl SdkBuilder {
     /// set, [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
     /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
-    /// generated and the platform's secure random source failed, and
-    /// [`Storage`](crate::ErrorCode::Storage) for a root-storage failure,
-    /// which includes the orphaned and unreadable-seed cases in step 2.
+    /// generated and the platform's secure random source failed,
+    /// [`Storage`](crate::ErrorCode::Storage) for a root-storage failure —
+    /// which covers the location that could not be created, opened, or read
+    /// and written in step 1, including a browser origin that provides no
+    /// usable file system or denies access to it — and
+    /// [`StorageOrphaned`](crate::ErrorCode::StorageOrphaned), with
+    /// [`ErrorDetails::StorageOrphaned`](crate::ErrorDetails::StorageOrphaned),
+    /// for the orphaned and unreadable-seed cases in step 2. Those two are
+    /// deliberately separate codes: a root-storage failure is a backend fault
+    /// worth retrying, while an orphaned location is permanent and needs a
+    /// person to act.
     ///
     /// Notably **not** here:
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
     /// and [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable).
     /// Those are per-federation conditions and arrive as
     /// [`Quarantined`](FederationStatus::Quarantined) statuses on a
-    /// successfully built instance.
+    /// successfully built instance. Nor does a per-federation storage
+    /// failure appear here: a federation whose local state cannot be read is
+    /// a [`Quarantined`](FederationStatus::Quarantined) carrying
+    /// [`Storage`](crate::ErrorCode::Storage), and a committed erase that
+    /// could not be completed is a
+    /// [`Forgetting`](FederationStatus::Forgetting) — neither is a reason for
+    /// this call to fail.
     pub async fn build(self) -> Result<Sdk> {
         unimplemented!()
     }
@@ -1111,8 +1274,9 @@ impl core::fmt::Debug for Redacted {
 /// # Shape
 ///
 /// A flat data enum: no generics, no tuple variants, no borrowed data, and
-/// nothing nested beyond a plain record of a [`Copy`] enum and a string. It
-/// therefore generates mechanically into a Swift or Kotlin sealed
+/// nothing nested beyond the plain [`Diagnostic`](crate::Diagnostic) record
+/// that [`Quarantined`](FederationStatus::Quarantined) carries. It therefore
+/// generates mechanically into a Swift or Kotlin sealed
 /// enum-with-associated-values and a TypeScript discriminated union, with no
 /// hand-written per-target adapter.
 ///
@@ -1188,8 +1352,14 @@ pub enum FederationStatus {
     /// This state also carries the answer to the question a caller would
     /// otherwise have to ask by failing a call.
     Quarantined {
-        /// Why the federation is not running, as the same stable code the
-        /// equivalent [`Error`](crate::Error) would carry:
+        /// Why the federation is not running: the same stable
+        /// [`ErrorCode`](crate::ErrorCode) the equivalent
+        /// [`Error`](crate::Error) would carry, a human-readable message, and
+        /// the same structured details envelope, so the modules that conflict
+        /// in a mixed-generation federation are readable without parsing
+        /// text.
+        ///
+        /// [`code`](crate::Diagnostic::code) is the part to branch on:
         /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
         /// for a configuration this SDK refuses (mixed module generations,
         /// most often),
@@ -1198,28 +1368,28 @@ pub enum FederationStatus {
         /// answered in time, and [`Storage`](crate::ErrorCode::Storage) when
         /// the federation's local state could not be read.
         ///
-        /// Reusing [`ErrorCode`] rather than inventing a parallel reason
-        /// enum is deliberate: an application already has a switch over
-        /// these codes for its error banners, the taxonomy is already
-        /// stable and additive-only, and a second enum would drift from the
-        /// first.
-        code: ErrorCode,
-        /// Human-readable detail — for a mixed-generation federation, the
-        /// modules that conflict and the generations they declare.
+        /// Reusing [`ErrorCode`](crate::ErrorCode) rather than inventing a
+        /// parallel reason enum is deliberate: an application already has a
+        /// switch over these codes for its error banners, the taxonomy is
+        /// already stable and additive-only, and a second enum would drift
+        /// from the first.
         ///
-        /// For humans only: logs, diagnostics, an expandable "details" row.
-        /// Exactly like [`Error::message`](crate::Error::message), it is not
-        /// part of the stability contract and must never be parsed or
-        /// matched on.
+        /// [`message`](crate::Diagnostic::message) is human-readable detail —
+        /// for a mixed-generation federation, the modules that conflict and
+        /// the generations they declare. For humans only: logs, diagnostics,
+        /// an expandable "details" row. Exactly like
+        /// [`Error::message`](crate::Error::message), it is not part of the
+        /// stability contract and must never be parsed or matched on.
         ///
-        /// The equivalent [`Error`](crate::Error) carries the same
-        /// information as structured data too — for a mixed federation,
-        /// [`ErrorDetails::MixedModuleGenerations`](crate::ErrorDetails::MixedModuleGenerations)
-        /// — and mirroring that envelope here, so a quarantine is as
-        /// machine-readable as the error it corresponds to, is a wanted
-        /// follow-up rather than something a caller should work around by
-        /// parsing this string.
-        message: String,
+        /// [`details`](crate::Diagnostic::details) is that same information as
+        /// structured data, which is what makes a quarantine as
+        /// machine-readable as the error it corresponds to: a mixed
+        /// federation carries
+        /// [`ErrorDetails::MixedModuleGenerations`](crate::ErrorDetails::MixedModuleGenerations),
+        /// read with [`Diagnostic::detail`](crate::Diagnostic::detail), so the
+        /// conflicting modules are a value rather than something to scrape out
+        /// of a sentence.
+        diagnostic: Diagnostic,
     },
     /// Stored and intact, and stopped because the application asked for
     /// that with [`Sdk::close_federation`].
@@ -1229,12 +1399,33 @@ pub enum FederationStatus {
     /// chose this. [`Sdk::reopen_federation`] undoes the choice.
     Closed,
     /// An erase has been committed and is being carried out, or is waiting
-    /// to be finished by a retry or the next
+    /// to be finished by a retry or by a later
     /// [`SdkBuilder::build`](crate::SdkBuilder::build).
     ///
     /// The federation will not be opened again and cannot be resurrected;
     /// see [`Sdk::forget_federation`]. An application seeing this should
     /// render "removing…" rather than a wallet.
+    ///
+    /// Concretely, and unchanged by how long the erase takes: the id is
+    /// listed by [`Sdk::stored_federations`] and answered here by
+    /// [`Sdk::federation_status`], absent from [`Sdk::federations`] and from
+    /// [`Sdk::federation`], and refused by [`Sdk::reopen_federation`] with
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput). Its balance,
+    /// operation log and activity history are gone as far as this API is
+    /// concerned from the moment the tombstone lands, whether or not the
+    /// bytes have finished going away. Joining the same federation again is
+    /// allowed and produces a new federation with no local history, after the
+    /// committed erase is finished; see [`Sdk::join`].
+    ///
+    /// It is therefore *not* a variant of quarantine, and does not carry a
+    /// code or message. [`Quarantined`](FederationStatus::Quarantined) means
+    /// "intact, meant to run, currently cannot", and its reason is
+    /// actionable; this means "already gone, still being deleted", where the
+    /// only action is to wait for a retry. An erase whose completion keeps
+    /// failing stays here and is retried by each later build rather than
+    /// failing the build — the reason for the stall reaches an application as
+    /// the [`Error`](crate::Error) from
+    /// [`Sdk::forget_federation`] and in logs, not as part of this state.
     Forgetting,
     /// The erase completed: this federation is gone.
     ///
@@ -1356,6 +1547,7 @@ struct FederationStatusUpdatesInner;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorCode;
 
     #[test]
     fn builder_debug_redacts_the_mnemonic() {
@@ -1371,14 +1563,34 @@ mod tests {
     fn a_quarantine_carries_the_code_to_branch_on() {
         // The point of the status is that an application learns *why* a
         // federation is unavailable without provoking an error, so the code
-        // has to be readable straight off the value.
+        // has to be readable straight off the value — and, since the
+        // diagnosis carries the same envelope an `Error` would, so do the
+        // modules that conflict.
         let status = FederationStatus::Quarantined {
-            code: ErrorCode::UnsupportedFederation,
-            message: "modules mint=v1, ln=v2".to_owned(),
+            diagnostic: Diagnostic::with_details(
+                ErrorCode::UnsupportedFederation,
+                "modules mint=v1, ln=v2",
+                crate::ErrorDetails::MixedModuleGenerations {
+                    modules: vec![
+                        crate::ModuleGeneration::new("mint", 1),
+                        crate::ModuleGeneration::new("ln", 2),
+                    ],
+                },
+            ),
         };
         match &status {
-            FederationStatus::Quarantined { code, .. } => {
-                assert_eq!(*code, ErrorCode::UnsupportedFederation);
+            FederationStatus::Quarantined { diagnostic } => {
+                assert_eq!(diagnostic.code, ErrorCode::UnsupportedFederation);
+                match diagnostic.detail() {
+                    Some(crate::ErrorDetails::MixedModuleGenerations { modules }) => {
+                        let named: Vec<(&str, u32)> = modules
+                            .iter()
+                            .map(|module| (module.kind.as_str(), module.generation))
+                            .collect();
+                        assert_eq!(named, vec![("mint", 1), ("ln", 2)]);
+                    }
+                    other => panic!("expected the conflicting modules, got {other:?}"),
+                }
             }
             other => panic!("expected a quarantine, got {other:?}"),
         }
@@ -1392,10 +1604,27 @@ mod tests {
         assert_ne!(
             FederationStatus::Closed,
             FederationStatus::Quarantined {
-                code: ErrorCode::FederationUnreachable,
-                message: String::new(),
+                diagnostic: Diagnostic::new(ErrorCode::FederationUnreachable, ""),
             }
         );
+    }
+
+    #[test]
+    fn a_committed_erase_is_a_listable_state_of_its_own() {
+        // `Forgetting` is what `stored_federations` shows for a federation
+        // whose erase is committed but unfinished, so the listing record has
+        // to be able to carry it — and it must stay distinguishable from the
+        // "stored and intact" states an application offers a reconnect for,
+        // and from the `Forgotten` notification that drops the row.
+        let info = FederationInfo {
+            id: FederationId::from_raw("fed-id".to_owned()),
+            name: Some("Test Federation".to_owned()),
+            network: Network::Regtest,
+            status: FederationStatus::Forgetting,
+        };
+        assert_eq!(info.status, FederationStatus::Forgetting);
+        assert_ne!(FederationStatus::Forgetting, FederationStatus::Closed);
+        assert_ne!(FederationStatus::Forgetting, FederationStatus::Forgotten);
     }
 
     #[test]
