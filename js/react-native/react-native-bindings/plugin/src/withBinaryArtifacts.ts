@@ -1,7 +1,7 @@
 import type { ConfigPlugin } from '@expo/config-plugins'
 import * as path from 'path'
 import * as fs from 'fs'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import * as crypto from 'crypto'
 
 const PACKAGE_NAME = '@fedimint/react-native-bindings'
@@ -105,10 +105,14 @@ function downloadBinaryArtifacts(): void {
   // Download and verify Android artifacts
   try {
     console.log('Downloading Fedimint SDK Android artifacts...')
-    execSync(`curl -L "${androidUrl}" --output android-artifacts.zip`, {
-      cwd: packageRoot,
-      stdio: 'inherit',
-    })
+    execFileSync(
+      'curl',
+      ['-L', androidUrl, '--output', 'android-artifacts.zip'],
+      {
+        cwd: packageRoot,
+        stdio: 'inherit',
+      },
+    )
 
     if (androidChecksum) {
       const actualAndroidChecksum = hashFileSync(
@@ -124,12 +128,12 @@ function downloadBinaryArtifacts(): void {
     }
 
     if (process.platform === 'win32') {
-      execSync('tar -xf android-artifacts.zip', {
+      execFileSync('tar', ['-xf', 'android-artifacts.zip'], {
         cwd: packageRoot,
         stdio: 'inherit',
       })
     } else {
-      execSync('unzip -o android-artifacts.zip', {
+      execFileSync('unzip', ['-o', 'android-artifacts.zip'], {
         cwd: packageRoot,
         stdio: 'inherit',
       })
@@ -145,7 +149,7 @@ function downloadBinaryArtifacts(): void {
   // Download and verify iOS artifacts
   try {
     console.log('Downloading Fedimint SDK iOS artifacts...')
-    execSync(`curl -L "${iosUrl}" --output ios-artifacts.zip`, {
+    execFileSync('curl', ['-L', iosUrl, '--output', 'ios-artifacts.zip'], {
       cwd: packageRoot,
       stdio: 'inherit',
     })
@@ -164,12 +168,12 @@ function downloadBinaryArtifacts(): void {
     }
 
     if (process.platform === 'win32') {
-      execSync('tar -xf ios-artifacts.zip', {
+      execFileSync('tar', ['-xf', 'ios-artifacts.zip'], {
         cwd: packageRoot,
         stdio: 'inherit',
       })
     } else {
-      execSync('unzip -o ios-artifacts.zip', {
+      execFileSync('unzip', ['-o', 'ios-artifacts.zip'], {
         cwd: packageRoot,
         stdio: 'inherit',
       })
