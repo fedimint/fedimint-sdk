@@ -258,8 +258,8 @@ importers:
         specifier: workspace:*
         version: link:../../shared/core
       '@fedimint/transport-web':
-        specifier: latest
-        version: 0.1.2(@fedimint/core@shared+core)
+        specifier: workspace:*
+        version: link:../../web/transport-web
       react:
         specifier: '>=19.2.4'
         version: 19.2.4
@@ -2448,14 +2448,6 @@ packages:
 
   '@fedimint/core@0.1.3':
     resolution: {integrity: sha512-tM+KPUxrTQAWxdMXXlTf4wPo4hqGgtqW/lSrPdKkCOjoSx4TMahuxogXiA9ibp5TMeca+YewmCEjb6IPSuc+5w==}
-
-  '@fedimint/fedimint-client-wasm-bundler@0.1.1':
-    resolution: {integrity: sha512-1nRSQzMMB2DA8iVtvSb6SFz+XQ6nbyN9MWaebfns9fBRfXG58IKa5BWbM9Evj8G6TlM3JkMBR5J5nA9JkERjMQ==}
-
-  '@fedimint/transport-web@0.1.2':
-    resolution: {integrity: sha512-3pKpGsa+fsQM5uOgV+fvpiHt0rwQN8r16GR0eZqklMExTWO3SR1m3DHRG/qDjNFHuamXwOjJNiXwIWOnqR4MBw==}
-    peerDependencies:
-      '@fedimint/core': 0.1.3
 
   '@fedimint/types@0.0.3':
     resolution: {integrity: sha512-rOv3GjcqfnUjDuOl27hcQVpG6qky4i84DBQNmch40aM9cT8hOFjtTRnhb38K8IW5peXGRDd/HNqt2vB9aQOS1Q==}
@@ -12071,7 +12063,7 @@ snapshots:
 
   '@expo-google-fonts/material-symbols@0.4.27': {}
 
-  '@expo/cli@55.0.19(e60909027da1f2b754799db2a59a5c2f)':
+  '@expo/cli@55.0.19(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.7)(expo-constants@55.0.9)(expo-font@55.0.4)(expo-router@55.0.8)(expo@55.0.9)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)(supports-color@8.1.1)(typescript@6.0.3)':
     dependencies:
       '@expo/code-signing-certificates': 0.0.6
       '@expo/config': 55.0.11(supports-color@8.1.1)(typescript@6.0.3)
@@ -12470,14 +12462,6 @@ snapshots:
 
   '@fedimint/core@0.1.3':
     dependencies:
-      '@fedimint/types': 0.0.3
-
-  '@fedimint/fedimint-client-wasm-bundler@0.1.1': {}
-
-  '@fedimint/transport-web@0.1.2(@fedimint/core@shared+core)':
-    dependencies:
-      '@fedimint/core': link:shared/core
-      '@fedimint/fedimint-client-wasm-bundler': 0.1.1
       '@fedimint/types': 0.0.3
 
   '@fedimint/types@0.0.3': {}
@@ -17105,7 +17089,7 @@ snapshots:
   expo@55.0.9(@babel/core@7.29.0(supports-color@8.1.1))(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.7)(expo-router@55.0.8)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)(supports-color@8.1.1)(typescript@6.0.3):
     dependencies:
       '@babel/runtime': 7.28.6
-      '@expo/cli': 55.0.19(e60909027da1f2b754799db2a59a5c2f)
+      '@expo/cli': 55.0.19(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.7)(expo-constants@55.0.9)(expo-font@55.0.4)(expo-router@55.0.8)(expo@55.0.9)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)(supports-color@8.1.1)(typescript@6.0.3)
       '@expo/config': 55.0.11(supports-color@8.1.1)(typescript@6.0.3)
       '@expo/config-plugins': 55.0.7(supports-color@8.1.1)
       '@expo/devtools': 55.0.2(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
