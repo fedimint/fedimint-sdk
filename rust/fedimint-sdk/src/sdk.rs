@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::{Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Result, Storage};
+use crate::{
+    ErrorCode, Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Network, Result,
+    Storage,
+};
 
 /// A running SDK instance: one [`Storage`], one BIP-39 seed, and every
 /// federation joined against them.
@@ -26,19 +29,103 @@ use crate::{Federation, FederationId, FederationPreview, InviteCode, Mnemonic, R
 /// Storage is likewise shared and namespaced per federation internally;
 /// applications do not manage per-federation locations.
 ///
-/// # Lifecycle
+/// # Federation lifecycle
 ///
-/// An instance is opened by [`SdkBuilder::build`] and closed by
-/// [`Sdk::shutdown`]. Between those points, federations may be joined
-/// ([`Sdk::join`]), stopped while keeping their data
-/// ([`Sdk::close_federation`]), or erased ([`Sdk::forget_federation`]).
-/// Any [`Federation`] handle for a federation that has been closed — and
-/// every handle at all after [`Sdk::shutdown`] — fails its **fallible**
-/// calls with
+/// Every federation this instance's storage remembers is in exactly one of
+/// the states [`FederationStatus`] names, and every lifecycle call on this
+/// type is a transition between them. They are worth reading once as a
+/// whole, because the rest of this type's contract is stated in terms of
+/// them rather than re-derived per method:
+///
+/// - **[`Running`](FederationStatus::Running)** — open, workers turning,
+///   operations progressing. This is the only state in which the federation
+///   appears in [`Sdk::federations`] and [`Sdk::federation`] hands back a
+///   live handle.
+/// - **[`Recovering`](FederationStatus::Recovering)** — open, with a live
+///   handle, but its wallet has not finished being reconstructed from the
+///   seed: its balance and activity are incomplete and every spend and
+///   receive is refused with
+///   [`Recovering`](crate::ErrorCode::Recovering). Only a completed recovery
+///   leaves this state, so the destructive erase is the only other way out
+///   of it; [`Sdk::forget_federation`] documents what that costs.
+/// - **[`Quarantined`](FederationStatus::Quarantined)** — stored and
+///   intact, but not running, because the SDK could not or would not
+///   operate on it: its configuration is one this SDK refuses, its local
+///   state could not be read, or no guardian answered when it was opened.
+///   Nothing has been deleted, and the state carries the [`ErrorCode`] and
+///   message that explain why.
+/// - **[`Closed`](FederationStatus::Closed)** — stored and intact, not
+///   running, because the application asked for exactly that with
+///   [`Sdk::close_federation`].
+/// - **[`Forgetting`](FederationStatus::Forgetting)** — an erase has been
+///   committed and is being carried out or waiting to be finished; see
+///   [`Sdk::forget_federation`].
+///
+/// Three rules hold across all of them, and they are what keep this from
+/// being a pile of special cases:
+///
+/// **A stored federation is never silently absent.** [`Sdk::federations`]
+/// lists live handles, which is what an application needs in order to *act*.
+/// Everything the storage holds, whatever its state, is listed by
+/// [`Sdk::stored_federations`], and [`Sdk::federation_status`] answers for a
+/// single id. A wallet list should be rendered from the second, so that a
+/// federation which is closed, quarantined, or being erased appears as
+/// itself, with a reason, instead of as a wallet that quietly vanished
+/// between two runs.
+///
+/// **A federation that will not open does not take the instance down with
+/// it.** [`SdkBuilder::build`] fails only when the *root* storage or the
+/// seed is unsound; a federation that cannot be opened is quarantined and
+/// reported, because refusing to build would deny the user access to every
+/// healthy federation and to [`Sdk::export_mnemonic`] — the one call that
+/// gets their money out of a broken installation.
+///
+/// **Getting back to running takes one call and no invite code.**
+/// [`Sdk::reopen_federation`] moves a federation out of
+/// [`Closed`](FederationStatus::Closed) or
+/// [`Quarantined`](FederationStatus::Quarantined) using the configuration
+/// the SDK already holds. An application must never have to have retained an
+/// invite code in order to reach a wallet it still has.
+///
+/// Status changes are also observable as they happen, through
+/// [`Sdk::federation_status_updates`], so an application can react to a
+/// federation being quarantined underneath it instead of finding out by
+/// provoking a failure.
+///
+/// # Durability: correctness never depends on a clean shutdown
+///
+/// Mobile operating systems terminate backgrounded applications without
+/// warning, without unwinding, and without awaiting anything. A browser tab
+/// disappears the same way. This design therefore takes the strongest
+/// position it can and states it once, here, because several methods below
+/// rely on it:
+///
+/// **Every transition an application can observe is durably committed before
+/// it becomes observable.** A joined federation is persisted before
+/// [`Sdk::join`] returns its handle. An operation is persisted before the
+/// facade call that started it hands back an [`Operation`](crate::Operation).
+/// A state is persisted before [`OperationUpdates::next`](crate::OperationUpdates::next)
+/// yields it. An erase is committed before it begins. There is no window in
+/// which the SDK has told the caller that value moved, or that a
+/// fund-affecting transition happened, and could still forget it.
+///
+/// The consequence is that [`Sdk::shutdown`] is an optimisation, not a
+/// correctness requirement, and that an abrupt kill loses nothing that was
+/// acknowledged. What a caller may rely on after the process dies without
+/// warning is spelled out on [`Sdk::shutdown`].
+///
+/// # Closed handles
+///
+/// Any [`Federation`] handle for a federation that is no longer running —
+/// closed, quarantined, being erased — and every handle at all after
+/// [`Sdk::shutdown`], fails its **fallible** calls with
 /// [`ErrorCode::FederationClosed`](crate::ErrorCode::FederationClosed)
 /// rather than panicking or silently doing nothing. Its infallible
 /// accessors keep answering; see [`Federation`] for exactly what each of
-/// them reports once closed.
+/// them reports. The *reason* the federation stopped running is not encoded
+/// in that error — one code covers all of them deliberately, so that
+/// applications have exactly one "this handle is stale" branch — and is read
+/// from [`Sdk::federation_status`] instead.
 #[derive(Debug, Clone)]
 pub struct Sdk {
     inner: Arc<SdkInner>,
@@ -71,7 +158,10 @@ impl Sdk {
     /// Validation here is the same validation [`Sdk::join`] performs,
     /// including the federation-wide module-generation rule described on
     /// that method: a federation this SDK could not operate on is rejected
-    /// at preview rather than previewed and then refused at join.
+    /// at preview rather than previewed and then refused at join. That rule
+    /// is also re-checked for the lifetime of a joined federation, and
+    /// [`Sdk::join`] documents what happens when a configuration that used
+    /// to satisfy it stops doing so.
     ///
     /// # Errors
     ///
@@ -92,9 +182,12 @@ impl Sdk {
     ///
     /// Joining derives this federation's client secret from the instance
     /// seed, writes its configuration and client state to storage, and
-    /// starts its background workers. The federation is reopened
-    /// automatically by every subsequent [`SdkBuilder::build`] against the
-    /// same storage until it is closed or forgotten.
+    /// starts its background workers. All of that is durably committed
+    /// before this call returns, per the durability rule on [`Sdk`]: a
+    /// process killed immediately afterwards comes back with the federation
+    /// joined. It is [`Running`](FederationStatus::Running) from then on, and
+    /// is reopened automatically by every subsequent [`SdkBuilder::build`]
+    /// against the same storage until it is closed or forgotten.
     ///
     /// # The federation-wide module-generation rule
     ///
@@ -102,20 +195,81 @@ impl Sdk {
     /// v1, or all v2. There is no per-module override and no way for a
     /// caller to opt out: a mixed federation is rejected with
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation),
-    /// with diagnostics in the error message naming the modules that
-    /// conflict and the generations they declare. The rule is checked at
-    /// [`Sdk::preview`], here at join, when an existing federation is
-    /// reopened, and again whenever its configuration changes while the
-    /// instance is running. It covers *every* module the federation runs,
-    /// not only the ones this SDK exposes as facades: a module the SDK
-    /// never touches still participates in the check, because a federation
-    /// running a mixed set is not a configuration this SDK is willing to
-    /// hold funds in.
+    /// carrying
+    /// [`ErrorDetails::MixedModuleGenerations`](crate::ErrorDetails::MixedModuleGenerations)
+    /// so the modules that conflict and the generations they declare are
+    /// readable as structured data rather than only as prose in the message.
+    /// The rule is checked at [`Sdk::preview`],
+    /// here at join, when an existing federation is reopened, and again
+    /// whenever its configuration changes while the instance is running. It
+    /// covers *every* module the federation runs, not only the ones this SDK
+    /// exposes as facades: a module the SDK never touches still participates
+    /// in the check, because a federation running a mixed set is not a
+    /// configuration this SDK is willing to hold funds in.
+    ///
+    /// ## When a running federation stops satisfying it
+    ///
+    /// A federation's configuration can change under a running instance —
+    /// guardians upgrade, modules are added, a module generation moves. If
+    /// the new configuration is mixed, or is otherwise one this SDK refuses,
+    /// the outcome is defined rather than left to whatever the
+    /// implementation happens to do:
+    ///
+    /// 1. **The refused configuration is never adopted.** The last
+    ///    configuration that validated stays in force as the federation's
+    ///    known configuration, which is what
+    ///    [`Federation::name`](crate::Federation::name),
+    ///    [`Federation::network`](crate::Federation::network) and
+    ///    [`Federation::capabilities`](crate::Federation::capabilities) keep
+    ///    reporting. The SDK never operates on a half-understood
+    ///    configuration, and never silently drops a module out from under a
+    ///    facade an application is holding.
+    /// 2. **The federation is quarantined, not closed and not erased.** Its
+    ///    workers stop, it leaves [`Sdk::federations`], and its status
+    ///    becomes
+    ///    [`Quarantined`](FederationStatus::Quarantined) carrying
+    ///    [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
+    ///    and a message naming the conflict. Nothing local is deleted: the
+    ///    client state, the operation log, and the activity history are all
+    ///    still there, so a federation that becomes supported again — the
+    ///    guardians finish an upgrade, the application ships an SDK that
+    ///    understands the new generation — comes back with
+    ///    [`Sdk::reopen_federation`] and loses nothing.
+    /// 3. **Pending work terminates observably, and is not thrown away.**
+    ///    In-flight operation state is flushed durably first, and then every
+    ///    outstanding
+    ///    [`OperationUpdates::next`](crate::OperationUpdates::next) and
+    ///    [`BalanceUpdates::next`](crate::BalanceUpdates::next) against the
+    ///    federation resolves with
+    ///    [`FederationClosed`](crate::ErrorCode::FederationClosed), as does
+    ///    every subsequent fallible call on its handles. No subscriber is
+    ///    left hanging — a promise that never settles is worse than a
+    ///    failure, because a failure can be shown and retried. The
+    ///    operations themselves are neither cancelled nor marked failed:
+    ///    their persisted state is preserved verbatim and they resume where
+    ///    they left off if the federation is reopened.
+    ///
+    /// Quarantine is deliberately loud, because step 3 means the SDK has
+    /// stopped driving those state machines locally. Value already committed
+    /// to a protocol will resolve however that protocol resolves it, with no
+    /// local help until the federation runs again, which is precisely why
+    /// this state is reported through
+    /// [`Sdk::federation_status`] and
+    /// [`Sdk::federation_status_updates`] rather than being inferred from an
+    /// error some later call happens to return.
+    ///
+    /// The line between quarantine and ordinary trouble is drawn at
+    /// *refusal*, not at reachability: a running federation whose guardians
+    /// are unreachable is not quarantined, because that is transient and the
+    /// SDK keeps retrying in the background. Quarantine is for a federation
+    /// the SDK will not operate on until something changes.
     ///
     /// # Errors
     ///
     /// [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) when this
-    /// instance already holds the federation, plus every error
+    /// instance already holds the federation — including when it holds it
+    /// closed or quarantined, where [`Sdk::reopen_federation`] rather than a
+    /// second join is the call that wants making — plus every error
     /// [`Sdk::preview`] can produce, and
     /// [`Storage`](crate::ErrorCode::Storage) if the join cannot be
     /// persisted.
@@ -125,9 +279,17 @@ impl Sdk {
 
     /// Every federation this instance currently has open.
     ///
-    /// Federations that were closed with [`Sdk::close_federation`] are not
-    /// listed even though their data is retained, and forgotten ones are
-    /// gone entirely. The order is unspecified.
+    /// This is the "what can I act on right now" list, and its meaning is
+    /// narrow on purpose: a [`Federation`] here is running, so its facades
+    /// work and its balance is live. Federations that are closed,
+    /// quarantined, or being erased are not listed — they have no live
+    /// handle to hand out — and forgotten ones are gone entirely. The order
+    /// is unspecified.
+    ///
+    /// This is therefore *not* the list to render a wallet screen from. Use
+    /// [`Sdk::stored_federations`] for that: it lists everything the storage
+    /// holds with a [`FederationStatus`] for each, so a federation that is
+    /// not currently usable is shown as such instead of disappearing.
     pub fn federations(&self) -> Vec<Federation> {
         unimplemented!()
     }
@@ -135,22 +297,180 @@ impl Sdk {
     /// The open federation with this id, or `None` if this instance has no
     /// such federation open.
     ///
-    /// `None` covers both "never joined" and "joined but currently
-    /// closed"; the two are not distinguished here, because in both cases
-    /// there is nothing an application can do with the federation until it
-    /// joins it again.
+    /// `None` covers every reason there is no live handle: never joined,
+    /// forgotten, closed, quarantined, or being erased. They are not
+    /// distinguished here, because in all of those cases the answer to "may
+    /// I act on this federation" is the same no.
+    ///
+    /// When the distinction matters — and it does for anything that renders
+    /// a list, offers a "reconnect" affordance, or explains to a user why a
+    /// wallet is not available — [`Sdk::federation_status`] answers it for
+    /// this same id, and returns `None` only when the storage genuinely has
+    /// no such federation.
     pub fn federation(&self, id: &FederationId) -> Option<Federation> {
+        unimplemented!()
+    }
+
+    /// Every federation this instance's storage holds, running or not, each
+    /// with its current [`FederationStatus`].
+    ///
+    /// This is the list a wallet screen should be built from.
+    /// [`Sdk::federations`] answers "what can I act on"; this answers "what
+    /// does this user have", which is the question a list of wallets is
+    /// actually asking. A federation that was closed with
+    /// [`Sdk::close_federation`], one that was quarantined because it could
+    /// not be opened, and one whose erase is still finishing all appear
+    /// here, labelled, rather than being absent — an application cannot
+    /// distinguish a missing row from a wallet the user left, and would
+    /// otherwise present a balance that has quietly lost a federation.
+    ///
+    /// It also closes a gap that would otherwise be unrecoverable. Closing a
+    /// federation keeps all of its data but takes away its handle; without a
+    /// listing like this one, and without [`Sdk::reopen_federation`], the
+    /// only route back would be joining again with the original invite code
+    /// — which an application may never have retained, and which the user
+    /// may have no way to obtain a second time. A wallet the SDK is still
+    /// holding must never become undiscoverable.
+    ///
+    /// Each entry is a small owned record rather than a handle, because most
+    /// of what it describes has no handle to give: see [`FederationInfo`].
+    /// The order is unspecified, as in [`Sdk::federations`]; sort by
+    /// whatever the screen shows.
+    ///
+    /// Infallible and synchronous: the statuses are instance state, not a
+    /// storage read. Like the descriptive accessors on [`Federation`], this
+    /// keeps answering after [`Sdk::shutdown`], reporting the last statuses
+    /// the instance knew.
+    pub fn stored_federations(&self) -> Vec<FederationInfo> {
+        unimplemented!()
+    }
+
+    /// What this instance's storage currently knows about one federation.
+    ///
+    /// `None` means precisely one thing: this storage holds no federation
+    /// with that id, because it was never joined or because it was
+    /// successfully forgotten. Every other case — running, recovering,
+    /// closed, quarantined, mid-erase — is a `Some` carrying the state, so
+    /// that "there is nothing here" and "there is something here that is not
+    /// currently usable" are never confused. That distinction is the whole
+    /// point of this accessor existing alongside [`Sdk::federation`], which
+    /// deliberately collapses them.
+    ///
+    /// This is the observable side of quarantine, and the reason quarantine
+    /// is not something an application has to discover by provoking an
+    /// error: the [`ErrorCode`] and message inside
+    /// [`Quarantined`](FederationStatus::Quarantined) say why the federation
+    /// is not running, without any call having to fail first. It follows the
+    /// same principle as [`Federation::capabilities`](crate::Federation::capabilities)
+    /// — what the SDK can and cannot do is a value to read and branch on,
+    /// not an exception to catch.
+    ///
+    /// Infallible, synchronous, and still answering after
+    /// [`Sdk::shutdown`], for the same reasons as
+    /// [`Sdk::stored_federations`].
+    pub fn federation_status(&self, id: &FederationId) -> Option<FederationStatus> {
+        unimplemented!()
+    }
+
+    /// Opens a new, independent subscription to every federation's status.
+    ///
+    /// A status can change without the application having asked for
+    /// anything: guardians publish a configuration this SDK refuses and the
+    /// federation is quarantined, a recovery finishes, another clone of this
+    /// [`Sdk`] closes a federation, an erase completes. Polling
+    /// [`Sdk::stored_federations`] would work but would make a UI choose
+    /// between a stale list and a timer, so the change is pushed instead.
+    ///
+    /// Each call returns its own cursor, exactly like
+    /// [`Federation::balance_updates`](crate::Federation::balance_updates):
+    /// two subscribers both see every change and neither consumes the
+    /// other's updates. This is instance-wide rather than per-federation,
+    /// which is why it yields a whole [`FederationInfo`] — the same record
+    /// [`Sdk::stored_federations`] returns, so a list screen updates by
+    /// replacing the row whose
+    /// [`id`](FederationInfo::id) matches and needs no second shape to
+    /// interpret.
+    ///
+    /// This cannot fail, so it hands out a subscriber even after
+    /// [`Sdk::shutdown`]; that subscriber's first
+    /// [`next`](FederationStatusUpdates::next) yields
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    pub fn federation_status_updates(&self) -> FederationStatusUpdates {
+        unimplemented!()
+    }
+
+    /// Starts a stored federation running again, without an invite code.
+    ///
+    /// This is the way back from [`Closed`](FederationStatus::Closed) and
+    /// from [`Quarantined`](FederationStatus::Quarantined). The SDK already
+    /// holds the federation's configuration and client state, so no invite
+    /// code is required and none is accepted: requiring one would make
+    /// reaching a wallet the SDK is holding depend on the application having
+    /// kept a bearer credential it was never told to keep.
+    ///
+    /// It runs the same open sequence [`SdkBuilder::build`] runs for a
+    /// remembered federation: revalidate the configuration against the
+    /// module-generation rule described on [`Sdk::join`], start the
+    /// background workers, and resume unfinished operations from where they
+    /// were persisted. On success the federation is
+    /// [`Running`](FederationStatus::Running) (or
+    /// [`Recovering`](FederationStatus::Recovering) if a rescan is still
+    /// outstanding), it appears in [`Sdk::federations`] again, and it is
+    /// reopened automatically by later builds — reopening clears the
+    /// opt-out that [`Sdk::close_federation`] set.
+    ///
+    /// Handles obtained before the federation stopped running are *not*
+    /// revived. They stay closed, and their fallible calls keep failing with
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed); the handle
+    /// this call returns is the live one. Reviving old handles would mean a
+    /// stale reference silently becoming live again, which is a harder
+    /// property to reason about than "a closed handle is closed forever".
+    ///
+    /// Reopening a federation that is already running is not an error: it
+    /// returns the live handle, mirroring the idempotence of
+    /// [`Sdk::close_federation`], because the postcondition the caller asked
+    /// for already holds.
+    ///
+    /// A failed reopen leaves the federation
+    /// [`Quarantined`](FederationStatus::Quarantined) with the same
+    /// [`ErrorCode`] this call returns, so the failure is both reported to
+    /// the caller and recorded for anything reading statuses later. That
+    /// also means later builds will retry it: the application asked for this
+    /// federation to be running, and quarantine records "meant to run,
+    /// currently cannot" rather than "deliberately stopped".
+    /// [`Sdk::close_federation`] is how to give up on it.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when this storage
+    /// holds no federation with that id, or holds one whose erase has
+    /// already been committed — a committed erase is never resurrected, and
+    /// both cases mean the same thing to a caller, that the id names nothing
+    /// openable. (This mirrors
+    /// [`Federation::activity`](crate::Federation::activity), which reports
+    /// a cursor it did not issue the same way.) Then
+    /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
+    /// for a configuration this SDK refuses,
+    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable)
+    /// and [`Timeout`](crate::ErrorCode::Timeout) when the guardians cannot
+    /// be reached in time, [`Storage`](crate::ErrorCode::Storage) if the
+    /// federation's local state cannot be read, and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the whole
+    /// instance has been shut down.
+    pub async fn reopen_federation(&self, id: &FederationId) -> Result<Federation> {
         unimplemented!()
     }
 
     /// Stops running this federation while keeping all of its data.
     ///
     /// The federation's background workers stop, it is dropped from
-    /// [`Sdk::federations`], and it is no longer reopened automatically by
-    /// later builds against this storage. Nothing is deleted: the client
-    /// state, the operation log, and the activity history all remain, and
-    /// joining the federation again restores access to them rather than
-    /// starting over. This is the non-destructive half of leaving a
+    /// [`Sdk::federations`], its status becomes
+    /// [`Closed`](FederationStatus::Closed), and it is no longer reopened
+    /// automatically by later builds against this storage. Nothing is
+    /// deleted: the client state, the operation log, and the activity
+    /// history all remain, it stays listed by [`Sdk::stored_federations`],
+    /// and [`Sdk::reopen_federation`] restores access to all of it without
+    /// needing an invite code. This is the non-destructive half of leaving a
     /// federation; [`Sdk::forget_federation`] is the destructive half.
     ///
     /// Any [`Federation`] handle an application still holds for this
@@ -164,7 +484,10 @@ impl Sdk {
     ///
     /// Closing is idempotent: an id that names no open federation is not an
     /// error, because the postcondition — the federation is not running and
-    /// its data is intact — already holds.
+    /// its data is intact — already holds. That includes an id that names a
+    /// quarantined federation, which closing turns into a deliberate
+    /// [`Closed`](FederationStatus::Closed) so that later builds stop
+    /// retrying it.
     ///
     /// # Errors
     ///
@@ -179,41 +502,171 @@ impl Sdk {
     /// Permanently deletes this federation's local state.
     ///
     /// This is destructive and unrecoverable from within the SDK: the
-    /// client state, operation log, and activity history for the federation
-    /// are erased. Only the seed survives, so re-joining the federation
-    /// later recovers whatever the federation itself can reconstruct, not
-    /// what was only ever recorded locally.
+    /// configuration, client state, operation log, and activity history for
+    /// the federation are erased. Only the seed survives, so re-joining the
+    /// federation later recovers whatever the federation itself can
+    /// reconstruct, not what was only ever recorded locally — and because
+    /// the configuration goes too, re-joining needs an invite code again.
+    /// This is the one lifecycle call that requires the application to have
+    /// kept one; [`Sdk::close_federation`] and [`Sdk::reopen_federation`]
+    /// exist so that merely wanting a federation to stop running never does.
     ///
-    /// Because of that, the call is guarded rather than forceful. It
-    /// refuses unless all of the following hold, and each refusal leaves
-    /// the federation exactly as it was:
+    /// Because of that, the call is guarded rather than forceful, and it
+    /// runs in three phases whose order is part of the contract.
+    ///
+    /// # 1. Quiesce, atomically, before anything is checked
+    ///
+    /// The federation is retired first: in one atomic step it leaves
+    /// [`Sdk::federations`], every outstanding [`Federation`] handle,
+    /// facade, and subscriber for it is closed, and its background workers
+    /// are stopped after flushing their state durably. Only then is
+    /// eligibility evaluated.
+    ///
+    /// "Its background workers" includes a running seed rescan. Stopping one
+    /// here is the *only* way anything in this SDK can end a rescan — there
+    /// is deliberately no cancel-recovery call — and it is why this call has
+    /// to remain reachable on a recovering federation; see below.
+    ///
+    /// This ordering is required, not incidental. Checking eligibility
+    /// against a federation that is still running would leave a window
+    /// between the check and the erase in which a cloned facade — and every
+    /// handle in this crate is cheaply cloneable, so an application may hold
+    /// many — could start a payment, mint notes, or spawn a state machine.
+    /// The erase would then delete the local record of value that had just
+    /// moved. There is no way to close that window from the caller's side,
+    /// so the SDK closes it: nothing can start work on a federation that is
+    /// already retired.
+    ///
+    /// # 2. Refuse unless it is safe, leaving the data intact
+    ///
+    /// The call then refuses unless all of the following hold:
     ///
     /// - **Zero spendable balance.** Any remaining spendable ecash fails
     ///   the call with
     ///   [`BalanceNotEmpty`](crate::ErrorCode::BalanceNotEmpty).
-    /// - **No non-final operations**, **no reclaimable outgoing value**
+    /// - **No non-final operations** and **no reclaimable outgoing value**
     ///   (out-of-band ecash a receiver has not redeemed and this instance
-    ///   could still reclaim), and **no recovery in progress**. Any of
-    ///   these fails the call with
+    ///   could still reclaim). Either fails the call with
     ///   [`PendingOperations`](crate::ErrorCode::PendingOperations).
+    ///
+    /// One class of non-final operation is deliberately exempt: an on-chain
+    /// receive that has not yet seen a transaction. It holds no value — a
+    /// deposit address with nothing sent to it protects nothing — and the
+    /// only thing that could ever settle it is a stranger deciding to send
+    /// money, so counting it would let a single unused address block the
+    /// erase indefinitely. Once a transaction *has* been seen it is an
+    /// ordinary pending operation and does block, until it is claimed or
+    /// fails. See [`Onchain::receive`](crate::Onchain::receive).
     ///
     /// The reclaimable-value condition is the non-obvious one: notes handed
     /// out but not yet redeemed are still worth money to the sender until
     /// their reclaim window closes, and the record needed to reclaim them
     /// lives in exactly the state this call would delete.
     ///
-    /// Outstanding handles behave as they do after
-    /// [`Sdk::close_federation`]: they fail with
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). Forgetting
-    /// is idempotent — an id with no local state is not an error.
+    /// Every guard here is protecting value the caller **could still move**
+    /// if they did something else first: spend the balance down, let an
+    /// operation settle, reclaim the notes. That framing is what decides the
+    /// next question.
+    ///
+    /// ## Recovery is never a reason to refuse
+    ///
+    /// A federation whose recovery has not completed is recovery-locked:
+    /// every spend and receive against it is refused with
+    /// [`Recovering`](crate::ErrorCode::Recovering), only a completed
+    /// recovery releases the lock, and no call in this SDK stops or cancels
+    /// a recovery. This erase is therefore the sole exit from a recovery that
+    /// cannot be finished, and **none of the guards above may block it.**
+    /// Concretely:
+    ///
+    /// - **A recovery-locked federation's balance does not count.** What
+    ///   such a federation reports is a *provisional* figure that is still
+    ///   moving as the rescan proceeds, and none of it is spendable —
+    ///   spendable is what the guard is about, and the lock is precisely why
+    ///   nothing is. Counting it would close the last door: the recovery
+    ///   cannot be finished, the balance cannot be spent down, and so the
+    ///   federation could never be erased either.
+    /// - **The rescan is not a "pending operation" for this purpose.** A
+    ///   rescan that is still going is a non-final operation, and one that
+    ///   stopped short of completing holds the lock just as firmly. Neither
+    ///   blocks this call, and phase 1 aborts a running rescan as part of the
+    ///   erase.
+    /// - **Reclaimable outgoing value on a locked federation does not block
+    ///   it either**, because reclaiming is itself a spend and the lock
+    ///   refuses it. Such value is forfeited by the erase, which is one of
+    ///   the costs of this exit rather than a reason to deny it.
+    ///
+    /// So "no pending operations" must not be read as "not recovering", and
+    /// this call never returns
+    /// [`Recovering`](crate::ErrorCode::Recovering) under any circumstances.
+    ///
+    /// What that exit costs is real and should be put in front of the user
+    /// before they take it: the recovered-so-far state is thrown away, the
+    /// local activity history is gone for good, locally-recorded reclaimable
+    /// value is forfeited, and starting over needs the invite code again. The
+    /// federation still holds the funds, so a fresh join-and-recover can find
+    /// them again — but it starts the recovery, and the lock, from the
+    /// beginning.
+    ///
+    /// A refusal deletes nothing whatsoever. It does, however, leave the
+    /// federation stopped — it was quiesced in phase 1, and handles are not
+    /// revived — so its status afterwards is
+    /// [`Closed`](FederationStatus::Closed) and
+    /// [`Sdk::reopen_federation`] is how the application gets it running
+    /// again. That is a deliberate trade: the alternative is to check first
+    /// and quiesce afterwards, which reintroduces exactly the race phase 1
+    /// exists to prevent. Losing a handle is recoverable in one call;
+    /// deleting the record of in-flight value is not.
+    ///
+    /// # 3. Commit the erase before performing it
+    ///
+    /// "The deletion failed partway" is not an acceptable outcome: a
+    /// half-erased federation is neither reopenable nor safely retryable,
+    /// and reopening one would resurrect a client whose state has holes in
+    /// it. So the erase is made atomic with respect to crashes by
+    /// committing the *decision* first. A durable tombstone is written in a
+    /// single step, and only then is any state removed. From the moment the
+    /// tombstone lands, the deletion will happen: either this call finishes
+    /// it, or a later [`Sdk::forget_federation`] with the same id resumes
+    /// it, or the next [`SdkBuilder::build`] completes it before returning.
+    /// A tombstoned federation is never opened, never handed a handle, and
+    /// never resurrected.
+    ///
+    /// (A tombstone rather than a backend transaction because this crate has
+    /// to make the same promise on two very different backends — see
+    /// [`Storage`] — and a multi-key atomic delete cannot be assumed on
+    /// both. A single atomic write can.)
+    ///
+    /// A federation is therefore always in exactly one of three states when
+    /// this call returns, and there is no fourth:
+    ///
+    /// - **Erased.** `Ok(())`, the state is gone,
+    ///   [`Sdk::federation_status`] returns `None`, and the id no longer
+    ///   appears in [`Sdk::stored_federations`].
+    /// - **Fully intact and closed.** The call refused in phase 2, or could
+    ///   not even write the tombstone, and nothing was deleted.
+    /// - **Committed but unfinished.** The tombstone landed and the erase
+    ///   did not complete. The status is
+    ///   [`Forgetting`](FederationStatus::Forgetting), so an application can
+    ///   show "removing…" instead of a phantom wallet, and the call is
+    ///   safely retryable with the same id.
+    ///
+    /// Forgetting is idempotent: an id with no local state is not an error,
+    /// and an id that is already tombstoned finishes the erase and returns
+    /// `Ok(())`.
     ///
     /// # Errors
     ///
-    /// [`BalanceNotEmpty`](crate::ErrorCode::BalanceNotEmpty),
-    /// [`PendingOperations`](crate::ErrorCode::PendingOperations),
-    /// [`Storage`](crate::ErrorCode::Storage) if the deletion fails partway,
-    /// and [`FederationClosed`](crate::ErrorCode::FederationClosed) after
-    /// shutdown.
+    /// [`BalanceNotEmpty`](crate::ErrorCode::BalanceNotEmpty) and
+    /// [`PendingOperations`](crate::ErrorCode::PendingOperations) for a
+    /// phase-2 refusal, which deletes nothing;
+    /// [`Storage`](crate::ErrorCode::Storage) if the backend fails, which
+    /// means either that nothing was deleted or that the erase is committed
+    /// and unfinished — never that the federation is in an unknown state —
+    /// and which is retryable either way; and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) after
+    /// shutdown. Never
+    /// [`Recovering`](crate::ErrorCode::Recovering): a recovery in any state
+    /// is not a reason to refuse, for the reasons given above.
     pub async fn forget_federation(&self, id: &FederationId) -> Result<()> {
         unimplemented!()
     }
@@ -238,40 +691,103 @@ impl Sdk {
     /// when the instance is built and held in memory for its lifetime; it
     /// does not read storage and remains available after
     /// [`Sdk::shutdown`].
+    ///
+    /// It is also the reason [`SdkBuilder::build`] refuses to fail over a
+    /// federation. An instance whose every federation is quarantined still
+    /// exports its seed, which is the user's route to their money by any
+    /// other client. A design where one unreachable federation could deny
+    /// this call would be a design in which a guardian outage can look
+    /// indistinguishable from lost funds.
     pub fn export_mnemonic(&self) -> Mnemonic {
         unimplemented!()
     }
 
-    /// Flushes everything to storage, stops all background work, and
-    /// releases the storage lock.
+    /// Best-effort: flushes everything to storage, stops all background
+    /// work, and releases the storage lock.
     ///
     /// After this returns, the instance is finished: every fallible call on
     /// every [`Sdk`] and [`Federation`] handle, and every subscriber
     /// obtained from one, fails with
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) — with
-    /// [`Sdk::export_mnemonic`] the deliberate exception, as noted there.
-    /// The infallible accessors on [`Federation`] behave as they do after
-    /// [`Sdk::close_federation`], documented on that type. Another instance
-    /// may then open the same storage. Shutdown is idempotent — calling it
-    /// twice is not an error.
+    /// [`Sdk::export_mnemonic`] the deliberate exception, as noted there,
+    /// alongside the infallible status accessors
+    /// ([`Sdk::stored_federations`], [`Sdk::federation_status`]) and the
+    /// infallible accessors on [`Federation`]. Another instance may then
+    /// open the same storage. Shutdown is idempotent — calling it twice is
+    /// not an error.
     ///
-    /// **On mobile this call is required before the process can die.**
-    /// Both iOS and Android terminate backgrounded applications without
-    /// warning and without unwinding; an instance that has not been shut
-    /// down may have durable writes still buffered, and — on native
-    /// storage — leaves its lock to be recovered on the next open. Call
-    /// this from the platform's "entering background" or "about to
-    /// terminate" callback and await it before returning.
+    /// # It is an optimisation, not a requirement
+    ///
+    /// **Correctness does not depend on this call.** iOS and Android
+    /// terminate backgrounded applications without warning, without
+    /// unwinding, and without awaiting anything an application would like to
+    /// await; a browser tab can vanish the same way. Any design in which a
+    /// missed shutdown loses money is therefore a design that loses money in
+    /// production, so this crate does not have one. Everything a caller can
+    /// observe is already durable at the moment it becomes observable — see
+    /// the durability rule on [`Sdk`] — and what this call adds is:
+    ///
+    /// - a flush of buffered non-critical state, such as caches and the
+    ///   in-memory tail of activity, so the next open has less to redo;
+    /// - an orderly release of the storage lock, so a subsequent opener
+    ///   does not have to reclaim it;
+    /// - a defined point after which no background work is running, which
+    ///   is what a test harness or a CLI wants before it exits.
+    ///
+    /// Call it from the platform's "entering background" or "about to
+    /// terminate" callback if there is one, and await it if you are allowed
+    /// to. Do not build anything on being able to.
+    ///
+    /// # What survives an abrupt kill
+    ///
+    /// If the process dies without this call — killed by the OS, crashed,
+    /// tab closed — then on the next [`SdkBuilder::build`] over the same
+    /// storage:
+    ///
+    /// - **Everything acknowledged is there.** Any value a completed call
+    ///   returned or a subscriber yielded — a joined federation, an
+    ///   [`OperationId`](crate::OperationId), an operation state, a
+    ///   committed erase — is present. Nothing acknowledged is lost.
+    /// - **In-flight operations resume by themselves.** They were persisted
+    ///   as they ran, they keep their ids, they are found by
+    ///   [`Federation::operation`](crate::Federation::operation), and they
+    ///   continue from their last persisted checkpoint. Resumption from a
+    ///   checkpoint is idempotent, so an operation is neither dropped nor
+    ///   performed twice, and it terminates in a state exactly as it would
+    ///   have without the interruption.
+    /// - **A call that never returned may or may not have happened.** This
+    ///   is the one thing a caller does not get to know, and no design can
+    ///   give it: the process died between the write and the return. The
+    ///   persisted state after reopening is authoritative, which is why
+    ///   operations are addressed by a stable
+    ///   [`OperationId`](crate::OperationId) — retry by looking up the id,
+    ///   not by repeating the request.
+    /// - **The seed is never at risk.** It is written before anything
+    ///   derived from it exists, so there is no crash window that leaves
+    ///   federation state derived from a seed that was never saved. See
+    ///   [`SdkBuilder::build`].
+    /// - **A lock left behind is reclaimed, not fatal.** A storage lock held
+    ///   by a process that was killed is recovered by the next opener on
+    ///   that device; [`StorageInUse`](crate::ErrorCode::StorageInUse) means
+    ///   genuinely concurrent use, never a stale lock. A single crash must
+    ///   not be able to make a wallet permanently unopenable.
+    /// - **A committed erase completes.** A federation whose tombstone
+    ///   landed before the kill is finished off during the next build,
+    ///   rather than reopening half-erased. See
+    ///   [`Sdk::forget_federation`].
     ///
     /// Shutting down does not cancel operations in the sense of undoing
     /// them: an operation that was running is persisted mid-flight and
     /// resumes when the storage is opened again, exactly as it would after
-    /// a crash.
+    /// a crash. That equivalence is the point — the clean path and the
+    /// crash path lead to the same place.
     ///
     /// # Errors
     ///
     /// [`Storage`](crate::ErrorCode::Storage) if the final flush fails. The
-    /// instance is closed either way.
+    /// instance is closed either way, and because nothing observable was
+    /// waiting on that flush, the failure is a diagnostic rather than a loss
+    /// of data.
     pub async fn shutdown(&self) -> Result<()> {
         unimplemented!()
     }
@@ -296,7 +812,8 @@ impl SdkBuilder {
     /// Sets where the instance persists its state.
     ///
     /// Required: [`SdkBuilder::build`] fails without it rather than
-    /// guessing a location. Use [`Storage::at`] for a real location or
+    /// guessing a location. Use [`Storage::at`] for a real location on a
+    /// native target, [`Storage::in_browser`] for one in a browser, or
     /// [`Storage::in_memory`] for a throwaway one.
     pub fn storage(mut self, storage: Storage) -> Self {
         self.storage = Some(storage);
@@ -308,12 +825,16 @@ impl SdkBuilder {
     ///
     /// Supply one to restore an existing wallet from a written-down phrase.
     /// Omit it and the instance uses the seed already in storage, or — if
-    /// the storage is empty — generates a fresh one and persists it before
-    /// deriving anything from it. Generating a seed can fail, because drawing
-    /// secure entropy can (see [`Mnemonic::generate`]); when it does,
-    /// [`SdkBuilder::build`] reports
+    /// the storage is proven empty — generates a fresh one and persists it
+    /// before deriving anything from it. Generating a seed can fail, because
+    /// drawing secure entropy can (see [`Mnemonic::generate`]); when it
+    /// does, [`SdkBuilder::build`] reports
     /// [`Entropy`](crate::ErrorCode::Entropy) rather than panicking or
     /// settling for a weaker source.
+    ///
+    /// "Proven empty" is load-bearing and is spelled out on
+    /// [`SdkBuilder::build`]: a seed is established only over a backend that
+    /// holds nothing else, never merely because no seed was found.
     ///
     /// Supplying a mnemonic that differs from the one the storage already
     /// holds is a mistake the SDK will not paper over: [`SdkBuilder::build`]
@@ -336,33 +857,95 @@ impl SdkBuilder {
     /// 1. **Take the storage lock.** If the location is already open, in
     ///    this process or another, the call fails with
     ///    [`StorageInUse`](crate::ErrorCode::StorageInUse) and nothing has
-    ///    been touched. (Sharing one location between processes is not part
-    ///    of the 0.1 contract; see [`Storage`] for the future shape of
-    ///    that.)
-    /// 2. **Reconcile the seed, before any mutation.** If the storage holds
-    ///    a seed and a different mnemonic was supplied, the call fails with
-    ///    [`SeedMismatch`](crate::ErrorCode::SeedMismatch) and the storage
-    ///    is left byte-for-byte as it was found. If the storage holds no
-    ///    seed, the supplied or freshly generated mnemonic is written
-    ///    durably *now* — before any federation-derived state exists — so
-    ///    there is no crash window that could leave state derived from a
-    ///    seed that was never saved. Generating that mnemonic is itself
-    ///    fallible (see [`Mnemonic::generate`]): if the platform's secure
-    ///    random source fails, the call fails with
-    ///    [`Entropy`](crate::ErrorCode::Entropy) and, as in step 2's other
-    ///    failure, nothing has been written.
-    /// 3. **Reopen the federations.** Each federation the storage remembers
-    ///    is revalidated (including the module-generation rule described on
-    ///    [`Sdk::join`]) and started, and its unfinished operations resume
-    ///    from where they were persisted. A federation that cannot be
-    ///    opened is *reported*: the call fails, naming the federation and
-    ///    the reason. It is never silently omitted from
-    ///    [`Sdk::federations`], because an application cannot distinguish a
-    ///    missing federation from one the user left, and would show a
-    ///    balance that has quietly lost a wallet. (The exact reporting
-    ///    shape — failing the build, as here, versus surfacing per-
-    ///    federation diagnostics on a successfully built instance — is the
-    ///    one part of this contract still expected to be refined.)
+    ///    been touched. A lock left behind by a process that died without
+    ///    [`Sdk::shutdown`] is reclaimed rather than treated as contention;
+    ///    see [`Storage`] for the native and browser cases. (Sharing one
+    ///    location between live processes is not part of the 0.1 contract;
+    ///    see [`Storage`] for the future shape of that.)
+    /// 2. **Reconcile the seed, before any mutation.** This is the step
+    ///    where a wrong answer silently corrupts a wallet, so it is stated
+    ///    exhaustively. There are exactly four cases:
+    ///    - *The storage holds a usable seed.* It is used. If a different
+    ///      mnemonic was supplied the call fails with
+    ///      [`SeedMismatch`](crate::ErrorCode::SeedMismatch).
+    ///    - *The storage is proven empty* — no seed and no state of any kind
+    ///      belonging to this SDK: no federation record, no client state, no
+    ///      operation log, no activity history. The supplied or freshly
+    ///      generated mnemonic is written durably *now*, before any
+    ///      federation-derived state can exist, so there is no crash window
+    ///      that could leave state derived from a seed that was never saved.
+    ///      Generating that mnemonic is itself fallible (see
+    ///      [`Mnemonic::generate`]): if the platform's secure random source
+    ///      fails, the call fails with
+    ///      [`Entropy`](crate::ErrorCode::Entropy) and nothing has been
+    ///      written.
+    ///    - *There is no usable seed but there is other state.* The storage
+    ///      is **orphaned**, and the call fails with
+    ///      [`Storage`](crate::ErrorCode::Storage) without writing anything.
+    ///    - *The seed entry exists but cannot be read* — truncated,
+    ///      corrupt, or written in a format this build does not understand.
+    ///      Also a refusal, with the same code, and again without writing
+    ///      anything.
+    ///
+    ///    The last two cases are why "no seed" must never be read as "fresh
+    ///    storage". Writing a new seed over storage that already holds
+    ///    federation or client state would associate that state with the
+    ///    wrong derivation root: every per-federation secret would be
+    ///    derived from a seed that has nothing to do with the notes,
+    ///    operations, and backups already sitting there. The wallet would
+    ///    open, look empty or nearly so, and the real funds would be
+    ///    unreachable without the original phrase — while the only local
+    ///    trace of which seed the state belonged to had just been
+    ///    overwritten. Refusing is recoverable; a wrong write is not. The
+    ///    same applies to an unreadable seed entry: it may be a transient
+    ///    backend fault or a newer on-disk format, and overwriting it turns
+    ///    a temporary problem into permanent fund loss.
+    ///
+    ///    **Ordering guarantee.** The emptiness proof and the seed
+    ///    reconciliation happen under the lock taken in step 1 and strictly
+    ///    before any write this call makes. If step 2 fails for any reason,
+    ///    the backend is byte-identical to how it was found.
+    ///
+    ///    (`Storage` is the closest code this version has for an orphaned or
+    ///    unreadable-seed backend; both cases carry a message and structured
+    ///    diagnostics that identify them. A dedicated code for "this backend
+    ///    holds state but no usable seed" would be better, because it is a
+    ///    permanent, human-actionable condition — restore from the phrase,
+    ///    or point at a different location — rather than the transient
+    ///    read/write failure `Storage` otherwise describes.)
+    /// 3. **Finish any committed erase.** A federation whose tombstone was
+    ///    written but whose deletion did not complete (see
+    ///    [`Sdk::forget_federation`]) is erased now, before it could be
+    ///    opened. A committed erase is never resurrected.
+    /// 4. **Reopen the federations, and quarantine the ones that will not
+    ///    open.** Each federation the storage remembers, and that was not
+    ///    closed with [`Sdk::close_federation`], is revalidated (including
+    ///    the module-generation rule described on [`Sdk::join`]) and
+    ///    started, and its unfinished operations resume from where they were
+    ///    persisted.
+    ///
+    ///    A federation that cannot be opened **does not fail this call**. It
+    ///    is put into [`Quarantined`](FederationStatus::Quarantined) with
+    ///    the [`ErrorCode`] and message that explain why, it is absent from
+    ///    [`Sdk::federations`], and it is present and labelled in
+    ///    [`Sdk::stored_federations`]. Later builds retry it.
+    ///
+    ///    This is a deliberate reversal of the obvious design. Failing the
+    ///    build is worse than it looks: one federation whose guardians are
+    ///    down, or that has upgraded to a configuration this build refuses,
+    ///    would deny the user every *healthy* federation, all of their
+    ///    history, and [`Sdk::export_mnemonic`] — the call that gets their
+    ///    seed out so they can reach their money with something else. A
+    ///    single unreachable guardian set must not be indistinguishable from
+    ///    a broken wallet. The original concern that motivated failing —
+    ///    that an application would read a short [`Sdk::federations`] list
+    ///    as "the user left that federation" — is answered by making the
+    ///    federation *visible with a reason* instead of by refusing to
+    ///    start.
+    ///
+    /// Top-level `Err` is therefore reserved for the root storage and the
+    /// seed: things that make the whole instance unsound. Anything scoped to
+    /// one federation is reported as that federation's status.
     ///
     /// # Errors
     ///
@@ -370,12 +953,16 @@ impl SdkBuilder {
     /// set, [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
     /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
-    /// generated and the platform's secure random source failed,
-    /// [`Storage`](crate::ErrorCode::Storage) for a backend failure,
+    /// generated and the platform's secure random source failed, and
+    /// [`Storage`](crate::ErrorCode::Storage) for a root-storage failure,
+    /// which includes the orphaned and unreadable-seed cases in step 2.
+    ///
+    /// Notably **not** here:
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
-    /// for a remembered federation that no longer validates, and
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable)
-    /// for one that cannot be contacted at all.
+    /// and [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable).
+    /// Those are per-federation conditions and arrive as
+    /// [`Quarantined`](FederationStatus::Quarantined) statuses on a
+    /// successfully built instance.
     pub async fn build(self) -> Result<Sdk> {
         unimplemented!()
     }
@@ -403,11 +990,238 @@ impl core::fmt::Debug for Redacted {
     }
 }
 
+/// What an SDK instance's storage currently knows about one federation.
+///
+/// This is the crate's answer to "why can I not use this wallet right now",
+/// and it is deliberately a **value to read** rather than an error to
+/// provoke — the same principle as
+/// [`Federation::capabilities`](crate::Federation::capabilities). An
+/// application lays out a screen from statuses; it does not attempt
+/// operations to discover which federations are healthy.
+///
+/// Read one with [`Sdk::federation_status`], read them all with
+/// [`Sdk::stored_federations`], and follow changes with
+/// [`Sdk::federation_status_updates`]. The state machine these variants form
+/// — and which call moves a federation between them — is documented in one
+/// place, on [`Sdk`].
+///
+/// # Shape
+///
+/// A flat data enum: no generics, no tuple variants, no borrowed data, and
+/// nothing nested beyond a plain record of a [`Copy`] enum and a string. It
+/// therefore generates mechanically into a Swift or Kotlin sealed
+/// enum-with-associated-values and a TypeScript discriminated union, with no
+/// hand-written per-target adapter.
+///
+/// The enum is `#[non_exhaustive]`; its variants are not. Rust callers write
+/// a wildcard arm, and a state that exists never grows a field — a generated
+/// record that grows a field is exactly what is not safely additive across
+/// three foreign type systems at once. More detail about a situation arrives
+/// as a new, more specific variant instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FederationStatus {
+    /// Open and working: workers are running, operations are progressing,
+    /// and [`Sdk::federation`] hands out a live handle.
+    Running,
+    /// Open, but the wallet has not finished being reconstructed from the
+    /// seed, so the federation is **recovery-locked**.
+    ///
+    /// A live handle exists and identity, metadata and capabilities are
+    /// readable, while balance and activity are incomplete and still moving
+    /// and every spend and receive is refused with
+    /// [`Recovering`](crate::ErrorCode::Recovering).
+    ///
+    /// This state covers a rescan that is *running* and one that has
+    /// *stopped without completing*, and it deliberately does not
+    /// distinguish them, because the lock does not either: only a completed
+    /// recovery releases it, and a stopped attempt holds it exactly as
+    /// firmly as a running one. An application that needs the finer
+    /// distinction — to offer "retry" rather than "still working" — reads it
+    /// from the recovery API. What this status is for is the coarser and
+    /// more important fact: this federation cannot move value yet.
+    ///
+    /// Not to be confused with
+    /// [`Quarantined`](FederationStatus::Quarantined). A recovering
+    /// federation is one the SDK is happily operating; a quarantined one is
+    /// one it refuses to operate. The exits differ accordingly: a recovery
+    /// is finished (or the federation is erased), whereas a quarantine is
+    /// cleared by [`Sdk::reopen_federation`] once whatever caused it has
+    /// changed.
+    ///
+    /// This state only arises when the SDK's recovery API — currently behind
+    /// the off-by-default `experimental` feature — has been used; the
+    /// variant is unconditional so that the set of statuses a binding must
+    /// handle does not change with a cargo feature.
+    Recovering,
+    /// Stored and intact, but not running, because the SDK could not or
+    /// would not open it.
+    ///
+    /// Nothing has been deleted: the configuration, client state, operation
+    /// log, and activity history are all still there, and
+    /// [`Sdk::reopen_federation`] retries. Quarantine means "meant to be
+    /// running, currently cannot", so later builds retry it too;
+    /// [`Sdk::close_federation`] is how an application gives up on it.
+    ///
+    /// This state also carries the answer to the question a caller would
+    /// otherwise have to ask by failing a call.
+    Quarantined {
+        /// Why the federation is not running, as the same stable code the
+        /// equivalent [`Error`](crate::Error) would carry:
+        /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
+        /// for a configuration this SDK refuses (mixed module generations,
+        /// most often),
+        /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable)
+        /// or [`Timeout`](crate::ErrorCode::Timeout) when no guardian
+        /// answered in time, and [`Storage`](crate::ErrorCode::Storage) when
+        /// the federation's local state could not be read.
+        ///
+        /// Reusing [`ErrorCode`] rather than inventing a parallel reason
+        /// enum is deliberate: an application already has a switch over
+        /// these codes for its error banners, the taxonomy is already
+        /// stable and additive-only, and a second enum would drift from the
+        /// first.
+        code: ErrorCode,
+        /// Human-readable detail — for a mixed-generation federation, the
+        /// modules that conflict and the generations they declare.
+        ///
+        /// For humans only: logs, diagnostics, an expandable "details" row.
+        /// Exactly like [`Error::message`](crate::Error::message), it is not
+        /// part of the stability contract and must never be parsed or
+        /// matched on.
+        ///
+        /// The equivalent [`Error`](crate::Error) carries the same
+        /// information as structured data too — for a mixed federation,
+        /// [`ErrorDetails::MixedModuleGenerations`](crate::ErrorDetails::MixedModuleGenerations)
+        /// — and mirroring that envelope here, so a quarantine is as
+        /// machine-readable as the error it corresponds to, is a wanted
+        /// follow-up rather than something a caller should work around by
+        /// parsing this string.
+        message: String,
+    },
+    /// Stored and intact, and stopped because the application asked for
+    /// that with [`Sdk::close_federation`].
+    ///
+    /// Distinct from [`Quarantined`](FederationStatus::Quarantined) in one
+    /// way that matters: later builds do *not* reopen it, because someone
+    /// chose this. [`Sdk::reopen_federation`] undoes the choice.
+    Closed,
+    /// An erase has been committed and is being carried out, or is waiting
+    /// to be finished by a retry or the next
+    /// [`SdkBuilder::build`](crate::SdkBuilder::build).
+    ///
+    /// The federation will not be opened again and cannot be resurrected;
+    /// see [`Sdk::forget_federation`]. An application seeing this should
+    /// render "removing…" rather than a wallet.
+    Forgetting,
+    /// The erase completed: this federation is gone.
+    ///
+    /// This is a *notification*, not a stored state. It is delivered once by
+    /// [`FederationStatusUpdates::next`] so a list screen can drop the row,
+    /// and it is the last thing that subscriber will ever say about this id.
+    /// [`Sdk::federation_status`] returns `None` for a forgotten federation,
+    /// because there is nothing left for it to describe.
+    Forgotten,
+}
+
+/// A stored federation, described without a live handle.
+///
+/// [`Sdk::stored_federations`] returns these and
+/// [`FederationStatusUpdates::next`] yields them. It exists because most of
+/// what an application needs in order to *list* federations is needed
+/// exactly when there is no [`Federation`] to ask: a closed federation, a
+/// quarantined one, one whose erase is finishing. Making
+/// [`Sdk::federations`] polymorphic over live and non-live federations would
+/// have changed what a `Federation` means — every handle in that list can be
+/// acted on — so the listing gets its own small record instead.
+///
+/// Owned, flat, and free of tuples and borrows, so it crosses into Swift,
+/// Kotlin and TypeScript as a plain record. `#[non_exhaustive]`: fields may
+/// be added, so construct it only through the SDK and match it with `..` or
+/// by field access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FederationInfo {
+    /// The federation's id — the key for [`Sdk::federation`],
+    /// [`Sdk::federation_status`] and [`Sdk::reopen_federation`], and what
+    /// identifies the row to replace when this record arrives from
+    /// [`FederationStatusUpdates::next`].
+    pub id: FederationId,
+    /// The federation's human-readable name, when its configuration
+    /// declares one.
+    ///
+    /// From the last configuration that validated, exactly as
+    /// [`Federation::name`](crate::Federation::name) reports it — so a
+    /// closed or quarantined federation still has a label to show. Not a
+    /// verified or unique identifier: identity is [`id`](FederationInfo::id).
+    pub name: Option<String>,
+    /// The Bitcoin network this federation operates on, from the same
+    /// last-good configuration as [`name`](FederationInfo::name).
+    pub network: Network,
+    /// What the SDK can currently do with it.
+    pub status: FederationStatus,
+}
+
+/// One independent subscription to every federation's status.
+///
+/// Obtained from [`Sdk::federation_status_updates`]. Not `Clone`, for the
+/// same reason [`BalanceUpdates`](crate::BalanceUpdates) is not: it is a
+/// single cursor, and a second consumer should have a second subscription.
+/// Dropping it stops only this subscription and never any work.
+#[derive(Debug)]
+pub struct FederationStatusUpdates {
+    inner: Arc<FederationStatusUpdatesInner>,
+}
+
+impl FederationStatusUpdates {
+    /// Waits for the next status change, anywhere in this instance.
+    ///
+    /// The first calls deliver the current state of every federation this
+    /// storage holds — one [`FederationInfo`] each, in unspecified order —
+    /// so a subscriber can be the only thing a list screen reads, without a
+    /// separate priming call to [`Sdk::stored_federations`] that could race
+    /// with the first change. After that, each call resolves when some
+    /// federation's status changes.
+    ///
+    /// # Why this is not `Option`-shaped
+    ///
+    /// Like [`BalanceUpdates::next`](crate::BalanceUpdates::next) and unlike
+    /// [`OperationUpdates::next`](crate::OperationUpdates::next), there is
+    /// no final value: an instance's set of federations can always change
+    /// again, so `Ok(None)` could not arise and would be a permanently-`Some`
+    /// wrapper for every caller to unwrap. The one way this stream ends is
+    /// the instance shutting down, and that is a condition callers must
+    /// notice, so it surfaces as
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    ///
+    /// A federation being forgotten is not the end of the stream either. It
+    /// arrives as an ordinary update carrying
+    /// [`Forgotten`](FederationStatus::Forgotten), which is the last update
+    /// for that id and tells a list screen to drop the row; the
+    /// subscription itself stays open for every other federation.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once the
+    /// SDK has been shut down — the terminal condition for this stream, and
+    /// what the very first call yields on a subscriber taken after
+    /// shutdown. Other errors are infrastructure failures:
+    /// [`Storage`](crate::ErrorCode::Storage) or
+    /// [`Internal`](crate::ErrorCode::Internal).
+    pub async fn next(&mut self) -> Result<FederationInfo> {
+        unimplemented!()
+    }
+}
+
 /// Placeholder for the shared instance state. Handles hold this behind an
 /// `Arc` so cloning an [`Sdk`] shares one set of federations, one storage,
 /// and one pool of background work.
 #[derive(Debug)]
 struct SdkInner;
+
+/// Placeholder for one federation-status subscription's state.
+#[derive(Debug)]
+struct FederationStatusUpdatesInner;
 
 #[cfg(test)]
 mod tests {
@@ -421,5 +1235,50 @@ mod tests {
         let rendered = format!("{builder:?}");
         assert!(rendered.contains("mnemonic"));
         assert!(rendered.contains("None"));
+    }
+
+    #[test]
+    fn a_quarantine_carries_the_code_to_branch_on() {
+        // The point of the status is that an application learns *why* a
+        // federation is unavailable without provoking an error, so the code
+        // has to be readable straight off the value.
+        let status = FederationStatus::Quarantined {
+            code: ErrorCode::UnsupportedFederation,
+            message: "modules mint=v1, ln=v2".to_owned(),
+        };
+        match &status {
+            FederationStatus::Quarantined { code, .. } => {
+                assert_eq!(*code, ErrorCode::UnsupportedFederation);
+            }
+            other => panic!("expected a quarantine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn statuses_distinguish_deliberate_closure_from_quarantine() {
+        // These two are both "stored, intact, not running" and differ only
+        // in whether a later build retries. Collapsing them would lose the
+        // difference between a wallet the user left and one that broke.
+        assert_ne!(
+            FederationStatus::Closed,
+            FederationStatus::Quarantined {
+                code: ErrorCode::FederationUnreachable,
+                message: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_stored_federation_is_describable_without_a_live_handle() {
+        // The listing record must be constructible for a federation that
+        // has no handle at all — that is the case it exists for.
+        let info = FederationInfo {
+            id: FederationId::from_raw("fed-id".to_owned()),
+            name: Some("Test Federation".to_owned()),
+            network: Network::Regtest,
+            status: FederationStatus::Closed,
+        };
+        assert_eq!(info.status, FederationStatus::Closed);
+        assert_eq!(info.clone(), info);
     }
 }

@@ -110,7 +110,7 @@ impl Federation {
     /// on an on-chain deposit to confirm — is not counted here. The balance
     /// is what could be spent right now.
     ///
-    /// While a recovery is in progress the balance may be incomplete and
+    /// While a recovery is incomplete the balance may be partial and
     /// may keep changing as the rescan proceeds; it settles when recovery
     /// finishes.
     ///

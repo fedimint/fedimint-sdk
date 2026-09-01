@@ -30,6 +30,104 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// An application that needs durable, portable history must keep its own,
 /// keyed by [`ActivityItem::operation_id`].
+///
+/// # What the numbers mean
+///
+/// [`amount`](ActivityItem::amount) and [`fee`](ActivityItem::fee) are
+/// defined here, once, for every kind — because two bindings rendering the
+/// same row have to produce the same two numbers, and "the principal,
+/// excluding fee" does not make that true. It does not say whether an
+/// incoming row is what the payer sent or what landed in the balance, and it
+/// does not say whether an ecash send reports what the user asked for or what
+/// the mint actually handed out. Those are different numbers.
+///
+/// One rule, in three clauses:
+///
+/// 1. **`amount` is the counterparty figure** — what the other side received
+///    (outgoing) or sent (incoming). Gross of this wallet's fees, and
+///    *actual* rather than requested.
+/// 2. **`fee` is what this wallet paid** for that transfer: on top of the
+///    counterparty figure when outgoing, out of it when incoming.
+/// 3. **The balance therefore moves by `amount + fee` outgoing, and
+///    `amount - fee` incoming.**
+///
+/// A receive row is gross, then: the payer paid `amount`, and the credit that
+/// landed is `amount - fee`. A send row's `amount` is what the payee got, and
+/// the debit was `amount + fee`. No row folds a fee into `amount`, and no row
+/// reports a net figure there.
+///
+/// | kind | `amount` — what the counterparty sent or received | `fee` |
+/// | --- | --- | --- |
+/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes actually handed over, which the mint may have rounded **up** from the amount requested | what issuing those notes cost |
+/// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes redeemed | the reissuance fee taken out of it |
+/// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee bound by the executed quote, which is the fee actually charged |
+/// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee taken out of it |
+/// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before the peg-in fee; `None` until a transaction is seen | the peg-in fee; `None` until it is known |
+/// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
+/// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
+///
+/// ## The identity describes what was attempted
+///
+/// A row's numbers describe the transfer the operation set out to make. They
+/// are *also* the realised balance movement exactly when
+/// [`status`](ActivityItem::status) is [`Success`](ActivityStatus::Success).
+/// For the other buckets:
+///
+/// - [`Refunded`](ActivityStatus::Refunded) and
+///   [`Canceled`](ActivityStatus::Canceled): the transfer did not happen and
+///   the value is back, so the net movement is zero apart from a fee already
+///   spent. The fields go on describing the attempt — "1000 sat, refunded" is
+///   what a list needs to show — and it is the bucket, not the numbers, that
+///   says the money came back.
+/// - [`Failed`](ActivityStatus::Failed): the transfer neither completed nor
+///   resolved into a clean return, so the balance effect is not something
+///   this row can assert. Render the attempt; read the operation and the
+///   balance for the rest.
+/// - [`Unknown`](ActivityStatus::Unknown): `amount`, `fee` and
+///   [`direction`](ActivityItem::direction) are all `None`, so there is no
+///   identity to reconcile and nothing to render wrongly.
+///
+/// ## Requested is not actual
+///
+/// For an ecash send the two genuinely differ, and this row reports the
+/// actual. A mint issues notes in fixed denominations, so a request for
+/// 1234 msat may be satisfied by notes worth more than that, and selecting
+/// them may itself cost a fee. `amount` is the value of the notes the
+/// receiver can redeem, which is the only figure that reconciles with what
+/// left the balance. What the caller asked for is not thrown away — it is on
+/// the send's own details record, as `EcashSendDetails::requested_amount` —
+/// so a receipt can show both without this row carrying a third number.
+///
+/// ## On-chain rows mix two denominations, exactly
+///
+/// An on-chain operation's chain-side figures are whole
+/// [`Sats`](crate::Sats) — a transaction output cannot be a fraction of a
+/// satoshi — while this row is in millisatoshi [`Amount`]s so that one list
+/// can mix kinds. The conversion is
+/// [`Sats::to_amount`](crate::Sats::to_amount), which rounds nothing: a
+/// satoshi is exactly 1000 msat. So an on-chain row's `amount` is always a
+/// whole multiple of 1000 msat, and a caller that wants satoshis back should
+/// use [`Amount::to_sats_exact`](crate::Amount::to_sats_exact) rather than
+/// dividing and hoping.
+///
+/// Its `fee` is not. The federation-side costs of an on-chain operation are
+/// quoted in millisatoshis and can carry sub-satoshi precision, so `fee`
+/// here — and a deposit's net credit — may not divide by 1000. That is why
+/// the on-chain quote reports its amount in `Sats` but its fee and total in
+/// `Amount`, and it is the reason to read a fee rather than derive one.
+///
+/// ## When two numbers are not enough
+///
+/// They often are not, and that is deliberate: this is a list row, and the
+/// full account of an operation lives on the operation. Resolve
+/// [`operation_id`](ActivityItem::operation_id) with
+/// [`Federation::operation`](crate::Federation::operation), then read
+/// [`Operation::details`](crate::Operation::details) for the requested
+/// amount, the gross deposit, the invoice, the destination, the route and the
+/// executed quote, and [`Operation::state`](crate::Operation::state) for
+/// where it stands. Two numbers and a bucket are what a list needs; a receipt
+/// screen should not be built out of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActivityItem {
@@ -53,20 +151,35 @@ pub struct ActivityItem {
     /// user's own history and unsuitable as evidence of when anything
     /// actually happened.
     pub time: Timestamp,
-    /// The principal amount, **excluding** any fee.
+    /// What the counterparty sent or received: gross of this wallet's fees,
+    /// and actual rather than requested.
     ///
-    /// `None` for kinds that have no single fixed amount — an on-chain
-    /// deposit before anything has arrived, for instance. Keeping the
-    /// principal separate from [`ActivityItem::fee`] means a list can show
-    /// "1000 sat" as the amount of a payment rather than a fee-inclusive
-    /// total that matches neither what the user typed nor what the payee
-    /// received.
+    /// Which figure that is for each kind, and what it deliberately is not,
+    /// is fixed by the table in [What the numbers
+    /// mean](ActivityItem#what-the-numbers-mean) — that table is the
+    /// contract, and it is what stops two bindings from rendering the same
+    /// row differently.
+    ///
+    /// `None` for a kind with no single counterparty figure: a recovery,
+    /// which transfers nothing; a row this SDK cannot interpret, where any
+    /// number would be invented; or an on-chain deposit before a transaction
+    /// has been seen, where there is nothing yet to report. A figure that
+    /// starts `None` and becomes known is written once and never changes
+    /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee paid, when it is known.
+    /// The fee this wallet paid for the transfer, when it is known.
     ///
-    /// `None` when the kind has no fee, or when the fee is not known yet
-    /// (an operation still in flight). Always a separate field from
-    /// [`ActivityItem::amount`], never folded into it.
+    /// Always a separate field from [`ActivityItem::amount`] and never folded
+    /// into it: an outgoing row debited `amount + fee`, an incoming row
+    /// credited `amount - fee`, and a list showing "1000 sat" wants the
+    /// number the user typed or the payee received rather than a
+    /// fee-inclusive total that matches neither.
+    ///
+    /// `None` when the kind has no fee at all, or when the fee is not knowable
+    /// yet — an operation still in flight, or an on-chain deposit whose
+    /// peg-in fee only exists once something has arrived. `Some(zero)` and
+    /// `None` are different answers, and a UI should treat them so: the first
+    /// says the transfer was free, the second that this row cannot say yet.
     pub fee: Option<Amount>,
     /// Whether value moved in or out.
     ///
@@ -75,9 +188,36 @@ pub struct ActivityItem {
     /// third "neither" variant on [`Direction`] so that a UI branching on
     /// direction handles the no-direction case by not drawing an arrow at
     /// all, rather than by drawing a third kind of arrow.
+    ///
+    /// It also selects which half of the accounting identity applies:
+    /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
+    /// [`Incoming`](Direction::Incoming) credited `amount - fee`. A row with
+    /// no direction has no identity to reconcile, and both figures are
+    /// `None`.
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
     pub status: ActivityStatus,
+    /// Whether the operation has finished.
+    ///
+    /// `true` once it has reached a state it will never leave — the same
+    /// predicate [`OperationState::is_final`](crate::OperationState::is_final)
+    /// applies to a typed state.
+    ///
+    /// This is recorded independently of [`status`](ActivityItem::status)
+    /// because for one bucket the two genuinely come apart. An
+    /// [`Unknown`](ActivityStatus::Unknown) row's outcome cannot be
+    /// interpreted, and inferring from that that it must still be running
+    /// would be a fabrication: a row this SDK version cannot read may well
+    /// have settled years ago. Whether an operation *finished* is a different
+    /// question from *how it turned out*, and it is one this SDK can still
+    /// answer for a record it cannot otherwise interpret.
+    ///
+    /// For every other bucket the two agree, and must:
+    /// `is_final` is `false` exactly when `status` is
+    /// [`Pending`](ActivityStatus::Pending). That is what makes this the one
+    /// predicate a list can use to decide whether to draw a spinner, on every
+    /// row, with no special case for the rows it does not understand.
+    pub is_final: bool,
 }
 
 /// Which way value moved.
@@ -94,8 +234,13 @@ pub enum Direction {
 ///
 /// Coarse on purpose: this is the summary a list row shows, and the full
 /// detail lives on the operation itself, reachable through
-/// [`ActivityItem::operation_id`]. Mapping a rich state machine down to
-/// five buckets is the whole job of this type.
+/// [`ActivityItem::operation_id`]. Mapping a rich state machine down to a
+/// handful of buckets is the whole job of this type.
+///
+/// Every variant here is an *outcome*. Whether the operation has finished is
+/// a separate axis, carried by [`ActivityItem::is_final`], and the two are
+/// only redundant for the five buckets this SDK can interpret; see
+/// [`Unknown`](Self::Unknown).
 ///
 /// [`Refunded`](Self::Refunded) and [`Canceled`](Self::Canceled) are
 /// first-class rather than being folded into
@@ -106,9 +251,11 @@ pub enum Direction {
 ///
 /// # Which operation state lands in which bucket
 ///
-/// Every non-final state maps to [`Pending`](Self::Pending), so only the
-/// final ones are listed. There is no unmapped state: if a state is not
-/// here, it is not final.
+/// For a kind this SDK version understands, every non-final state maps to
+/// [`Pending`](Self::Pending), so only the final ones are listed. There is no
+/// unmapped state: if a state is not here, it is not final. A row whose state
+/// cannot be read at all is the one case outside this table, and it is
+/// [`Unknown`](Self::Unknown).
 ///
 /// | operation state | bucket |
 /// | --- | --- |
@@ -138,28 +285,45 @@ pub enum Direction {
 /// it joins the withdrawn-invoice case under
 /// [`Canceled`](Self::Canceled).
 ///
-/// # An `Unknown` row
+/// # An uninterpretable row
 ///
-/// A row whose
-/// [`kind`](crate::ActivityItem::kind) is
-/// [`OperationKind::Unknown`](crate::OperationKind::Unknown) was written by
-/// a version of the SDK that understood something this one does not, so its
-/// state cannot be interpreted and must not be guessed at. Such a row
-/// reports [`Pending`](Self::Pending) for
-/// [`status`](crate::ActivityItem::status) — the honest answer is "this SDK
-/// cannot tell that it finished" — and `None` for
+/// A row whose [`kind`](crate::ActivityItem::kind) is
+/// [`OperationKind::Unknown`](crate::OperationKind::Unknown) was written by a
+/// version of the SDK that understood something this one does not, so its
+/// outcome cannot be interpreted and must not be guessed at. Such a row
+/// reports [`Unknown`](Self::Unknown).
+///
+/// It does **not** report [`Pending`](Self::Pending). An earlier revision of
+/// this documentation said it did, on the reasoning that "this SDK cannot
+/// tell that it finished" is the honest answer; it is not, for two reasons.
+/// It is a claim about the money — a payment that settled long ago rendered
+/// for ever as one still in flight — and it is not even true: finality is
+/// recorded independently of the outcome, so the SDK can tell, and
+/// [`ActivityItem::is_final`] says so. A finished row this build cannot read
+/// therefore reports `status == Unknown` with `is_final == true`, and one that
+/// is genuinely still running reports the same status with
+/// `is_final == false`. The two cases are distinguishable, which is the whole
+/// point.
+///
 /// [`amount`](crate::ActivityItem::amount),
 /// [`fee`](crate::ActivityItem::fee) and
-/// [`direction`](crate::ActivityItem::direction). An application should
-/// render it as an opaque entry rather than as a stalled payment; the fields
-/// are absent precisely so it has nothing to render wrongly.
+/// [`direction`](crate::ActivityItem::direction) stay `None`: the fields are
+/// absent precisely so there is nothing to render wrongly. What the row
+/// actually said about itself is still readable — resolve
+/// [`operation_id`](crate::ActivityItem::operation_id) with
+/// [`Federation::operation`](crate::Federation::operation) and read
+/// [`AnyOperation::raw_kind`](crate::AnyOperation::raw_kind) — so an
+/// application can log or display *which* thing it did not understand instead
+/// of only that something was unrecognised. Render it as an opaque entry:
+/// not as a stalled payment, and not as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ActivityStatus {
-    /// Still in flight — the operation has not reached a final state. Also
-    /// what an uninterpretable
-    /// [`OperationKind::Unknown`](crate::OperationKind::Unknown) row
-    /// reports, since this SDK version cannot tell that it finished.
+    /// Still in flight — the operation has not reached a final state.
+    ///
+    /// Reported only for rows this SDK version can interpret. A row it
+    /// cannot interpret reports [`Unknown`](Self::Unknown) instead, whether
+    /// or not it has finished.
     Pending,
     /// Completed as intended.
     Success,
@@ -177,6 +341,29 @@ pub enum ActivityStatus {
     /// [`Failed`](Self::Failed): nothing went wrong, the transfer just did
     /// not happen.
     Canceled,
+    /// This SDK version cannot interpret how the row turned out.
+    ///
+    /// Not a sixth outcome, but the absence of a reading, and it is reported
+    /// in two situations:
+    ///
+    /// - the row's [`kind`](crate::ActivityItem::kind) is
+    ///   [`OperationKind::Unknown`](crate::OperationKind::Unknown) — a record
+    ///   written by a build that understood a module or an operation this one
+    ///   does not; and
+    /// - the kind is one this build knows but the persisted final state is a
+    ///   variant its state enum does not have, which a newer build can write
+    ///   because every state enum here is `#[non_exhaustive]`.
+    ///
+    /// In both, the outcome is unreadable while the row itself is perfectly
+    /// real. Guessing is not an option, and neither is
+    /// [`Pending`](Self::Pending): see [the section
+    /// above](ActivityStatus#an-uninterpretable-row).
+    ///
+    /// Whether such an operation has finished is a separate question, and one
+    /// the SDK does answer — read [`ActivityItem::is_final`]. A UI should show
+    /// the row, its time, and that its outcome is unknown, and should show
+    /// neither an amount nor a failure.
+    Unknown,
 }
 
 /// One page of activity history.
@@ -197,4 +384,189 @@ pub struct ActivityPage {
     /// reload it, but never construct or interpret one. See
     /// [`Cursor`](crate::Cursor).
     pub next: Option<Cursor>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row with the fields this module's tests care about, and defensible
+    /// filler for the rest.
+    fn row(
+        kind: OperationKind,
+        amount: Option<Amount>,
+        fee: Option<Amount>,
+        direction: Option<Direction>,
+        status: ActivityStatus,
+        is_final: bool,
+    ) -> ActivityItem {
+        ActivityItem {
+            operation_id: OperationId::from_raw("op".to_owned()),
+            kind,
+            time: Timestamp::from_epoch_millis(1_700_000_000_000),
+            amount,
+            fee,
+            direction,
+            status,
+            is_final,
+        }
+    }
+
+    #[test]
+    fn an_uninterpretable_row_may_already_be_final() {
+        // The case the `Pending` reading got wrong: a row this build cannot
+        // read, that finished long ago. Its outcome is unknown; its finality
+        // is not.
+        let settled = row(
+            OperationKind::Unknown,
+            None,
+            None,
+            None,
+            ActivityStatus::Unknown,
+            true,
+        );
+        assert_eq!(settled.status, ActivityStatus::Unknown);
+        assert!(settled.is_final);
+        assert_ne!(settled.status, ActivityStatus::Pending);
+
+        // And the same status with the other finality, which is the point of
+        // keeping the two apart.
+        let running = ActivityItem {
+            is_final: false,
+            ..settled.clone()
+        };
+        assert_eq!(running.status, settled.status);
+        assert_ne!(running, settled);
+    }
+
+    #[test]
+    fn an_uninterpretable_row_renders_no_numbers() {
+        let unknown = row(
+            OperationKind::Unknown,
+            None,
+            None,
+            None,
+            ActivityStatus::Unknown,
+            true,
+        );
+        assert_eq!(unknown.amount, None);
+        assert_eq!(unknown.fee, None);
+        assert_eq!(unknown.direction, None);
+    }
+
+    #[test]
+    fn finality_and_pending_agree_for_interpretable_rows() {
+        let pending = row(
+            OperationKind::LnSend,
+            Some(Amount::from_msats(1_000)),
+            None,
+            Some(Direction::Outgoing),
+            ActivityStatus::Pending,
+            false,
+        );
+        assert_eq!(pending.status == ActivityStatus::Pending, !pending.is_final);
+
+        for status in [
+            ActivityStatus::Success,
+            ActivityStatus::Failed,
+            ActivityStatus::Refunded,
+            ActivityStatus::Canceled,
+        ] {
+            let settled = ActivityItem {
+                status,
+                is_final: true,
+                ..pending.clone()
+            };
+            assert_eq!(settled.status == ActivityStatus::Pending, !settled.is_final);
+        }
+    }
+
+    #[test]
+    fn outgoing_rows_debit_amount_plus_fee() {
+        let sent = row(
+            OperationKind::LnSend,
+            Some(Amount::from_msats(1_000)),
+            Some(Amount::from_msats(10)),
+            Some(Direction::Outgoing),
+            ActivityStatus::Success,
+            true,
+        );
+        let debited = sent
+            .amount
+            .and_then(|amount| sent.fee.and_then(|fee| amount.checked_add(fee)));
+        assert_eq!(debited, Some(Amount::from_msats(1_010)));
+    }
+
+    #[test]
+    fn incoming_rows_credit_amount_minus_fee() {
+        let received = row(
+            OperationKind::LnReceive,
+            Some(Amount::from_msats(1_000)),
+            Some(Amount::from_msats(10)),
+            Some(Direction::Incoming),
+            ActivityStatus::Success,
+            true,
+        );
+        // The gross figure is what the payer paid, so the credit is smaller
+        // than the row's amount — never the other way round.
+        let credited = received
+            .amount
+            .and_then(|amount| received.fee.and_then(|fee| amount.checked_sub(fee)));
+        assert_eq!(credited, Some(Amount::from_msats(990)));
+        assert!(credited < received.amount);
+    }
+
+    #[test]
+    fn a_free_transfer_and_an_unknown_fee_are_different_answers() {
+        let free = row(
+            OperationKind::LnSend,
+            Some(Amount::from_msats(1_000)),
+            Some(Amount::from_msats(0)),
+            Some(Direction::Outgoing),
+            ActivityStatus::Success,
+            true,
+        );
+        let not_yet = ActivityItem {
+            fee: None,
+            ..free.clone()
+        };
+        assert_ne!(free.fee, not_yet.fee);
+    }
+
+    #[test]
+    fn on_chain_rows_are_whole_multiples_of_a_thousand_msats() {
+        let deposited = crate::Sats::from_sats(25_000);
+        let deposit = row(
+            OperationKind::OnchainReceive,
+            deposited.to_amount(),
+            crate::Sats::from_sats(300).to_amount(),
+            Some(Direction::Incoming),
+            ActivityStatus::Success,
+            true,
+        );
+        assert_eq!(deposit.amount, Some(Amount::from_msats(25_000_000)));
+        assert_eq!(
+            deposit.amount.and_then(Amount::to_sats_exact),
+            Some(deposited)
+        );
+        assert_eq!(
+            deposit.fee.and_then(Amount::to_sats_exact),
+            Some(crate::Sats::from_sats(300))
+        );
+    }
+
+    #[test]
+    fn a_recovery_row_has_no_transfer_to_account_for() {
+        let recovery = row(
+            OperationKind::Recovery,
+            None,
+            None,
+            None,
+            ActivityStatus::Success,
+            true,
+        );
+        assert_eq!(recovery.amount, None);
+        assert_eq!(recovery.fee, None);
+        assert_eq!(recovery.direction, None);
+    }
 }

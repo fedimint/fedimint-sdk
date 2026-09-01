@@ -27,11 +27,16 @@ impl Bolt11Invoice {
     }
 
     /// The amount encoded in the invoice, or `None` if the invoice is
-    /// amountless (the payer chooses the amount).
+    /// amountless (the payer would choose the amount).
     ///
-    /// An amountless invoice cannot be quoted without supplying an explicit
-    /// amount override; doing so fails with
-    /// [`ErrorCode::AmountRequired`](crate::ErrorCode::AmountRequired).
+    /// `None` means the invoice cannot be paid through this SDK at all, and
+    /// no amount the caller supplies can change that: fedimint does not
+    /// support paying amountless BOLT11 invoices, deliberately, because it
+    /// cannot be done safely — it is a permanent upstream position rather
+    /// than a gap waiting to be filled. Quoting such an invoice fails with
+    /// [`ErrorCode::AmountlessInvoice`](crate::ErrorCode::AmountlessInvoice),
+    /// so checking this accessor is how an application declines the invoice
+    /// with a useful message instead of surfacing a failed quote.
     pub fn amount(&self) -> Option<Amount> {
         unimplemented!()
     }

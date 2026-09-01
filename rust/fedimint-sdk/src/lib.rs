@@ -86,12 +86,23 @@
 //!     println!("{capabilities:?}");
 //!
 //!     // Ecash: notes to hand over out of band, plus an operation that says
-//!     // whether they were redeemed or came back.
+//!     // whether they were redeemed or came back. Quote first here too — the
+//!     // mint rounds the request up to a denomination it can issue, and note
+//!     // selection can cost a fee, so the debit is not the amount asked for.
 //!     if let Some(ecash) = federation.ecash() {
-//!         let sent = ecash.send(Amount::from_msats(50_000)).await?;
+//!         let quote = ecash.quote(Amount::from_msats(50_000)).await?;
+//!         println!(
+//!             "{} of notes plus {} fee ({} debited), good until {}",
+//!             quote.notes_value(),
+//!             quote.fee(),
+//!             quote.total(),
+//!             quote.expires_at(),
+//!         );
+//!         let sent = ecash.send(quote).await?;
 //!         println!("give these to the receiver: {}", sent.notes);
-//!         // Worth persisting: an id is all it takes to find this send again
-//!         // after the process dies.
+//!         // Worth persisting, though not required: the notes are readable
+//!         // again from `Operation::details` after a restart, and the id is
+//!         // all it takes to find this send.
 //!         println!("resume with {}", sent.operation.id());
 //!     }
 //!
@@ -99,9 +110,9 @@
 //!     // number the user agreed to is the number that gets paid.
 //!     if let Some(lightning) = federation.lightning() {
 //!         let invoice: Bolt11Invoice = invoice.parse()?;
-//!         // `None` because this invoice names its own amount; an amountless
-//!         // invoice needs `Some(amount)` here instead.
-//!         let quote = lightning.quote(&invoice, None).await?;
+//!         // An invoice states its own amount. One that does not cannot be
+//!         // paid at all, so there is nothing to override here.
+//!         let quote = lightning.quote(&invoice).await?;
 //!         println!(
 //!             "pay {} plus {} fee ({} total) via {:?}, good until {}",
 //!             quote.invoice_amount(),
@@ -417,18 +428,30 @@ mod storage;
 mod types;
 
 pub use activity::{ActivityItem, ActivityPage, ActivityStatus, Direction};
-pub use ecash::{Ecash, EcashReceiveState, EcashSend, EcashSendState};
-pub use error::{Error, ErrorCode, Result};
+pub use ecash::{
+    Ecash, EcashQuote, EcashReceiveDetails, EcashReceiveState, EcashSend, EcashSendDetails,
+    EcashSendState,
+};
+pub use error::{Error, ErrorCode, ErrorDetails, ModuleGeneration, Result};
 pub use federation::{BalanceUpdates, Capabilities, Federation};
-pub use lightning::{Lightning, LightningRoute, LnQuote, LnReceive, LnReceiveState, LnSendState};
+pub use lightning::{
+    Lightning, LightningRoute, LnFeeBreakdown, LnQuote, LnReceive, LnReceiveDetails,
+    LnReceiveState, LnSendDetails, LnSendState,
+};
 pub use meta::{ConsensusMetadata, Meta};
-pub use onchain::{Onchain, OnchainQuote, OnchainReceive, OnchainReceiveState, OnchainSendState};
-pub use operation::{AnyOperation, Operation, OperationKind, OperationState, OperationUpdates};
+pub use onchain::{
+    Onchain, OnchainFeeBreakdown, OnchainQuote, OnchainReceive, OnchainReceiveDetails,
+    OnchainReceiveState, OnchainSendDetails, OnchainSendState,
+};
+pub use operation::{
+    AnyOperation, DetailedOperationState, Operation, OperationDetails, OperationKind,
+    OperationState, OperationUpdates, RawOperationKind,
+};
 // Behind the off-by-default `experimental` feature, and excluded from the
 // crate's stability contract; see the module's own documentation.
 #[cfg(feature = "experimental")]
 pub use recovery::{Recovery, RecoveryState};
-pub use sdk::{Sdk, SdkBuilder};
+pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, SdkBuilder};
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
