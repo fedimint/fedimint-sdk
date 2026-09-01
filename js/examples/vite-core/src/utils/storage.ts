@@ -25,9 +25,18 @@ export const clearClientStorage = async (): Promise<void> => {
     if (typeof window !== 'undefined' && window.indexedDB) {
       if (typeof window.indexedDB.databases === 'function') {
         const dbs = await window.indexedDB.databases()
-        for (const db of dbs) {
-          if (db.name) window.indexedDB.deleteDatabase(db.name)
-        }
+        const deletePromises = dbs
+          .filter((db) => db.name && db.name.includes('fedimint'))
+          .map((db) => {
+            return new Promise<void>((resolve, reject) => {
+              const req = window.indexedDB.deleteDatabase(db.name!)
+              req.onsuccess = () => resolve()
+              req.onerror = () => reject(req.error)
+              req.onblocked = () => resolve()
+            })
+          })
+        await Promise.all(deletePromises)
+        console.log('Fedimint IndexedDB databases wiped successfully.')
       }
     }
   } catch (e) {
