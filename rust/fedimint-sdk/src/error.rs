@@ -212,12 +212,7 @@ impl Error {
         message: impl Into<String>,
         details: ErrorDetails,
     ) -> Error {
-        Error::with_projected_details(
-            code,
-            message,
-            details,
-            RawErrorDetails::CURRENT_VERSION,
-        )
+        Error::with_projected_details(code, message, details, RawErrorDetails::CURRENT_VERSION)
     }
 
     /// Constructs an error whose detail was projected off a received raw
@@ -442,12 +437,7 @@ impl Diagnostic {
         message: impl Into<String>,
         details: ErrorDetails,
     ) -> Diagnostic {
-        Diagnostic::with_projected_details(
-            code,
-            message,
-            details,
-            RawErrorDetails::CURRENT_VERSION,
-        )
+        Diagnostic::with_projected_details(code, message, details, RawErrorDetails::CURRENT_VERSION)
     }
 
     /// The projection counterpart of [`Diagnostic::with_details`]: builds a
