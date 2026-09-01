@@ -20,8 +20,13 @@
 pub enum Network {
     /// Bitcoin mainnet.
     Bitcoin,
-    /// The long-running public Bitcoin testnet.
+    /// The long-running public Bitcoin testnet, testnet3.
     Testnet,
+    /// Testnet4: the successor public testnet, introduced after testnet3's
+    /// difficulty and supply problems made it unreliable to test against.
+    /// A separate network with its own genesis block, not a continuation of
+    /// [`Testnet`](Self::Testnet).
+    Testnet4,
     /// Signet: a public test network secured by a signer rather than
     /// proof-of-work, generally more stable than testnet.
     Signet,

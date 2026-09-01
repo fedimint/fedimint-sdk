@@ -155,6 +155,20 @@ pub enum ErrorCode {
     FederationClosed,
     /// The operation did not complete within an internal time budget.
     Timeout,
+    /// The platform's secure random source was unavailable or failed, so no
+    /// entropy could be drawn — as when
+    /// [`Mnemonic::generate`](crate::Mnemonic::generate) creates a fresh seed,
+    /// directly or through [`SdkBuilder::build`](crate::SdkBuilder::build)
+    /// establishing one for empty storage.
+    ///
+    /// This is the one failure a caller can do nothing about: there is no
+    /// input to correct, no permission to grant, and no retry that reliably
+    /// helps. It is still surfaced rather than papered over, because the
+    /// alternatives are worse — panicking would take down a binding layer
+    /// that must not panic, and falling back to a weaker source would mint a
+    /// guessable seed and lose funds silently. Report it and stop; do not
+    /// substitute entropy of your own.
+    Entropy,
     /// The local storage backend failed to read or write.
     Storage,
     /// An internal error that does not fit any other category. Its presence

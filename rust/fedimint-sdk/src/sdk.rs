@@ -309,7 +309,11 @@ impl SdkBuilder {
     /// Supply one to restore an existing wallet from a written-down phrase.
     /// Omit it and the instance uses the seed already in storage, or — if
     /// the storage is empty — generates a fresh one and persists it before
-    /// deriving anything from it.
+    /// deriving anything from it. Generating a seed can fail, because drawing
+    /// secure entropy can (see [`Mnemonic::generate`]); when it does,
+    /// [`SdkBuilder::build`] reports
+    /// [`Entropy`](crate::ErrorCode::Entropy) rather than panicking or
+    /// settling for a weaker source.
     ///
     /// Supplying a mnemonic that differs from the one the storage already
     /// holds is a mistake the SDK will not paper over: [`SdkBuilder::build`]
@@ -342,7 +346,11 @@ impl SdkBuilder {
     ///    seed, the supplied or freshly generated mnemonic is written
     ///    durably *now* — before any federation-derived state exists — so
     ///    there is no crash window that could leave state derived from a
-    ///    seed that was never saved.
+    ///    seed that was never saved. Generating that mnemonic is itself
+    ///    fallible (see [`Mnemonic::generate`]): if the platform's secure
+    ///    random source fails, the call fails with
+    ///    [`Entropy`](crate::ErrorCode::Entropy) and, as in step 2's other
+    ///    failure, nothing has been written.
     /// 3. **Reopen the federations.** Each federation the storage remembers
     ///    is revalidated (including the module-generation rule described on
     ///    [`Sdk::join`]) and started, and its unfinished operations resume
@@ -361,6 +369,8 @@ impl SdkBuilder {
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) if no storage was
     /// set, [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
+    /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
+    /// generated and the platform's secure random source failed,
     /// [`Storage`](crate::ErrorCode::Storage) for a backend failure,
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation)
     /// for a remembered federation that no longer validates, and

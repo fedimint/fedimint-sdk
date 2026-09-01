@@ -354,7 +354,7 @@ impl OperationState for LnSendState {
 /// upstream's `AwaitingFunds` is folded into [`Funded`](Self::Funded) —
 /// both mean "paid, settling".
 ///
-/// [`Expired`](Self::Expired) is the one addition. An invoice that simply
+/// [`Expired`](Self::Expired) is one addition. An invoice that simply
 /// lapses unpaid is the most common way a receive ends, and it is not a
 /// failure worth alarming a user about; v1 upstream has no dedicated
 /// variant for it and reports it as a `Canceled` with an expiry reason,
@@ -362,7 +362,28 @@ impl OperationState for LnSendState {
 /// means an application can render "this invoice expired" without parsing
 /// a reason string, and it aligns the SDK with where upstream is going.
 ///
-/// Because that split is a judgement rather than a one-to-one mapping,
+/// [`Failed`](Self::Failed) is the other, and it exists because lnv2 can
+/// reach a state none of the variants above can honestly express. lnv2's
+/// `ReceiveOperationState` includes `Failure`, reached when the payment was
+/// *confirmed* and issuing the ecash for it then failed. That is neither
+/// [`Canceled`](Self::Canceled), which this enum documents as ending the
+/// receive before payment, nor [`Claimed`](Self::Claimed), which would
+/// assert the funds are spendable when they are not. It maps as follows:
+///
+/// - **lnv2.** `ReceiveOperationState::Failure` maps here directly.
+/// - **v1.** No state corresponds. v1 reports the equivalent breakdowns
+///   through `LnReceiveState::Canceled { reason }`, and the SDK does not
+///   inspect that reason to decide between [`Canceled`](Self::Canceled) and
+///   [`Failed`](Self::Failed): a v1 receive that upstream cancels maps to
+///   [`Canceled`](Self::Canceled), full stop. Deciding otherwise would mean
+///   matching on free-form text, which this crate refuses to make any
+///   binding do — the same reasoning that gave [`Expired`](Self::Expired) its
+///   own variant, and the reason [`Failed`](Self::Failed) carries **no
+///   payload**: everything a caller can act on is in the variant itself, and
+///   diagnostic detail belongs in logs, not in a field applications would be
+///   tempted to parse.
+///
+/// Because those splits are judgements rather than a one-to-one mapping,
 /// this variant set is provisional and will be reconciled against the
 /// lightning client when this facade is implemented.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,6 +406,22 @@ pub enum LnReceiveState {
     },
     /// Final: the invoice's expiry passed without it being paid.
     Expired,
+    /// Final: the payment arrived but the ecash for it was never issued.
+    ///
+    /// This is the one genuinely bad outcome of a receive, and it is not the
+    /// ordinary "nobody paid" ending — somebody *did* pay. The payment was
+    /// confirmed and then the step that turns it into spendable notes did
+    /// not complete, so the amount is **not in the balance** and will not
+    /// arrive by waiting. Unlike [`Expired`](Self::Expired) and
+    /// [`Canceled`](Self::Canceled), where nothing moved and nothing is
+    /// owed, this needs an operator's attention: the funds exist somewhere
+    /// between the payer and this wallet and recovering them is not
+    /// something the application can do by retrying.
+    ///
+    /// Render it as an error the user should report, not as an expired
+    /// invoice. Deliberately payload-free; see the enum's mapping notes for
+    /// why, and for how v1 and lnv2 reach (or do not reach) this state.
+    Failed,
 }
 
 impl crate::operation::sealed::Sealed for LnReceiveState {}
@@ -395,9 +432,10 @@ impl OperationState for LnReceiveState {
             LnReceiveState::Created
             | LnReceiveState::WaitingForPayment
             | LnReceiveState::Funded => false,
-            LnReceiveState::Claimed | LnReceiveState::Canceled { .. } | LnReceiveState::Expired => {
-                true
-            }
+            LnReceiveState::Claimed
+            | LnReceiveState::Canceled { .. }
+            | LnReceiveState::Expired
+            | LnReceiveState::Failed => true,
         }
     }
 }
@@ -489,5 +527,10 @@ mod tests {
     #[test]
     fn ln_receive_state_expired_is_final() {
         assert!(LnReceiveState::Expired.is_final());
+    }
+
+    #[test]
+    fn ln_receive_state_failed_is_final() {
+        assert!(LnReceiveState::Failed.is_final());
     }
 }

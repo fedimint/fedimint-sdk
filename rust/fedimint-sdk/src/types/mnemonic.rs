@@ -82,9 +82,26 @@ pub struct Mnemonic {
 impl Mnemonic {
     /// Generates a fresh 12-word English BIP-39 mnemonic.
     ///
-    /// This draws from a system source of entropy, so it has no meaningful
-    /// behavior to specify at the type-skeleton stage.
-    pub fn generate() -> Self {
+    /// The words come from the platform's cryptographically secure random
+    /// source — `getrandom` and friends natively, the Web Crypto API on
+    /// wasm — and that source can genuinely be unavailable or fail on both:
+    /// a sandbox without `/dev/urandom`, an exhausted file-descriptor table,
+    /// a browsing context where `crypto.getRandomValues` is not exposed.
+    /// This returns [`Result`](crate::Result) so that such a failure is a
+    /// value to report rather than a panic. An infallible signature would
+    /// leave only two ways out — panic, or silently fall back to a weaker
+    /// source — and each is unacceptable here: this crate's binding layers
+    /// hold a strict no-panic discipline (the UniFFI layer is built with
+    /// `panic = "abort"`, so a panic takes the host application down), and a
+    /// seed drawn from weak entropy is a fund-loss bug that would surface
+    /// only once someone else guessed it.
+    ///
+    /// # Errors
+    ///
+    /// [`Entropy`](crate::ErrorCode::Entropy) if the platform's secure random
+    /// source was unavailable or failed. That is the only failure: nothing
+    /// here reads storage or contacts a federation.
+    pub fn generate() -> crate::Result<Mnemonic> {
         unimplemented!()
     }
 

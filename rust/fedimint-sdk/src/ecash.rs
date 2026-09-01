@@ -109,15 +109,36 @@ pub struct EcashSend {
 impl Operation<EcashSendState> {
     /// Asks for the notes back, before the receiver redeems them.
     ///
-    /// `Ok(())` means the *request* was accepted — or that there was nothing
-    /// left to cancel, see below — never that the notes were
-    /// reclaimed. Redemption and cancellation genuinely race — the receiver
-    /// may be redeeming at the same moment — and only the federation
-    /// decides who wins. The outcome therefore arrives where every other
-    /// outcome does, as a state: [`EcashSendState::Canceled`] if the notes
-    /// came back, [`EcashSendState::Redeemed`] if the receiver got them.
-    /// Between the request and the outcome the operation sits in
-    /// [`EcashSendState::CancelRequested`].
+    /// # What `Ok(())` means, exactly
+    ///
+    /// **`Ok(())` means the cancellation intent has been committed to local
+    /// storage and will survive a restart or a period offline.** That is the
+    /// whole postcondition. It does not mean the federation has been
+    /// contacted, that a reclaim has been attempted, or that the notes came
+    /// back.
+    ///
+    /// This is a deliberate choice about where the boundary sits, and it is
+    /// what makes the result actionable. Had the call waited on the network,
+    /// it could return
+    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) or
+    /// [`Timeout`](crate::ErrorCode::Timeout) *after* durably recording the
+    /// intent, and the caller would be left with the one answer nothing can
+    /// be done with: "maybe accepted". They could not retry safely without
+    /// wondering whether they were duplicating a request already in flight,
+    /// and they could not report failure without possibly contradicting a
+    /// reclaim that then succeeds. Committing locally first removes that
+    /// state: the request is recorded, the SDK keeps trying on its own, and a
+    /// device that was offline at the moment of the call still reclaims when
+    /// it comes back.
+    ///
+    /// The outcome arrives where every other outcome does, as a state:
+    /// [`EcashSendState::Canceled`] if the notes came back,
+    /// [`EcashSendState::Redeemed`] if the receiver got them. Between the
+    /// request and the outcome the operation sits in
+    /// [`EcashSendState::CancelRequested`]. The protocol race is real —
+    /// the receiver may be redeeming at this very moment and only the
+    /// federation decides who wins — and it resolves through those states,
+    /// not through this return value.
     ///
     /// This is the only cancellation in the crate, because it is the only
     /// place where cancelling is a real protocol action rather than an
@@ -126,9 +147,8 @@ impl Operation<EcashSendState> {
     /// # Requesting a cancel on a settled send is not an error
     ///
     /// If the send has already reached a final state — the notes came back
-    /// ([`EcashSendState::Canceled`]), the receiver redeemed them
-    /// ([`EcashSendState::Redeemed`]), or the send failed
-    /// ([`EcashSendState::Failed`]) — this returns `Ok(())` and does
+    /// ([`EcashSendState::Canceled`]) or the receiver redeemed them
+    /// ([`EcashSendState::Redeemed`]) — this returns `Ok(())` and does
     /// nothing. The postcondition the call promises already holds: no
     /// cancellation is pending, and the outcome is recorded in the state,
     /// where the caller reads it. This is the same idempotent framing
@@ -143,10 +163,15 @@ impl Operation<EcashSendState> {
     ///
     /// # Errors
     ///
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage), and
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    /// Only failures that stop the intent from being recorded at all — which
+    /// is why no network error appears here:
+    /// [`Storage`](crate::ErrorCode::Storage) if the request cannot be
+    /// committed durably, and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
+    /// federation was closed or the SDK shut down, leaving nothing to record
+    /// it against. An unreachable federation or a slow guardian is not a
+    /// failure of this call: the intent is already durable and the SDK
+    /// pursues it in the background.
     pub async fn request_cancel(&self) -> Result<()> {
         unimplemented!()
     }
@@ -183,11 +208,37 @@ impl Operation<EcashSendState> {
 /// happened to the money. An application asking "did my notes come back?"
 /// needs the second question answered, and gets one variant per answer.
 ///
-/// [`Failed`](Self::Failed) has no upstream counterpart in that enum: it
-/// covers failures the SDK observes around the state machine rather than
-/// within it. This variant set is therefore provisional in that one
-/// respect and will be reconciled against the mint client when this facade
-/// is implemented.
+/// The mapping is total: every upstream variant lands somewhere here, and
+/// there is no variant here without an upstream counterpart.
+///
+/// # There is no failure state, and that is the point
+///
+/// An ecash send has exactly two terminal outcomes — the notes came back
+/// ([`Canceled`](Self::Canceled)) or the receiver got them
+/// ([`Redeemed`](Self::Redeemed)) — because those are the only two things
+/// that can happen to the money. Upstream's `SpendOOBState` has no state for
+/// a failed send either: its `UserCanceledFailure` names a failed
+/// *cancellation*, which is precisely the receiver having redeemed, and maps
+/// to [`Redeemed`](Self::Redeemed) above.
+///
+/// Infrastructure failure does not become a third outcome. If storage cannot
+/// be read, no guardian answers, or the federation handle is closed, that is
+/// a failure of the *observation*, and it surfaces exactly where the crate's
+/// central convention says it does: as `Err` from
+/// [`Operation::state`](crate::Operation::state),
+/// [`Operation::await_final`](crate::Operation::await_final), or
+/// [`OperationUpdates::next`](crate::OperationUpdates::next). The send
+/// itself keeps running, unaffected by the fact that nobody could see it.
+///
+/// Recording such a failure as a terminal state would be a lie about money,
+/// not just about naming. Bearer notes that are out in the world can still
+/// be redeemed by a receiver, and can still be reclaimed by the sender's
+/// pending reclaim, long after some call failed to observe them. A state
+/// declaring the operation over would tell an application the value is
+/// settled when it is not, and — because
+/// [`Sdk::forget_federation`](crate::Sdk::forget_federation) refuses while
+/// reclaimable outgoing value remains — could let a federation's local state
+/// be deleted while notes it could still have reclaimed were outstanding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashSendState {
@@ -206,12 +257,6 @@ pub enum EcashSendState {
     /// Final: the receiver redeemed the notes. The value is theirs; a
     /// cancellation request, if one was made, lost the race.
     Redeemed,
-    /// Final: the send could not be completed.
-    Failed {
-        /// Human-readable explanation. Diagnostic only — not a stable
-        /// contract, and not something to match on.
-        reason: String,
-    },
 }
 
 impl crate::operation::sealed::Sealed for EcashSendState {}
@@ -220,9 +265,7 @@ impl OperationState for EcashSendState {
     fn is_final(&self) -> bool {
         match self {
             EcashSendState::Created | EcashSendState::CancelRequested => false,
-            EcashSendState::Canceled | EcashSendState::Redeemed | EcashSendState::Failed { .. } => {
-                true
-            }
+            EcashSendState::Canceled | EcashSendState::Redeemed => true,
         }
     }
 }
@@ -290,16 +333,6 @@ mod tests {
     #[test]
     fn ecash_send_state_redeemed_is_final() {
         assert!(EcashSendState::Redeemed.is_final());
-    }
-
-    #[test]
-    fn ecash_send_state_failed_is_final() {
-        assert!(
-            EcashSendState::Failed {
-                reason: String::new(),
-            }
-            .is_final()
-        );
     }
 
     #[test]

@@ -52,7 +52,9 @@
 //!     // One storage, one seed, as many federations as the user joins.
 //!     // Parsing the phrase validates it; leaving `.mnemonic(..)` off
 //!     // entirely would use the seed already in this storage, or — if the
-//!     // storage is empty — generate a fresh one.
+//!     // storage is empty — generate a fresh one, which `build` reports as
+//!     // `ErrorCode::Entropy` in the rare case the platform's random source
+//!     // fails.
 //!     let mnemonic: Mnemonic = phrase.parse()?;
 //!     let sdk = Sdk::builder()
 //!         .storage(Storage::at(data_dir)?)
@@ -218,9 +220,11 @@
 //! built again over the same storage, and it can be picked up later with
 //! [`Federation::operation`] using nothing but its id. [`Operation`] and
 //! [`OperationUpdates`] are observation handles, not ownership: dropping a
-//! handle, dropping a subscriber, or dropping a pending
-//! [`next`](OperationUpdates::next) future stops the watching and never the
-//! work.
+//! handle ends nothing at all, dropping a subscriber ends only that
+//! subscription, and dropping a pending
+//! [`next`](OperationUpdates::next) future ends only that one wait — the
+//! subscriber stays usable and no transition is lost. None of the three ever
+//! stops the work.
 //!
 //! This is deliberate, and it is the answer to "can I cancel it?". For most
 //! operations there is nothing to cancel, because value has already moved

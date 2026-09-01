@@ -15,7 +15,29 @@ use super::Amount;
 /// Notes obtained from a sender should be redeemed promptly: unredeemed
 /// notes that a sender created are subject to that sender's automatic
 /// reclaim policy, after which they stop being redeemable.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// # `Display` prints the notes, `Debug` never does
+///
+/// This value **is** the money: anyone holding the string can redeem it, so
+/// it is a bearer instrument in exactly the way a banknote is. The two
+/// formatting traits therefore mean different things here, and the split is
+/// deliberate:
+///
+/// - **[`Display`](core::fmt::Display) is the escape hatch**, and it is the
+///   only one. Printing the notes is the whole point of the type — they have
+///   to reach a receiver somehow — so a caller that writes `{notes}` is
+///   making a visible, deliberate choice to emit spendable value, the same
+///   way [`Mnemonic::words`](crate::Mnemonic::words) is the deliberate way to
+///   get a seed phrase out.
+/// - **[`Debug`] is not an escape hatch** and is redacted. `{:?}` is what
+///   application logging, crash reporters, tracing spans, and `assert!`
+///   failure messages reach for, and none of those is a place to put a
+///   bearer token. Derived `Debug` would also leak *transitively*: a struct
+///   holding a `Notes` prints its fields, so [`EcashSend`](crate::EcashSend)
+///   — which does derive `Debug` — would print the token merely by being
+///   logged, without anyone ever formatting a `Notes` on purpose. Redacting
+///   here fixes that everywhere at once.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Notes {
     notes: String,
 }
@@ -42,7 +64,29 @@ impl Notes {
     }
 }
 
+impl core::fmt::Debug for Notes {
+    /// Prints `Notes(<redacted>)`: the type name and nothing else, never the
+    /// token.
+    ///
+    /// Hand-written rather than derived because the wrapped string is
+    /// spendable value. `Debug` output ends up in log lines, crash reports,
+    /// tracing spans, and `assert!` messages without anybody deciding that it
+    /// should, and a derive would additionally leak the token through every
+    /// struct that contains one — [`EcashSend`](crate::EcashSend) derives
+    /// `Debug`, so `{:?}` on it would print the notes it carries. The value
+    /// is still reachable, deliberately and visibly, through
+    /// [`Display`](core::fmt::Display).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Notes(<redacted>)")
+    }
+}
+
 impl core::fmt::Display for Notes {
+    /// Writes the ecash token itself, in its canonical string form.
+    ///
+    /// This is the deliberate way to get the value out — to show a QR code,
+    /// to put it in a message — and it is the *only* way; see the type-level
+    /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.notes;
         unimplemented!()
@@ -57,5 +101,36 @@ impl core::str::FromStr for Notes {
     /// malformed value.
     fn from_str(_s: &str) -> Result<Self, Self::Err> {
         unimplemented!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for a real token: no part of this string may ever appear
+    /// in `Debug` output.
+    const TOKEN: &str = "notes-secret-bearer-value-0123456789";
+
+    #[test]
+    fn debug_prints_the_marker_and_nothing_else() {
+        let notes = Notes::from_raw(TOKEN.to_owned());
+        let rendered = format!("{notes:?}");
+        // Not merely "does not contain the token": the whole rendering is
+        // the type name and the redaction marker, so there is nowhere for a
+        // prefix, suffix, or truncated fragment of the value to hide.
+        assert_eq!(rendered, "Notes(<redacted>)");
+        assert!(!rendered.contains(TOKEN));
+    }
+
+    #[test]
+    fn debug_stays_redacted_when_nested_in_another_value() {
+        // The transitive case is the dangerous one: a `Notes` inside a struct
+        // that derives `Debug` (`EcashSend` does) must not print the token
+        // just because the outer value was logged.
+        let nested = Some(Notes::from_raw(TOKEN.to_owned()));
+        let rendered = format!("{nested:?}");
+        assert_eq!(rendered, "Some(Notes(<redacted>))");
+        assert!(!rendered.contains(TOKEN));
     }
 }

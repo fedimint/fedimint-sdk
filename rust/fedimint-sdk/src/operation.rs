@@ -190,9 +190,24 @@ impl<S: OperationState> Operation<S> {
 /// [`Operation::updates`] exists to avoid — call it again for a second,
 /// independent subscription instead.
 ///
-/// Dropping a subscriber, or dropping a future returned by
-/// [`OperationUpdates::next`] before it resolves, cancels only this
-/// subscription. The operation itself is unaffected.
+/// # Two different drops, two different meanings
+///
+/// These are separate events and are easy to conflate, so they are stated
+/// apart. Neither ever touches the operation itself, which runs detached.
+///
+/// - **Dropping a pending [`next`](OperationUpdates::next) future** cancels
+///   only *that wait*. The subscriber survives and stays usable: a later
+///   `next()` resumes from the same cursor position, and no transition that
+///   happened in between is lost or skipped. This is what makes the
+///   subscriber safe to use inside `select!`, a timeout, or any other
+///   combinator that drops the loser — the ordinary way an async caller
+///   waits on two things at once.
+/// - **Dropping the subscriber** ends *that subscription* and nothing else.
+///   Other subscribers keep their own cursors, and
+///   [`Operation::updates`] hands out a fresh one at any time.
+///
+/// See [`next`](OperationUpdates::next) for the full contract, including
+/// what this requires of an implementation.
 #[derive(Debug)]
 pub struct OperationUpdates<S: OperationState> {
     inner: Arc<OperationInner>,
@@ -222,6 +237,36 @@ impl<S: OperationState> OperationUpdates<S> {
     /// `Ok(Some(failure state))` followed by `Ok(None)`. `Err` never
     /// carries the outcome of an operation, only the failure of observing
     /// it.
+    ///
+    /// # Dropping this future is safe, and is not dropping the subscription
+    ///
+    /// This call is **cancellation-safe**. Dropping the future it returns
+    /// before it resolves cancels only that one wait. Specifically:
+    ///
+    /// - The subscriber remains valid and usable. Calling `next()` again is
+    ///   correct and expected.
+    /// - The cursor does not move. The next call resumes from exactly the
+    ///   position the abandoned one was waiting at.
+    /// - **No transition is lost.** A state the operation reached while no
+    ///   future was pending is still delivered by the following `next()`; it
+    ///   is not dropped on the floor because nobody happened to be awaiting
+    ///   at that instant.
+    ///
+    /// That is what lets a caller write the ordinary things — race `next()`
+    /// against a timeout, put it in a `select!` beside a shutdown signal,
+    /// abandon it when a screen closes — without having to reason about
+    /// whether doing so silently skipped a state.
+    ///
+    /// Dropping the **subscriber** is the different event: it ends that
+    /// subscription. Dropping either one leaves the operation itself running,
+    /// as always.
+    ///
+    /// This is a constraint on the implementation, not merely a description
+    /// of one. The subscription must be built so that its position advances
+    /// when a state is *handed to the caller*, never when a future is merely
+    /// polled — a naive implementation that consumes from a shared queue
+    /// inside the future, or that only buffers while someone is awaiting,
+    /// violates it and drops states under exactly the `select!` usage above.
     ///
     /// # Errors
     ///

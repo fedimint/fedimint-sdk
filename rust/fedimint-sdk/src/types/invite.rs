@@ -14,7 +14,27 @@ use super::{FederationId, Network};
 /// entered as text, scanned from a QR code, or shared as a link and
 /// reconstructed on the other end without any federation-specific parsing
 /// logic outside this crate.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// # `Display` prints the code, `Debug` never does
+///
+/// An invite code is not always public. It can embed an `api_secret`, which
+/// is the credential a private federation requires before its guardians will
+/// answer at all — so the code is a bearer credential, and printing one can
+/// hand a reader access to a federation that was meant to be closed. The two
+/// formatting traits are therefore split deliberately:
+///
+/// - **[`Display`](core::fmt::Display) is the escape hatch**, and it is the
+///   only one. Rendering the code is what the type is for — it has to be
+///   shown, scanned, and shared — so `{invite}` is a visible, deliberate
+///   choice, the same way [`Mnemonic::words`](crate::Mnemonic::words) is the
+///   deliberate way to get a seed phrase out.
+/// - **[`Debug`] is not an escape hatch** and is redacted. `{:?}` is what
+///   logging, crash reporters, tracing spans, and `assert!` failure messages
+///   reach for, none of which should receive a credential nobody chose to
+///   publish. Derived `Debug` would also leak *transitively*: any struct
+///   holding an `InviteCode` and deriving `Debug` would print it merely by
+///   being logged, without anyone formatting the code on purpose.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct InviteCode {
     code: String,
 }
@@ -31,7 +51,28 @@ impl InviteCode {
     }
 }
 
+impl core::fmt::Debug for InviteCode {
+    /// Prints `InviteCode(<redacted>)`: the type name and nothing else, never
+    /// the code.
+    ///
+    /// Hand-written rather than derived because an invite code may embed a
+    /// federation's `api_secret`, making it a credential rather than a public
+    /// identifier. `Debug` output reaches log lines, crash reports, tracing
+    /// spans, and `assert!` messages without anybody deciding that it should,
+    /// and a derive would additionally leak the code through every struct
+    /// that contains one and derives `Debug`. The value stays reachable,
+    /// deliberately and visibly, through [`Display`](core::fmt::Display).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("InviteCode(<redacted>)")
+    }
+}
+
 impl core::fmt::Display for InviteCode {
+    /// Writes the invite code itself, in its canonical string form.
+    ///
+    /// This is the deliberate way to get the value out — to render a QR code,
+    /// to share a link — and it is the *only* way; see the type-level
+    /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.code;
         unimplemented!()
@@ -93,4 +134,35 @@ pub struct FederationPreview {
     /// Config-level metadata (for example, a welcome message), keyed by
     /// arbitrary string keys as defined by the federation's configuration.
     pub meta: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for a real invite code, including the credential an invite
+    /// for a private federation can embed.
+    const CODE: &str = "fed11-invite-code-with-api-secret-0123456789";
+
+    #[test]
+    fn debug_prints_the_marker_and_nothing_else() {
+        let invite = InviteCode::from_raw(CODE.to_owned());
+        let rendered = format!("{invite:?}");
+        // Not merely "does not contain the code": the whole rendering is the
+        // type name and the redaction marker, so there is nowhere for a
+        // prefix, suffix, or truncated fragment of the value to hide.
+        assert_eq!(rendered, "InviteCode(<redacted>)");
+        assert!(!rendered.contains(CODE));
+    }
+
+    #[test]
+    fn debug_stays_redacted_when_nested_in_another_value() {
+        // The transitive case is the dangerous one: an `InviteCode` inside a
+        // struct that derives `Debug` must not print the code just because
+        // the outer value was logged.
+        let nested = Some(InviteCode::from_raw(CODE.to_owned()));
+        let rendered = format!("{nested:?}");
+        assert_eq!(rendered, "Some(InviteCode(<redacted>))");
+        assert!(!rendered.contains(CODE));
+    }
 }

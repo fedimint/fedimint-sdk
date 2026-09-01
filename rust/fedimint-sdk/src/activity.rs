@@ -114,7 +114,6 @@ pub enum Direction {
 /// | --- | --- |
 /// | [`EcashSendState::Redeemed`](crate::EcashSendState::Redeemed) | [`Success`](Self::Success) |
 /// | [`EcashSendState::Canceled`](crate::EcashSendState::Canceled) | [`Canceled`](Self::Canceled) |
-/// | [`EcashSendState::Failed`](crate::EcashSendState::Failed) | [`Failed`](Self::Failed) |
 /// | [`EcashReceiveState::Done`](crate::EcashReceiveState::Done) | [`Success`](Self::Success) |
 /// | [`EcashReceiveState::Failed`](crate::EcashReceiveState::Failed) | [`Failed`](Self::Failed) |
 /// | [`LnSendState::Success`](crate::LnSendState::Success) | [`Success`](Self::Success) |
@@ -123,6 +122,7 @@ pub enum Direction {
 /// | [`LnReceiveState::Claimed`](crate::LnReceiveState::Claimed) | [`Success`](Self::Success) |
 /// | [`LnReceiveState::Canceled`](crate::LnReceiveState::Canceled) | [`Canceled`](Self::Canceled) |
 /// | [`LnReceiveState::Expired`](crate::LnReceiveState::Expired) | [`Canceled`](Self::Canceled) |
+/// | [`LnReceiveState::Failed`](crate::LnReceiveState::Failed) | [`Failed`](Self::Failed) |
 /// | [`OnchainSendState::Succeeded`](crate::OnchainSendState::Succeeded) | [`Success`](Self::Success) |
 /// | [`OnchainSendState::Failed`](crate::OnchainSendState::Failed) | [`Failed`](Self::Failed) |
 /// | [`OnchainReceiveState::Claimed`](crate::OnchainReceiveState::Claimed) | [`Success`](Self::Success) |

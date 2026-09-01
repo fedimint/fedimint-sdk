@@ -41,7 +41,10 @@
 ///   supplied, one is generated and durably persisted *before* any
 ///   federation-derived state exists. There is no window in which
 ///   federation state has been written but the seed that produced it has
-///   not.
+///   not. Generating a seed is fallible — it needs the platform's secure
+///   random source — and a failure to draw entropy fails the open with
+///   [`ErrorCode::Entropy`](crate::ErrorCode::Entropy), leaving the storage
+///   untouched.
 /// - **A different seed is a refusal, not a migration.** Opening storage
 ///   that already holds a seed while supplying a different mnemonic fails
 ///   with [`ErrorCode::SeedMismatch`](crate::ErrorCode::SeedMismatch), and
