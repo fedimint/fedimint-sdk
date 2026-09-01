@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { pipeline, PassThrough } = require('stream');
 
@@ -106,9 +106,9 @@ const downloadAndVerify = (url, dest, expectedChecksum) => {
 const unzip = (file, dest) => {
     try {
         if (process.platform === 'win32') {
-            execSync(`tar -xf "${file}" -C "${dest}"`);
+            execFileSync('tar', ['-xf', file, '-C', dest]);
         } else {
-            execSync(`unzip -o "${file}" -d "${dest}"`);
+            execFileSync('unzip', ['-o', file, '-d', dest]);
         }
     } catch (e) {
         console.error(`Failed to unzip ${file}: ${e.message}`);
