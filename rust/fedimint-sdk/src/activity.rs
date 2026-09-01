@@ -71,7 +71,7 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee the executed quote quoted: what the payment was funded with, which is not necessarily what the payment finally cost |
 /// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee, taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated as realized — the peg-in fee plus the primary module's fees and denomination dust, per [`OnchainReceiveDetails::realized_fee`](crate::OnchainReceiveDetails::realized_fee); nothing predicts these costs up front, so `None` until a claim is accepted |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated as realized — the peg-in fee, the primary module's fees and denomination dust, and the second wallet module's network sweep deduction, per [`OnchainReceiveDetails::realized_fee`](crate::OnchainReceiveDetails::realized_fee); nothing predicts these costs up front, so `None` until the deposit settles, and a measured zero where it settled with nothing accepted |
 /// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
 ///
@@ -252,10 +252,11 @@ pub struct ActivityItem {
     /// mean](ActivityItem#what-the-numbers-mean).
     ///
     /// `None` when the kind has no fee at all, or when the fee is not knowable
-    /// yet — an operation still in flight, or an on-chain deposit whose claim
-    /// costs only exist once a claim has been accepted. `Some(zero)` and
-    /// `None` are different answers, and a UI should treat them so: the first
-    /// says the transfer was free, the second that this row cannot say yet.
+    /// yet — an operation still in flight, or an on-chain deposit that has
+    /// not settled, whose claim costs exist only once it has. `Some(zero)`
+    /// and `None` are different answers, and a UI should treat them so: the
+    /// first says the transfer was free, the second that this row cannot say
+    /// yet.
     pub fee: Option<Amount>,
     /// Whether value moved in or out.
     ///

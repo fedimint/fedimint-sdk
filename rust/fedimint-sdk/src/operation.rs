@@ -165,10 +165,15 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 ///   storage transaction. A process that dies immediately after
 ///   [`Ecash::send`](crate::Ecash::send) returns must still find the notes
 ///   on the next start; that is the whole point.
-/// - **Fields fill in once and never move.** A field is either set at
-///   creation or set in the same write that records the transition
-///   establishing it. `None` becomes `Some` exactly once; a value never
-///   changes to a different value, and never reverts.
+/// - **Fields fill in at most once and never move.** A field is either set
+///   at creation or set in the same write that records the transition
+///   establishing it. `None` becomes `Some` at most once; a value never
+///   changes to a different value, and never reverts. Whether a *final*
+///   state can leave a field absent is each field's own documented
+///   business: most records establish every realized figure at every
+///   ending, but where a particular ending genuinely cannot establish a
+///   fact, the field stays `None` there for good, and its documentation
+///   says so rather than letting the reader infer a zero.
 /// - **Nothing is derived at read time from a state that may have been
 ///   missed.** If a value can only be observed as a transition happens, it
 ///   is persisted as it happens.
@@ -410,7 +415,7 @@ impl<S: DetailedOperationState> Operation<S> {
     ///
     /// Calling this twice returns the same values, with one exception: a
     /// field documented as filling in later (a deposit's transaction id, for
-    /// instance) goes from `None` to `Some` exactly once and then never
+    /// instance) goes from `None` to `Some` at most once and then never
     /// changes. Nothing here is ever rewritten or withdrawn, so details read
     /// before a state and details read after it never contradict each other,
     /// and there is no ordering a caller has to get right between this call

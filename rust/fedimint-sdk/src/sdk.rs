@@ -390,11 +390,12 @@ impl Sdk {
     /// Listing recovering federations is also what keeps a reconstruction
     /// discoverable across a restart. The calls that read and resume one take
     /// a [`FederationId`], and an application that persisted neither an
-    /// operation id nor a federation id has this list as its only route back
-    /// to a wallet that is still being reconstructed. Hiding those
-    /// federations here would leave such an application holding a federation
-    /// it can neither spend from nor find — a documented recovery path that
-    /// does not exist.
+    /// operation id nor a federation id finds an *open* reconstruction here
+    /// — and a closed or quarantined one only in [`Sdk::stored_federations`],
+    /// which is why that list, not this one, is where such an application
+    /// starts. Hiding recovering federations here would leave it holding a
+    /// federation it can neither spend from nor find through the open list —
+    /// a documented recovery path that does not exist.
     ///
     /// This is therefore *not* the list to render a wallet screen from. Use
     /// [`Sdk::stored_federations`] for that: it is a superset of this list
@@ -1189,7 +1190,13 @@ impl SdkBuilder {
     ///    closed with [`Sdk::close_federation`], is revalidated (including
     ///    the module-generation rule described on [`Sdk::join`]) and
     ///    started, and its unfinished operations resume from where they were
-    ///    persisted.
+    ///    persisted. Before its handle is handed out, the SDK reconciles any
+    ///    issuance failure the underlying client's executor produced while
+    ///    the SDK was not running — the partial credit such a failure leaves
+    ///    is reconstructed, not observed, per [the *Measuring*
+    ///    section][measuring] of
+    ///    [`EcashReceiveDetails`](crate::EcashReceiveDetails) — so no record
+    ///    is ever readable with a credit still being counted.
     ///
     ///    A federation whose wallet was still being reconstructed from the
     ///    seed comes back [`Recovering`](FederationStatus::Recovering) — that
@@ -1255,6 +1262,8 @@ impl SdkBuilder {
     /// could not be completed is a
     /// [`Forgetting`](FederationStatus::Forgetting) — neither is a reason for
     /// this call to fail.
+    ///
+    /// [measuring]: crate::EcashReceiveDetails#measuring-what-a-failed-issuance-left-behind
     pub async fn build(self) -> Result<Sdk> {
         unimplemented!()
     }

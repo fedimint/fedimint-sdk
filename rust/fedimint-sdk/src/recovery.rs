@@ -110,15 +110,18 @@
 //! 2. **It kept only the [`FederationId`].** [`Sdk::recovery_status`] to
 //!    read the state, [`Sdk::resume_recovery`] to get a handle back.
 //! 3. **It kept nothing.**
-//!    [`Sdk::federations`](crate::Sdk::federations) lists the federations
-//!    this instance currently has open, a still-recovering one included, and
-//!    case 2 applies to each of them. One gap to know about: a federation
-//!    closed with
-//!    [`Sdk::close_federation`](crate::Sdk::close_federation) is *not* in
-//!    that list. It appears in
-//!    [`Sdk::stored_federations`](crate::Sdk::stored_federations) as closed,
-//!    and [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings it
-//!    back — still recovery-locked — before case 2 applies to it.
+//!    [`Sdk::stored_federations`](crate::Sdk::stored_federations) is the
+//!    list to start from — not
+//!    [`Sdk::federations`](crate::Sdk::federations), which lists only the
+//!    federations this instance currently has *open*. A still-recovering
+//!    federation is open and appears in both, and case 2 applies to it
+//!    directly. Two kinds do not: one closed with
+//!    [`Sdk::close_federation`](crate::Sdk::close_federation), and one
+//!    quarantined — which is where a [`Sdk::recover`] whose join committed
+//!    but whose open then failed leaves its federation (see that method).
+//!    Both appear only in the stored list, labelled, and
+//!    [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings
+//!    either back — still recovery-locked — before case 2 applies to it.
 //!
 //! # Reopening restarts a stopped attempt by itself
 //!
@@ -275,13 +278,23 @@ impl Sdk {
     /// answer — both report
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) while no
     /// live handle exists, so pointing at them *first* would be a
-    /// contradiction, not a route. A retry of *this* call after such an
-    /// error reports [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) —
-    /// the signpost to that route, not a dead end. An intent written for a
-    /// join that never committed is inert and harmless: only the underlying
-    /// client's own durable recovery marker, not the intent alone, makes a
-    /// federation count as recovering, so the next `recover` for the same
-    /// federation supersedes the leftover and a plain
+    /// contradiction, not a route.
+    ///
+    /// Every call on that route takes a [`FederationId`], and the failed
+    /// caller has one without any help from the error: the id is encoded in
+    /// the invite code itself, and
+    /// [`InviteCode::federation_id`](crate::InviteCode::federation_id)
+    /// reads it locally, before this call is ever made. That is what makes
+    /// the route deterministic — an application recovering several
+    /// federations at once does not have to guess which quarantined row is
+    /// whose — and it is why the error carries no id of its own. A retry of
+    /// *this* call after such an error reports
+    /// [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) — the signpost to
+    /// that route, not a dead end. An intent written for a join that never
+    /// committed is inert and harmless: only the underlying client's own
+    /// durable recovery marker, not the intent alone, makes a federation
+    /// count as recovering, so the next `recover` for the same federation
+    /// supersedes the leftover and a plain
     /// [`Sdk::join`](crate::Sdk::join) discards it in the same transaction
     /// that joins.
     ///

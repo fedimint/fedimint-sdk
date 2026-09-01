@@ -9,7 +9,10 @@ use super::{FederationId, Network};
 /// An invite code carries everything needed to locate and connect to a
 /// federation's guardians before anything has been persisted locally. It is
 /// opaque: callers pass it to a preview or join call rather than picking it
-/// apart. It round-trips through [`Display`](core::fmt::Display) and
+/// apart, with one deliberate exception —
+/// [`federation_id`](InviteCode::federation_id), the key that every
+/// per-federation call takes, is readable from the code without a network
+/// round trip. It round-trips through [`Display`](core::fmt::Display) and
 /// [`FromStr`](core::str::FromStr) with a validating parse, so it can be
 /// entered as text, scanned from a QR code, or shared as a link and
 /// reconstructed on the other end without any federation-specific parsing
@@ -40,6 +43,31 @@ pub struct InviteCode {
 }
 
 impl InviteCode {
+    /// The id of the federation this code invites to.
+    ///
+    /// Read from the code itself, which encodes it: no network round trip,
+    /// no join, and the same value [`FederationPreview::id`] reports after
+    /// one. This is the one thing a caller may take out of an otherwise
+    /// opaque code, and it is exposed because it is the key every
+    /// per-federation call on [`Sdk`](crate::Sdk) takes —
+    /// [`federation_status`](crate::Sdk::federation_status) and
+    /// [`reopen_federation`](crate::Sdk::reopen_federation) among them, and
+    /// the seed-recovery calls of the `experimental` feature with them. An
+    /// application holding only an invite code can therefore find out where
+    /// that federation stands *before* joining, and — the case that makes
+    /// this accessor necessary rather than convenient — find its way back to
+    /// a federation that a failed seed recovery left committed but not
+    /// open, since that call's error carries no id and enumerating stored
+    /// federations cannot say which row a particular failed call produced.
+    ///
+    /// Not a credential: a federation id is public. The `Debug` redaction
+    /// covers the code as a whole because of the `api_secret` it can embed,
+    /// and reading the id out of it hands over nothing that was secret.
+    pub fn federation_id(&self) -> FederationId {
+        let _ = &self.code;
+        unimplemented!()
+    }
+
     /// Wraps an already-validated invite code string.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not
