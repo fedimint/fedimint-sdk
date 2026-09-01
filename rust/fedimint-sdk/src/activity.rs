@@ -55,6 +55,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///    user approved. What the balance finally did — how much a refund or a
 ///    reclaim actually gave back, what an accepted transaction actually
 ///    charged — is recorded on the operation's own details record, not here.
+///    The one exception is an on-chain deposit, which has no quoted terms:
+///    its row reports the observed gross and the realized claim fee, per the
+///    table below.
 ///
 /// A receive row is gross, then: the payer paid `amount`, and the credit
 /// expected to land is `amount - fee`. A send row's `amount` is what the
@@ -68,7 +71,7 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee the executed quote quoted: what the payment was funded with, which is not necessarily what the payment finally cost |
 /// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee, taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before the peg-in fee; `None` until a transaction is seen | the peg-in fee; `None` until it is known |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated as realized — the peg-in fee plus the primary module's output fees and denomination dust, per [`OnchainReceiveDetails::realized_fee`](crate::OnchainReceiveDetails::realized_fee); a deposit has no quote step, so `None` until a claim is accepted |
 /// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
 ///
@@ -223,7 +226,11 @@ pub struct ActivityItem {
     /// starts `None` and becomes known is written once and never changes
     /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee this wallet was quoted for the transfer, when it is known.
+    /// The fee this wallet was quoted for the transfer, when it is known —
+    /// or, for an on-chain deposit, the one kind with no quote step, the
+    /// realized claim fee. Which figure it is for each kind is fixed by the
+    /// table in [What the numbers
+    /// mean](ActivityItem#what-the-numbers-mean).
     ///
     /// Always a separate field from [`ActivityItem::amount`] and never folded
     /// into it: an outgoing row debited `amount + fee`, an incoming row was to
@@ -238,8 +245,8 @@ pub struct ActivityItem {
     /// mean](ActivityItem#what-the-numbers-mean).
     ///
     /// `None` when the kind has no fee at all, or when the fee is not knowable
-    /// yet — an operation still in flight, or an on-chain deposit whose
-    /// peg-in fee only exists once something has arrived. `Some(zero)` and
+    /// yet — an operation still in flight, or an on-chain deposit whose claim
+    /// costs only exist once a claim has been accepted. `Some(zero)` and
     /// `None` are different answers, and a UI should treat them so: the first
     /// says the transfer was free, the second that this row cannot say yet.
     pub fee: Option<Amount>,
