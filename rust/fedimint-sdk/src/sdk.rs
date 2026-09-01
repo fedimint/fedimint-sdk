@@ -729,7 +729,13 @@ impl Sdk {
     /// The reclaimable-value condition is the non-obvious one: notes handed
     /// out but not yet redeemed are still worth money to the sender until
     /// their reclaim window closes, and the record needed to reclaim them
-    /// lives in exactly the state this call would delete.
+    /// lives in exactly the state this call would delete. Reclaimable
+    /// *incoming* value is guarded too, through the non-final rule rather
+    /// than a condition of its own: a lightning receive whose payment
+    /// arrived but whose claim was rejected sits in the non-final
+    /// [`ClaimRetrying`](crate::LnReceiveState::ClaimRetrying), and the
+    /// local receive keys its retry depends on are likewise state this call
+    /// would delete.
     ///
     /// Every guard here is protecting value the caller **could still move**
     /// if they did something else first: spend the balance down, let an
@@ -1113,10 +1119,15 @@ impl SdkBuilder {
     ///      writing anything, carrying
     ///      [`ErrorDetails::StorageOrphaned`](crate::ErrorDetails::StorageOrphaned)
     ///      with the location and `seed_present: false`.
-    ///    - *The seed entry exists but cannot be read* — truncated,
+    ///    - *The seed entry was read in full but is unusable* — truncated,
     ///      corrupt, or written in a format this build does not understand.
     ///      Also a refusal, with the same code and detail case but
-    ///      `seed_present: true`, and again without writing anything.
+    ///      `seed_present: true`, and again without writing anything. This
+    ///      case requires the backend to have **returned** the bytes: a read
+    ///      the backend failed to perform decides nothing about the seed and
+    ///      fails with [`Storage`](crate::ErrorCode::Storage) instead, which
+    ///      is retryable — a transient outage must not be reported under a
+    ///      permanent code.
     ///
     ///    The last two cases are why "no seed" must never be read as "fresh
     ///    storage". Writing a new seed over storage that already holds
@@ -1128,9 +1139,9 @@ impl SdkBuilder {
     ///    unreachable without the original phrase — while the only local
     ///    trace of which seed the state belonged to had just been
     ///    overwritten. Refusing is recoverable; a wrong write is not. The
-    ///    same applies to an unreadable seed entry: it may be a transient
-    ///    backend fault or a newer on-disk format, and overwriting it turns
-    ///    a temporary problem into permanent fund loss.
+    ///    same applies to an unusable seed entry: it may be a newer on-disk
+    ///    format an updated build could read, and overwriting it turns a
+    ///    solvable problem into permanent fund loss.
     ///
     ///    **Ordering guarantee.** The emptiness proof and the seed
     ///    reconciliation happen under the lock taken in step 1 and strictly
@@ -1274,11 +1285,16 @@ impl core::fmt::Debug for Redacted {
 /// # Shape
 ///
 /// A flat data enum: no generics, no tuple variants, no borrowed data, and
-/// nothing nested beyond the plain [`Diagnostic`](crate::Diagnostic) record
-/// that [`Quarantined`](FederationStatus::Quarantined) carries. It therefore
-/// generates mechanically into a Swift or Kotlin sealed
-/// enum-with-associated-values and a TypeScript discriminated union, with no
-/// hand-written per-target adapter.
+/// nothing nested beyond the [`Diagnostic`](crate::Diagnostic) record that
+/// [`Quarantined`](FederationStatus::Quarantined) carries. One caveat keeps
+/// that from being the whole story: a `Diagnostic`'s typed details reach the
+/// growing [`ErrorDetails`](crate::ErrorDetails) enum, which is not safely
+/// decodable by an older generated binding. So the variants here generate
+/// mechanically, but the diagnostic's details field crosses the boundary in
+/// the same shape [`Error::details`](crate::Error::details) does — as the
+/// raw envelope, projected locally by the reader (see
+/// [`DetailEnvelope`](crate::DetailEnvelope)) — rather than as a generated
+/// nested enum.
 ///
 /// The enum is `#[non_exhaustive]`; its variants are not. Rust callers write
 /// a wildcard arm, and a state that exists never grows a field — a generated

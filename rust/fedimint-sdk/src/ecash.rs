@@ -155,16 +155,19 @@ impl Ecash {
     /// out-of-band notes.
     ///
     /// The quote is consumed: it describes one send and can fund one send.
-    /// Execution follows the plan — the same note value, issued in the same
-    /// denominations — or it does not happen:
+    /// Execution delivers the quoted note value — that much is deterministic
+    /// — or it does not happen:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
-    /// quote depends on moved underneath it (the notes it planned to spend
-    /// went to another operation, the federation's fee schedule or
-    /// configuration changed). Both mean the same thing to a caller: quote
-    /// again and re-confirm with the user. That refusal is worth having: a
-    /// user is not charged against terms they never saw.
+    /// quote depends on has *visibly* moved underneath it (the notes it
+    /// planned to spend went to another operation, the federation's fee
+    /// schedule or configuration changed). Both mean the same thing to a
+    /// caller: quote again and re-confirm with the user. That refusal is
+    /// worth having — a user is not charged against terms that were already
+    /// stale when they approved them — but it is a pre-flight check with the
+    /// window every pre-flight check has, not an execution guarantee; see
+    /// [`EcashQuote::total`].
     ///
     /// That refusal is **not** a spending ceiling, though an earlier draft of
     /// this documentation said it was. [`EcashQuote::total`] is the debit this
@@ -311,8 +314,12 @@ impl Ecash {
 /// reason the distinction cannot be engineered away, [`EcashQuote::total`].
 /// The realized counterparts live on [`EcashSendDetails`].
 ///
-/// What an executed quote *does* bind is the plan: the value the notes carry
-/// and the denominations they are issued in. What it cannot bind is the debit.
+/// What an executed quote *does* bind is the amount: the value the notes will
+/// carry follows deterministically from the amount requested, so
+/// [`notes_value`](EcashQuote::notes_value) is the one figure fixed here for
+/// good. What it cannot bind is anything decided at execution against the
+/// live inventory — the denominations that value arrives in, and the debit
+/// that funds it.
 #[derive(Debug)]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
@@ -410,11 +417,16 @@ impl EcashQuote {
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) once the validity
     /// window has passed, and
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) when the notes it
-    /// planned against went elsewhere or the fee schedule moved — so a stale
-    /// quote is never executed silently. That is a genuine protection against
-    /// staleness; it is not a bound on the commit. The plan itself *is* bound:
-    /// the value the notes carry, and the denominations they are issued in,
-    /// are the ones that were shown.
+    /// planned against went elsewhere or the fee schedule moved. That is a
+    /// genuine protection against *visible* staleness, and nothing more: the
+    /// check has the same race the fee recheck above has, and both published
+    /// spend calls take an amount and nothing else — neither quoted notes
+    /// nor a reservation token — so the mint selects and reissues at
+    /// execution, and the denominations actually handed over can differ
+    /// from the ones a preview showed. What stays bound is
+    /// [`notes_value`](EcashQuote::notes_value): it follows
+    /// deterministically from the amount, so what the receiver can redeem
+    /// is exactly the figure that was approved.
     ///
     /// And the receipt reports the truth.
     /// [`EcashSendDetails::realized_total_debited`] is what the balance
@@ -689,8 +701,9 @@ impl OperationState for EcashSendState {
 /// [`realized_total_debited`](EcashSendDetails::realized_total_debited),
 /// [`restored_amount`](EcashSendDetails::restored_amount) and
 /// [`realized_fee`](EcashSendDetails::realized_fee) are the outcome, and they
-/// are `Option` because they do not exist yet before the transactions that
-/// establish them are accepted. None of them is announced by a state —
+/// are `Option` because they do not exist yet before the events that
+/// establish them — an accepted transaction, or an exact-change spend that
+/// needs none. None of them is announced by a state —
 /// [`EcashSendState`] carries no payload — so this record is their only
 /// possible home, and they take the shape the placement rule's case 3
 /// prescribes for a fact established at a transition: absent, then written
@@ -717,8 +730,11 @@ impl OperationState for EcashSendState {
 /// - `notes_value >= requested_amount`. A mint rounds a request up, never
 ///   down; see [`EcashQuote`] for why.
 ///
-/// `realized_total_debited` fills in when the funding transaction is accepted.
-/// It may be above or below `quoted_total_debited`, in either direction and by
+/// `realized_total_debited` fills in when the funding becomes real: on
+/// acceptance of the reissue transaction when one is needed, or immediately —
+/// as `notes_value`, at zero funding fee — when exact change was held and no
+/// transaction exists (see the field's own doc). On the reissue path it may
+/// be above or below `quoted_total_debited`, in either direction and by
 /// either party's doing; that gap is the whole reason the two are separate
 /// fields, and no invariant here bounds one by the other.
 ///
@@ -828,16 +844,35 @@ pub struct EcashSendDetails {
     /// generated binding has to redo checked arithmetic on money to recover
     /// the number a receipt shows.
     pub quoted_total_debited: Amount,
-    /// Realized: what actually left the spendable balance to fund this send,
-    /// as the accepted funding transaction charged it.
+    /// Realized: what actually left the spendable balance to fund this send.
     ///
-    /// `None` until that transaction is accepted, then written once and never
-    /// revised. It can differ from
-    /// [`quoted_total_debited`](EcashSendDetails::quoted_total_debited) in
-    /// **either** direction: the mint decides which notes to spend, which to
-    /// reissue, what change to make and what dust it cannot represent when it
-    /// assembles the transaction, and it takes no maximum from this SDK.
-    /// [`EcashQuote::total`] sets out why that gap cannot be closed from here.
+    /// A send funds in one of two ways, and this field is written at the
+    /// moment the funding is real in each:
+    ///
+    /// - **Exact change was held.** Both mint generations then remove the
+    ///   exact notes locally and hand them over with no federation
+    ///   transaction at all. The debit is
+    ///   [`notes_value`](EcashSendDetails::notes_value), charged the moment
+    ///   the notes are committed to the send, and this field is written then
+    ///   — `Some(notes_value)`, with a funding fee of zero. Gating it on a
+    ///   transaction that never exists would leave the record asserting an
+    ///   unfunded send forever while the balance had visibly fallen.
+    /// - **A reissue was needed.** The debit is what the accepted reissue
+    ///   transaction charged, written when that transaction is accepted. It
+    ///   can differ from
+    ///   [`quoted_total_debited`](EcashSendDetails::quoted_total_debited) in
+    ///   **either** direction: the mint decides which notes to spend, which
+    ///   to reissue, what change to make and what dust it cannot represent
+    ///   when it assembles the transaction, and it takes no maximum from
+    ///   this SDK. [`EcashQuote::total`] sets out why that gap cannot be
+    ///   closed from here. Establishing the figure carries an implementation
+    ///   obligation worth naming: upstream runs the reissue under an
+    ///   internal operation id it generates and discards, unrelated to the
+    ///   operation it hands back, so the implementation must persist its own
+    ///   correlation to that reissue at the moment it makes it — the fee is
+    ///   not recoverable afterwards from the returned operation alone.
+    ///
+    /// Written once and never revised, in both cases.
     ///
     /// This is the figure a "you paid" line must read from at creation, and
     /// the figure the record's reconciliation identity is written against — not
@@ -845,7 +880,7 @@ pub struct EcashSendDetails {
     ///
     /// Zero and absent are different answers, as everywhere else in this crate:
     /// `Some(0)` would say the send was funded without moving anything, absent
-    /// says no funding transaction has been accepted yet.
+    /// says the funding has not happened yet.
     pub realized_total_debited: Option<Amount>,
     /// Realized: what a reclaim actually put back into the spendable
     /// balance.
@@ -1013,12 +1048,16 @@ impl OperationState for EcashReceiveState {
 ///   what the balance actually rose by. It may be smaller or larger than
 ///   `expected_net_credit`; that difference is the whole reason both pairs
 ///   are here.
-/// - For a [`Failed`](EcashReceiveState::Failed) one, both realized figures
-///   are zero. Nothing was reissued, so the notes' value never entered the
-///   balance and a rejected transaction is not charged for. The identity
-///   above does not apply, because there was no transfer for it to describe —
-///   two zeros say "nothing moved", which is exactly what a receipt for a
-///   failed redemption has to be able to say.
+/// - For a [`Failed`](EcashReceiveState::Failed) one, `realized_net_credit`
+///   is zero: nothing became spendable, whatever else happened. The fee is
+///   not so simple, because v1 can fail *after* its reissue transaction was
+///   accepted — the acceptance charged its fee, then producing the notes
+///   failed — as well as before, when a rejected transaction charges
+///   nothing. So `realized_fee` is zero for a pre-acceptance rejection,
+///   the accepted fee for an accepted-then-failed reissue, and absent where
+///   an implementation cannot establish which. The `Done` identity above
+///   does not apply either way, because no credit exists for it to
+///   describe.
 ///
 /// `Debug` is derived, for the reason given on [`EcashSendDetails`]: [`Notes`]
 /// redacts itself, and a derive inherits that.
@@ -1076,11 +1115,13 @@ pub struct EcashReceiveDetails {
     /// [`EcashReceiveState`] carries no amounts, so no amount of watching
     /// would recover this and the record is its only home.
     ///
-    /// Zero for a [`Failed`](EcashReceiveState::Failed) redemption, because a
-    /// transaction the federation rejected is not charged for — should an
-    /// implementation find a failure that did cost something, this field
-    /// reports that cost. The rule is "what actually moved", never "zero on
-    /// failure".
+    /// On a [`Failed`](EcashReceiveState::Failed) redemption this reports
+    /// what the failure cost, which is not always nothing: zero when the
+    /// transaction was rejected outright — a rejected transaction is not
+    /// charged for — but the accepted fee when v1 accepted the reissue and
+    /// then failed to produce the notes, and absent where the
+    /// implementation cannot establish which happened. The rule is "what
+    /// actually moved", never "zero on failure".
     pub realized_fee: Option<Amount>,
     /// Realized: what the balance actually rose by.
     ///
@@ -1459,12 +1500,14 @@ mod tests {
     }
 
     #[test]
-    fn ecash_receive_details_a_failed_reissue_moved_nothing() {
+    fn ecash_receive_details_a_failed_reissue_credited_nothing() {
         let details = failed_receive_details();
 
-        // Nothing was reissued, so the notes' value never entered the balance
-        // and no transaction was charged for. Explicitly not `notes_value`
-        // minus a zero fee.
+        // Nothing became spendable, so the credit is zero — explicitly not
+        // `notes_value` minus a fee. The fee is a separate question: this
+        // rejection happened before acceptance, so it charged nothing, but
+        // an accepted-then-failed reissue would report its accepted fee
+        // here instead.
         assert_eq!(details.realized_net_credit, Some(NOTHING));
         assert_eq!(details.realized_fee, Some(NOTHING));
         assert_ne!(details.realized_net_credit, Some(details.notes_value));

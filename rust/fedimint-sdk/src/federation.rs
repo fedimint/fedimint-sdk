@@ -102,17 +102,26 @@ impl Federation {
         unimplemented!()
     }
 
-    /// The spendable ecash balance.
+    /// The ecash balance: the value this instance currently holds as its
+    /// own, uncommitted notes.
     ///
-    /// "Spendable" is the operative word: value that is committed to an
-    /// in-flight operation — funding a lightning payment, sitting in
-    /// out-of-band notes that have not been redeemed or reclaimed, waiting
-    /// on an on-chain deposit to confirm — is not counted here. The balance
-    /// is what could be spent right now.
+    /// Value that is committed to an in-flight operation — funding a
+    /// lightning payment, sitting in out-of-band notes that have not been
+    /// redeemed or reclaimed, waiting on an on-chain deposit to confirm — is
+    /// not counted here.
     ///
-    /// While a recovery is incomplete the balance may be partial and
-    /// may keep changing as the rescan proceeds; it settles when recovery
-    /// finishes.
+    /// Holding is not spending, and this method takes no position on the
+    /// latter: whether a spend would be *permitted* is governed by the
+    /// federation's status, not by this number. The case where the two
+    /// diverge is a recovery-locked federation: while the rescan proceeds
+    /// the balance reported here is partial, still moving, and worth
+    /// showing as progress — yet none of it is spendable, and every spend
+    /// or receive is refused with
+    /// [`Recovering`](crate::ErrorCode::Recovering) no matter what this
+    /// method returned. It settles when recovery finishes. On a
+    /// [`Running`](crate::FederationStatus::Running) federation the two
+    /// notions coincide, and this is exactly the amount a spend can draw
+    /// on.
     ///
     /// # Errors
     ///

@@ -36,7 +36,7 @@ use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp,
 ///   that output from the primary (mint) module and the change and dust
 ///   that funding leaves behind. Nor is a peg-in's cost only the wallet
 ///   module's peg-in fee: claiming a deposit balances the wallet input into
-///   primary-module outputs, whose output fees and denomination dust reduce
+///   primary-module outputs, whose fees and denomination dust reduce
 ///   what reaches the balance just as the peg-in fee does. Those figures
 ///   are quoted and charged in millisatoshis, and their sums are routinely
 ///   not whole satoshis.
@@ -244,16 +244,38 @@ impl Onchain {
     /// same output claimed again under a different upstream operation. See
     /// [`OnchainReceiveState`] for what that does to the state machine.
     ///
-    /// The implementation therefore persists, in the same storage transaction
-    /// that creates the operation, a correlation from the deposit address and
-    /// the funding output to this operation id, and resolves every subsequent
-    /// upstream attempt for that output back through it. Two properties follow
-    /// that a caller may rely on: an operation id obtained here never stops
-    /// resolving because the attempt behind it was abandoned, and the same
-    /// output never surfaces as two operations. This is also why the address
-    /// is a persisted field on [`OnchainReceiveDetails`] rather than a value
-    /// only the returned handle knows — it is half of the correlation key, not
+    /// The correlation that makes the id stable is built in two stages,
+    /// because its two halves do not exist at the same time. When this call
+    /// creates the operation, no funding output exists yet — nobody has
+    /// paid — so the only key there is to persist is the address, and it is
+    /// persisted to the operation id in the same storage transaction that
+    /// creates the operation. The output half is bound later: when the
+    /// scanner first observes an output paying that address, the
+    /// implementation atomically records that outpoint against the same
+    /// operation id, and from then on resolves every upstream attempt for
+    /// that output back through it. Two properties follow that a caller may
+    /// rely on: an operation id obtained here never stops resolving because
+    /// the attempt behind it was abandoned, and the same output never
+    /// surfaces as two operations. This is also why the address is a
+    /// persisted field on [`OnchainReceiveDetails`] rather than a value only
+    /// the returned handle knows — it is half of the correlation key, not
     /// just something to render.
+    ///
+    /// One funded case falls outside what the state machine can report
+    /// under the second wallet module, and it is stated rather than hidden:
+    /// an output too small to cover the claim's own fees is skipped by the
+    /// upstream scanner, which advances past it without recording any
+    /// persistent event. Nothing remains for the implementation to observe,
+    /// so the operation stays in
+    /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
+    /// — indistinguishable from an address nobody has paid, even though
+    /// coins arrived and will not be claimed — and, like any unpaid
+    /// receive, it does not block
+    /// [`forget_federation`](crate::Sdk::forget_federation). Mapping this
+    /// case to a terminal [`Failed`](OnchainReceiveState::Failed) needs an
+    /// upstream persistent skipped-output event to key on, and that event
+    /// is a named prerequisite this API documents rather than pretends to
+    /// have.
     ///
     /// # Errors
     ///
@@ -1052,10 +1074,15 @@ pub enum OnchainReceiveState {
     ///
     /// Carries no transaction and no amount even when one was seen. What
     /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
-    /// only ever saw this state reads it. What it would have cost is not
-    /// recorded anywhere, and that is not an omission: no claim transaction
-    /// was accepted, so there is no fee to report — see
-    /// [`OnchainReceiveDetails::realized_fee`].
+    /// only ever saw this state reads it — and so is what the failure cost,
+    /// when it cost something. Failure comes in two shapes under the first
+    /// wallet module: the claim transaction may have been rejected outright,
+    /// in which case nothing was charged, or it may have been **accepted** —
+    /// the peg-in spent, its fees incurred — with the primary module's note
+    /// finalization failing afterwards, in which case a real fee was paid
+    /// for notes that never became spendable. The state does not distinguish
+    /// them; [`OnchainReceiveDetails::realized_fee`] does, by being absent
+    /// for the first and recorded for the second.
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -1156,8 +1183,10 @@ impl OperationState for OnchainReceiveState {
 /// **aggregate** of everything the federation charged to bring the deposit
 /// into the balance, and it is deliberately not the wallet module's peg-in
 /// fee on its own. Claiming a deposit balances the wallet input into
-/// primary-module outputs; those output fees, and the denomination dust the
-/// split leaves behind, reduce the credit exactly as the peg-in fee does, and
+/// primary-module outputs; the primary module's fees — on those outputs, and
+/// on any existing notes it consolidates into the same transaction — and the
+/// denomination dust the split leaves behind, reduce the credit exactly as
+/// the peg-in fee does, and
 /// upstream's own accounting reports an accepted transaction's costs as one
 /// aggregate for that reason.
 ///
@@ -1222,8 +1251,10 @@ pub struct OnchainReceiveDetails {
     /// bring this deposit into the balance, once a claim has been accepted.
     ///
     /// Not the wallet module's peg-in fee on its own: claiming a deposit
-    /// balances the wallet input into primary-module outputs, and their
-    /// output fees and the denomination dust left over reduce the credit too.
+    /// balances the wallet input into primary-module outputs, and the
+    /// primary module's fees — output and input alike, if it consolidated
+    /// notes along the way — and the denomination dust left over reduce the
+    /// credit too.
     /// This field is the sum of all of it, which makes it the figure to read
     /// and the figure
     /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
@@ -1233,9 +1264,14 @@ pub struct OnchainReceiveDetails {
     ///
     /// `None` until a claim is accepted, and absent from every state at every
     /// point, which makes this record its only home: a caller cannot recover
-    /// it by watching, however carefully. A deposit that
-    /// [`Failed`](OnchainReceiveState::Failed) never establishes it at all,
-    /// because there was no accepted transaction to be charged for.
+    /// it by watching, however carefully. Acceptance, not success, is what
+    /// establishes it: a deposit that
+    /// [`Failed`](OnchainReceiveState::Failed) *before* any claim
+    /// transaction was accepted never establishes it — nothing was charged —
+    /// but the first wallet module can accept the claim and then fail note
+    /// finalization, and that deposit was charged this fee for notes that
+    /// never became spendable. `Some` on such a failure is the record
+    /// telling the truth about a cost with no credit to show for it.
     /// Millisatoshi-denominated, like every other fee in this facade.
     pub realized_fee: Option<Amount>,
     /// **Realized.** [`realized_fee`](OnchainReceiveDetails::realized_fee),
@@ -1318,16 +1354,25 @@ pub struct OnchainReceiveFeeBreakdown {
     /// not what reduced the credit, which is exactly why the other two fields
     /// exist rather than being folded silently into this one.
     pub peg_in: Amount,
-    /// What it costs to turn the peg-in into spendable notes: the primary
-    /// (mint) module's output fees on the transaction that balances the
-    /// wallet input into notes.
+    /// What it costs to turn the peg-in into spendable notes: everything the
+    /// primary (mint) module charged on the transaction that balances the
+    /// wallet input into notes — the output fees on the notes issued, and
+    /// the input fees on any existing notes the module chose to spend into
+    /// the same transaction while it was at it (the first mint module
+    /// consolidates small denominations opportunistically, the second may
+    /// rebalance; both ride along on the claim).
     ///
-    /// A federation-internal, millisatoshi-denominated cost with no on-chain
+    /// One component covering both directions rather than an input/output
+    /// split, for the same reason
+    /// [`LnFeeBreakdown::primary_module`](crate::LnFeeBreakdown::primary_module)
+    /// is: the split depends on which notes the module happened to select,
+    /// which is not information a receipt can promise. A
+    /// federation-internal, millisatoshi-denominated cost with no on-chain
     /// counterpart. Claiming a deposit cannot avoid it, because there is no
     /// way to receive a peg-in without issuing the notes it becomes, and it
     /// is the component most likely to make the aggregate a non-whole number
     /// of satoshis.
-    pub primary_output: Amount,
+    pub primary_module: Amount,
     /// The residue that note issuance leaves behind: value too small to be
     /// represented in the federation's denominations, and therefore given up.
     ///
@@ -1615,7 +1660,7 @@ mod tests {
     fn a_receive_breakdown() -> OnchainReceiveFeeBreakdown {
         OnchainReceiveFeeBreakdown {
             peg_in: Amount::from_msats(1_000),
-            primary_output: Amount::from_msats(400),
+            primary_module: Amount::from_msats(400),
             dust: Amount::from_msats(100),
         }
     }
@@ -1623,7 +1668,7 @@ mod tests {
     fn aggregate_of(breakdown: &OnchainReceiveFeeBreakdown) -> Amount {
         breakdown
             .peg_in
-            .checked_add(breakdown.primary_output)
+            .checked_add(breakdown.primary_module)
             .and_then(|partial| partial.checked_add(breakdown.dust))
             .expect("no overflow at this magnitude")
     }
@@ -1762,7 +1807,7 @@ mod tests {
     fn receive_fee_breakdown_components_sum_to_the_aggregate() {
         let breakdown = OnchainReceiveFeeBreakdown {
             peg_in: Amount::from_msats(1_000_000),
-            primary_output: Amount::from_msats(234_000),
+            primary_module: Amount::from_msats(234_000),
             dust: Amount::from_msats(567),
         };
         assert_eq!(aggregate_of(&breakdown), Amount::from_msats(1_234_567));

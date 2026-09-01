@@ -115,6 +115,26 @@
 //!    and [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings it
 //!    back — still recovery-locked — before case 2 applies to it.
 //!
+//! # Reopening restarts a stopped attempt by itself
+//!
+//! The underlying client deliberately does not persist a failed recovery as
+//! failed: a stopped attempt's progress rests at its last durable
+//! checkpoint, and opening the federation again resumes the rescan from
+//! there *automatically* — whether the open came from
+//! [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) or from
+//! [`SdkBuilder::build`](crate::SdkBuilder::build) bringing up the open
+//! federations at startup. The SDK cannot veto that restart, so it makes it
+//! observable instead: an open that finds the federation's last recorded
+//! attempt at [`RecoveryState::Failed`] mints the new attempt itself —
+//! a new [`OperationId`](crate::OperationId), exactly as
+//! [`Sdk::resume_recovery`] would — records it durably before the open
+//! returns, and points [`Sdk::recovery_status`] at it. The stopped attempt
+//! stays in the operation log untouched. `Failed` is therefore a statement
+//! about one attempt, never a promise that nothing is running now: after
+//! any reopen, the state to trust is [`Sdk::recovery_status`]'s, and
+//! [`Sdk::resume_recovery`] then reattaches to the attempt the reopen
+//! already started rather than starting another.
+//!
 //! ```no_run
 //! use fedimint_sdk::{FederationId, RecoveryState, Sdk};
 //!
@@ -215,6 +235,29 @@ impl Sdk {
     /// that takes a [`FederationId`], needs no invite code, and works on
     /// precisely the joined federation this one refuses.
     ///
+    /// # A failed call may still have joined
+    ///
+    /// The join is not the last fallible step. The underlying client
+    /// commits the join durably — configuration, secret hash, and the
+    /// pending-recovery marker — *before* the steps that can still fail
+    /// after it, so an `Err` from this call does not certify that nothing
+    /// happened: a [`Timeout`](crate::ErrorCode::Timeout) or
+    /// [`Storage`](crate::ErrorCode::Storage) can arrive with the
+    /// federation already joined and already committed to recovering.
+    ///
+    /// The SDK makes that window survivable by ordering its own writes
+    /// first: the recovery intent, and the operation id this call would
+    /// have returned, are persisted durably *before* the upstream join is
+    /// asked to mutate anything. One guarantee follows, and it holds for
+    /// **every** error this call can return: if the join committed, the
+    /// SDK's recovery record exists, so [`Sdk::recovery_status`] answers
+    /// for the federation and [`Sdk::resume_recovery`] accepts it and
+    /// carries the recovery on. A retry of *this* call after such an error
+    /// reports [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined) — the
+    /// signpost to those two calls, not a dead end. An intent written for a
+    /// join that never committed is inert and harmless: the next `recover`
+    /// for the same federation supersedes it.
+    ///
     /// # Errors
     ///
     /// The same errors as [`Sdk::join`]:
@@ -223,11 +266,8 @@ impl Sdk {
     /// [`Timeout`](crate::ErrorCode::Timeout),
     /// [`UnsupportedFederation`](crate::ErrorCode::UnsupportedFederation),
     /// [`Storage`](crate::ErrorCode::Storage), and
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
-    ///
-    /// `AlreadyJoined` here is not a dead end: it means the federation has
-    /// been joined, so [`Sdk::recovery_status`] can say where its recovery
-    /// stands and [`Sdk::resume_recovery`] can carry it on.
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) — each with
+    /// the may-already-have-joined caveat above.
     pub async fn recover(&self, invite: &InviteCode) -> Result<Recovery> {
         unimplemented!()
     }
@@ -254,7 +294,10 @@ impl Sdk {
     /// - **A recovery is running.** Nothing new is started. The returned
     ///   [`Recovery`] observes the attempt that is already running, which
     ///   is how an application reattaches to it after a restart without
-    ///   having kept the operation id.
+    ///   having kept the operation id. An attempt a reopen started on its
+    ///   own lands here too — reopening a federation whose last attempt
+    ///   stopped restarts the rescan automatically; see the module
+    ///   documentation.
     /// - **The last attempt stopped** ([`RecoveryState::Failed`]). A new
     ///   attempt starts, with a new [`OperationId`](crate::OperationId).
     ///   The stopped attempt is not rewritten or removed: it stays in the
@@ -275,7 +318,11 @@ impl Sdk {
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when this instance
     /// holds the federation but has no recovery for it, because it was
-    /// joined with [`Sdk::join`] rather than [`Sdk::recover`]. Resuming a
+    /// joined with [`Sdk::join`] rather than [`Sdk::recover`]. That is the
+    /// only way the record can be missing: `recover` persists its recovery
+    /// intent *before* it lets upstream join (see its docs), so a
+    /// federation a failed `recover` call left joined still carries the
+    /// record, and this call accepts it. Resuming a
     /// recovery is a different request from starting the first one, and
     /// this call deliberately does not do the second: turning a plainly
     /// joined federation into a recovering one would re-derive its client
@@ -501,7 +548,10 @@ pub enum RecoveryState {
     ///
     /// - **Retry.** [`Sdk::resume_recovery`] starts a fresh attempt for
     ///   this federation. It needs only the [`FederationId`], because the
-    ///   federation is already joined.
+    ///   federation is already joined. A retry can also arrive without
+    ///   being asked for: reopening the federation restarts a stopped
+    ///   rescan by itself, minting the new attempt exactly as
+    ///   `resume_recovery` would — see the module documentation.
     /// - **Erase and start over.** If retrying keeps stopping, the
     ///   documented exit is to erase the federation's local state and
     ///   recover it again from the invite code, with the costs the module

@@ -560,9 +560,16 @@ impl From<Diagnostic> for Error {
 ///
 /// - **Unknown kind:** consume `payload` by its length, do not look inside it,
 ///   and keep the envelope as [`DetailEnvelope::Opaque`].
-/// - **Known kind:** read that kind's fields in order. **Ignore any bytes
-///   left over.** Trailing bytes are not an error; they are a newer producer
-///   saying something this build has no field for.
+/// - **Known kind:** read that kind's fields in order, and require the
+///   payload to end exactly where the last field does. A kind's layout never
+///   drifts, so a well-formed newer producer never has more to
+///   say under an old kind — it says it under a new kind instead. Trailing
+///   bytes therefore mean the payload does not match the layout this kind
+///   froze, and the envelope is kept as [`DetailEnvelope::Opaque`], exactly
+///   like a short one. Projecting it anyway would also destroy the surplus,
+///   since an [`Interpreted`](DetailEnvelope::Interpreted) detail does not
+///   retain its bytes and a forwarder would re-encode only the fields it
+///   read.
 /// - **Short or invalid payload:** a payload that ends before the last field,
 ///   holds invalid UTF-8, or holds a `bool` that is neither `0` nor `1` is
 ///   *uninterpretable*. Keep it as [`DetailEnvelope::Opaque`] and never guess
@@ -655,12 +662,15 @@ impl RawErrorDetails {
 /// this one is deliberately **not** `#[non_exhaustive]`: "interpreted" and "not
 /// interpreted" exhausts the possibilities for all time, so there is no third
 /// case to reserve room for, and a Rust caller should get a total match instead
-/// of a wildcard arm it can never reach. It is also, for the same reason, the
-/// one data enum here that would be safe to transport as a generated
-/// enum-with-associated-values — two frozen cases can never present a decoder
-/// with an unknown tag. The recommended boundary shape is still an optional
-/// [`RawErrorDetails`] with each side projecting locally, since that is the
-/// form the encoding contract is written against.
+/// of a wildcard arm it can never reach. That closedness is a Rust-side
+/// property only, and it must not be mistaken for wire safety: this enum
+/// must **never** be the generated boundary type, because
+/// [`Interpreted`](DetailEnvelope::Interpreted) carries the growing
+/// [`ErrorDetails`], and an old decoder that recognises the outer tag still
+/// fails on an inner case it has never seen. The boundary shape is an
+/// optional [`RawErrorDetails`] — always, everywhere a detail crosses,
+/// including [`Diagnostic`](crate::Diagnostic) inside a federation status —
+/// with each side projecting this type locally from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetailEnvelope {
     /// This side knew the kind and read the payload, so the detail is
@@ -1253,7 +1263,13 @@ pub enum ErrorCode {
     /// go with it changes by asking again, so the two need opposite handling —
     /// back off and retry one, stop and tell a human about the other — and
     /// telling them apart has to be possible from `code` alone, because
-    /// [`Error::message`] may never be parsed.
+    /// [`Error::message`] may never be parsed. The boundary follows from
+    /// that: this code is only ever raised on bytes the backend **returned**
+    /// — an entry proven absent, or read in full and then found unusable. A
+    /// read the backend *failed to perform* proves nothing about the seed
+    /// and is [`Storage`](ErrorCode::Storage), however it smells, because
+    /// calling a recoverable outage permanent tells the caller to stop
+    /// retrying the one thing that would fix it.
     ///
     /// **Nothing was mutated.** The refusal happens under the storage lock and
     /// strictly before any write the open would make (see
@@ -1272,11 +1288,16 @@ pub enum ErrorCode {
     /// 1. Where the entry was present but unusable, **update the SDK or the
     ///    app** — a newer build may read a format this one cannot, and that
     ///    costs nothing and risks nothing.
-    /// 2. **Open the same location with the mnemonic that state came from**,
-    ///    which restores the seed beside its state instead of replacing it.
-    /// 3. **Point at a different location.** The everyday cause is a path
+    /// 2. **Point at a different location.** The everyday cause is a path
     ///    that moved, or storage belonging to another app, profile, or user.
-    /// 4. **Abandon the location deliberately**, by deleting its contents,
+    ///    If the phrase for the stranded state is known, it also recovers the
+    ///    funds — at a *fresh* location, by seed recovery, never by writing
+    ///    into this one: no build case repairs an orphaned store in place,
+    ///    because
+    ///    nothing persisted there can prove a supplied phrase is the one the
+    ///    state came from, and a plausible-but-wrong seed written beside it
+    ///    would be indistinguishable from success.
+    /// 3. **Abandon the location deliberately**, by deleting its contents,
     ///    which makes it provably empty and therefore openable. This destroys
     ///    any funds whose only backup was that seed, so it is a last resort a
     ///    person chooses explicitly — never a step an application takes on
