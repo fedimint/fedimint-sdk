@@ -11,10 +11,14 @@
 /// disagreement.
 ///
 /// This enum is `#[non_exhaustive]`: Bitcoin has occasionally grown new test
-/// networks, and a new variant here is an additive change, not a breaking
-/// one. Rust callers must write a non-exhaustive match (with a wildcard
-/// arm); foreign bindings map an unrecognized future variant to an explicit
-/// unknown case.
+/// networks, and a new variant here is an additive change for Rust callers,
+/// who must write a non-exhaustive match with a wildcard arm.
+///
+/// It is not additive for a generated binding, though, and the crate-level
+/// documentation's forward-compatibility section explains why: a decoder
+/// pinned to an older SDK fails on a tag it has never seen rather than
+/// mapping it to an unknown case. A binding is expected to be regenerated
+/// alongside the SDK it talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Network {

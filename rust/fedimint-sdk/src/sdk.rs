@@ -32,22 +32,33 @@ use crate::{
 /// # Federation lifecycle
 ///
 /// Every federation this instance's storage remembers is in exactly one of
-/// the states [`FederationStatus`] names, and every lifecycle call on this
-/// type is a transition between them. They are worth reading once as a
-/// whole, because the rest of this type's contract is stated in terms of
-/// them rather than re-derived per method:
+/// the five states below, and every lifecycle call on this type is a
+/// transition between them. They are worth reading once as a whole, because
+/// the rest of this type's contract is stated in terms of them rather than
+/// re-derived per method. ([`Forgotten`](FederationStatus::Forgotten) is the
+/// one variant of [`FederationStatus`] that is not among them: it is a
+/// notification that a federation is gone, not a state one is stored in.)
 ///
 /// - **[`Running`](FederationStatus::Running)** — open, workers turning,
-///   operations progressing. This is the only state in which the federation
-///   appears in [`Sdk::federations`] and [`Sdk::federation`] hands back a
-///   live handle.
+///   operations progressing, nothing the federation offers withheld.
 /// - **[`Recovering`](FederationStatus::Recovering)** — open, with a live
 ///   handle, but its wallet has not finished being reconstructed from the
 ///   seed: its balance and activity are incomplete and every spend and
 ///   receive is refused with
-///   [`Recovering`](crate::ErrorCode::Recovering). Only a completed recovery
-///   leaves this state, so the destructive erase is the only other way out
-///   of it; [`Sdk::forget_federation`] documents what that costs.
+///   [`Recovering`](crate::ErrorCode::Recovering) until the reconstruction
+///   completes.
+///
+///   Those first two are the **open** states, and together they are exactly
+///   what [`Sdk::federations`] lists and what [`Sdk::federation`] hands back
+///   a live handle for. Completing the reconstruction turns `Recovering`
+///   into `Running`, and nothing in this SDK completes or cancels one on
+///   demand, so an unfinished reconstruction — and the refusals that come
+///   with it — survives closing, reopening and restarting; the destructive
+///   erase [`Sdk::forget_federation`] performs is the only way to be rid of
+///   one without finishing it. Leaving the *state* is a weaker thing than
+///   that: closing or quarantining a recovering federation moves it out of
+///   `Recovering` while preserving the unfinished reconstruction, so
+///   reopening lands it back here rather than in `Running`.
 /// - **[`Quarantined`](FederationStatus::Quarantined)** — stored and
 ///   intact, but not running, because the SDK could not or would not
 ///   operate on it: its configuration is one this SDK refuses, its local
@@ -65,8 +76,9 @@ use crate::{
 /// being a pile of special cases:
 ///
 /// **A stored federation is never silently absent.** [`Sdk::federations`]
-/// lists live handles, which is what an application needs in order to *act*.
-/// Everything the storage holds, whatever its state, is listed by
+/// lists the federations this instance has open — the two states above, the
+/// ones with a live handle — which is what an application needs in order to
+/// *act*. Everything the storage holds, whatever its state, is listed by
 /// [`Sdk::stored_federations`], and [`Sdk::federation_status`] answers for a
 /// single id. A wallet list should be rendered from the second, so that a
 /// federation which is closed, quarantined, or being erased appears as
@@ -80,12 +92,13 @@ use crate::{
 /// healthy federation and to [`Sdk::export_mnemonic`] — the one call that
 /// gets their money out of a broken installation.
 ///
-/// **Getting back to running takes one call and no invite code.**
-/// [`Sdk::reopen_federation`] moves a federation out of
+/// **Getting a stored federation open again takes one call and no invite
+/// code.** [`Sdk::reopen_federation`] moves a federation out of
 /// [`Closed`](FederationStatus::Closed) or
 /// [`Quarantined`](FederationStatus::Quarantined) using the configuration
-/// the SDK already holds. An application must never have to have retained an
-/// invite code in order to reach a wallet it still has.
+/// the SDK already holds, into whichever open state its persisted work leaves
+/// it in. An application must never have to have retained an invite code in
+/// order to reach a wallet it still has.
 ///
 /// Status changes are also observable as they happen, through
 /// [`Sdk::federation_status_updates`], so an application can react to a
@@ -126,6 +139,17 @@ use crate::{
 /// in that error — one code covers all of them deliberately, so that
 /// applications have exactly one "this handle is stale" branch — and is read
 /// from [`Sdk::federation_status`] instead.
+///
+/// A [`Recovering`](FederationStatus::Recovering) federation is emphatically
+/// *not* one of these. It is open, its handle is live, and the sends and
+/// receives it will not perform yet fail with
+/// [`Recovering`](crate::ErrorCode::Recovering) instead — a different code
+/// because it is a different situation, and the distinction is the reason
+/// both exist. `FederationClosed` says "this handle is stale, and no call on
+/// it will ever work again"; `Recovering` says "this federation is working,
+/// and will accept this call once its wallet has been reconstructed".
+/// Retrying the first with the same handle is pointless; retrying the second
+/// is the whole plan.
 #[derive(Debug, Clone)]
 pub struct Sdk {
     inner: Arc<SdkInner>,
@@ -279,23 +303,65 @@ impl Sdk {
 
     /// Every federation this instance currently has open.
     ///
-    /// This is the "what can I act on right now" list, and its meaning is
-    /// narrow on purpose: a [`Federation`] here is running, so its facades
-    /// work and its balance is live. Federations that are closed,
-    /// quarantined, or being erased are not listed — they have no live
-    /// handle to hand out — and forgotten ones are gone entirely. The order
-    /// is unspecified.
+    /// This is the "what can I act on right now" list, and *open* is its
+    /// exact meaning: a [`Federation`] here is
+    /// [`Running`](FederationStatus::Running) or
+    /// [`Recovering`](FederationStatus::Recovering) — the two open states of
+    /// the lifecycle above — so the SDK is holding a live client for it, its
+    /// facades work, and it answers calls rather than reporting itself stale.
+    /// Federations that are closed, quarantined, or being erased are not
+    /// listed, because they have no live handle to hand out, and forgotten
+    /// ones are gone entirely. The order is unspecified.
+    ///
+    /// A [`Recovering`](FederationStatus::Recovering) entry is a real, usable
+    /// handle and not a placeholder. Its descriptive accessors —
+    /// [`id`](crate::Federation::id), [`name`](crate::Federation::name),
+    /// [`network`](crate::Federation::network),
+    /// [`capabilities`](crate::Federation::capabilities) — answer as they
+    /// would for any other federation, its facades and metadata are there,
+    /// operations can be looked up, and its balance and activity are reported
+    /// and kept up to date, provisionally, as the wallet is reconstructed.
+    /// What it refuses is the work that needs a complete wallet: every send
+    /// and receive, and taking a fresh backup, fails with
+    /// [`Recovering`](crate::ErrorCode::Recovering) until the reconstruction
+    /// completes. That is a documented refusal by a working
+    /// federation, carrying its own code so an application can explain *why*
+    /// and offer to wait — not the
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) of a handle
+    /// with nothing behind it. So "every federation in this list can be acted
+    /// on" holds unweakened; what a recovering one does with one class of
+    /// call is part of acting on it, not an exception to it.
+    ///
+    /// Listing recovering federations is also what keeps a reconstruction
+    /// discoverable across a restart. The calls that read and resume one take
+    /// a [`FederationId`], and an application that persisted neither an
+    /// operation id nor a federation id has this list as its only route back
+    /// to a wallet that is still being reconstructed. Hiding those
+    /// federations here would leave such an application holding a federation
+    /// it can neither spend from nor find — a documented recovery path that
+    /// does not exist.
     ///
     /// This is therefore *not* the list to render a wallet screen from. Use
-    /// [`Sdk::stored_federations`] for that: it lists everything the storage
-    /// holds with a [`FederationStatus`] for each, so a federation that is
-    /// not currently usable is shown as such instead of disappearing.
+    /// [`Sdk::stored_federations`] for that: it is a superset of this list
+    /// and gives everything the storage holds a [`FederationStatus`], so a
+    /// federation that is not currently usable is shown as such instead of
+    /// disappearing.
     pub fn federations(&self) -> Vec<Federation> {
         unimplemented!()
     }
 
     /// The open federation with this id, or `None` if this instance has no
     /// such federation open.
+    ///
+    /// "Open" means precisely what it means in [`Sdk::federations`], and the
+    /// two can never disagree: this returns `Some` for exactly the
+    /// federations that list contains — [`Running`](FederationStatus::Running)
+    /// and [`Recovering`](FederationStatus::Recovering) — with the same
+    /// caveat attached to a recovering one, that it answers every call except
+    /// the ones needing a complete wallet, which it refuses with
+    /// [`Recovering`](crate::ErrorCode::Recovering) until its own is
+    /// reconstructed. Looking an id up here is a lookup into that list, not a
+    /// second and narrower notion of availability.
     ///
     /// `None` covers every reason there is no live handle: never joined,
     /// forgotten, closed, quarantined, or being erased. They are not
@@ -323,6 +389,14 @@ impl Sdk {
     /// here, labelled, rather than being absent — an application cannot
     /// distinguish a missing row from a wallet the user left, and would
     /// otherwise present a balance that has quietly lost a federation.
+    ///
+    /// It is a superset of [`Sdk::federations`], never a different set: every
+    /// open federation appears here too, carrying
+    /// [`Running`](FederationStatus::Running) or
+    /// [`Recovering`](FederationStatus::Recovering), so the shorter list is
+    /// this one filtered to the states that have a live handle. Every state
+    /// [`FederationStatus`] names as stored appears here, and only a
+    /// federation that has been fully forgotten appears in neither.
     ///
     /// It also closes a gap that would otherwise be unrecoverable. Closing a
     /// federation keeps all of its data but takes away its handle; without a
@@ -412,12 +486,19 @@ impl Sdk {
     /// remembered federation: revalidate the configuration against the
     /// module-generation rule described on [`Sdk::join`], start the
     /// background workers, and resume unfinished operations from where they
-    /// were persisted. On success the federation is
-    /// [`Running`](FederationStatus::Running) (or
-    /// [`Recovering`](FederationStatus::Recovering) if a rescan is still
-    /// outstanding), it appears in [`Sdk::federations`] again, and it is
-    /// reopened automatically by later builds — reopening clears the
-    /// opt-out that [`Sdk::close_federation`] set.
+    /// were persisted. On success the federation is open and appears in
+    /// [`Sdk::federations`] again, and it is reopened automatically by later
+    /// builds — reopening clears the opt-out that
+    /// [`Sdk::close_federation`] set. Which open state it lands in is not
+    /// this call's choice but the federation's: it is
+    /// [`Running`](FederationStatus::Running), or
+    /// [`Recovering`](FederationStatus::Recovering) if the reconstruction of
+    /// its wallet from the seed was still unfinished when it stopped, since
+    /// that is persisted with the rest of its state and resumes here like any
+    /// other unfinished work. Either way the handle this returns is live and
+    /// listed; a recovering one refuses sends and receives with
+    /// [`Recovering`](crate::ErrorCode::Recovering) and answers everything
+    /// else.
     ///
     /// Handles obtained before the federation stopped running are *not*
     /// revived. They stay closed, and their fallible calls keep failing with
@@ -426,10 +507,12 @@ impl Sdk {
     /// stale reference silently becoming live again, which is a harder
     /// property to reason about than "a closed handle is closed forever".
     ///
-    /// Reopening a federation that is already running is not an error: it
-    /// returns the live handle, mirroring the idempotence of
-    /// [`Sdk::close_federation`], because the postcondition the caller asked
-    /// for already holds.
+    /// Reopening a federation that is already open — running or recovering —
+    /// is not an error: it returns the live handle, mirroring the idempotence
+    /// of [`Sdk::close_federation`], because the postcondition the caller
+    /// asked for already holds. It does not, and cannot, hurry a
+    /// reconstruction along: a recovering federation reopened this way is
+    /// handed back still recovering.
     ///
     /// A failed reopen leaves the federation
     /// [`Quarantined`](FederationStatus::Quarantined) with the same
@@ -488,6 +571,17 @@ impl Sdk {
     /// quarantined federation, which closing turns into a deliberate
     /// [`Closed`](FederationStatus::Closed) so that later builds stop
     /// retrying it.
+    ///
+    /// A [`Recovering`](FederationStatus::Recovering) federation closes like
+    /// any other, and closing it is not a way out of the reconstruction it is
+    /// in the middle of. Its status becomes
+    /// [`Closed`](FederationStatus::Closed), the unfinished reconstruction is
+    /// preserved along with the rest of its persisted state, and
+    /// [`Sdk::reopen_federation`] brings the federation back as
+    /// [`Recovering`](FederationStatus::Recovering) with that work resuming
+    /// where it stopped. Finishing the reconstruction, or the destructive
+    /// [`Sdk::forget_federation`], are the only things that end one; this
+    /// call merely stops working on it for now.
     ///
     /// # Errors
     ///
@@ -924,6 +1018,15 @@ impl SdkBuilder {
     ///    started, and its unfinished operations resume from where they were
     ///    persisted.
     ///
+    ///    A federation whose wallet was still being reconstructed from the
+    ///    seed comes back [`Recovering`](FederationStatus::Recovering) — that
+    ///    reconstruction is one of the unfinished operations that resume here
+    ///    — and is listed by [`Sdk::federations`] alongside the
+    ///    [`Running`](FederationStatus::Running) ones, since both are open.
+    ///    That is how an application which persisted nothing across the
+    ///    restart finds such a federation again, and why the list is defined
+    ///    by having a live handle rather than by being fully usable.
+    ///
     ///    A federation that cannot be opened **does not fail this call**. It
     ///    is put into [`Quarantined`](FederationStatus::Quarantined) with
     ///    the [`ErrorCode`] and message that explain why, it is absent from
@@ -1021,8 +1124,13 @@ impl core::fmt::Debug for Redacted {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FederationStatus {
-    /// Open and working: workers are running, operations are progressing,
-    /// and [`Sdk::federation`] hands out a live handle.
+    /// Open and fully working: workers are running, operations are
+    /// progressing, and nothing the federation offers is withheld.
+    ///
+    /// One of the two open states, so the federation is listed by
+    /// [`Sdk::federations`] and [`Sdk::federation`] hands out a live handle;
+    /// [`Recovering`](FederationStatus::Recovering) is the other, and differs
+    /// only in refusing fund-touching calls.
     Running,
     /// Open, but the wallet has not finished being reconstructed from the
     /// seed, so the federation is **recovery-locked**.
@@ -1031,6 +1139,16 @@ pub enum FederationStatus {
     /// readable, while balance and activity are incomplete and still moving
     /// and every spend and receive is refused with
     /// [`Recovering`](crate::ErrorCode::Recovering).
+    ///
+    /// This is the second **open** state, so the federation is listed by
+    /// [`Sdk::federations`] and returned by [`Sdk::federation`] exactly as a
+    /// [`Running`](FederationStatus::Running) one is. That is deliberate and
+    /// load-bearing: this is a federation the SDK is operating, its refusals
+    /// are specific answers rather than the
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) of a stale
+    /// handle, and a wallet still being reconstructed has to stay reachable
+    /// through those two calls or an application that kept nothing across a
+    /// restart could not find it at all.
     ///
     /// This state covers a rescan that is *running* and one that has
     /// *stopped without completing*, and it deliberately does not
@@ -1044,10 +1162,14 @@ pub enum FederationStatus {
     /// Not to be confused with
     /// [`Quarantined`](FederationStatus::Quarantined). A recovering
     /// federation is one the SDK is happily operating; a quarantined one is
-    /// one it refuses to operate. The exits differ accordingly: a recovery
-    /// is finished (or the federation is erased), whereas a quarantine is
-    /// cleared by [`Sdk::reopen_federation`] once whatever caused it has
-    /// changed.
+    /// one it refuses to operate. The exits differ accordingly: a quarantine
+    /// is cleared by [`Sdk::reopen_federation`] once whatever caused it has
+    /// changed, whereas this state gives way to
+    /// [`Running`](FederationStatus::Running) when the reconstruction
+    /// completes. Closing or quarantining a recovering federation moves it
+    /// out of this state without finishing that reconstruction, which is
+    /// persisted, so reopening lands it back here; only
+    /// [`Sdk::forget_federation`] ends an unfinished one, by erasing it.
     ///
     /// This state only arises when the SDK's recovery API — currently behind
     /// the off-by-default `experimental` feature — has been used; the
@@ -1134,6 +1256,14 @@ pub enum FederationStatus {
 /// [`Sdk::federations`] polymorphic over live and non-live federations would
 /// have changed what a `Federation` means — every handle in that list can be
 /// acted on — so the listing gets its own small record instead.
+///
+/// That invariant is about the handle, not about what every call through it
+/// will agree to do. A [`Recovering`](FederationStatus::Recovering)
+/// federation is in that list and can be acted on: a live client answers, and
+/// the sends and receives it declines are declined with
+/// [`Recovering`](crate::ErrorCode::Recovering) by that same live client. A
+/// record here, by contrast, has no client behind it at all, which is exactly
+/// why it is a record.
 ///
 /// Owned, flat, and free of tuples and borrows, so it crosses into Swift,
 /// Kotlin and TypeScript as a plain record. `#[non_exhaustive]`: fields may

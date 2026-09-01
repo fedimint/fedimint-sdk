@@ -28,14 +28,18 @@ use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp,
 /// - **Exact millisatoshis.** Every fee, every total debit, and the net
 ///   amount a deposit credits to the balance
 ///   ([`OnchainQuote::fee`], [`OnchainQuote::total`],
-///   [`OnchainSendDetails::total_debited`],
+///   [`OnchainSendDetails::quoted_total_debited`],
+///   [`OnchainSendDetails::realized_total_debited`],
 ///   [`OnchainReceiveState::Claimed`],
-///   [`OnchainReceiveDetails::net_credit`]). A peg-out's cost is not just
-///   the chain fee for the wallet output: it also covers funding that
-///   output from the primary (mint) module and the change and dust that
-///   funding leaves behind, and a peg-in's cost is a federation fee taken
-///   out of the deposit. Those are quoted and charged in millisatoshis, and
-///   their sums are routinely not whole satoshis.
+///   [`OnchainReceiveDetails::realized_net_credit`]). A peg-out's cost is
+///   not just the chain fee for the wallet output: it also covers funding
+///   that output from the primary (mint) module and the change and dust
+///   that funding leaves behind. Nor is a peg-in's cost only the wallet
+///   module's peg-in fee: claiming a deposit balances the wallet input into
+///   primary-module outputs, whose output fees and denomination dust reduce
+///   what reaches the balance just as the peg-in fee does. Those figures
+///   are quoted and charged in millisatoshis, and their sums are routinely
+///   not whole satoshis.
 ///
 /// An earlier draft of this facade declared **everything** here to be whole
 /// satoshis. That rule was written before upstream's fee contract was
@@ -52,6 +56,35 @@ use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp,
 /// (exact by construction, one satoshi being exactly 1000 msat) and
 /// [`Amount::to_sats_exact`](crate::Amount::to_sats_exact) downward, which
 /// refuses rather than truncates.
+///
+/// # Quoted terms and realized outcomes
+///
+/// Every money figure this facade reports is one of two different kinds of
+/// fact, and conflating them is how a receipt comes to assert something that
+/// never happened. The records here separate them by name, and every field
+/// says which half it belongs to.
+///
+/// - **Quoted** — everything [`OnchainQuote`] exposes, and every
+///   `quoted_`-prefixed field. Fixed when [`Onchain::quote`] ran, never
+///   optional (an attempt always had terms), and a description of the
+///   attempt rather than of the outcome. This is what the user approved.
+/// - **Realized** — every `realized_`-prefixed field. `Option`, absent until
+///   the operation settles, then set exactly once from the fees the
+///   federation recorded against the transaction it accepted. This is what
+///   the balance actually did.
+///
+/// The two can differ, and neither is redundant. A withdrawal's
+/// federation-side costs — mint inputs, change, denomination dust — are
+/// chosen when the transaction is assembled and accepted, not when it is
+/// quoted, and that gap cannot be closed from inside this SDK;
+/// [`OnchainQuote::total`] sets out exactly why. So show the quoted figure
+/// before the user commits, because it is the number they are approving, and
+/// show the realized figure on the receipt afterwards, because it is the
+/// number their balance moved by. For an operation that failed, the realized
+/// figure may be zero or absent entirely.
+///
+/// A deposit has no quoted half at all — there is no quote for one — so
+/// every money figure on [`OnchainReceiveDetails`] is realized by nature.
 ///
 /// # The recovery lock applies to both directions
 ///
@@ -193,10 +226,13 @@ impl Onchain {
     /// # No quote
     ///
     /// There is nothing to quote for a deposit. The sender pays the Bitcoin
-    /// network fee out of their own wallet, and the federation's peg-in
-    /// terms apply to whatever arrives; the fee those terms take is knowable
-    /// only once an amount exists, and it is reported then — see
-    /// [`OnchainReceiveDetails::fee`].
+    /// network fee out of their own wallet, and what the federation charges
+    /// to bring the deposit into the balance is knowable only once there is
+    /// an amount to claim and an accepted transaction that claims it. It is
+    /// reported then, as a realized figure and never a quoted one — see
+    /// [`OnchainReceiveDetails::realized_fee`], and note that it is the
+    /// aggregate of every federation-side cost rather than the wallet
+    /// module's peg-in fee alone.
     ///
     /// # Errors
     ///
@@ -214,11 +250,19 @@ impl Onchain {
     /// Plans a withdrawal and returns an executable quote for it.
     ///
     /// Like its lightning counterpart, this exists because the cost is only
-    /// knowable after the SDK has worked out how the federation will build
-    /// and broadcast the transaction. The returned [`OnchainQuote`] binds
-    /// the destination address, the amount, the aggregate fee, the total
-    /// debit, and the federation configuration those were computed against,
-    /// and [`Onchain::send`] executes exactly that or refuses.
+    /// estimable after the SDK has worked out how the federation would build
+    /// and broadcast the transaction. The returned [`OnchainQuote`] fixes
+    /// the destination address and the amount, names the aggregate fee and
+    /// total debit it computed for them, and records the federation
+    /// configuration those were computed against; [`Onchain::send`] executes
+    /// that plan or refuses it.
+    ///
+    /// The fee and total it names are **quoted** figures — what the
+    /// withdrawal is expected to cost, and what the user approves — not a
+    /// bound on what will be debited. [`OnchainQuote::total`] explains where
+    /// the gap comes from and why this SDK cannot close it; what the
+    /// withdrawal actually cost is reported afterwards on
+    /// [`OnchainSendDetails::realized_total_debited`].
     ///
     /// `amount` is in whole [`Sats`](crate::Sats) because it is the amount
     /// that will appear in the withdrawal transaction's output. The fee and
@@ -240,7 +284,7 @@ impl Onchain {
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an amount the
     /// federation cannot withdraw (zero, or below its dust threshold),
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance) when
-    /// the balance cannot cover [`OnchainQuote::total`],
+    /// the balance cannot cover the quoted [`OnchainQuote::total`],
     /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
     /// recovery is incomplete,
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
@@ -254,26 +298,37 @@ impl Onchain {
     /// Executes a quoted withdrawal.
     ///
     /// The quote is consumed and executed as quoted — same destination, same
-    /// amount, same fee — or the call fails with
+    /// amount, same quoted fee — or the call fails with
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if its validity
     /// window has passed, or
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if the fee estimate
     /// or federation configuration it was built on has moved. In both cases
-    /// the remedy is the same: quote again and re-confirm.
+    /// the remedy is the same: quote again and re-confirm. That refusal is
+    /// worth having: a user is not charged against terms they never saw.
     ///
-    /// [`OnchainQuote::total`] is the ceiling this call is authorised
-    /// against. Nothing beyond it can be debited: a withdrawal that would
-    /// now cost more is a
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) refusal, never a
-    /// silent overspend of the difference.
+    /// That refusal is **not** a spending ceiling, though an earlier draft of
+    /// this documentation said it was. [`OnchainQuote::total`] is the debit
+    /// this withdrawal was quoted at, not a maximum this call is authorised
+    /// against: published Fedimint offers no way to bind a total inside the
+    /// transaction that finally commits, so the realized debit can land above
+    /// the quoted one and refusing a visibly stale quote does not stop it.
+    /// [`OnchainQuote::total`] gives the mechanism in full and names what
+    /// upstream would have to add before a ceiling could be promised.
+    ///
+    /// What this call does instead is record what happened:
+    /// [`OnchainSendDetails::realized_total_debited`] is the debit the
+    /// balance actually took, and it is what a "you paid" line must read
+    /// from. A [`QuoteChanged`](crate::ErrorCode::QuoteChanged) refusal is
+    /// not the only signal a caller gets about a moving fee, and it was
+    /// never sufficient as one.
     ///
     /// The returned operation reaches [`OnchainSendState::Succeeded`] once
     /// the federation has broadcast the transaction. That is the SDK's
     /// finish line, not the chain's: confirmation of the withdrawal
     /// transaction on the Bitcoin network is the recipient's business, and
     /// the [`Txid`](crate::Txid) in that state is what an application shows
-    /// or links to a block explorer. The terms it was executed on stay
-    /// readable, however it ends, from
+    /// or links to a block explorer. The terms it was quoted on, and what it
+    /// finally cost, stay readable however it ends, from
     /// [`OnchainSendDetails`].
     ///
     /// # Errors
@@ -299,6 +354,14 @@ impl Onchain {
 /// [`LnQuote`](crate::LnQuote), the accessors expose exactly what a user
 /// must approve and nothing else; the plan itself is the SDK's to keep.
 ///
+/// Everything here is a **quoted** figure: fixed when the quote ran, and a
+/// prediction of what the withdrawal will cost rather than a measurement of
+/// what it did — see the
+/// [convention](Onchain#quoted-terms-and-realized-outcomes) and, for the
+/// reason the distinction cannot be engineered away,
+/// [`OnchainQuote::total`]. The realized counterparts live on
+/// [`OnchainSendDetails`].
+///
 /// The accessors deliberately do not all speak the same unit — the
 /// destination amount is whole [`Sats`](crate::Sats) and the fee and total
 /// are millisatoshi [`Amount`](crate::Amount)s. That asymmetry reads as an
@@ -317,20 +380,31 @@ impl OnchainQuote {
     /// hold a fraction of a satoshi. It is the same number the caller passed
     /// to [`Onchain::quote`].
     ///
-    /// This is *not* what leaves the balance; see [`OnchainQuote::total`].
+    /// This is *not* what leaves the balance: the quoted debit is
+    /// [`OnchainQuote::total`], and what the balance finally paid is
+    /// [`OnchainSendDetails::realized_total_debited`].
     pub fn amount(&self) -> Sats {
         unimplemented!()
     }
 
-    /// The exact aggregate cost of this withdrawal, over and above
+    /// The quoted aggregate cost of this withdrawal, over and above
     /// [`OnchainQuote::amount`].
     ///
-    /// "Aggregate" is the whole point: this is **every** debit the
-    /// withdrawal incurs beyond the destination output, summed with nothing
-    /// rounded away — the chain fee for the wallet output the federation
-    /// will build, the cost of funding that output from the primary (mint)
-    /// module, and the change and dust that funding leaves behind.
-    /// [`OnchainQuote::fee_breakdown`] names those parts individually.
+    /// "Aggregate" is half the point: this is **every** debit the withdrawal
+    /// is expected to incur beyond the destination output, summed with
+    /// nothing rounded away — the chain fee for the wallet output the
+    /// federation will build, the cost of funding that output from the
+    /// primary (mint) module, and the change and dust that funding leaves
+    /// behind. [`OnchainQuote::fee_breakdown`] names those parts
+    /// individually.
+    ///
+    /// "Quoted" is the other half. The mint-side components are chosen when
+    /// the transaction is assembled, which happens after this quote has been
+    /// discarded, so this is the figure the user approves and not a
+    /// measurement of what the withdrawal cost; see [`OnchainQuote::total`]
+    /// for the mechanism. What it actually cost is
+    /// [`OnchainSendDetails::realized_fee`], and that is the figure a
+    /// receipt shows.
     ///
     /// It is an [`Amount`](crate::Amount) rather than
     /// [`Sats`](crate::Sats) because that sum is genuinely not a whole
@@ -351,20 +425,63 @@ impl OnchainQuote {
         unimplemented!()
     }
 
-    /// The total that will be debited from the balance:
+    /// The total this withdrawal is quoted at:
     /// [`OnchainQuote::amount`] converted to millisatoshis, plus
     /// [`OnchainQuote::fee`].
     ///
-    /// This is the number to show as "you will pay", and it is exact — the
-    /// point of aggregating the fee in millisatoshis is that this figure
-    /// does not have to be approximated.
+    /// This is the number to show as "you will pay" on an approval screen,
+    /// and it is exact in the sense that matters there — the point of
+    /// aggregating the fee in millisatoshis is that the figure the user says
+    /// yes to does not have to be approximated.
     ///
-    /// It is also a **ceiling**, not merely a prediction:
-    /// [`Onchain::send`] is authorised for this and no more. A withdrawal
-    /// that would cost more than this by the time it executes is refused
-    /// with [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so the user
-    /// re-approves a new number instead of quietly paying it. That is what
-    /// makes it safe to render as a commitment rather than an estimate.
+    /// # It is an estimate, not an enforced ceiling
+    ///
+    /// An earlier draft of this API called this a ceiling that
+    /// [`Onchain::send`] was authorised against and could not exceed. That
+    /// claim is **retracted**: published Fedimint cannot enforce it, and no
+    /// amount of care inside this SDK can supply the enforcement from
+    /// outside. The mechanism is worth stating precisely, because its shape
+    /// is what decides whether it can be worked around.
+    ///
+    /// - Quoting runs the primary module's input selection inside a
+    ///   transaction that is explicitly **non-committable**, and then throws
+    ///   that transaction away. It is a dry run by construction: nothing
+    ///   about the selection it made survives it.
+    /// - Executing later assembles and submits a **different**, committable
+    ///   transaction, and that path takes no expected-total or maximum-total
+    ///   argument. Handing it the quoted chain feerate binds the
+    ///   wallet-output component; the mint input fees, the change fees and
+    ///   the denomination dust are chosen at that moment and can differ from
+    ///   the ones the discarded transaction implied.
+    /// - Re-checking the fee immediately before submitting does not close
+    ///   the gap, it only narrows the window. Between the check and the
+    ///   commit the terms can still move — a time-of-check to time-of-use
+    ///   race — and a check that leaves a race is not a guarantee. Saying so
+    ///   is more useful than implying one.
+    ///
+    /// What would turn this into a real ceiling is an upstream change, not an
+    /// SDK one: either an atomic maximum-total (or expected-fee) guard
+    /// *inside* transaction finalization, so that assembly itself refuses to
+    /// exceed a figure the caller named, or a persisted fee reservation with
+    /// defined drop, expiry and restart semantics, so that the terms quoted
+    /// are the terms held. Either is a prerequisite this API is documenting
+    /// rather than pretending to have.
+    ///
+    /// # What a caller gets instead
+    ///
+    /// Two things, and between them they cover the honest cases.
+    ///
+    /// [`Onchain::send`] still refuses a quote whose terms have visibly
+    /// moved, with [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so a
+    /// stale quote is never executed silently. That is a genuine protection
+    /// against staleness; it is not a bound on the commit.
+    ///
+    /// And the receipt reports the truth.
+    /// [`OnchainSendDetails::realized_total_debited`] is what the balance
+    /// actually paid, recorded from the accepted transaction's own fees, and
+    /// it is what a "you paid" line must read from. A caller that renders
+    /// this quoted total after the fact will eventually render a number that
+    /// is not what happened.
     pub fn total(&self) -> Amount {
         unimplemented!()
     }
@@ -376,10 +493,12 @@ impl OnchainQuote {
     /// behind a disclosure, next to the aggregate. It re-reports the same
     /// money as [`OnchainQuote::fee`]; it is not an additional charge.
     ///
-    /// The aggregate remains the figure to charge and to compare against a
-    /// balance; see [`OnchainFeeBreakdown`] for why a caller should not
-    /// re-derive it by summing.
-    pub fn fee_breakdown(&self) -> OnchainFeeBreakdown {
+    /// It is a breakdown of the **quoted** fee, and the split is as
+    /// provisional as the total it explains. The aggregate remains the figure
+    /// to charge and to compare against a balance; see
+    /// [`OnchainSendFeeBreakdown`] for why a caller should not re-derive it
+    /// by summing.
+    pub fn fee_breakdown(&self) -> OnchainSendFeeBreakdown {
         unimplemented!()
     }
 
@@ -403,6 +522,17 @@ impl OnchainQuote {
 /// aggregate exactly — the SDK's own invariant is that the components sum to
 /// [`OnchainQuote::fee`], with no rounding and no residue.
 ///
+/// # This explains a quote, not an outcome
+///
+/// These are quoted components, and they inherit everything
+/// [`OnchainQuote::total`] says about quoted figures: the two mint-side
+/// lines in particular are re-decided when the transaction is assembled. A
+/// withdrawal's realized cost is reported as a single aggregate on
+/// [`OnchainSendDetails::realized_fee`] and is deliberately not broken down
+/// this way — the accepted transaction's cost is recorded as one figure, and
+/// splitting it along these lines after the fact would be presenting a guess
+/// as a measurement.
+///
 /// # Read the aggregate; use these to explain it
 ///
 /// A caller that needs the number to charge, to compare against a balance,
@@ -413,13 +543,15 @@ impl OnchainQuote {
 ///   component in two or name one that did not exist. The aggregate stays
 ///   correct across that change; a caller that had hard-coded the sum of
 ///   the fields it knew about would quietly start understating the fee.
-/// - The aggregate is the figure the quote commits to and
-///   [`Onchain::send`] is authorised against. Nothing else is.
+/// - The aggregate is the figure the quote is executed on, and the one
+///   [`Onchain::send`] compares against when it decides whether the terms
+///   have moved. A component is an explanation; it is not an authorisation,
+///   and neither is the aggregate.
 ///
 /// So: aggregate for arithmetic, breakdown for explanation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct OnchainFeeBreakdown {
+pub struct OnchainSendFeeBreakdown {
     /// What it costs to put the destination output on chain: the
     /// federation's charge for the wallet output it will build, including
     /// its share of the Bitcoin network fee at the feerate the quote was
@@ -441,10 +573,10 @@ pub struct OnchainFeeBreakdown {
     /// notes, plus any residue too small to be worth returning and
     /// therefore given up.
     ///
-    /// Small, frequently sub-satoshi, and genuinely part of the debit. It is
-    /// reported rather than absorbed because a fee that does not reconcile
-    /// with the balance movement is worse than a fee with a third line in
-    /// it.
+    /// Small, frequently sub-satoshi, and genuinely part of the quoted debit.
+    /// It is reported rather than absorbed because a fee whose parts do not
+    /// add up to the number being charged is worse than a fee with a third
+    /// line in it.
     pub change: Amount,
 }
 
@@ -486,11 +618,14 @@ pub struct OnchainReceive {
 /// only change is that the payloads are named fields rather than positional
 /// ones, so they cross a foreign-function boundary as records.
 ///
-/// The terms the withdrawal was executed on — destination, amount, fee,
-/// total debit — are not here. They belong to what the operation *is*
-/// rather than to where it has got to, they are the same in every state,
-/// and a receipt has to be renderable for a withdrawal that failed as much
-/// as for one that succeeded. They live on [`OnchainSendDetails`].
+/// No variant carries a money figure at any point, and that is upstream's
+/// shape rather than a simplification of it: the terms the withdrawal was
+/// quoted on — destination, amount, fee, total debit — and what it finally
+/// cost are both absent from `WithdrawState`. They belong to what the
+/// operation *is* rather than to where it has got to, and a receipt has to
+/// be renderable for a withdrawal that failed as much as for one that
+/// succeeded. They live on [`OnchainSendDetails`], quoted and realized
+/// halves alike, which is therefore the only place either can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainSendState {
@@ -524,24 +659,47 @@ impl OperationState for OnchainSendState {
     }
 }
 
-/// What an on-chain withdrawal *is*: the destination and the terms it was
-/// executed on.
+/// What an on-chain withdrawal *is*: the destination, the terms it was quoted
+/// at, and what it finally cost.
 ///
 /// Read with [`Operation::details`](crate::Operation::details) on an
-/// `Operation<OnchainSendState>`. Every field here is fixed by the executed
-/// [`OnchainQuote`] and committed in the same storage transaction that
-/// creates the operation, so it is readable from the first moment
-/// [`Onchain::send`] returns, survives a restart, and reads the same however
-/// the withdrawal ends. That last part matters: a withdrawal that failed has
-/// a destination and a quoted fee just as a successful one does, and a
-/// receipt that can only be produced for successes is not a receipt.
+/// `Operation<OnchainSendState>`. The destination, the amount and the quoted
+/// half are fixed by the executed [`OnchainQuote`] and committed in the same
+/// storage transaction that creates the operation, so they are readable from
+/// the first moment [`Onchain::send`] returns, survive a restart, and read
+/// the same however the withdrawal ends. That last part matters: a withdrawal
+/// that failed has a destination and a quoted fee just as a successful one
+/// does, and a receipt that can only be produced for successes is not a
+/// receipt.
+///
+/// # Two halves: what was approved, and what happened
+///
+/// [`quoted_fee`](OnchainSendDetails::quoted_fee) and
+/// [`quoted_total_debited`](OnchainSendDetails::quoted_total_debited) are the
+/// terms the user approved.
+/// [`realized_fee`](OnchainSendDetails::realized_fee) and
+/// [`realized_total_debited`](OnchainSendDetails::realized_total_debited) are
+/// what the balance actually did, absent until the withdrawal settles. Both
+/// halves are here because the quoted pair is an estimate that
+/// [`Onchain::send`] cannot bind — see [`OnchainQuote::total`] for why — and
+/// a receipt that shows an estimate is not a receipt either. The
+/// [convention](Onchain#quoted-terms-and-realized-outcomes) is the same in
+/// every details record in this crate.
+///
+/// Neither realized field duplicates a state's payload: no variant of
+/// [`OnchainSendState`] carries a money figure, so this record is the only
+/// place either can be read and no amount of watching the operation would
+/// recover them. Each goes from `None` to `Some` exactly once, in the write
+/// that records the settling transition, and never changes afterwards — so
+/// reading this record twice cannot produce two contradictory receipts, and a
+/// caller need not order the read against
+/// [`Operation::state`](crate::Operation::state).
 ///
 /// # Why the units differ inside one record
 ///
 /// [`amount`](OnchainSendDetails::amount) is whole
-/// [`Sats`](crate::Sats) — it is an output in a Bitcoin transaction.
-/// [`fee`](OnchainSendDetails::fee) and
-/// [`total_debited`](OnchainSendDetails::total_debited) are millisatoshi
+/// [`Sats`](crate::Sats) — it is an output in a Bitcoin transaction. The two
+/// fees and the two totals are millisatoshi
 /// [`Amount`](crate::Amount)s — they are federation-side figures that are
 /// not whole satoshis. See the [unit note](Onchain) and
 /// [`OnchainQuote::fee`].
@@ -578,19 +736,28 @@ pub struct OnchainSendDetails {
     ///
     /// The counterparty figure: what the recipient receives, gross of this
     /// wallet's fees. Not what left the balance — that is
-    /// [`total_debited`](OnchainSendDetails::total_debited).
-    pub amount: Sats,
-    /// The aggregate fee as quoted, exactly.
+    /// [`realized_total_debited`](OnchainSendDetails::realized_total_debited),
+    /// or before it settles the estimate in
+    /// [`quoted_total_debited`](OnchainSendDetails::quoted_total_debited).
     ///
-    /// The same figure [`OnchainQuote::fee`] reported and the same one
-    /// [`Onchain::send`] was authorised against: wallet output, primary
-    /// (mint) funding, change and dust, added up in millisatoshis. Recorded
-    /// because it appears nowhere in the withdrawal's progress stream and
-    /// cannot be re-derived afterwards — the mempool it was estimated
-    /// against has moved on.
-    pub fee: Amount,
-    /// What the withdrawal debits from the balance: `amount` converted to
-    /// millisatoshis plus [`fee`](OnchainSendDetails::fee).
+    /// Neither quoted nor realized: this is a term of the withdrawal that
+    /// [`Onchain::send`] does bind, so it needs no half.
+    pub amount: Sats,
+    /// **Quoted.** The aggregate fee the executed quote named, exactly.
+    ///
+    /// The same figure [`OnchainQuote::fee`] reported and the number the user
+    /// approved: wallet output, primary (mint) funding, change and dust,
+    /// added up in millisatoshis. Recorded because it appears nowhere in the
+    /// withdrawal's progress stream and cannot be re-derived afterwards — the
+    /// mempool it was estimated against has moved on.
+    ///
+    /// What the withdrawal was *expected* to cost, not a measurement of what
+    /// it did and not a ceiling it was held to; compare
+    /// [`realized_fee`](OnchainSendDetails::realized_fee).
+    pub quoted_fee: Amount,
+    /// **Quoted.** What the withdrawal was quoted to debit from the balance:
+    /// [`amount`](OnchainSendDetails::amount) converted to millisatoshis plus
+    /// [`quoted_fee`](OnchainSendDetails::quoted_fee).
     ///
     /// Stored rather than recomputed on read, for two reasons. It is the
     /// exact number the user approved, and a receipt should show what was
@@ -598,7 +765,49 @@ pub struct OnchainSendDetails {
     /// reassembling it means [`Sats::to_amount`](crate::Sats::to_amount),
     /// which is fallible, so every reader would have to handle an overflow
     /// case in order to recover a value that was already known here.
-    pub total_debited: Amount,
+    ///
+    /// It is not a ceiling — [`OnchainQuote::total`] retracts that claim and
+    /// explains why it cannot be made — so it answers "what did you agree
+    /// to", never "what did you pay".
+    pub quoted_total_debited: Amount,
+    /// **Realized.** What the withdrawal actually cost, once the federation
+    /// has accepted the transaction that performed it.
+    ///
+    /// `None` until the withdrawal settles, then set once from the fees the
+    /// federation recorded against the accepted transaction — the aggregate
+    /// of all of them, on the same terms
+    /// [`quoted_fee`](OnchainSendDetails::quoted_fee) aggregates its
+    /// components, so the two are directly comparable figures.
+    ///
+    /// It can differ from the quoted fee in either direction, because the
+    /// mint-side components are chosen at assembly time and the quote's own
+    /// selection was discarded; [`OnchainQuote::total`] gives the mechanism.
+    /// For a withdrawal that ended in [`Failed`](OnchainSendState::Failed)
+    /// this may be zero, or stay `None` when nothing was ever accepted to
+    /// charge for. Absent means "never settled", never "lost".
+    ///
+    /// Reported as one aggregate with no component split, unlike
+    /// [`OnchainQuote::fee_breakdown`]: the accepted transaction's cost is
+    /// recorded as a single figure, and inventing a breakdown for it would be
+    /// presenting a guess as a measurement.
+    pub realized_fee: Option<Amount>,
+    /// **Realized.** What the balance actually paid:
+    /// [`amount`](OnchainSendDetails::amount) in millisatoshis plus
+    /// [`realized_fee`](OnchainSendDetails::realized_fee).
+    ///
+    /// The figure a "you paid" line must read from. Refusing a visibly stale
+    /// quote with [`QuoteChanged`](crate::ErrorCode::QuoteChanged) happens
+    /// before execution and is not a bound on the commit, so
+    /// [`quoted_total_debited`](OnchainSendDetails::quoted_total_debited) is
+    /// not the final word on what a withdrawal cost — this is.
+    ///
+    /// `None` until the withdrawal settles, and written in the same storage
+    /// transaction as [`realized_fee`](OnchainSendDetails::realized_fee) so
+    /// the two can never disagree. Stored rather than derived on read for the
+    /// same fallible-arithmetic reason the quoted total is. Zero for a
+    /// withdrawal that failed leaving nothing debited, and `None` for one
+    /// that never settled at all.
+    pub realized_total_debited: Option<Amount>,
     /// When the withdrawal was started, by this device's clock.
     ///
     /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time):
@@ -633,19 +842,22 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 ///   block-explorer link needs. The vout is dropped because nothing in this
 ///   API takes one.
 /// - **Every state that knows the gross amount reports it.** Upstream's
-///   `btc_deposited` is the amount that arrived on chain, before the
-///   federation's peg-in fee, and it is available from the moment a
+///   `btc_deposited` is the amount that arrived on chain, before anything the
+///   federation charges to claim it, and it is available from the moment a
 ///   transaction is seen. It is therefore on
 ///   [`WaitingForConfirmation`](Self::WaitingForConfirmation),
 ///   [`Confirmed`](Self::Confirmed) and [`Claimed`](Self::Claimed) alike,
 ///   in whole [`Sats`](crate::Sats) — an on-chain output cannot hold a
 ///   fraction of one.
 /// - **[`Claimed`](Self::Claimed) also reports a net figure this SDK
-///   computes.** The amount actually credited to the balance — deposited
-///   less the peg-in fee — is the number a user sees their balance move by,
-///   and upstream never reports it. It is an
+///   computes.** The amount actually credited to the balance — what arrived,
+///   less the aggregate of every federation-side cost of claiming it — is the
+///   number a user sees their balance move by, and upstream never reports it.
+///   That cost is *not* only the wallet module's peg-in fee, and this SDK's
+///   earlier drafts said it was; see
+///   [`OnchainReceiveDetails::realized_fee`]. It is an
 ///   [`Amount`](crate::Amount) rather than [`Sats`](crate::Sats) because
-///   the fee is charged in millisatoshis and can leave the credit with
+///   those fees are charged in millisatoshis and can leave the credit with
 ///   sub-satoshi precision; see the [unit note](Onchain).
 ///
 /// # The final state is self-contained
@@ -665,9 +877,9 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// [`Failed`](Self::Failed), which carries only a diagnostic reason even
 /// though a deposit can fail after its transaction was seen. That is what
 /// [`OnchainReceiveDetails`] is for: the address, the transaction, the gross
-/// amount, the fee and the net credit are all on the details record too, and
-/// between that record and the current state an application never needs to
-/// have seen an earlier one.
+/// amount, the realized fee and the net credit are all on the details record
+/// too, and between that record and the current state an application never
+/// needs to have seen an earlier one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
@@ -686,7 +898,7 @@ pub enum OnchainReceiveState {
         /// The funding transaction.
         txid: Txid,
         /// The gross amount that transaction paid to the address, before
-        /// the federation's peg-in fee.
+        /// anything the federation charges to claim it.
         gross_deposited: Sats,
     },
     /// The transaction has the confirmations the federation requires; the
@@ -695,7 +907,7 @@ pub enum OnchainReceiveState {
         /// The funding transaction.
         txid: Txid,
         /// The gross amount that transaction paid to the address, before
-        /// the federation's peg-in fee.
+        /// anything the federation charges to claim it.
         gross_deposited: Sats,
     },
     /// Final: the deposit is in the spendable balance.
@@ -707,24 +919,38 @@ pub enum OnchainReceiveState {
     Claimed {
         /// The funding transaction, for receipts and block explorers.
         txid: Txid,
-        /// The gross amount that arrived on chain, before the federation's
-        /// peg-in fee.
+        /// The gross amount that arrived on chain, before anything the
+        /// federation charged to claim it.
         gross_deposited: Sats,
-        /// The amount actually credited to the balance:
-        /// `gross_deposited` less the federation's peg-in fee.
+        /// The amount actually credited to the balance: `gross_deposited`
+        /// less the aggregate of every federation-side cost of claiming the
+        /// deposit.
         ///
         /// Computed by the SDK — upstream reports only the gross figure —
-        /// and denominated in millisatoshis, because the fee that was
-        /// deducted is, so the credit need not be a whole number of
-        /// satoshis. This is the number the balance moved by.
+        /// from the fees the federation recorded against the accepted claim
+        /// transaction. Those are more than the wallet module's peg-in fee,
+        /// which is why `gross_deposited` minus a peg-in fee does not
+        /// reproduce this number;
+        /// [`OnchainReceiveDetails::realized_fee`] is the aggregate it is
+        /// computed from and
+        /// [`OnchainReceiveDetails::realized_fee_breakdown`] names the parts.
+        /// Denominated in millisatoshis, because those fees are, so the
+        /// credit need not be a whole number of satoshis.
+        ///
+        /// This is the number the balance moved by, and it is the same value
+        /// as [`OnchainReceiveDetails::realized_net_credit`]. Being a state
+        /// this deposit actually reached, it is a realized figure by nature —
+        /// a deposit has no quoted terms, because there is no quote for one.
         net_credit: Amount,
     },
     /// Final: the deposit could not be claimed.
     ///
     /// Carries no transaction and no amount even when one was seen. What
-    /// arrived, and what it was going to cost, are on
-    /// [`OnchainReceiveDetails`], which is where a caller that only ever
-    /// saw this state reads them.
+    /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
+    /// only ever saw this state reads it. What it would have cost is not
+    /// recorded anywhere, and that is not an omission: no claim transaction
+    /// was accepted, so there is no fee to report — see
+    /// [`OnchainReceiveDetails::realized_fee`].
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -764,27 +990,50 @@ impl OperationState for OnchainReceiveState {
 /// [`address`](OnchainReceiveDetails::address) is a persisted field, and an
 /// operation id is genuinely enough to re-render the QR code.
 ///
-/// # Why four fields are optional, and what a caller can count on
+/// # Every money figure here is realized, and none is quoted
 ///
-/// All four are the placement rule's case 3
-/// ([`OperationDetails`](crate::OperationDetails)): a fact that comes into
-/// existence at a transition and is *not* carried by every state after it,
-/// so the state announces it and this record keeps it. It takes that shape
-/// twice over here, for two different reasons:
+/// A deposit has no quoted half, because there is no quote for one: the
+/// sender pays the chain fee from their own wallet and the federation's terms
+/// apply to whatever arrives. So this record has no `quoted_` fields at all,
+/// and its `realized_` ones follow the same
+/// [convention](Onchain#quoted-terms-and-realized-outcomes) as the withdrawal
+/// side — set from the fees the federation recorded against the transaction
+/// it accepted, and absent until it accepted one.
 ///
-/// - [`txid`](OnchainReceiveDetails::txid),
-///   [`gross_deposited`](OnchainReceiveDetails::gross_deposited) and
-///   [`net_credit`](OnchainReceiveDetails::net_credit) are each announced by
-///   a state and dropped by [`Failed`](OnchainReceiveState::Failed), which
-///   can follow a transaction that was already seen and carries nothing but
-///   a reason. A deposit that arrived and then could not be claimed is
-///   precisely the one an application has to be able to describe, so the
-///   record keeps what that state does not.
-/// - [`fee`](OnchainReceiveDetails::fee) duplicates nothing at all: no state
-///   carries the peg-in fee at any point, so this record is the only place
-///   it can be read and no amount of watching would recover it.
+/// # Why five fields are optional, and what a caller can count on
 ///
-/// The guarantee on all four is the same, and it is what makes them safe to
+/// A realized fact does not exist until the thing it describes has happened,
+/// which is what these `Option`s mean. Against the placement rule
+/// ([`OperationDetails`](crate::OperationDetails)) they fall into three
+/// groups:
+///
+/// - [`txid`](OnchainReceiveDetails::txid) and
+///   [`gross_deposited`](OnchainReceiveDetails::gross_deposited) are case 3:
+///   each is announced by a state and dropped by
+///   [`Failed`](OnchainReceiveState::Failed), which can follow a transaction
+///   that was already seen and carries nothing but a reason. A deposit that
+///   arrived and then could not be claimed is precisely the one an
+///   application has to be able to describe, so the record keeps what that
+///   state does not.
+/// - [`realized_fee`](OnchainReceiveDetails::realized_fee) and
+///   [`realized_fee_breakdown`](OnchainReceiveDetails::realized_fee_breakdown)
+///   duplicate nothing at all: no state carries what the claim cost at any
+///   point, so this record is the only place either can be read and no amount
+///   of watching would recover them.
+/// - [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
+///   the one duplication worth arguing about, and it is deliberate rather
+///   than case 3. [`Claimed`](OnchainReceiveState::Claimed) is final and
+///   sticky, so by the rule's case 2 the credit could have lived on that
+///   state alone. It is kept here as well because the fee it is computed
+///   from lives nowhere but this record: splitting one arithmetic identity
+///   across two reads would force a receipt either to re-derive the credit
+///   with fallible arithmetic — which this record's own contract forbids —
+///   or to pair a fee read from here with a credit read from there and order
+///   the two against each other. Both copies are written in the same storage
+///   transaction from the same accepted-transaction figures, so they cannot
+///   disagree.
+///
+/// The guarantee on all five is the same, and it is what makes them safe to
 /// read at any time: each goes from `None` to `Some` exactly once, in the
 /// same write that records the transition establishing it, and never changes
 /// to a different value and never reverts. So a caller need not order this
@@ -793,18 +1042,37 @@ impl OperationState for OnchainReceiveState {
 ///
 /// `None` means "not established yet", never "lost". A deposit still in
 /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction) has
-/// all four absent, which is simply the truth: nobody has paid.
+/// all five absent, which is simply the truth: nobody has paid.
 ///
-/// # The arithmetic these fields satisfy
+/// # The aggregate, and the arithmetic these fields satisfy
 ///
-/// Once all three amounts are present,
-/// [`net_credit`](OnchainReceiveDetails::net_credit) is
+/// [`realized_fee`](OnchainReceiveDetails::realized_fee) is the
+/// **aggregate** of everything the federation charged to bring the deposit
+/// into the balance, and it is deliberately not the wallet module's peg-in
+/// fee on its own. Claiming a deposit balances the wallet input into
+/// primary-module outputs; those output fees, and the denomination dust the
+/// split leaves behind, reduce the credit exactly as the peg-in fee does, and
+/// upstream's own accounting reports an accepted transaction's costs as one
+/// aggregate for that reason.
+///
+/// So the identity is:
 /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
-/// millisatoshis less [`fee`](OnchainReceiveDetails::fee), and it is the
-/// same value [`Claimed`](OnchainReceiveState::Claimed) reports. The fee is
-/// recorded rather than left to be derived so that a receipt does not have
-/// to do fallible arithmetic to name the one number a user asks about when
-/// their balance moved by less than the sender sent.
+/// millisatoshis, less
+/// [`realized_fee`](OnchainReceiveDetails::realized_fee), equals
+/// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit),
+/// which is the same value [`Claimed`](OnchainReceiveState::Claimed) reports.
+/// It is **not** gross less a peg-in fee. An earlier draft of this record
+/// documented it that way, and that subtraction does not in general equal the
+/// balance movement, which is why the field was widened rather than
+/// re-explained.
+///
+/// The aggregate is authoritative and is the figure to read;
+/// [`realized_fee_breakdown`](OnchainReceiveDetails::realized_fee_breakdown)
+/// names its parts, the peg-in fee among them, for a screen that wants to
+/// explain the difference rather than merely state it. The fee is recorded
+/// rather than left to be derived so that a receipt does not have to do
+/// fallible arithmetic to name the one number a user asks about when their
+/// balance moved by less than the sender sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct OnchainReceiveDetails {
@@ -832,34 +1100,66 @@ pub struct OnchainReceiveDetails {
     /// become a second transaction if a second one pays the same address;
     /// see [`Onchain::receive`].
     pub txid: Option<Txid>,
-    /// The gross amount that arrived on chain, before the federation's
-    /// peg-in fee.
+    /// The gross amount that arrived on chain, before anything the
+    /// federation charged to claim it.
     ///
     /// Whole [`Sats`](crate::Sats): it is the value of an output in the
     /// funding transaction. `None` until a transaction is seen, then fixed.
     ///
     /// This is the counterparty figure — what the sender sent — and it is
     /// the number to show beside the credit when a user asks why the two
-    /// differ.
+    /// differ. An observed on-chain fact rather than a fee, so it belongs to
+    /// neither half of the quoted/realized split; it is optional only because
+    /// nobody may have paid yet.
     pub gross_deposited: Option<Sats>,
-    /// The federation's peg-in fee, once it is known.
+    /// **Realized.** The aggregate of everything the federation charged to
+    /// bring this deposit into the balance, once a claim has been accepted.
     ///
-    /// `None` until then, and absent from every state at every point, which
-    /// makes this record its only home: a caller cannot recover it by
-    /// watching, however carefully. Millisatoshi-denominated, like every
-    /// other fee in this facade.
-    pub fee: Option<Amount>,
-    /// The amount credited to the balance: `gross_deposited` in
-    /// millisatoshis less [`fee`](OnchainReceiveDetails::fee).
+    /// Not the wallet module's peg-in fee on its own: claiming a deposit
+    /// balances the wallet input into primary-module outputs, and their
+    /// output fees and the denomination dust left over reduce the credit too.
+    /// This field is the sum of all of it, which makes it the figure to read
+    /// and the figure
+    /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
+    /// computed from;
+    /// [`realized_fee_breakdown`](OnchainReceiveDetails::realized_fee_breakdown)
+    /// names the parts.
+    ///
+    /// `None` until a claim is accepted, and absent from every state at every
+    /// point, which makes this record its only home: a caller cannot recover
+    /// it by watching, however carefully. A deposit that
+    /// [`Failed`](OnchainReceiveState::Failed) never establishes it at all,
+    /// because there was no accepted transaction to be charged for.
+    /// Millisatoshi-denominated, like every other fee in this facade.
+    pub realized_fee: Option<Amount>,
+    /// **Realized.** [`realized_fee`](OnchainReceiveDetails::realized_fee),
+    /// split into the named parts it is made of.
+    ///
+    /// `Some` exactly when the aggregate is, set in the same write, and
+    /// re-reporting the same money rather than an additional charge. It
+    /// exists so that "the sender sent 100 000 sat and my balance went up by
+    /// less" can be answered with the peg-in fee named separately from the
+    /// mint-side costs — which is the question this record is most often read
+    /// to answer, and the one the aggregate alone cannot break down.
+    ///
+    /// The aggregate stays authoritative; see
+    /// [`OnchainReceiveFeeBreakdown`] for why a caller should not re-derive
+    /// it by summing these.
+    pub realized_fee_breakdown: Option<OnchainReceiveFeeBreakdown>,
+    /// **Realized.** The amount credited to the balance:
+    /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
+    /// millisatoshis less
+    /// [`realized_fee`](OnchainReceiveDetails::realized_fee) — the aggregate,
+    /// not a peg-in fee alone.
     ///
     /// `None` until the claim completes. Equal to the
     /// [`Claimed`](OnchainReceiveState::Claimed) state's own net figure —
     /// the same value in both places, so a receipt built from the record and
     /// one built from the state cannot disagree — and an
     /// [`Amount`](crate::Amount) for the same reason it is one there: the
-    /// fee deducted is millisatoshi-denominated, so the credit need not be a
-    /// whole number of satoshis.
-    pub net_credit: Option<Amount>,
+    /// fees deducted are millisatoshi-denominated, so the credit need not be
+    /// a whole number of satoshis.
+    pub realized_net_credit: Option<Amount>,
     /// When the deposit address was allocated, by this device's clock.
     ///
     /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time).
@@ -874,6 +1174,62 @@ impl crate::operation::OperationDetails for OnchainReceiveDetails {}
 
 impl crate::operation::DetailedOperationState for OnchainReceiveState {
     type Details = OnchainReceiveDetails;
+}
+
+/// What [`OnchainReceiveDetails::realized_fee`] is made of, component by
+/// component.
+///
+/// Obtained from [`OnchainReceiveDetails::realized_fee_breakdown`]. Every
+/// field is an exact millisatoshi [`Amount`](crate::Amount), for the reason
+/// [`OnchainQuote::fee`] gives on the withdrawal side: these are
+/// federation-side figures and several of them are not whole satoshis.
+/// Together they account for the aggregate exactly — the SDK's own invariant
+/// is that the components sum to
+/// [`OnchainReceiveDetails::realized_fee`], with no rounding and no residue.
+///
+/// Unlike [`OnchainSendFeeBreakdown`], which explains a quote, this explains
+/// an outcome: every field is read from the claim transaction the federation
+/// accepted, so the parts are measurements rather than predictions.
+///
+/// # Read the aggregate; use these to explain it
+///
+/// The same rule, for the same two reasons. The type is
+/// `#[non_exhaustive]`, so a later version may split a component in two or
+/// name one that did not exist, and a caller that had hard-coded the sum of
+/// the fields it knew about would quietly start understating what the deposit
+/// cost. And the aggregate is the figure
+/// [`OnchainReceiveDetails::realized_net_credit`] was actually computed from,
+/// so it is the only one guaranteed to reconcile with the balance movement.
+///
+/// So: aggregate for arithmetic, breakdown for explanation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OnchainReceiveFeeBreakdown {
+    /// The wallet module's own charge for accepting the peg-in.
+    ///
+    /// The component a user means by "the federation's deposit fee", and the
+    /// only one an earlier draft of this record reported. On its own it is
+    /// not what reduced the credit, which is exactly why the other two fields
+    /// exist rather than being folded silently into this one.
+    pub peg_in: Amount,
+    /// What it costs to turn the peg-in into spendable notes: the primary
+    /// (mint) module's output fees on the transaction that balances the
+    /// wallet input into notes.
+    ///
+    /// A federation-internal, millisatoshi-denominated cost with no on-chain
+    /// counterpart. Claiming a deposit cannot avoid it, because there is no
+    /// way to receive a peg-in without issuing the notes it becomes, and it
+    /// is the component most likely to make the aggregate a non-whole number
+    /// of satoshis.
+    pub primary_output: Amount,
+    /// The residue that note issuance leaves behind: value too small to be
+    /// represented in the federation's denominations, and therefore given up.
+    ///
+    /// Small, frequently sub-satoshi, and genuinely part of why the credit is
+    /// less than what arrived. Reported rather than absorbed because a credit
+    /// that does not reconcile with the balance movement is worse than one
+    /// with a third line in it.
+    pub dust: Amount,
 }
 
 /// Placeholder for the wallet-module state this facade operates on.
@@ -910,6 +1266,41 @@ mod tests {
     /// [`crate::OperationDetails`] imposes.
     fn round_trip_details<S: DetailedOperationState>(details: S::Details) -> S::Details {
         details
+    }
+
+    /// A withdrawal record as it reads the moment [`Onchain::send`] returns:
+    /// the quoted half committed, the realized half not yet established.
+    fn a_quoted_send(amount: Sats, quoted_fee: Amount) -> OnchainSendDetails {
+        OnchainSendDetails {
+            address: an_address(),
+            amount,
+            quoted_fee,
+            quoted_total_debited: amount
+                .to_amount()
+                .expect("the test amounts are representable in msat")
+                .checked_add(quoted_fee)
+                .expect("no overflow at this magnitude"),
+            realized_fee: None,
+            realized_total_debited: None,
+            created_at: Timestamp::from_epoch_millis(1),
+        }
+    }
+
+    /// The same record once the federation has accepted the transaction and
+    /// charged `realized_fee` for it — which need not be what was quoted.
+    fn settled(details: &OnchainSendDetails, realized_fee: Amount) -> OnchainSendDetails {
+        OnchainSendDetails {
+            realized_fee: Some(realized_fee),
+            realized_total_debited: Some(
+                details
+                    .amount
+                    .to_amount()
+                    .expect("the test amounts are representable in msat")
+                    .checked_add(realized_fee)
+                    .expect("no overflow at this magnitude"),
+            ),
+            ..details.clone()
+        }
     }
 
     #[test]
@@ -998,8 +1389,8 @@ mod tests {
             } => {
                 assert_eq!(txid, a_txid());
                 assert_eq!(gross_deposited, Sats::from_sats(100_000));
-                // A fee of 1500 msat leaves a credit that is not a whole
-                // number of satoshis, which is why this field is an
+                // An aggregate fee of 1500 msat leaves a credit that is not
+                // a whole number of satoshis, which is why this field is an
                 // `Amount`: as `Sats` it could only have been wrong.
                 assert_eq!(net_credit, Amount::from_msats(99_998_500));
                 assert_eq!(net_credit.to_sats_exact(), None);
@@ -1009,34 +1400,94 @@ mod tests {
     }
 
     #[test]
-    fn send_details_total_is_the_amount_plus_the_exact_fee() {
-        let amount = Sats::from_sats(25_000);
-        let fee = Amount::from_msats(1_234_567);
-        let details = OnchainSendDetails {
-            address: an_address(),
-            amount,
-            fee,
-            total_debited: amount
-                .to_amount()
-                .expect("25 000 sat is representable in msat")
-                .checked_add(fee)
-                .expect("no overflow at this magnitude"),
-            created_at: Timestamp::from_epoch_millis(1),
-        };
-        assert_eq!(details.total_debited, Amount::from_msats(26_234_567));
-        // The reason the fee and the total are `Amount`s: neither is a whole
-        // number of satoshis, so a satoshi-typed accessor would have had to
+    fn send_details_quoted_total_is_the_amount_plus_the_quoted_fee() {
+        let details = a_quoted_send(Sats::from_sats(25_000), Amount::from_msats(1_234_567));
+        assert_eq!(details.quoted_total_debited, Amount::from_msats(26_234_567));
+        // The reason the fees and totals are `Amount`s: neither is a whole
+        // number of satoshis, so a satoshi-typed field would have had to
         // round the debit down.
-        assert_eq!(details.fee.to_sats_exact(), None);
-        assert_eq!(details.total_debited.to_sats_exact(), None);
+        assert_eq!(details.quoted_fee.to_sats_exact(), None);
+        assert_eq!(details.quoted_total_debited.to_sats_exact(), None);
         // ... while what reaches the destination genuinely is whole sats.
         assert_eq!(details.amount, Sats::from_sats(25_000));
+    }
+
+    /// The quoted half is committed when `send` returns; the realized half
+    /// does not exist until the federation has accepted a transaction, and
+    /// absent means "not settled", not "free".
+    #[test]
+    fn send_details_realized_is_absent_until_the_withdrawal_settles() {
+        let details = a_quoted_send(Sats::from_sats(25_000), Amount::from_msats(1_234_567));
+        assert_eq!(details.realized_fee, None);
+        assert_eq!(details.realized_total_debited, None);
+        assert_eq!(details.quoted_fee, Amount::from_msats(1_234_567));
+    }
+
+    /// The invariant that the retraction of the ceiling claim rests on: the
+    /// debit that actually lands can exceed the one that was quoted, because
+    /// the mint inputs, change and dust are re-decided when the transaction
+    /// is assembled. The record has to be able to state both figures.
+    #[test]
+    fn send_details_realized_may_exceed_quoted() {
+        let quoted = a_quoted_send(Sats::from_sats(25_000), Amount::from_msats(1_234_567));
+        let realized = settled(&quoted, Amount::from_msats(1_400_000));
+
+        assert!(realized.realized_fee > Some(realized.quoted_fee));
+        assert!(realized.realized_total_debited > Some(realized.quoted_total_debited));
+        assert_eq!(
+            realized.realized_total_debited,
+            Some(Amount::from_msats(26_400_000))
+        );
+        // Settlement does not revise the quoted half: it is still exactly
+        // what the user approved, which is what makes the pair worth keeping.
+        assert_eq!(realized.quoted_fee, quoted.quoted_fee);
+        assert_eq!(realized.quoted_total_debited, quoted.quoted_total_debited);
+    }
+
+    /// And it can land below the quote, or at zero for a withdrawal that
+    /// failed leaving nothing debited.
+    #[test]
+    fn send_details_realized_may_be_below_quoted_or_zero() {
+        let quoted = a_quoted_send(Sats::from_sats(25_000), Amount::from_msats(1_234_567));
+
+        let cheaper = settled(&quoted, Amount::from_msats(900_000));
+        assert!(cheaper.realized_fee < Some(cheaper.quoted_fee));
+        assert!(cheaper.realized_total_debited < Some(cheaper.quoted_total_debited));
+
+        let failed = OnchainSendDetails {
+            realized_fee: Some(Amount::from_msats(0)),
+            realized_total_debited: Some(Amount::from_msats(0)),
+            ..quoted.clone()
+        };
+        assert_eq!(failed.realized_total_debited, Some(Amount::from_msats(0)));
+        // A failed withdrawal still has terms to show on a receipt.
+        assert_eq!(failed.quoted_total_debited, quoted.quoted_total_debited);
+        assert_eq!(failed.address, quoted.address);
+    }
+
+    /// The deposit fee this SDK records, component by component. The peg-in
+    /// fee is deliberately only part of it.
+    fn a_receive_breakdown() -> OnchainReceiveFeeBreakdown {
+        OnchainReceiveFeeBreakdown {
+            peg_in: Amount::from_msats(1_000),
+            primary_output: Amount::from_msats(400),
+            dust: Amount::from_msats(100),
+        }
+    }
+
+    fn aggregate_of(breakdown: &OnchainReceiveFeeBreakdown) -> Amount {
+        breakdown
+            .peg_in
+            .checked_add(breakdown.primary_output)
+            .and_then(|partial| partial.checked_add(breakdown.dust))
+            .expect("no overflow at this magnitude")
     }
 
     #[test]
     fn receive_details_options_fill_in_once_and_agree_with_claimed() {
         let gross = Sats::from_sats(100_000);
-        let fee = Amount::from_msats(1_500);
+        let breakdown = a_receive_breakdown();
+        let fee = aggregate_of(&breakdown);
         let net = gross
             .to_amount()
             .expect("100 000 sat is representable in msat")
@@ -1047,26 +1498,34 @@ mod tests {
             address: an_address(),
             txid: None,
             gross_deposited: None,
-            fee: None,
-            net_credit: None,
+            realized_fee: None,
+            realized_fee_breakdown: None,
+            realized_net_credit: None,
             created_at: Timestamp::from_epoch_millis(1),
         };
         // Nothing is known before a transaction is seen, and that is not a
         // failure to record anything.
         assert_eq!(waiting.txid, None);
-        assert_eq!(waiting.net_credit, None);
+        assert_eq!(waiting.realized_fee, None);
+        assert_eq!(waiting.realized_net_credit, None);
 
         let claimed = OnchainReceiveDetails {
             txid: Some(a_txid()),
             gross_deposited: Some(gross),
-            fee: Some(fee),
-            net_credit: Some(net),
+            realized_fee: Some(fee),
+            realized_fee_breakdown: Some(breakdown),
+            realized_net_credit: Some(net),
             ..waiting.clone()
         };
         // The fields that were already fixed are untouched by the fill-in.
         assert_eq!(claimed.address, waiting.address);
         assert_eq!(claimed.created_at, waiting.created_at);
         assert_ne!(claimed, waiting);
+        // The breakdown appears exactly when the aggregate does.
+        assert_eq!(
+            claimed.realized_fee.is_some(),
+            claimed.realized_fee_breakdown.is_some()
+        );
 
         // The record and the final state report the same money.
         let state = OnchainReceiveState::Claimed {
@@ -1082,27 +1541,101 @@ mod tests {
             } => {
                 assert_eq!(claimed.txid, Some(txid));
                 assert_eq!(claimed.gross_deposited, Some(gross_deposited));
-                assert_eq!(claimed.net_credit, Some(net_credit));
+                assert_eq!(claimed.realized_net_credit, Some(net_credit));
             }
             _ => unreachable!("constructed as Claimed"),
         }
     }
 
+    /// The accounting fix: what reduces a deposit's credit is the aggregate
+    /// of every federation-side cost, so subtracting the peg-in fee alone
+    /// does not reproduce the balance movement — it overstates the credit by
+    /// the mint-side costs.
+    #[test]
+    fn receive_details_net_credit_comes_from_the_aggregate_not_the_peg_in_fee() {
+        let gross = Sats::from_sats(100_000);
+        let gross_msats = gross
+            .to_amount()
+            .expect("100 000 sat is representable in msat");
+        let breakdown = a_receive_breakdown();
+        let aggregate = aggregate_of(&breakdown);
+        assert_eq!(aggregate, Amount::from_msats(1_500));
+        assert!(aggregate > breakdown.peg_in);
+
+        let net = gross_msats
+            .checked_sub(aggregate)
+            .expect("the fee is smaller than the deposit");
+        let claimed = OnchainReceiveDetails {
+            address: an_address(),
+            txid: Some(a_txid()),
+            gross_deposited: Some(gross),
+            realized_fee: Some(aggregate),
+            realized_fee_breakdown: Some(breakdown.clone()),
+            realized_net_credit: Some(net),
+            created_at: Timestamp::from_epoch_millis(1),
+        };
+
+        // The identity this record documents.
+        assert_eq!(
+            claimed.realized_net_credit,
+            Some(Amount::from_msats(99_998_500))
+        );
+        // And the identity it explicitly does not: `gross - peg_in` is a
+        // different, larger number, which is the whole reason the field is
+        // the aggregate.
+        let peg_in_only = gross_msats
+            .checked_sub(breakdown.peg_in)
+            .expect("the peg-in fee is smaller than the deposit");
+        assert_ne!(Some(peg_in_only), claimed.realized_net_credit);
+        assert!(Some(peg_in_only) > claimed.realized_net_credit);
+        // The credit is not a whole number of satoshis, which is why it is an
+        // `Amount`.
+        assert_eq!(net.to_sats_exact(), None);
+    }
+
+    /// A deposit that failed after its transaction was seen: the on-chain
+    /// facts survive on the record, and no fee is invented for a claim that
+    /// was never accepted.
+    #[test]
+    fn receive_details_failed_deposit_keeps_the_facts_and_records_no_fee() {
+        let details = OnchainReceiveDetails {
+            address: an_address(),
+            txid: Some(a_txid()),
+            gross_deposited: Some(Sats::from_sats(100_000)),
+            realized_fee: None,
+            realized_fee_breakdown: None,
+            realized_net_credit: None,
+            created_at: Timestamp::from_epoch_millis(1),
+        };
+        assert_eq!(details.txid, Some(a_txid()));
+        assert_eq!(details.gross_deposited, Some(Sats::from_sats(100_000)));
+        assert_eq!(details.realized_fee, None);
+        assert_eq!(details.realized_net_credit, None);
+    }
+
+    #[test]
+    fn receive_fee_breakdown_components_sum_to_the_aggregate() {
+        let breakdown = OnchainReceiveFeeBreakdown {
+            peg_in: Amount::from_msats(1_000_000),
+            primary_output: Amount::from_msats(234_000),
+            dust: Amount::from_msats(567),
+        };
+        assert_eq!(aggregate_of(&breakdown), Amount::from_msats(1_234_567));
+        // As on the withdrawal side, the parts do not add up to a whole
+        // number of satoshis.
+        assert_eq!(aggregate_of(&breakdown).to_sats_exact(), None);
+    }
+
     #[test]
     fn both_state_types_name_their_details_record() {
-        let send = OnchainSendDetails {
-            address: an_address(),
-            amount: Sats::from_sats(1),
-            fee: Amount::from_msats(1),
-            total_debited: Amount::from_msats(1_001),
-            created_at: Timestamp::from_epoch_millis(0),
-        };
+        let send = a_quoted_send(Sats::from_sats(1), Amount::from_msats(1));
         let receive = OnchainReceiveDetails {
             address: an_address(),
             txid: None,
             gross_deposited: None,
-            fee: None,
-            net_credit: None,
+            realized_fee: None,
+            realized_fee_breakdown: None,
+            realized_net_credit: None,
             created_at: Timestamp::from_epoch_millis(0),
         };
         assert_eq!(round_trip_details::<OnchainSendState>(send.clone()), send);
@@ -1113,8 +1646,8 @@ mod tests {
     }
 
     #[test]
-    fn fee_breakdown_components_sum_to_the_aggregate() {
-        let breakdown = OnchainFeeBreakdown {
+    fn send_fee_breakdown_components_sum_to_the_aggregate() {
+        let breakdown = OnchainSendFeeBreakdown {
             wallet_output: Amount::from_msats(1_200_000),
             funding: Amount::from_msats(34_000),
             change: Amount::from_msats(567),

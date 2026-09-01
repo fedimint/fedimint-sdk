@@ -781,9 +781,14 @@ pub struct RawOperationKind {
 /// label and group rows without having to resolve each one to a typed
 /// handle first.
 ///
-/// `#[non_exhaustive]`: new kinds arrive with new modules. Rust callers
-/// must include a wildcard arm; bindings map an unrecognised kind to their
-/// own unknown case.
+/// `#[non_exhaustive]`: new kinds arrive with new modules, and Rust callers
+/// must include a wildcard arm. Note that this is a Rust-only guarantee — a
+/// generated binding pinned to an older SDK fails to decode a kind added
+/// since rather than mapping it to its own unknown case, which is why
+/// [`Unknown`](OperationKind::Unknown) exists as a real variant that every
+/// binding already has: the mapping happens inside this crate, so no decoder
+/// is handed a tag it does not know. See the crate-level
+/// forward-compatibility section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OperationKind {

@@ -130,8 +130,11 @@
 //!         let mut updates = payment.updates();
 //!         while let Some(state) = updates.next().await? {
 //!             match state {
-//!                 LnSendState::Success { preimage, fee, .. } => {
-//!                     println!("paid, fee {fee}, preimage {preimage}");
+//!                 LnSendState::Success { preimage, quoted_fee, .. } => {
+//!                     // The fee the quote committed to. What the payment
+//!                     // finally cost is on `Operation::details`, because
+//!                     // only an accepted transaction fixes it.
+//!                     println!("paid, quoted fee {quoted_fee}, preimage {preimage}");
 //!                 }
 //!                 // Not an error: the payment did not go through, and the
 //!                 // money is back in the balance.
@@ -351,22 +354,54 @@
 //!
 //! # Forward compatibility
 //!
-//! Every public enum in this crate is `#[non_exhaustive]`. For Rust callers
-//! that means matches need a wildcard arm; the compiler will say so. For
-//! generated bindings it means each foreign enum carries an explicit unknown
-//! case, onto which a variant added by a later SDK version is mapped, so
-//! that meeting one is a branch to handle rather than a crash or a silent
-//! misinterpretation.
+//! Every public enum in this crate is `#[non_exhaustive]`. That is a
+//! **Rust-only** guarantee, and the limit is worth stating plainly: for Rust
+//! callers it means matches need a wildcard arm, which the compiler enforces,
+//! so a variant added in a later release is not a breaking change. It does
+//! **not** mean a generated Swift, Kotlin or TypeScript decoder tolerates a
+//! tag it has never seen. UniFFI's generated Swift decoder throws
+//! `unexpectedEnumCase` on an unknown discriminant, and no attribute on the
+//! Rust side changes that. A pre-generated binding pinned to an older SDK,
+//! meeting an [`ErrorCode`], a [`Network`], an [`OperationKind`] or an
+//! operation-state variant added since, fails to decode it — it does not
+//! quietly receive an "unknown" case.
 //!
-//! That is not ceremony. Persisted state outlives the version of the SDK that
-//! wrote it: applications get downgraded, module sets change, and a record
-//! written by a newer build is still a real record of real money. This is why
-//! [`Federation::operation`] returns an operation it cannot interpret as
-//! `Ok(Some(_))` with [`OperationKind::Unknown`] instead of failing the
-//! lookup — an application can then list it honestly as "an operation from
-//! another version", where a failure would have made it invisible. Acting on
-//! such an operation, as opposed to observing that it exists, is what
-//! [`ErrorCode::UnsupportedOperation`] reports.
+//! So forward tolerance at the boundary is not free, and there are exactly
+//! two ways to have it:
+//!
+//! - **Regenerate the binding against the SDK version it talks to.** This is
+//!   the default expectation here and the cheap answer: the binding and the
+//!   SDK ship together, so no vintage gap exists to tolerate.
+//! - **Hand-write an adapter for the boundary, and test it across versions.**
+//!   For a fieldless enum this is cheap in principle — carry the variant's
+//!   stable *name* across as a length-delimited string, so an unfamiliar one
+//!   is read and skipped like any other string, and project it into the
+//!   target's own enum with an explicit unknown fallback. What it costs is a
+//!   per-target map that must be kept in step and a cross-version conformance
+//!   suite that decodes a newer producer's output with an older consumer's
+//!   adapter. Without those tests the tolerance is a claim, not a property.
+//!
+//! One boundary here does not rely on either, because its wire form was
+//! designed for it: an error's structured detail crosses as
+//! [`RawErrorDetails`] — a version, a kind string, and a length-delimited
+//! opaque payload. A reader of any vintage consumes that record completely
+//! and skips a payload whose kind it has never heard of, keeping it as
+//! [`DetailEnvelope::Opaque`], and the typed [`ErrorDetails`] cases are
+//! projected locally from what it does recognise. That is the shape to copy
+//! wherever a detail must survive a version gap.
+//!
+//! None of this is ceremony, because persisted state outlives the version of
+//! the SDK that wrote it: applications get downgraded, module sets change,
+//! and a record written by a newer build is still a real record of real money.
+//! This is why [`Federation::operation`] returns an operation it cannot
+//! interpret as `Ok(Some(_))` with [`OperationKind::Unknown`] instead of
+//! failing the lookup — an application can then list it honestly as "an
+//! operation from another version", where a failure would have made it
+//! invisible. Note what makes that work where the enum-level claim above does
+//! not: the mapping happens *inside this crate*, onto a variant every binding
+//! generated today already has, so no decoder is ever handed a tag it does
+//! not know. Acting on such an operation, as opposed to observing that it
+//! exists, is what [`ErrorCode::UnsupportedOperation`] reports.
 //!
 //! # What the binding layers must guarantee
 //!
@@ -432,7 +467,9 @@ pub use ecash::{
     Ecash, EcashQuote, EcashReceiveDetails, EcashReceiveState, EcashSend, EcashSendDetails,
     EcashSendState,
 };
-pub use error::{Error, ErrorCode, ErrorDetails, ModuleGeneration, Result};
+pub use error::{
+    DetailEnvelope, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails, Result,
+};
 pub use federation::{BalanceUpdates, Capabilities, Federation};
 pub use lightning::{
     Lightning, LightningRoute, LnFeeBreakdown, LnQuote, LnReceive, LnReceiveDetails,
@@ -440,8 +477,8 @@ pub use lightning::{
 };
 pub use meta::{ConsensusMetadata, Meta};
 pub use onchain::{
-    Onchain, OnchainFeeBreakdown, OnchainQuote, OnchainReceive, OnchainReceiveDetails,
-    OnchainReceiveState, OnchainSendDetails, OnchainSendState,
+    Onchain, OnchainQuote, OnchainReceive, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
+    OnchainReceiveState, OnchainSendDetails, OnchainSendFeeBreakdown, OnchainSendState,
 };
 pub use operation::{
     AnyOperation, DetailedOperationState, Operation, OperationDetails, OperationKind,

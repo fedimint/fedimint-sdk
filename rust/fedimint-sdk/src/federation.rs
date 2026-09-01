@@ -173,8 +173,23 @@ impl Federation {
         unimplemented!()
     }
 
-    /// The lightning facade, or `None` if this federation has no lightning
-    /// module. See [`Federation::ecash`] for why this is an `Option`.
+    /// The lightning facade, or `None` if it is unavailable here. See
+    /// [`Federation::ecash`] for why this is an `Option`.
+    ///
+    /// Unlike the other two facades, this one has a second reason to be
+    /// absent, so `None` does not mean "no lightning module" on its own:
+    ///
+    /// - the federation has no lightning module, or
+    /// - the federation is on [`Network::Testnet4`](crate::Network::Testnet4).
+    ///
+    /// The second case is an upstream limitation rather than a choice.
+    /// Bolt11 identifies a currency, not a network, and its `tb` currency
+    /// covers both testnets — so "a Testnet4 invoice" is not a thing that
+    /// exists, and the pinned invoice library cannot round-trip Testnet4 at
+    /// all. Rather than issue invoices that carry the wrong currency and pay
+    /// against comparisons that cannot succeed, the capability is withheld.
+    /// [`Lightning`] documents this in full. It will appear, with no change
+    /// to this API, once upstream can distinguish the two testnets.
     pub fn lightning(&self) -> Option<Lightning> {
         unimplemented!()
     }
@@ -263,8 +278,9 @@ impl Federation {
     ///
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery is
-    /// still running, and
+    /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+    /// recovery is incomplete — which is not the same as still running, since
+    /// a recovery that stopped short leaves the lock in place — and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn backup(&self) -> Result<()> {
         unimplemented!()
@@ -286,6 +302,11 @@ pub struct Capabilities {
     /// Whether [`Federation::ecash`] is available.
     pub ecash: bool,
     /// Whether [`Federation::lightning`] is available.
+    ///
+    /// `false` when the federation has no lightning module, and also for a
+    /// federation on [`Network::Testnet4`](crate::Network::Testnet4), where
+    /// bolt11 cannot express the network at all — see
+    /// [`Federation::lightning`].
     pub lightning: bool,
     /// Whether [`Federation::onchain`] is available.
     pub onchain: bool,

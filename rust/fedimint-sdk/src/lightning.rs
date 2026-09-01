@@ -19,6 +19,46 @@ use crate::{
 /// invoice is created or a payment is funded, so a class of failures that
 /// used to appear halfway through an operation is instead an error from
 /// the call that started it.
+///
+/// # Lightning is unavailable on a Testnet4 federation
+///
+/// A federation on [`Network::Testnet4`](crate::Network::Testnet4) offers no
+/// lightning at all: [`Federation::lightning`](crate::Federation::lightning)
+/// returns `None` for it, and
+/// [`Capabilities::lightning`](crate::Capabilities::lightning) is `false`.
+/// This is an **absent capability, not a broken one** — the same shape as a
+/// federation that simply has no lightning module, and a value to branch on
+/// rather than a failure to provoke.
+///
+/// The reason is upstream, and it is not something this SDK can paper over:
+///
+/// - **BOLT11 has no Testnet4 currency.** An invoice carries a currency
+///   prefix, and the one for a test network is `tb` — shared by testnet3 and
+///   testnet4. The invoice format itself cannot tell the two apart, so there
+///   is no such thing as "a Testnet4 invoice" to build or to recognise.
+/// - **The pinned `lightning-invoice` maps Testnet4 to Regtest.** Its
+///   `Network -> Currency` conversion has no Testnet4 case: it trips a debug
+///   assertion and falls back to the *regtest* currency, while the reverse
+///   conversion turns the test currency back into testnet3. The mapping is
+///   lossy in both directions, and in a release build the fallback is silent.
+/// - **Fedimint 0.12 relies on those conversions.** lnv1 uses
+///   `Network -> Currency` to compare an invoice against the federation and to
+///   build the invoices it issues; lnv2 compares the federation's network
+///   against `invoice.currency().into()`. On a Testnet4 federation both
+///   therefore reject a perfectly valid `tb` invoice — and an invoice issued
+///   for such a federation would be minted with the wrong currency.
+///
+/// Until upstream can distinguish testnet3 from testnet4, an invoice for a
+/// Testnet4 federation can be neither built nor matched reliably, and
+/// silently paying against a mismatched currency is worse than not offering
+/// the facility. Withholding the facade is the honest outcome: an application
+/// renders "this federation does not support lightning" once, instead of
+/// discovering a currency mismatch mid-payment. When the upstream fixes land
+/// (or are backported), the capability appears with no change to this API.
+///
+/// Every other network — mainnet, testnet3, signet, regtest — is unaffected,
+/// and the check that keeps a wrong-network invoice out of a payment is
+/// described on [`Lightning::quote`].
 #[derive(Debug, Clone)]
 pub struct Lightning {
     inner: Arc<LightningInner>,
@@ -65,17 +105,36 @@ impl Lightning {
     /// does not specify an amount and cannot be paid here" is a better thing
     /// to show than a failed quote.
     ///
-    /// # This is where the network is checked
+    /// # This is where the currency class is checked
     ///
-    /// The invoice's currency — and therefore the Bitcoin network it is
-    /// denominated for — is compared against the federation's
-    /// ([`Federation::network`](crate::Federation::network)) here, and a
+    /// A bolt11 invoice does not name a [`Network`](crate::Network). It names
+    /// a **currency**, and the two are not in one-to-one correspondence: the
+    /// test currency `tb` covers testnet3 and testnet4 alike, and the
+    /// conversions between the two vocabularies lose information in both
+    /// directions. So the check made here is the one the invoice can actually
+    /// support — the invoice's currency class against the class the
+    /// federation's network belongs to
+    /// ([`Federation::network`](crate::Federation::network)) — and a
     /// disagreement fails with
-    /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch). The structured
-    /// [`ErrorDetails::NetworkMismatch`](crate::ErrorDetails::NetworkMismatch)
-    /// carries both networks — the federation's as `expected` and the
-    /// invoice's as `actual` — so a caller can name them without parsing the
-    /// message.
+    /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch).
+    ///
+    /// The classes are mainnet (`bc`), test (`tb`), signet (`tbs`) and regtest
+    /// (`bcrt`). A mainnet invoice against a signet federation, or a regtest
+    /// invoice against mainnet, is refused here and cannot reach
+    /// [`Lightning::send`].
+    ///
+    /// **This call does not claim to identify the invoice's exact network,
+    /// and no caller should read it as doing so.** Testnet3 and testnet4 share
+    /// one currency, so an invoice in the test class names no single network,
+    /// and asserting one would be an invention. The structured
+    /// [`ErrorDetails`](crate::ErrorDetails) accompanying the failure
+    /// therefore reports the federation's network — which *is* known exactly —
+    /// beside the invoice's currency class, rather than pretending to a
+    /// precise `Network` for the invoice; that reshaping is why the detail is
+    /// described here in prose instead of by its fields. Lightning is not
+    /// offered on a Testnet4 federation at all (see [`Lightning`]), so the
+    /// class check never has to arbitrate between the two testnets on the
+    /// federation's side either.
     ///
     /// Quoting is the deterministic place for that check: every payment
     /// passes through it, it happens before anything is committed, and the
@@ -83,15 +142,15 @@ impl Lightning {
     /// generation serves the payment. lnv2 has its own `WrongCurrency`
     /// failure downstream of here, but relying on it would mean discovering
     /// the mismatch mid-payment on one generation and not at all on the
-    /// other. A syntactically valid invoice for the wrong network therefore
-    /// cannot survive quoting and reach [`Lightning::send`].
+    /// other. A syntactically valid invoice for an incompatible currency
+    /// therefore cannot survive quoting and reach [`Lightning::send`].
     ///
     /// # Errors
     ///
     /// [`AmountlessInvoice`](crate::ErrorCode::AmountlessInvoice) for an
     /// invoice that names no amount,
     /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) for an invoice
-    /// denominated for another network,
+    /// whose currency class is incompatible with the federation's network,
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an invoice that
     /// has already expired,
     /// [`GatewayUnavailable`](crate::ErrorCode::GatewayUnavailable) when no
@@ -111,8 +170,9 @@ impl Lightning {
     /// Executes a quoted payment.
     ///
     /// The quote is consumed: it describes one payment and can fund one
-    /// payment. Execution follows the plan exactly — same amount, same
-    /// fee, same route — or it does not happen:
+    /// payment. Execution follows the plan — same amount, same route, and a
+    /// debit that never exceeds the quoted [`LnQuote::total`] — or it does not
+    /// happen:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
@@ -126,9 +186,12 @@ impl Lightning {
     ///
     /// The terms this call executed on are persisted as
     /// [`LnSendDetails`] before it returns, so the invoice, the amounts, the
-    /// fee and the route stay readable from
+    /// quoted fee and the route stay readable from
     /// [`Operation::details`](crate::Operation::details) for the life of the
-    /// operation — after a restart, and however the payment ends.
+    /// operation — after a restart, and however the payment ends. What the
+    /// balance *actually* did is added to that same record as the payment
+    /// settles; the two halves are described on
+    /// [`LnSendDetails`], and for a refunded payment they differ.
     ///
     /// # Errors
     ///
@@ -160,7 +223,15 @@ impl Lightning {
     /// `amount` is what the payer is asked for: the invoice's face value is
     /// exactly this amount, and the receive-side fee is taken out of it, so
     /// the credit that lands is slightly smaller. [`LnReceiveDetails`] states
-    /// that convention exactly and records every one of the three numbers.
+    /// that convention exactly and records each of the numbers involved.
+    ///
+    /// The fee quoted here is an **estimate of what a later claim will cost**,
+    /// not a commitment. Nobody has paid yet, and the federation-side fees are
+    /// chosen only when the claiming transaction is actually assembled and
+    /// accepted, against the note inventory at that future time — 0.12's
+    /// receive fee quote is an explicitly non-committable dry run. So
+    /// [`LnReceiveDetails`] keeps the quoted terms and the realized outcome
+    /// apart, and an invoice that expires unpaid realizes no credit at all.
     ///
     /// The invoice and the terms it was issued on are persisted as
     /// [`LnReceiveDetails`] before this call returns, so the QR code can be
@@ -196,9 +267,16 @@ impl Lightning {
 /// what it holds is not recoverable later from the underlying client — the
 /// fee, in particular, is quoted once and is not repeated in the payment's
 /// progress stream — so the quote is what lets [`LnSendState::Success`]
-/// report the fee that was actually charged, and what
-/// [`Lightning::send`] persists into [`LnSendDetails`] so that the fee and
-/// the route survive a restart and remain readable however the payment ends.
+/// report the fee the payment was executed on, and what
+/// [`Lightning::send`] persists into [`LnSendDetails`] so that the quoted fee
+/// and the route survive a restart and remain readable however the payment
+/// ends.
+///
+/// Everything here is a **quoted** term: the numbers the user approved,
+/// fixed when this quote was executed. What the balance actually did is a
+/// separate matter, recorded on [`LnSendDetails`] as the payment settles —
+/// see the quoted-versus-realized split described there. The one guarantee
+/// that binds the two is [`LnQuote::total`]: the real debit never exceeds it.
 #[derive(Debug)]
 pub struct LnQuote {
     inner: LnQuoteInner,
@@ -237,6 +315,12 @@ impl LnQuote {
     /// [`LnQuote::fee_breakdown`] itemises this same number for an approval
     /// screen that wants to show the parts. This accessor stays
     /// authoritative: the breakdown sums to it exactly.
+    ///
+    /// It is a **quoted** figure, and the federation's share of it is chosen
+    /// for real only when the funding transaction is assembled and accepted.
+    /// This is the number to show and to charge against; what the balance
+    /// finally moved by is [`LnSendDetails::realized_fee`], which is recorded
+    /// as the payment settles and can be smaller.
     pub fn fee(&self) -> Amount {
         unimplemented!()
     }
@@ -269,7 +353,9 @@ impl LnQuote {
     /// funding transaction is assembled is denomination dust, which depends on
     /// the notes actually spent. The quote resolves it upwards, so the bound
     /// errs in the direction that protects the user: the debit is never more
-    /// than this, and may be a hair less.
+    /// than this, and may be a hair less. What it actually was is
+    /// [`LnSendDetails::realized_total_debited`], recorded once the funding
+    /// transaction is accepted.
     pub fn total(&self) -> Amount {
         unimplemented!()
     }
@@ -375,10 +461,11 @@ pub enum LightningRoute {
 /// This value is a convenience, not the only copy. Everything on it is also
 /// persisted as [`LnReceiveDetails`] before [`Lightning::receive`] returns,
 /// so an application that dropped it, or that is running again after a
-/// restart, re-reads the invoice — and the amounts, the fee and the expiry —
-/// from [`Operation::details`](crate::Operation::details) with nothing but
-/// the operation's id. The QR code is never lost with the value that first
-/// carried it.
+/// restart, re-reads the invoice — and the amounts, the quoted fee and the
+/// expiry — from [`Operation::details`](crate::Operation::details) with nothing
+/// but the operation's id. The QR code is never lost with the value that first
+/// carried it, and what the payment finally credited is added to that same
+/// record when it settles.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct LnReceive {
@@ -435,7 +522,10 @@ pub struct LnReceive {
 ///   gateway took it on, so the funds never left and no refund was needed.
 ///   Nothing was paid, so it is not [`Success`](Self::Success); the money is
 ///   in the balance, which is exactly what [`Refunded`](Self::Refunded)
-///   promises, so that is where it lands. There is no `Canceled` variant
+///   promises, so that is where it lands — and the realized fields of
+///   [`LnSendDetails`] are what distinguish it from a refund that cost
+///   something, since an attempt that never assembled a funding transaction
+///   moved nothing at all. There is no `Canceled` variant
 ///   here: an outgoing payment offers no cancellation to a caller of this
 ///   SDK (the only cancellation in the crate is
 ///   [`Operation::request_cancel`](crate::Operation::request_cancel) for
@@ -455,11 +545,12 @@ pub struct LnReceive {
 /// provisional and will be reconciled against the lightning client when this
 /// facade is implemented.
 ///
-/// # An obligation this enum places on the implementation
+/// # Two obligations this enum places on the implementation
 ///
-/// [`Success`](Self::Success) carries the fee and the route. **Neither is
-/// available from the v1 upstream progress stream.** Upstream reports a fee
-/// exactly once, synchronously, as the `fee` field of the
+/// **The quoted terms must be carried forward.**
+/// [`Success`](Self::Success) carries the quoted fee and the route, and
+/// **neither is available from the v1 upstream progress stream.** Upstream
+/// reports a fee exactly once, synchronously, as the `fee` field of the
 /// `OutgoingLightningPayment` returned when the payment is initiated — and
 /// that field is only the gateway's cut, not the whole debit
 /// ([`LnQuote::fee`] is) — and it does not put the gateway id into the
@@ -471,6 +562,19 @@ pub struct LnReceive {
 /// as a successful one. That is a real obligation on whoever implements this
 /// facade, and it is precisely why [`LnQuote`] is an executable object rather
 /// than a set of numbers to display and discard.
+///
+/// **What actually moved must be recorded as it moves.** A quoted fee is not
+/// a realized one: fedimint chooses a payment's federation-side fees — the
+/// mint input and output fees, the change, the denomination dust — only when
+/// a transaction is assembled and accepted, so the real figures exist only
+/// afterwards. Worse for a receipt, a [`Refunded`](Self::Refunded) payment
+/// executes a *second* transaction to claim the funding back, which costs
+/// money of its own, and no upstream state reports what either transaction
+/// charged. The SDK must therefore record, from the accepted transactions it
+/// submitted, what actually left the balance, what actually came back, and the
+/// difference that is gone for good — the three `realized_` fields of
+/// [`LnSendDetails`]. Without them a refunded send cannot be reconciled
+/// against the balance at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LnSendState {
@@ -489,38 +593,64 @@ pub enum LnSendState {
         /// copying it into [`LnSendDetails`] would duplicate a value that can
         /// never be missed.
         preimage: Preimage,
-        /// The aggregate fee actually charged, carried forward from the
-        /// executed quote — [`LnQuote::fee`], the whole debit and not only the
-        /// gateway's cut.
+        /// The aggregate fee the payment was **quoted and executed on** —
+        /// [`LnQuote::fee`], the whole debit and not only the gateway's cut.
         ///
-        /// Also in [`LnSendDetails::fee`], and the duplication is deliberate:
-        /// it is placement-rule case 3, the one case that licenses it. The fee
-        /// is announced by this state and by no other — a
+        /// This is the number the user approved, not a measurement of what the
+        /// balance did. The two can differ: the quote resolves denomination
+        /// dust upwards and the federation's share is fixed only when the
+        /// funding transaction is accepted, so the real cost of this payment
+        /// is [`LnSendDetails::realized_fee`], which is `Some` by the time
+        /// this state is reached. A receipt that wants one number should show
+        /// that one; a receipt that wants to explain itself shows both.
+        ///
+        /// Also in [`LnSendDetails::quoted_fee`], and the duplication is
+        /// deliberate: it is placement-rule case 3, the one case that licenses
+        /// it. The quoted fee is announced by this state and by no other — a
         /// [`Refunded`](Self::Refunded) or [`Failed`](Self::Failed) payment
         /// carries none — so the state alone would lose it for exactly the
         /// endings a receipt is most needed for, and the record alone would
         /// break every caller that reads a fee off a successful payment
-        /// without a second call. The two never disagree: both are the number
-        /// the executed quote committed to, written once.
-        fee: Amount,
+        /// without a second call. The two copies never disagree: both are the
+        /// number the executed quote committed to, written once.
+        quoted_fee: Amount,
         /// How the payment was routed, carried forward from the executed
         /// quote.
         ///
         /// Also in [`LnSendDetails::route`], for the same case-3 reason as
-        /// the fee above: announced here, absent from every other ending, and
-        /// kept by the record so a refunded payment can still say whether it
-        /// ever needed a gateway.
+        /// the quoted fee above: announced here, absent from every other
+        /// ending, and kept by the record so a refunded payment can still say
+        /// whether it ever needed a gateway.
         route: LightningRoute,
     },
-    /// Final: the payment did not go through and the funds are back in the
-    /// spendable balance.
+    /// Final: the payment did not go through and the funding has been claimed
+    /// back into the spendable balance.
     ///
     /// This is the ordinary failure of a lightning payment — no route, the
     /// payee went away, the gateway gave up — and it is a success from the
     /// SDK's point of view in that the money is safe.
+    ///
+    /// **Not all of it comes back, and the shortfall is not zero.** The refund
+    /// is itself a federation transaction: it spends the funding contract as an
+    /// input and reissues notes as outputs, paying the primary module's input,
+    /// output and change fees and losing whatever will not fit a note
+    /// denomination. The gateway's cut may well return with the contract while
+    /// the fees that funded the attempt stay sunk. So the honest receipt for
+    /// this ending is three numbers, all on [`LnSendDetails`]:
+    /// [`realized_total_debited`](LnSendDetails::realized_total_debited) left,
+    /// [`restored_amount`](LnSendDetails::restored_amount) came back, and
+    /// [`realized_fee`](LnSendDetails::realized_fee) is the difference that
+    /// did not. Reporting "refunded" alone would leave a user's balance
+    /// quietly disagreeing with the story on screen.
     Refunded,
     /// Final: the payment failed in a way that did not resolve into a
     /// clean refund.
+    ///
+    /// This is the one ending whose money story may be genuinely
+    /// unestablishable: the funding may have been accepted and the refund may
+    /// not have completed, so [`LnSendDetails::restored_amount`] and
+    /// [`LnSendDetails::realized_fee`] can stay `None` here — absent because
+    /// nobody knows, never zero to make a receipt look tidy.
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -541,14 +671,15 @@ impl OperationState for LnSendState {
     }
 }
 
-/// What an outgoing lightning payment *is*: the invoice it pays and the terms
-/// it was executed on.
+/// What an outgoing lightning payment *is*: the invoice it pays, the terms it
+/// was executed on, and — once they are known — what the balance actually did.
 ///
 /// The persisted half of an [`LnSendState`] operation, read with
-/// [`Operation::details`](crate::Operation::details). Written in the same
-/// storage transaction that creates the operation, so a process that dies the
-/// instant [`Lightning::send`] returns still finds all of it on the next
-/// start.
+/// [`Operation::details`](crate::Operation::details). The quoted terms are
+/// written in the same storage transaction that creates the operation, so a
+/// process that dies the instant [`Lightning::send`] returns still finds them
+/// on the next start; the realized figures are added as the transactions that
+/// establish them are accepted.
 ///
 /// # What it is for
 ///
@@ -563,9 +694,67 @@ impl OperationState for LnSendState {
 ///   what it would have cost or which gateway had it. A receipt that only
 ///   exists for successes is not a receipt.
 ///
-/// Everything here is fixed when the quote is executed and never changes
-/// afterwards, so there is no `Option` and no field that fills in later:
-/// reading this twice gives the same answer, before or after any transition.
+/// # Quoted terms and realized outcome are different halves
+///
+/// This record has two halves, and conflating them is what makes a refund
+/// impossible to reconcile:
+///
+/// - **The quoted half** — [`invoice_amount`](LnSendDetails::invoice_amount),
+///   [`quoted_fee`](LnSendDetails::quoted_fee),
+///   [`quoted_total_debited`](LnSendDetails::quoted_total_debited),
+///   [`route`](LnSendDetails::route) — is fixed when the quote is executed and
+///   never changes. It is what the user approved, and it describes the
+///   *attempt*. Plain fields, always readable, from the moment the operation
+///   exists.
+/// - **The realized half** —
+///   [`realized_total_debited`](LnSendDetails::realized_total_debited),
+///   [`restored_amount`](LnSendDetails::restored_amount),
+///   [`realized_fee`](LnSendDetails::realized_fee) — is what the balance
+///   actually did. `Option`, absent until the fact is established by an
+///   accepted federation transaction, then written once and never revised.
+///
+/// They can differ, and for anything but a plain success they usually do.
+/// Fedimint fixes a payment's federation-side fees — the mint's input and
+/// output fees, the change it reissues, the value too small for any note
+/// denomination — only when a transaction is assembled and accepted; a fee
+/// quote is an explicitly non-committable dry run. And a
+/// [`Refunded`](LnSendState::Refunded) send runs a *second* transaction to
+/// claim its funding back, which costs money of its own: the gateway's cut may
+/// come back with the contract while the fees that funded the attempt stay
+/// sunk.
+///
+/// ## The identity that reconciles a receipt with the balance
+///
+/// Whenever all three realized figures are present:
+///
+/// ```text
+/// realized_total_debited == delivered + restored_amount + realized_fee
+/// ```
+///
+/// where `delivered` is [`invoice_amount`](LnSendDetails::invoice_amount) for
+/// a payment that reached [`Success`](LnSendState::Success) and zero for one
+/// that was [`Refunded`](LnSendState::Refunded). Read the other way round:
+/// `realized_fee` is every millisatoshi that left the balance and neither
+/// reached the payee nor came back — the sunk cost, and for a refund the whole
+/// cost.
+///
+/// ## When each realized field fills in
+///
+/// | state | `realized_total_debited` | `restored_amount` | `realized_fee` |
+/// | --- | --- | --- | --- |
+/// | [`Created`](LnSendState::Created) | `None` | `None` | `None` |
+/// | [`Funded`](LnSendState::Funded) | `Some` — the funding transaction was accepted | `None` | `None` |
+/// | [`Success`](LnSendState::Success) | `Some` | `Some(0)` — nothing came back | `Some` — `realized_total_debited` less the invoice amount |
+/// | [`Refunded`](LnSendState::Refunded) | `Some`, or `Some(0)` if funding never happened | `Some` — what the claim actually restored | `Some` — the difference, which is sunk |
+/// | [`Failed`](LnSendState::Failed) | `Some` if funding was accepted, else `None` | `None` — it did not resolve | `None` — not establishable |
+///
+/// `None` always means "not established", never "lost" and never "zero":
+/// `Some(0)` is a measurement and `None` is the absence of one, and the two
+/// must not be rendered the same way. Each field goes from `None` to `Some`
+/// exactly once, in the same write that records the transition establishing
+/// it, so this record can be read at any time without ordering it against
+/// [`Operation::state`](crate::Operation::state) and can never produce two
+/// contradictory receipts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LnSendDetails {
@@ -575,39 +764,100 @@ pub struct LnSendDetails {
     /// back off it, which is what lets a history screen render the payment
     /// without the application having kept the invoice itself.
     pub invoice: Bolt11Invoice,
-    /// What reaches the payee: the invoice's own amount, from
-    /// [`LnQuote::invoice_amount`].
+    /// Quoted half. What reaches the payee if the payment succeeds: the
+    /// invoice's own amount, from [`LnQuote::invoice_amount`].
+    ///
+    /// Exact rather than estimated — an invoice names its own amount — but
+    /// still a term of the attempt: a payment that was refunded delivered
+    /// nothing, and this number says what it would have delivered.
     pub invoice_amount: Amount,
-    /// The aggregate fee the executed quote committed to — [`LnQuote::fee`],
-    /// every debit that funded the payment and not only the gateway's cut.
+    /// Quoted half. The aggregate fee the executed quote committed to —
+    /// [`LnQuote::fee`], every cost of funding the payment and not only the
+    /// gateway's cut.
+    ///
+    /// The number the user approved. It is **not** a measurement of what the
+    /// payment cost: that is [`realized_fee`](LnSendDetails::realized_fee),
+    /// and the two differ whenever dust resolved differently than quoted or
+    /// the payment was refunded.
     ///
     /// Also on [`LnSendState::Success`], which is placement-rule case 3 and
-    /// the one licensed duplication: the fee is announced by that state
+    /// the one licensed duplication: the quoted fee is announced by that state
     /// alone, so keeping it only there would lose it for the refunded and
     /// failed endings that most need a number to show. Both copies are the
     /// same value from the same quote, written once and never revised.
-    pub fee: Amount,
-    /// What the payment was authorised for and funded against:
+    pub quoted_fee: Amount,
+    /// Quoted half. What the payment was authorised for:
     /// [`LnQuote::total`], equal to
     /// [`invoice_amount`](LnSendDetails::invoice_amount) plus
-    /// [`fee`](LnSendDetails::fee).
+    /// [`quoted_fee`](LnSendDetails::quoted_fee).
     ///
-    /// This says what left the balance to fund the payment, not what the
-    /// payment finally cost the user: a send that ends in
-    /// [`LnSendState::Refunded`] debited this and then gave it back, which is
-    /// what a receipt for a refund has to be able to say.
+    /// This is a ceiling, not a receipt: it says what the balance was
+    /// authorised to move by, not what it moved by. Execution is bound not to
+    /// exceed it and may come in a hair under, so the figure that says what
+    /// actually left is
+    /// [`realized_total_debited`](LnSendDetails::realized_total_debited) — the
+    /// same noun with the other prefix, and the distinction a refund makes
+    /// unavoidable.
     ///
     /// Stored rather than left to the caller's arithmetic so that a receipt
     /// screen and the approval screen before it can never disagree about the
     /// number the user said yes to.
-    pub total_debited: Amount,
-    /// How the payment was routed, from [`LnQuote::route`] — whether it left
-    /// the federation through a gateway, and which one.
+    pub quoted_total_debited: Amount,
+    /// Quoted half. How the payment was routed, from [`LnQuote::route`] —
+    /// whether it left the federation through a gateway, and which one.
     ///
     /// Duplicated onto [`LnSendState::Success`] for the same case-3 reason as
-    /// [`fee`](LnSendDetails::fee), and kept here so that "this stayed inside
-    /// the federation" remains answerable for a payment that was refunded.
+    /// [`quoted_fee`](LnSendDetails::quoted_fee), and kept here so that "this
+    /// stayed inside the federation" remains answerable for a payment that was
+    /// refunded.
     pub route: LightningRoute,
+    /// Realized half. What actually left the spendable balance to fund this
+    /// payment, as the accepted funding transaction charged it.
+    ///
+    /// `None` until that transaction is accepted — the transition to
+    /// [`Funded`](LnSendState::Funded) — because before then no such figure
+    /// exists: the federation's fees and the dust depend on the notes actually
+    /// spent. Never greater than
+    /// [`quoted_total_debited`](LnSendDetails::quoted_total_debited), which
+    /// execution is bound by, and often a little less.
+    ///
+    /// `Some(0)` is possible and means something precise: the attempt ended
+    /// without a funding transaction ever being assembled, so nothing moved.
+    pub realized_total_debited: Option<Amount>,
+    /// Realized half. What the refund actually put back into the spendable
+    /// balance, net of the refund transaction's own cost.
+    ///
+    /// `Some(0)` for a payment that succeeded — the money went to the payee,
+    /// nothing came back. `Some` and less than
+    /// [`realized_total_debited`](LnSendDetails::realized_total_debited) for a
+    /// [`Refunded`](LnSendState::Refunded) payment, because claiming the
+    /// funding back is itself a transaction: it pays the primary module's
+    /// input, output and change fees and loses whatever will not fit a note
+    /// denomination, even where the gateway's cut returns intact with the
+    /// contract.
+    ///
+    /// `None` while the payment is still in flight, and `None` for a
+    /// [`Failed`](LnSendState::Failed) send, where nothing resolved cleanly
+    /// and claiming a figure would be a guess.
+    pub restored_amount: Option<Amount>,
+    /// Realized half. The aggregate fee this payment actually cost: everything
+    /// that left the balance and neither reached the payee nor came back.
+    ///
+    /// For a success,
+    /// [`realized_total_debited`](LnSendDetails::realized_total_debited) less
+    /// [`invoice_amount`](LnSendDetails::invoice_amount). For a refund, the
+    /// whole net cost of a payment that delivered nothing —
+    /// [`realized_total_debited`](LnSendDetails::realized_total_debited) less
+    /// [`restored_amount`](LnSendDetails::restored_amount) — covering both
+    /// the funding transaction's fees and the refund transaction's. This is
+    /// the number a balance reconciliation needs, and the number
+    /// [`quoted_fee`](LnSendDetails::quoted_fee) only estimated.
+    ///
+    /// `None` until the operation settles, and `None` for a
+    /// [`Failed`](LnSendState::Failed) send: an unresolved payment has no
+    /// established cost, and reporting zero for one would understate what a
+    /// user lost.
+    pub realized_fee: Option<Amount>,
     /// When the payment was started, as the SDK recorded it.
     ///
     /// The timestamp to sort and label a history row by. It is the moment
@@ -648,34 +898,90 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// returned [`LnReceive`], or that is running again after a restart, still
 /// reads them from the operation's id alone.
 ///
-/// [`Expired`](Self::Expired) is one addition. An invoice that simply
-/// lapses unpaid is the most common way a receive ends, and it is not a
-/// failure worth alarming a user about; v1 upstream has no dedicated
-/// variant for it and reports it as a `Canceled` with an expiry reason,
-/// while lnv2 does have an explicit expired state. Splitting it out here
-/// means an application can render "this invoice expired" without parsing
-/// a reason string, and it aligns the SDK with where upstream is going.
+/// [`Expired`](Self::Expired) and [`Failed`](Self::Failed) are additions, and
+/// between them they are why a v1 terminal cancellation cannot be mapped by
+/// its upstream variant alone.
 ///
-/// [`Failed`](Self::Failed) is the other, and it exists because lnv2 can
-/// reach a state none of the variants above can honestly express. lnv2's
-/// `ReceiveOperationState` includes `Failure`, reached when the payment was
-/// *confirmed* and issuing the ecash for it then failed. That is neither
-/// [`Canceled`](Self::Canceled), which this enum documents as ending the
-/// receive before payment, nor [`Claimed`](Self::Claimed), which would
-/// assert the funds are spendable when they are not. It maps as follows:
+/// [`Expired`](Self::Expired) exists because an invoice that simply lapses
+/// unpaid is the most common way a receive ends and is not a failure worth
+/// alarming a user about. v1 has no dedicated variant for it and reports it as
+/// a cancellation whose reason is a timeout; lnv2 has an explicit expired
+/// state. Splitting it out lets an application render "this invoice expired"
+/// as its own outcome.
 ///
-/// - **lnv2.** `ReceiveOperationState::Failure` maps here directly.
-/// - **v1.** No state corresponds. v1 reports the equivalent breakdowns
-///   through `LnReceiveState::Canceled { reason }`, and the SDK does not
-///   inspect that reason to decide between [`Canceled`](Self::Canceled) and
-///   [`Failed`](Self::Failed): a v1 receive that upstream cancels maps to
-///   [`Canceled`](Self::Canceled), full stop. Deciding otherwise would mean
-///   matching on free-form text, which this crate refuses to make any
-///   binding do — the same reasoning that gave [`Expired`](Self::Expired) its
-///   own variant, and the reason [`Failed`](Self::Failed) carries **no
-///   payload**: everything a caller can act on is in the variant itself, and
-///   diagnostic detail belongs in logs, not in a field applications would be
-///   tempted to parse.
+/// [`Failed`](Self::Failed) exists because a payment can arrive and then fail
+/// to become spendable ecash. That is neither [`Canceled`](Self::Canceled),
+/// which this enum reserves for a receive that ended *before* payment, nor
+/// [`Claimed`](Self::Claimed), which would assert the funds are spendable when
+/// they are not.
+///
+/// # The v1 mapping is keyed on the reason *and* the phase
+///
+/// v1's cancellation reason is **typed, not free-form**: upstream's
+/// `LnReceiveState::Canceled` carries a `LightningReceiveError`, whose variants
+/// are `Timeout`, `Rejected`, `ClaimRejected` and `InvalidPreimage`. No string
+/// is parsed anywhere in this mapping, and none needs to be.
+///
+/// The typed variant is not sufficient on its own, though, because `Rejected`
+/// is emitted at two entirely different moments: for an offer the federation
+/// refused before anybody paid, and again after a claim had been accepted but
+/// the primary-module outputs failed to produce notes. The first means nothing
+/// happened; the second means somebody paid and the money did not arrive. So
+/// the mapping key is the pair **(typed reason, phase the operation had
+/// reached)**, where the phase that matters is whether the receive had ever
+/// reached [`Funded`](Self::Funded) — that is, whether a payment had been
+/// confirmed for it.
+///
+/// | upstream v1 | phase reached | here |
+/// | --- | --- | --- |
+/// | `Created` | — | [`Created`](Self::Created) |
+/// | `WaitingForPayment { .. }` | — | [`WaitingForPayment`](Self::WaitingForPayment) |
+/// | `Funded`, `AwaitingFunds` | — | [`Funded`](Self::Funded) |
+/// | `Claimed` | — | [`Claimed`](Self::Claimed) |
+/// | `Canceled { Timeout }` | any | [`Expired`](Self::Expired) |
+/// | `Canceled { Rejected }` | before [`Funded`](Self::Funded) | [`Canceled`](Self::Canceled) |
+/// | `Canceled { Rejected }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
+/// | `Canceled { ClaimRejected }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
+/// | `Canceled { InvalidPreimage }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
+/// | `Canceled { ClaimRejected \| InvalidPreimage }` | before [`Funded`](Self::Funded) | [`Canceled`](Self::Canceled) |
+///
+/// The last row is a fallback rather than an expected path — a claim cannot be
+/// rejected before there is a payment to claim — and it is listed so that the
+/// mapping is total on the pair rather than partial with a hole for an
+/// upstream ordering nobody has seen yet.
+///
+/// Three rules generate the whole table, and they are what an implementation
+/// should encode:
+///
+/// 1. `Timeout` is [`Expired`](Self::Expired). Nobody paid within the
+///    invoice's lifetime; that is the benign ending.
+/// 2. Any other reason reaching a receive that had got to
+///    [`Funded`](Self::Funded) is [`Failed`](Self::Failed). A payment was
+///    confirmed and did not become spendable notes — including the `Rejected`
+///    that arrives after a claim was accepted and the primary outputs failed,
+///    which earlier revisions of this documentation described as a benign
+///    pre-payment cancellation. It is the opposite of benign.
+/// 3. Any other reason reaching a receive that never got past
+///    [`WaitingForPayment`](Self::WaitingForPayment) is
+///    [`Canceled`](Self::Canceled) — a genuine refusal before payment, with
+///    nothing owed to anyone.
+///
+/// **This obliges the implementation to persist the phase.** The terminal
+/// upstream event does not say which moment it belongs to, and after a restart
+/// the SDK is not the process that watched the operation, so "did this receive
+/// ever reach [`Funded`](Self::Funded)?" must be durable rather than
+/// remembered. Without it a post-claim failure and a pre-payment refusal are
+/// indistinguishable, which is precisely the bug this mapping fixes. The
+/// realized fields of [`LnReceiveDetails`] are not a substitute: they answer
+/// what moved, not how far the operation got.
+///
+/// lnv2 needs none of this arbitration, because it draws the distinction
+/// itself: its `ReceiveOperationState` has explicit pending and claiming
+/// states, mapping onto [`WaitingForPayment`](Self::WaitingForPayment) and
+/// [`Funded`](Self::Funded); its claimed state maps onto
+/// [`Claimed`](Self::Claimed); its expired state onto
+/// [`Expired`](Self::Expired); and `Failure` — the payment confirmed, the
+/// ecash issuance failed — onto [`Failed`](Self::Failed) directly.
 ///
 /// Because those splits are judgements rather than a one-to-one mapping,
 /// this variant set is provisional and will be reconciled against the
@@ -695,18 +1001,32 @@ pub enum LnReceiveState {
     Funded,
     /// Final: the amount is in the spendable balance.
     ///
-    /// The amount that landed is [`LnReceiveDetails::net_credit`] — the
-    /// invoice's face value less the receive-side fee — not the invoice's face
-    /// value.
+    /// The amount that landed is
+    /// [`LnReceiveDetails::realized_net_credit`], which is `Some` by the time
+    /// this state is reached: the invoice's face value less the fee the
+    /// accepted claim actually charged. It is neither the face value nor the
+    /// estimate the invoice was issued against
+    /// ([`LnReceiveDetails::expected_net_credit`]) — those two can differ from
+    /// it, and only the realized figure says what the balance did.
     Claimed,
-    /// Final: the receive was cancelled before it was paid — for example
-    /// because the gateway withdrew the offer.
+    /// Final: the receive was refused **before** anyone paid it — for example
+    /// because the gateway withdrew the offer or the federation rejected it.
+    ///
+    /// Nothing moved and nothing is owed: no payment was confirmed, so no
+    /// credit was ever due. A cancellation that arrives *after* a payment was
+    /// confirmed is [`Failed`](Self::Failed), not this — see the enum's mapping
+    /// rules, which key on the phase for exactly that reason.
     Canceled {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
         reason: String,
     },
     /// Final: the invoice's expiry passed without it being paid.
+    ///
+    /// Nobody paid, so nothing was claimed and no fee was incurred:
+    /// [`LnReceiveDetails::realized_net_credit`] and
+    /// [`LnReceiveDetails::realized_fee`] both read zero here, while the
+    /// quoted terms still show what the invoice would have credited.
     Expired,
     /// Final: the payment arrived but the ecash for it was never issued.
     ///
@@ -720,9 +1040,15 @@ pub enum LnReceiveState {
     /// between the payer and this wallet and recovering them is not
     /// something the application can do by retrying.
     ///
+    /// [`LnReceiveDetails::realized_net_credit`] reads zero here — nothing
+    /// landed, and nothing will — while
+    /// [`LnReceiveDetails::realized_fee`] may be absent: a claim that was
+    /// accepted and then failed to produce notes did cost something, and this
+    /// is the one ending where how much may not be establishable.
+    ///
     /// Render it as an error the user should report, not as an expired
     /// invoice. Deliberately payload-free; see the enum's mapping notes for
-    /// why, and for how v1 and lnv2 reach (or do not reach) this state.
+    /// why, and for how v1 and lnv2 reach this state.
     Failed,
 }
 
@@ -742,13 +1068,14 @@ impl OperationState for LnReceiveState {
     }
 }
 
-/// What an incoming lightning payment *is*: the invoice that was issued and
-/// the terms it was issued on.
+/// What an incoming lightning payment *is*: the invoice that was issued, the
+/// terms it was issued on, and — if it is ever paid — what actually landed.
 ///
 /// The persisted half of an [`LnReceiveState`] operation, read with
-/// [`Operation::details`](crate::Operation::details). Written in the same
-/// storage transaction that creates the operation, so it is there however
-/// soon after [`Lightning::receive`] the process dies.
+/// [`Operation::details`](crate::Operation::details). The invoice and the
+/// quoted terms are written in the same storage transaction that creates the
+/// operation, so they are there however soon after [`Lightning::receive`] the
+/// process dies; the realized figures are added when the receive settles.
 ///
 /// # The invoice is the reason this record exists
 ///
@@ -764,33 +1091,82 @@ impl OperationState for LnReceiveState {
 ///
 /// # Which amount is which
 ///
-/// Three amounts, and the convention that relates them is fixed:
-/// **the fee is deducted from the invoice, not added on top of it.** The
-/// invoice's face value is exactly what the application asked
-/// [`Lightning::receive`] for, so the payer is asked for the number the
-/// application chose, and the receive-side fee — the gateway's charge plus
-/// the federation's own — comes out of it. Hence
+/// The convention that relates the amounts is fixed: **the fee is deducted
+/// from the invoice, not added on top of it.** The invoice's face value is
+/// exactly what the application asked [`Lightning::receive`] for, so the payer
+/// is asked for the number the application chose, and the receive-side fee —
+/// the gateway's charge plus the federation's own — comes out of it. Hence
 /// [`requested_amount`](LnReceiveDetails::requested_amount) `==`
-/// [`invoice_amount`](LnReceiveDetails::invoice_amount), and
-/// [`net_credit`](LnReceiveDetails::net_credit) is the smaller number that
-/// actually lands in the balance.
+/// [`invoice_amount`](LnReceiveDetails::invoice_amount), and the credit is the
+/// smaller number.
 ///
-/// The invariant holds whichever way a future module has to account for it:
+/// # Quoted terms and realized outcome are different halves
+///
+/// - **The quoted half** — [`requested_amount`](LnReceiveDetails::requested_amount),
+///   [`invoice_amount`](LnReceiveDetails::invoice_amount),
+///   [`quoted_fee`](LnReceiveDetails::quoted_fee),
+///   [`expected_net_credit`](LnReceiveDetails::expected_net_credit) — is fixed
+///   when the invoice is created. It is what the payer is asked for and what the
+///   application shows as "you will receive". Plain fields, readable from the
+///   moment the operation exists.
+/// - **The realized half** — [`realized_fee`](LnReceiveDetails::realized_fee),
+///   [`realized_net_credit`](LnReceiveDetails::realized_net_credit) — is what
+///   the balance actually did. `Option`, absent until the receive settles, then
+///   written once and never revised.
+///
+/// The split is not pedantry: **the aggregate receive fee cannot be fixed when
+/// the invoice is created.** The gateway's terms are known then, but the
+/// federation's input, output, change and denomination-dust costs are chosen
+/// only if and when a payment is actually claimed, against the note inventory
+/// at that future time — 0.12's receive fee quote is a point-in-time dry run
+/// that commits to nothing. And most invoices are never paid at all: an invoice
+/// that expires unpaid, or is refused before payment, realizes **no credit
+/// whatsoever**, so a plain field documented as "what actually lands" would be
+/// false for the most common ending a receive has.
+///
+/// ## The invariants
+///
+/// The quoted half is self-consistent from creation:
 ///
 /// ```text
-/// invoice_amount == net_credit + fee
+/// invoice_amount == expected_net_credit + quoted_fee
 /// ```
 ///
-/// All three are recorded rather than two and a subtraction, so the
-/// convention is *observable* rather than assumed. A caller can render "you
-/// asked for X, the payer pays Y, you receive Z" without knowing which module
-/// generation served the request, and a build that could only add the fee on
-/// top would still be reporting the face value the payer will really be asked
-/// for instead of a number that quietly disagrees with the invoice.
+/// The realized half satisfies the same relation, but **only for a receive
+/// that was actually claimed**:
 ///
-/// Everything here is fixed when the invoice is created and never changes, so
-/// there is no field that fills in later; reading it twice gives the same
-/// answer.
+/// ```text
+/// invoice_amount == realized_net_credit + realized_fee   // Claimed only
+/// ```
+///
+/// Both halves are recorded in full rather than as two numbers and a
+/// subtraction, so the convention is *observable* rather than assumed: a caller
+/// can render "you asked for X, the payer pays Y, you expect Z, you got W"
+/// without knowing which module generation served the request or redoing
+/// fallible arithmetic on money.
+///
+/// ## What the realized fields read at each ending
+///
+/// | state | `realized_fee` | `realized_net_credit` |
+/// | --- | --- | --- |
+/// | [`Created`](LnReceiveState::Created), [`WaitingForPayment`](LnReceiveState::WaitingForPayment), [`Funded`](LnReceiveState::Funded) | `None` | `None` |
+/// | [`Claimed`](LnReceiveState::Claimed) | `Some` — what the accepted claim charged | `Some` — the invoice amount less that |
+/// | [`Expired`](LnReceiveState::Expired) | `Some(0)` | `Some(0)` |
+/// | [`Canceled`](LnReceiveState::Canceled) | `Some(0)` | `Some(0)` |
+/// | [`Failed`](LnReceiveState::Failed) | `None` — a failed claim's cost may not be establishable | `Some(0)` — nothing landed, and nothing will |
+///
+/// `Some(0)` and `None` are different answers and must not be rendered the
+/// same way: zero is a measurement — the invoice lapsed, the balance did not
+/// move — while `None` means the figure is not established. For an invoice
+/// still waiting, that is simply the truth; for a
+/// [`Failed`](LnReceiveState::Failed) receive it will stay the truth, because a
+/// claim that was accepted and then failed to produce notes did cost something
+/// and pretending it cost zero would understate what a user lost.
+///
+/// Each realized field goes from `None` to `Some` exactly once, in the write
+/// that records the settling transition, and never changes afterwards — so
+/// this record can be read at any time without ordering it against
+/// [`Operation::state`](crate::Operation::state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LnReceiveDetails {
@@ -807,42 +1183,92 @@ pub struct LnReceiveDetails {
     /// nothing to return and the words the payer was shown would otherwise be
     /// gone. This is what a history row labels the receive with.
     pub description: String,
-    /// The amount asked of [`Lightning::receive`].
+    /// Quoted half. The amount asked of [`Lightning::receive`].
     ///
     /// Recorded as it was requested, so the record can be checked against
     /// what the application intended rather than only against what the
     /// invoice says.
     pub requested_amount: Amount,
-    /// The invoice's face value: what the payer is asked to pay.
+    /// Quoted half. The invoice's face value: what the payer is asked to pay.
     ///
     /// Equal to [`requested_amount`](LnReceiveDetails::requested_amount)
     /// under the deduct-the-fee convention described on this type, and always
-    /// equal to [`net_credit`](LnReceiveDetails::net_credit) plus
-    /// [`fee`](LnReceiveDetails::fee).
+    /// equal to
+    /// [`expected_net_credit`](LnReceiveDetails::expected_net_credit) plus
+    /// [`quoted_fee`](LnReceiveDetails::quoted_fee). Exact rather than
+    /// estimated: it is encoded in the invoice, and a payer who pays pays this.
     pub invoice_amount: Amount,
-    /// The receive-side fee: the gateway's charge for taking the payment in,
-    /// plus what the federation charges to issue the ecash for it.
+    /// Quoted half. The receive-side fee **as quoted when the invoice was
+    /// issued**: the gateway's charge for taking the payment in, plus the
+    /// federation's own quoted cost of issuing the ecash for it.
     ///
     /// The aggregate, on the same footing as [`LnQuote::fee`] on the sending
-    /// side: it is the whole difference between what the payer pays and what
-    /// lands, so no other deduction appears later. Zero is possible — a
-    /// payment that never left the federation has no gateway to pay — but is
-    /// not the rule, since issuing the notes is itself a federation
-    /// transaction.
-    pub fee: Amount,
-    /// What actually lands in the spendable balance:
-    /// [`invoice_amount`](LnReceiveDetails::invoice_amount) minus
-    /// [`fee`](LnReceiveDetails::fee).
+    /// side: the whole difference between what the payer pays and what is
+    /// expected to land, so no other deduction is expected later. Zero is
+    /// possible — a payment that never left the federation has no gateway to
+    /// pay — but is not the rule, since issuing the notes is itself a
+    /// federation transaction.
     ///
-    /// The number to show as "you will receive". Stored rather than derived
-    /// so that the receive screen and the history row can never disagree
-    /// about it.
-    pub net_credit: Amount,
+    /// It is an **estimate**, and it is the one figure on this record that a
+    /// caller must not present as settled. The gateway's terms are firm, but
+    /// the federation's share is chosen only when a claim is assembled and
+    /// accepted; what was really charged is
+    /// [`realized_fee`](LnReceiveDetails::realized_fee).
+    pub quoted_fee: Amount,
+    /// Quoted half. What the invoice is expected to credit:
+    /// [`invoice_amount`](LnReceiveDetails::invoice_amount) minus
+    /// [`quoted_fee`](LnReceiveDetails::quoted_fee).
+    ///
+    /// The number to show as "you will receive" *before* anyone has paid.
+    /// Stored rather than derived so that the receive screen and the history
+    /// row can never disagree about it.
+    ///
+    /// It is what the wallet expects, not what it got: an invoice that expires
+    /// unpaid still has an `expected_net_credit`, and it credited nothing. The
+    /// figure that says what the balance did is
+    /// [`realized_net_credit`](LnReceiveDetails::realized_net_credit).
+    pub expected_net_credit: Amount,
+    /// Realized half. The receive-side fee actually charged, once the receive
+    /// has settled.
+    ///
+    /// `Some` from the fees the accepted claim recorded — which may differ from
+    /// [`quoted_fee`](LnReceiveDetails::quoted_fee), because the federation's
+    /// input, output, change and dust costs depend on the inventory at claim
+    /// time rather than at invoice time. `Some(0)` for an invoice that expired
+    /// or was refused before payment: no claim was assembled, so nothing was
+    /// charged.
+    ///
+    /// `None` while the receive is still running, and `None` for a
+    /// [`Failed`](LnReceiveState::Failed) receive, where a claim may have been
+    /// accepted before the notes failed to materialise and the cost may not be
+    /// establishable. Never zero as a stand-in for unknown.
+    pub realized_fee: Option<Amount>,
+    /// Realized half. What the balance actually gained.
+    ///
+    /// `Some` and equal to [`invoice_amount`](LnReceiveDetails::invoice_amount)
+    /// less [`realized_fee`](LnReceiveDetails::realized_fee) for a receive that
+    /// reached [`Claimed`](LnReceiveState::Claimed) — the same value that state
+    /// refers to, so a receipt built from the record and one built from the
+    /// state cannot disagree.
+    ///
+    /// `Some(0)` for every other ending, and that zero is the point of this
+    /// field: an [`Expired`](LnReceiveState::Expired) or
+    /// [`Canceled`](LnReceiveState::Canceled) invoice was never paid, and a
+    /// [`Failed`](LnReceiveState::Failed) one was paid without the ecash ever
+    /// being issued — in none of the three did the spendable balance rise, and
+    /// [`expected_net_credit`](LnReceiveDetails::expected_net_credit) must not
+    /// be read as though it had.
+    ///
+    /// `None` only while the receive is still in flight: nobody has paid yet,
+    /// or the payment has not settled.
+    pub realized_net_credit: Option<Amount>,
     /// The gateway that agreed to take the payment in, if there was one.
     ///
     /// `None` means no gateway took part — not that the gateway is unknown.
-    /// Fixed when the invoice is created, like everything else here, so it
-    /// never turns from `None` into a gateway id later.
+    /// Fixed when the invoice is created, like the rest of the quoted half, so
+    /// it never turns from `None` into a gateway id later. It is the one
+    /// `Option` here that is not a realized figure, which is why its `None`
+    /// reads as an answer rather than as "not established yet".
     pub gateway_id: Option<GatewayId>,
     /// When the invoice stops being payable.
     ///
@@ -882,35 +1308,46 @@ mod tests {
     use super::*;
     use crate::operation::DetailedOperationState;
 
-    /// A send record with the numbers of one plausible payment: 100,000 msat
-    /// to the payee, 1,050 msat of aggregate fee, 101,050 msat debited.
+    /// The gateway used by every fixture here.
+    fn gateway() -> GatewayId {
+        GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned())
+    }
+
+    /// A send record as [`Lightning::send`] writes it: the quoted terms of one
+    /// plausible payment — 100,000 msat to the payee, 1,050 msat of quoted
+    /// aggregate fee, 101,050 msat authorised — and no realized figure yet,
+    /// because nothing has been accepted.
     fn send_details() -> LnSendDetails {
         LnSendDetails {
             invoice: Bolt11Invoice::from_raw("lnbcrt1000n1pexample".to_owned()),
             invoice_amount: Amount::from_msats(100_000),
-            fee: Amount::from_msats(1_050),
-            total_debited: Amount::from_msats(101_050),
+            quoted_fee: Amount::from_msats(1_050),
+            quoted_total_debited: Amount::from_msats(101_050),
             route: LightningRoute::Gateway {
-                gateway_id: GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned()),
+                gateway_id: gateway(),
             },
+            realized_total_debited: None,
+            restored_amount: None,
+            realized_fee: None,
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
     }
 
-    /// A receive record for an invoice of 50,000 msat with a 500 msat
-    /// receive-side fee, under the convention this crate fixes: the payer is
-    /// asked for exactly what was requested and the fee comes out of it.
+    /// A receive record as [`Lightning::receive`] writes it: an invoice of
+    /// 50,000 msat quoted against a 500 msat receive-side fee, under the
+    /// convention this crate fixes — the payer is asked for exactly what was
+    /// requested and the fee comes out of it — with nothing realized yet.
     fn receive_details() -> LnReceiveDetails {
         LnReceiveDetails {
             invoice: Bolt11Invoice::from_raw("lnbcrt500n1pexample".to_owned()),
             description: "coffee".to_owned(),
             requested_amount: Amount::from_msats(50_000),
             invoice_amount: Amount::from_msats(50_000),
-            fee: Amount::from_msats(500),
-            net_credit: Amount::from_msats(49_500),
-            gateway_id: Some(GatewayId::from_raw(
-                "0266e4598d1d3c415f572a8488830b".to_owned(),
-            )),
+            quoted_fee: Amount::from_msats(500),
+            expected_net_credit: Amount::from_msats(49_500),
+            realized_fee: None,
+            realized_net_credit: None,
+            gateway_id: Some(gateway()),
             expires_at: Timestamp::from_epoch_millis(1_700_000_600_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
@@ -936,32 +1373,44 @@ mod tests {
     }
 
     #[test]
-    fn ln_send_details_total_debited_is_the_amount_plus_the_aggregate_fee() {
+    fn ln_send_details_quoted_total_is_the_amount_plus_the_quoted_fee() {
         let details = send_details();
         assert_eq!(
-            details.invoice_amount.checked_add(details.fee),
-            Some(details.total_debited),
+            details.invoice_amount.checked_add(details.quoted_fee),
+            Some(details.quoted_total_debited),
         );
     }
 
     #[test]
-    fn ln_send_details_keep_the_fee_and_route_of_a_payment_that_was_refunded() {
-        // The review's point: a refunded send carries no fee and no route on
-        // its state, and the record is what keeps both readable.
+    fn ln_send_details_realize_nothing_until_a_transaction_is_accepted() {
+        // As written by `send`: the quoted half is complete, the realized half
+        // is absent — not zero, absent.
+        let details = send_details();
+        assert!(!LnSendState::Created.is_final());
+        assert_eq!(details.realized_total_debited, None);
+        assert_eq!(details.restored_amount, None);
+        assert_eq!(details.realized_fee, None);
+        assert_ne!(details.quoted_fee, Amount::from_msats(0));
+    }
+
+    #[test]
+    fn ln_send_details_keep_the_quoted_fee_and_route_of_a_payment_that_was_refunded() {
+        // A refunded send carries no fee and no route on its state, and the
+        // record is what keeps both readable.
         let details = send_details();
         let state = LnSendState::Refunded;
         assert!(state.is_final());
-        assert_eq!(details.fee, Amount::from_msats(1_050));
+        assert_eq!(details.quoted_fee, Amount::from_msats(1_050));
         assert_eq!(
             details.route,
             LightningRoute::Gateway {
-                gateway_id: GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned()),
+                gateway_id: gateway(),
             },
         );
     }
 
     #[test]
-    fn ln_send_details_and_success_agree_on_the_fee_and_route() {
+    fn ln_send_details_and_success_agree_on_the_quoted_fee_and_route() {
         // The one licensed duplication: two copies of the same value from the
         // same quote, never two different numbers.
         let details = send_details();
@@ -969,16 +1418,93 @@ mod tests {
             preimage: Preimage::from_raw(
                 "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
             ),
-            fee: details.fee,
+            quoted_fee: details.quoted_fee,
             route: details.route.clone(),
         };
         match state {
-            LnSendState::Success { fee, route, .. } => {
-                assert_eq!(fee, details.fee);
+            LnSendState::Success {
+                quoted_fee, route, ..
+            } => {
+                assert_eq!(quoted_fee, details.quoted_fee);
                 assert_eq!(route, details.route);
             }
             other => panic!("expected Success, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ln_send_details_reconcile_a_successful_payment() {
+        // Settled successfully: the debit came in a little under the quoted
+        // ceiling, nothing came back, and the realized fee is everything that
+        // left the balance without reaching the payee.
+        let details = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(101_048)),
+            restored_amount: Some(Amount::from_msats(0)),
+            realized_fee: Some(Amount::from_msats(1_048)),
+            ..send_details()
+        };
+        assert!(details.realized_total_debited <= Some(details.quoted_total_debited));
+        // realized_total_debited == delivered + restored + fee, delivered
+        // being the invoice amount for a payment that succeeded.
+        let reconciled = [
+            details.invoice_amount,
+            details.restored_amount.expect("restored"),
+            details.realized_fee.expect("fee"),
+        ]
+        .into_iter()
+        .try_fold(Amount::from_msats(0), Amount::checked_add);
+        assert_eq!(reconciled, details.realized_total_debited);
+    }
+
+    #[test]
+    fn ln_send_details_reconcile_a_refunded_payment_whose_realized_fee_is_sunk() {
+        // The case the review asks to be checkable. The gateway's 1,000 msat
+        // came back inside the refunded contract; the fees that funded the
+        // attempt (48 msat) and the refund transaction's own cost (30 msat) did
+        // not. So the realized fee is 78 msat against a quoted 1,050 — quoted
+        // and realized differ, and the record still reconciles.
+        let details = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(101_048)),
+            restored_amount: Some(Amount::from_msats(100_970)),
+            realized_fee: Some(Amount::from_msats(78)),
+            ..send_details()
+        };
+        let debited = details.realized_total_debited.expect("debited");
+        let restored = details.restored_amount.expect("restored");
+        let sunk = details.realized_fee.expect("sunk");
+
+        // Nothing reached the payee, so the whole debit is restored-plus-sunk.
+        assert_eq!(debited.checked_sub(restored), Some(sunk));
+        assert!(restored < debited);
+        // A refund is not free, and it is not the quoted fee either.
+        assert_ne!(sunk, Amount::from_msats(0));
+        assert_ne!(sunk, details.quoted_fee);
+        assert!(sunk < details.quoted_fee);
+        // The quoted terms are untouched by the outcome: the receipt can still
+        // say what the user approved.
+        assert_eq!(details.quoted_fee, Amount::from_msats(1_050));
+        assert_eq!(details.quoted_total_debited, Amount::from_msats(101_050));
+        assert!(LnSendState::Refunded.is_final());
+    }
+
+    #[test]
+    fn ln_send_details_leave_a_failed_payment_unreconciled_rather_than_zeroed() {
+        // Funding was accepted; nothing resolved after that. `None` is the
+        // honest answer, and it is not `Some(0)`.
+        let details = LnSendDetails {
+            realized_total_debited: Some(Amount::from_msats(101_048)),
+            restored_amount: None,
+            realized_fee: None,
+            ..send_details()
+        };
+        assert_eq!(details.restored_amount, None);
+        assert_ne!(details.realized_fee, Some(Amount::from_msats(0)));
+        assert!(
+            LnSendState::Failed {
+                reason: "gateway vanished mid-payment".to_owned(),
+            }
+            .is_final()
+        );
     }
 
     #[test]
@@ -989,16 +1515,96 @@ mod tests {
             ..send_details()
         };
         assert_eq!(details.route, LightningRoute::Internal);
-        assert_ne!(details.fee, Amount::from_msats(0));
+        assert_ne!(details.quoted_fee, Amount::from_msats(0));
     }
 
     #[test]
-    fn ln_receive_details_invoice_amount_is_the_net_credit_plus_the_fee() {
+    fn ln_receive_details_invoice_amount_is_the_expected_net_credit_plus_the_fee() {
         let details = receive_details();
         assert_eq!(
-            details.net_credit.checked_add(details.fee),
+            details.expected_net_credit.checked_add(details.quoted_fee),
             Some(details.invoice_amount),
         );
+    }
+
+    #[test]
+    fn ln_receive_details_realize_nothing_until_the_receive_settles() {
+        let details = receive_details();
+        assert!(!LnReceiveState::WaitingForPayment.is_final());
+        assert_eq!(details.realized_fee, None);
+        assert_eq!(details.realized_net_credit, None);
+    }
+
+    #[test]
+    fn ln_receive_details_realized_net_credit_is_the_invoice_amount_less_the_fee() {
+        // Claimed against a different inventory than the quote saw: the real
+        // fee is 620 msat where 500 was quoted, so the credit is smaller than
+        // the invoice promised.
+        let details = LnReceiveDetails {
+            realized_fee: Some(Amount::from_msats(620)),
+            realized_net_credit: Some(Amount::from_msats(49_380)),
+            ..receive_details()
+        };
+        assert_eq!(
+            details
+                .realized_net_credit
+                .and_then(|credit| credit.checked_add(details.realized_fee.expect("fee"))),
+            Some(details.invoice_amount),
+        );
+        assert_ne!(details.realized_fee, Some(details.quoted_fee));
+        assert!(details.realized_net_credit < Some(details.expected_net_credit));
+        assert!(LnReceiveState::Claimed.is_final());
+    }
+
+    #[test]
+    fn ln_receive_details_realize_nothing_for_an_invoice_that_expired_unpaid() {
+        // Nobody paid: the balance did not move and nothing was charged, and
+        // that is a measured zero rather than an absent figure.
+        let details = LnReceiveDetails {
+            realized_fee: Some(Amount::from_msats(0)),
+            realized_net_credit: Some(Amount::from_msats(0)),
+            ..receive_details()
+        };
+        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_fee, Some(Amount::from_msats(0)));
+        // The quoted half still says what the invoice would have credited.
+        assert_eq!(details.expected_net_credit, Amount::from_msats(49_500));
+        assert_ne!(
+            details.realized_net_credit,
+            Some(details.expected_net_credit)
+        );
+        assert!(LnReceiveState::Expired.is_final());
+    }
+
+    #[test]
+    fn ln_receive_details_realize_nothing_for_a_refusal_before_payment() {
+        let details = LnReceiveDetails {
+            realized_fee: Some(Amount::from_msats(0)),
+            realized_net_credit: Some(Amount::from_msats(0)),
+            ..receive_details()
+        };
+        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert!(
+            LnReceiveState::Canceled {
+                reason: "gateway withdrew the offer".to_owned(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
+    fn ln_receive_details_of_a_failed_receive_know_no_credit_landed_but_not_the_cost() {
+        // Somebody paid and the ecash was never issued: the credit is a known
+        // zero, the cost is unknown — and unknown is `None`, never `Some(0)`.
+        let details = LnReceiveDetails {
+            realized_fee: None,
+            realized_net_credit: Some(Amount::from_msats(0)),
+            ..receive_details()
+        };
+        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_fee, None);
+        assert_ne!(details.realized_fee, Some(Amount::from_msats(0)));
+        assert!(LnReceiveState::Failed.is_final());
     }
 
     #[test]
@@ -1007,7 +1613,7 @@ mod tests {
         // the fee comes out of it.
         let details = receive_details();
         assert_eq!(details.invoice_amount, details.requested_amount);
-        assert!(details.net_credit < details.invoice_amount);
+        assert!(details.expected_net_credit < details.invoice_amount);
     }
 
     #[test]
@@ -1048,7 +1654,7 @@ mod tests {
         ]
         .into_iter()
         .try_fold(Amount::from_msats(0), Amount::checked_add);
-        assert_eq!(summed, Some(send_details().fee));
+        assert_eq!(summed, Some(send_details().quoted_fee));
     }
 
     #[test]
@@ -1081,7 +1687,7 @@ mod tests {
                 preimage: Preimage::from_raw(
                     "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
                 ),
-                fee: Amount::from_msats(0),
+                quoted_fee: Amount::from_msats(0),
                 route: LightningRoute::Internal,
             }
             .is_final()

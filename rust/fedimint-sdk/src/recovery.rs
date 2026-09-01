@@ -52,7 +52,9 @@
 //!   federation's persisted state, not in this instance's memory, so it
 //!   survives a crash, a [`Sdk::shutdown`](crate::Sdk::shutdown), and a
 //!   [`Sdk::close_federation`](crate::Sdk::close_federation) followed by
-//!   joining the federation again.
+//!   [`Sdk::reopen_federation`](crate::Sdk::reopen_federation), which is the
+//!   way back for a federation this instance still holds — joining it again
+//!   would be refused, since it was never forgotten.
 //! - No call in this module releases it. There is deliberately no "spend
 //!   anyway", no "mark recovered", and no way to acknowledge a failure into
 //!   a usable wallet, because the whole point of the lock is that a payment
@@ -103,8 +105,15 @@
 //! 2. **It kept only the [`FederationId`].** [`Sdk::recovery_status`] to
 //!    read the state, [`Sdk::resume_recovery`] to get a handle back.
 //! 3. **It kept nothing.**
-//!    [`Sdk::federations`](crate::Sdk::federations) lists what this instance
-//!    holds, and case 2 applies to each of them.
+//!    [`Sdk::federations`](crate::Sdk::federations) lists the federations
+//!    this instance currently has open, a still-recovering one included, and
+//!    case 2 applies to each of them. One gap to know about: a federation
+//!    closed with
+//!    [`Sdk::close_federation`](crate::Sdk::close_federation) is *not* in
+//!    that list. It appears in
+//!    [`Sdk::stored_federations`](crate::Sdk::stored_federations) as closed,
+//!    and [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings it
+//!    back — still recovery-locked — before case 2 applies to it.
 //!
 //! ```no_run
 //! use fedimint_sdk::{FederationId, RecoveryState, Sdk};
@@ -283,9 +292,11 @@ impl Sdk {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the id
     /// names no open federation — never joined, or closed with
     /// [`Sdk::close_federation`](crate::Sdk::close_federation) — or when
-    /// the whole instance has been shut down. Joining a closed federation
-    /// again brings back its recovery record along with the rest of its
-    /// state, and this call then works on it.
+    /// the whole instance has been shut down.
+    /// [`Sdk::reopen_federation`](crate::Sdk::reopen_federation) brings a
+    /// closed federation back, recovery record and all, and this call then
+    /// works on it — re-joining is neither needed nor accepted, because the
+    /// federation was closed rather than forgotten.
     ///
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable)
     /// and [`Timeout`](crate::ErrorCode::Timeout) when the guardians cannot
