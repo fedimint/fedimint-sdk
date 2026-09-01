@@ -2165,7 +2165,11 @@ mod tests {
         let envelope = err.details.expect("the raw envelope is kept");
         assert!(!envelope.is_interpreted());
         assert_eq!(
-            envelope.raw().expect("opaque keeps its bytes").payload.len(),
+            envelope
+                .raw()
+                .expect("opaque keeps its bytes")
+                .payload
+                .len(),
             12
         );
     }
@@ -2188,7 +2192,11 @@ mod tests {
         let envelope = err.details.expect("the raw envelope is kept");
         assert!(!envelope.is_interpreted());
         assert_eq!(
-            envelope.raw().expect("opaque keeps its bytes").payload.len(),
+            envelope
+                .raw()
+                .expect("opaque keeps its bytes")
+                .payload
+                .len(),
             17
         );
     }

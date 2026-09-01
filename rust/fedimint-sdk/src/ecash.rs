@@ -718,9 +718,9 @@ impl crate::operation::sealed::Sealed for EcashSendState {}
 impl OperationState for EcashSendState {
     fn is_final(&self) -> bool {
         match self {
-            EcashSendState::Funding
-            | EcashSendState::Created
-            | EcashSendState::CancelRequested => false,
+            EcashSendState::Funding | EcashSendState::Created | EcashSendState::CancelRequested => {
+                false
+            }
             EcashSendState::Canceled
             | EcashSendState::Redeemed
             | EcashSendState::FundingFailed { .. } => true,
