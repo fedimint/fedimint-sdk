@@ -3,6 +3,7 @@ const path = require('path');
 const https = require('https');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
+const { pipeline, PassThrough } = require('stream');
 
 const pkg = require('../package.json');
 
@@ -65,29 +66,34 @@ const downloadAndVerify = (url, dest, expectedChecksum) => {
                 }
                 const file = fs.createWriteStream(dest);
                 const hash = crypto.createHash('sha256');
-                response.on('data', (chunk) => {
-                    file.write(chunk);
+                const passThrough = new PassThrough();
+                
+                passThrough.on('data', (chunk) => {
                     hash.update(chunk);
                 });
-                response.on('end', () => {
-                    file.end(() => {
-                        const actualChecksum = hash.digest('hex');
-                        if (expectedChecksum && actualChecksum !== expectedChecksum) {
-                            fs.unlinkSync(dest);
-                            reject(new Error(`Checksum mismatch for ${dest}. Expected: ${expectedChecksum}, Got: ${actualChecksum}`));
+
+                pipeline(
+                    response,
+                    passThrough,
+                    file,
+                    (err) => {
+                        if (err) {
+                            fs.unlink(dest, () => { });
+                            reject(err);
                         } else {
-                            if (expectedChecksum) {
-                                console.log(`${dest} checksum verified successfully.`);
+                            const actualChecksum = hash.digest('hex');
+                            if (expectedChecksum && actualChecksum !== expectedChecksum) {
+                                fs.unlinkSync(dest);
+                                reject(new Error(`Checksum mismatch for ${dest}. Expected: ${expectedChecksum}, Got: ${actualChecksum}`));
+                            } else {
+                                if (expectedChecksum) {
+                                    console.log(`${dest} checksum verified successfully.`);
+                                }
+                                resolve();
                             }
-                            resolve();
                         }
-                    });
-                });
-                response.on('error', (err) => {
-                    file.close();
-                    fs.unlink(dest, () => { });
-                    reject(err);
-                });
+                    }
+                );
             }).on('error', (err) => {
                 fs.unlink(dest, () => { });
                 reject(err);
