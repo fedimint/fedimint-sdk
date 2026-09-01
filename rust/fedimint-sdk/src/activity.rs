@@ -79,7 +79,8 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// A row's numbers describe the transfer the operation set out to make, on
 /// the terms it was quoted — every kind but an on-chain deposit, whose
-/// numbers are the realized ones and are the one pair that does reconcile.
+/// numbers are the realized ones and the one pair that does reconcile. Every
+/// universal claim in this section reads with that row carved out.
 /// [`Success`](ActivityStatus::Success) on
 /// [`status`](ActivityItem::status) says that transfer completed as intended
 /// — not that these two numbers are what the balance did. A quote is not a
@@ -127,9 +128,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// A UI that must show a single truthful figure for a settled row therefore
 /// reads the operation's own realized figures, whatever the bucket —
-/// including a [`Success`](ActivityStatus::Success). `amount ± fee` is what
-/// was attempted and what the user approved, which is what a list wants and
-/// — the deposit row excepted — never a statement of what the balance did.
+/// including a [`Success`](ActivityStatus::Success). For every kind but the
+/// deposit, `amount ± fee` is what was attempted and what the user approved
+/// — what a list wants, and never a statement of what the balance did.
 ///
 /// ## Requested is not actual
 ///
@@ -267,9 +268,10 @@ pub struct ActivityItem {
     /// It also selects which half of the accounting identity applies:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) was to credit `amount - fee` — in
-    /// both cases for the transfer as attempted, and never a claim about what
-    /// the balance finally did, which the operation's details record holds
-    /// even for a [`Success`](ActivityStatus::Success) row. A row with no
+    /// both cases for the transfer as attempted and, the deposit row's
+    /// realized figures excepted, never a claim about what the balance
+    /// finally did, which the operation's details record holds even for a
+    /// [`Success`](ActivityStatus::Success) row. A row with no
     /// direction has no identity to reconcile, and both figures are `None`.
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
