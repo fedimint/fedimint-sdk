@@ -255,6 +255,7 @@ const OnboardingScreen = ({
     setIsLoading(true)
     setError('')
     try {
+      localStorage.removeItem('backupConfirmed')
       const words = await director.generateMnemonic()
       setGeneratedMnemonic(words.join(' '))
       setShowMnemonic(true)
@@ -375,6 +376,7 @@ const OnboardingScreen = ({
     )
       return
     localStorage.setItem('pendingWipe', 'true')
+    localStorage.removeItem('backupConfirmed')
     window.location.reload()
   }
 

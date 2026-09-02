@@ -39,6 +39,7 @@ const handleWipe = (skipConfirm = false) => {
   )
     return
   localStorage.setItem('pendingWipe', 'true')
+  localStorage.removeItem('backupConfirmed')
   window.location.reload()
 }
 
@@ -207,6 +208,7 @@ const init = async () => {
     .addEventListener('click', async () => {
       showError('')
       try {
+        localStorage.removeItem('backupConfirmed')
         const words = await director.generateMnemonic()
         generatedWords = words
         const container = document.getElementById('mnemonic-words')
