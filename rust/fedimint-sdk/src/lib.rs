@@ -430,10 +430,6 @@
 //!
 //! The design of this API, and the review that amended it, live in
 //! [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344).
-//!
-//! The `experimental` cargo feature is off by default and is excluded from
-//! the stability contract: what it exposes may change or disappear in any
-//! release. It currently gates the recovery API.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -456,7 +452,6 @@ mod lightning;
 mod meta;
 mod onchain;
 mod operation;
-#[cfg(feature = "experimental")]
 mod recovery;
 mod sdk;
 mod storage;
@@ -485,9 +480,6 @@ pub use operation::{
     AnyOperation, DetailedOperationState, Operation, OperationDetails, OperationKind,
     OperationState, OperationSupport, OperationUpdates, RawOperationKind,
 };
-// Behind the off-by-default `experimental` feature, and excluded from the
-// crate's stability contract; see the module's own documentation.
-#[cfg(feature = "experimental")]
 pub use recovery::{Recovery, RecoveryState};
 pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, SdkBuilder};
 pub use storage::Storage;

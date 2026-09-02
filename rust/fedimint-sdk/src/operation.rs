@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use crate::{
     EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
-    OnchainReceiveState, OnchainSendState, OperationId, Result,
+    OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
 };
 
 /// The sealing module for [`OperationState`] and [`OperationDetails`].
@@ -165,10 +165,12 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 ///   storage transaction. A process that dies immediately after
 ///   [`Ecash::send`](crate::Ecash::send) returns must still find the notes
 ///   on the next start; that is the whole point.
-/// - **Fields fill in once and never move.** A field is either set at
-///   creation or set in the same write that records the transition
-///   establishing it. `None` becomes `Some` exactly once; a value never
-///   changes to a different value, and never reverts.
+/// - **Fields fill in at most once and never move.** A field is either set
+///   at creation or set in the same write that records the transition
+///   establishing it. `None` becomes `Some` at most once — an optional fact
+///   need never come to exist, and a record whose operation ended without
+///   it keeps the `None` for good — and a value never changes to a
+///   different value, and never reverts.
 /// - **Nothing is derived at read time from a state that may have been
 ///   missed.** If a value can only be observed as a transition happens, it
 ///   is persisted as it happens.
@@ -222,14 +224,13 @@ pub trait OperationDetails:
 ///
 /// # Why this is not an associated type on `OperationState`
 ///
-/// Two reasons, and the second is the more important one. A required
-/// associated item on [`OperationState`] would have to be supplied by every
-/// implementor at once, including `RecoveryState` behind the experimental
-/// feature. And a kind that genuinely has no fixed facts worth persisting
-/// should be able to say so by not implementing this trait, rather than by
-/// declaring an empty record that a binding then has to generate and a
-/// caller has to wonder about. Both traits are sealed, so which kinds have
-/// details remains this crate's decision either way.
+/// A required associated item on [`OperationState`] would have to be
+/// supplied by every implementor at once, and a kind that genuinely has no
+/// fixed facts worth persisting — a recovery is one — should be able to say
+/// so by not implementing this trait, rather than by declaring an empty
+/// record that a binding then has to generate and a caller has to wonder
+/// about. Both traits are sealed, so which kinds have details remains this
+/// crate's decision either way.
 pub trait DetailedOperationState: OperationState {
     /// The record [`Operation::details`] returns for this kind.
     ///
@@ -410,8 +411,9 @@ impl<S: DetailedOperationState> Operation<S> {
     ///
     /// Calling this twice returns the same values, with one exception: a
     /// field documented as filling in later (a deposit's transaction id, for
-    /// instance) goes from `None` to `Some` exactly once and then never
-    /// changes. Nothing here is ever rewritten or withdrawn, so details read
+    /// instance) goes from `None` to `Some` at most once and then never
+    /// changes — and stays `None` if the fact it records never comes to
+    /// exist. Nothing here is ever rewritten or withdrawn, so details read
     /// before a state and details read after it never contradict each other,
     /// and there is no ordering a caller has to get right between this call
     /// and [`state`](Operation::state).
@@ -552,17 +554,12 @@ impl<S: OperationState> OperationUpdates<S> {
 ///
 /// One sentence, and the rest of this type follows from it: **an operation is
 /// supported when this build can actually observe its typed state.** That is
-/// a claim about the reader as much as about the record, and it takes three
+/// a claim about the reader as much as about the record, and it takes two
 /// things to hold at once.
 ///
 /// 1. **The discriminator is one this build knows.** It maps onto an
 ///    [`OperationKind`] other than [`Unknown`](OperationKind::Unknown).
-/// 2. **This build compiled the accessor for that kind.** `as_recovery` sits
-///    behind the off-by-default `experimental` feature, so a default build
-///    has the six accessors below and not seven — while
-///    [`OperationKind::Recovery`] stays nameable in every build, because the
-///    operation was persisted regardless of the reader's features.
-/// 3. **The state schema is one this build reads.** A record written by a
+/// 2. **The state schema is one this build reads.** A record written by a
 ///    newer SDK can name a kind this build knows while its persisted *state*
 ///    uses a schema this build has never seen. The schema version travels on
 ///    [`RawOperationKind::schema_version`], so this is decidable up front
@@ -571,9 +568,6 @@ impl<S: OperationState> OperationUpdates<S> {
 /// Anything less and there is no typed handle to be had, so reporting it as
 /// supported would only move the disappointment later — which is exactly what
 /// [`supported_kind`](AnyOperation::supported_kind) exists to prevent.
-/// Condition 2 is a property of the reader alone: the same record is
-/// [`OperationSupport::Observable`] in a build with `experimental` on and
-/// [`OperationSupport::NotCompiledIn`] in one with it off.
 ///
 /// # Four questions, four calls
 ///
@@ -588,10 +582,10 @@ impl<S: OperationState> OperationUpdates<S> {
 ///   account.
 /// - **"How far can this build go with it, and why no further?"** —
 ///   [`support`](AnyOperation::support). One of
-///   [`OperationSupport`]'s variants: `Observable`, or which of the three
+///   [`OperationSupport`]'s variants: `Observable`, or which of the two
 ///   conditions failed. Infallible, so it is the form to log, show in a bug
-///   report, or use to decide between "unsupported in this build" and
-///   "unreadable record" in a message to a user.
+///   report, or use to decide between "written by a newer version" and
+///   "not recognised at all" in a message to a user.
 /// - **"May I act on it, and what is it?"** —
 ///   [`supported_kind`](AnyOperation::supported_kind). `Ok(kind)` exactly when
 ///   [`support`](AnyOperation::support) is
@@ -607,9 +601,9 @@ impl<S: OperationState> OperationUpdates<S> {
 ///
 /// ## What `None` from an accessor means
 ///
-/// The six `as_*` accessors below answer one narrow question — "is it *this*
-/// kind, and if so give me the handle" — and they return `Some` on exactly
-/// the condition above: the kind matches *and*
+/// The seven `as_*` accessors below answer one narrow question — "is it
+/// *this* kind, and if so give me the handle" — and they return `Some` on
+/// exactly the condition above: the kind matches *and*
 /// [`support`](AnyOperation::support) is
 /// [`Observable`](OperationSupport::Observable). So `None` covers three
 /// situations, and deliberately does not distinguish them:
@@ -618,8 +612,7 @@ impl<S: OperationState> OperationUpdates<S> {
 /// - the record is one this build cannot interpret at all
 ///   ([`UnknownKind`](OperationSupport::UnknownKind));
 /// - it *is* this kind, and this build still cannot observe it
-///   ([`NotCompiledIn`](OperationSupport::NotCompiledIn),
-///   [`StateSchemaTooNew`](OperationSupport::StateSchemaTooNew)).
+///   ([`StateSchemaTooNew`](OperationSupport::StateSchemaTooNew)).
 ///
 /// That third case is why the accessors are not merely a kind test. Handing
 /// back a typed [`Operation`] whose state cannot be decoded would move the
@@ -627,15 +620,15 @@ impl<S: OperationState> OperationUpdates<S> {
 /// checking; `None` keeps the whole question in one place. Which of the three
 /// it was is available, once, from [`support`](AnyOperation::support) and
 /// [`supported_kind`](AnyOperation::supported_kind), rather than making each
-/// of six accessors return a two-level answer that most callers would unwrap
-/// twice for nothing. A caller that will act on the operation asks first; a
-/// caller that is only sorting rows by kind never has to.
+/// of seven accessors return a two-level answer that most callers would
+/// unwrap twice for nothing. A caller that will act on the operation asks
+/// first; a caller that is only sorting rows by kind never has to.
 ///
 /// ## What no pre-read check can know
 ///
 /// [`Observable`](OperationSupport::Observable) is everything that can be
-/// established *before* the operation's state is read: a known kind, an
-/// accessor compiled in, and a recorded schema version this build reads. It
+/// established *before* the operation's state is read: a known kind, and a
+/// recorded schema version this build reads. It
 /// is not a promise that the read will succeed, and this type does not
 /// pretend otherwise — the check sees a version number, not the bytes behind
 /// it, and a record that carries no version at all
@@ -646,7 +639,7 @@ impl<S: OperationState> OperationUpdates<S> {
 /// What that buys is that every reason knowable in advance is reported in
 /// advance, by one call, instead of surfacing as a surprise from a typed
 /// handle the caller already holds. What is left over is the residue: a state
-/// that passed all three conditions and still cannot be decoded means a
+/// that passed both conditions and still cannot be decoded means a
 /// producer wrote a schema version it did not honour, which is a bug on one
 /// side or the other and not a forward-compatibility case. That surfaces as
 /// [`Internal`](crate::ErrorCode::Internal) from
@@ -676,14 +669,12 @@ impl AnyOperation {
     /// the next thing you do is act on the operation rather than label it.
     ///
     /// This is the reading of the *discriminator* and nothing more, so it
-    /// answers with a real kind in two cases where nothing can be done with
-    /// the operation: a recovery in a build without the `experimental`
-    /// feature, and a record whose state was written at a schema this build
-    /// cannot read. Both are honest labels — the record does say it is a
-    /// recovery, and it does say it is a lightning send — and both are
-    /// reported as unsupported by [`support`](AnyOperation::support). Nothing
-    /// here degrades to [`Unknown`](OperationKind::Unknown) on the reader's
-    /// account.
+    /// answers with a real kind even when nothing can be done with the
+    /// operation: a record whose state was written at a schema this build
+    /// cannot read still says it is a lightning send, and that is an honest
+    /// label, reported as unsupported by [`support`](AnyOperation::support).
+    /// Nothing here degrades to [`Unknown`](OperationKind::Unknown) on the
+    /// reader's account.
     pub fn kind(&self) -> OperationKind {
         unimplemented!()
     }
@@ -693,25 +684,24 @@ impl AnyOperation {
     /// The reason behind [`supported_kind`](AnyOperation::supported_kind), as
     /// an ordinary value instead of an error. Use it where the answer is
     /// going into a log line, a bug report, or a message to a user — telling
-    /// someone "this version of the app was built without recovery" and
-    /// "this operation was written by a newer version than this one" are
+    /// someone "this operation was written by a newer version than this one"
+    /// and "this version does not recognise that operation at all" are
     /// different things to say, and
     /// [`supported_kind`](AnyOperation::supported_kind) collapses them into
     /// one code on purpose.
     ///
     /// [`Observable`](OperationSupport::Observable) is the answer that means
     /// supported: the matching `as_*` accessor will hand back a typed handle.
-    /// Every other variant names one of the three conditions under
+    /// Every other variant names one of the two conditions under
     /// *What "supported" means here*, and means no typed handle exists in this
     /// build — pair it with [`raw_kind`](AnyOperation::raw_kind) to say which
     /// record it was about.
     ///
     /// Infallible and cheap, like [`kind`](AnyOperation::kind) and
     /// [`raw_kind`](AnyOperation::raw_kind): the decision is made from those
-    /// two answers and the features this build was compiled with, so it reads
-    /// no storage, touches no network, and does not read the operation's
-    /// state. What that last part costs is stated under *What no pre-read
-    /// check can know*.
+    /// two answers alone, so it reads no storage, touches no network, and
+    /// does not read the operation's state. What that last part costs is
+    /// stated under *What no pre-read check can know*.
     pub fn support(&self) -> OperationSupport {
         support_of(self.kind(), &self.raw_kind())
     }
@@ -730,18 +720,12 @@ impl AnyOperation {
     /// left [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation)
     /// documented but unreachable.
     ///
-    /// `Ok(kind)` means all three conditions under *What "supported" means
-    /// here* hold, so the accessor for that kind will hand back a typed
-    /// handle. Three consequences worth stating outright:
+    /// `Ok(kind)` means both conditions under *What "supported" means here*
+    /// hold, so the accessor for that kind will hand back a typed handle. Two
+    /// consequences worth stating outright:
     ///
     /// - It is **never** `Ok(OperationKind::Unknown)`: that is precisely the
     ///   case that becomes the error.
-    /// - It is **never** `Ok(OperationKind::Recovery)` in a build without the
-    ///   `experimental` feature, because such a build has no `as_recovery` and
-    ///   therefore no way to observe the operation.
-    ///   [`kind`](AnyOperation::kind) still names the record honestly, and an
-    ///   activity list should still show the row; what this call refuses is
-    ///   *acting* on it.
     /// - It is **never** `Ok` for a record whose state was written at a schema
     ///   version newer than this build reads, even when the kind itself is one
     ///   this build knows. The kind discriminator is only half the question,
@@ -754,9 +738,8 @@ impl AnyOperation {
     /// # Errors
     ///
     /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation), and
-    /// nothing else, for each of the three: an unrecognised discriminator, a
-    /// kind whose accessor this build was not compiled with, and a state
-    /// schema newer than this build reads. The message names the record and
+    /// nothing else, for each of the two: an unrecognised discriminator, and
+    /// a state schema newer than this build reads. The message names the record and
     /// the reason, and [`support`](AnyOperation::support) reports the same
     /// reason machine-readably. This reads no storage and touches no network:
     /// the record was already read to produce this handle.
@@ -847,18 +830,30 @@ impl AnyOperation {
         unimplemented!()
     }
 
-    // The seventh accessor, `as_recovery`, is feature-gated: it returns
-    // `Operation<RecoveryState>`, and `RecoveryState` exists only behind the
-    // off-by-default `experimental` feature. It is therefore defined in
-    // `recovery.rs`, in an `impl AnyOperation` block alongside that module's
-    // `impl Sdk`, so the default build's `AnyOperation` is exactly the six
-    // accessors above. `kind()` reports `OperationKind::Recovery` in either
-    // build, which is what an activity list needs, while `support()` and
-    // `supported_kind()` answer `NotCompiledIn` / `UnsupportedOperation`
-    // without the feature and `Observable` / `Ok` with it — the one place the
-    // gate is stated is `OperationKind::has_accessor_in_this_build`, so
-    // folding this accessor in when recovery stabilises means deleting one
-    // `cfg!` there and nothing else.
+    /// Recovers a typed handle if this is a seed recovery.
+    ///
+    /// `None` for any other kind, for a record this build cannot interpret,
+    /// and for a record of *this* kind whose typed state this build cannot
+    /// observe; see the type documentation for how to tell those apart.
+    ///
+    /// Without this a recovery would be the one operation an application
+    /// could not reattach to after a restart. A process that dies mid-rescan
+    /// leaves a persisted recovery running; on the next build,
+    /// [`Federation::operation`](crate::Federation::operation) finds it and
+    /// [`kind`](AnyOperation::kind) reports [`OperationKind::Recovery`], and
+    /// this is how its progress is then observed — rather than by attempting
+    /// a spend and catching [`Recovering`](crate::ErrorCode::Recovering),
+    /// which is precisely the error-driven discovery this crate rejects.
+    ///
+    /// This path needs the operation id, so it is the one to use when the
+    /// application kept it. When it did not,
+    /// [`Sdk::recovery_status`](crate::Sdk::recovery_status) and
+    /// [`Sdk::resume_recovery`](crate::Sdk::resume_recovery) reach the same
+    /// recovery from the [`FederationId`](crate::FederationId) alone; the
+    /// [recovery module](crate::Recovery) lays out all three routes.
+    pub fn as_recovery(&self) -> Option<Operation<RecoveryState>> {
+        unimplemented!()
+    }
 }
 
 /// The discriminator an operation was persisted under, as it was written.
@@ -927,7 +922,7 @@ pub struct RawOperationKind {
     /// another version" does not. `None` when the record predates versioning
     /// or does not carry a version.
     ///
-    /// It is also the input to the third of the three conditions behind
+    /// It is also the input to the second of the two conditions behind
     /// [`AnyOperation::support`]: a version newer than this build reads for
     /// that kind means the operation's typed state cannot be observed here,
     /// however familiar its kind. Read the verdict from
@@ -975,21 +970,8 @@ pub enum OperationKind {
     /// An on-chain deposit, tracked by
     /// [`OnchainReceiveState`](crate::OnchainReceiveState).
     OnchainReceive,
-    /// Restoring a wallet from its seed.
-    ///
-    /// This variant is **not** gated behind the crate's experimental
-    /// feature even though the recovery API is: a recovery operation
-    /// persisted by a build that had the feature enabled must still be
-    /// listable and nameable by a build that does not, rather than
-    /// degrading to [`OperationKind::Unknown`].
-    ///
-    /// What *is* feature-dependent is whether anything can be done with such
-    /// an operation. A build without the feature has no `as_recovery`, so
-    /// [`AnyOperation::support`] reports
-    /// [`OperationSupport::NotCompiledIn`] and
-    /// [`AnyOperation::supported_kind`] refuses it, while a build with the
-    /// feature reports [`Observable`](OperationSupport::Observable) for the
-    /// very same record. Naming it is always possible; observing it is not.
+    /// Restoring a wallet from its seed, tracked by
+    /// [`RecoveryState`](crate::RecoveryState).
     Recovery,
     /// An operation this SDK version cannot interpret.
     ///
@@ -1030,7 +1012,7 @@ pub enum OperationKind {
 /// How far this build can go with one persisted operation, decided before any
 /// of its state is read.
 ///
-/// Returned by [`AnyOperation::support`], which is where the three conditions
+/// Returned by [`AnyOperation::support`], which is where the two conditions
 /// under *What "supported" means here* are checked.
 /// [`Observable`](OperationSupport::Observable) is the one answer that means
 /// supported; every other variant names the condition that failed and means
@@ -1038,13 +1020,11 @@ pub enum OperationKind {
 ///
 /// # Why the reasons are worth telling apart
 ///
-/// Because they are different things to say and different things to do. "This
-/// version of the app was built without recovery" is a build that needs
-/// replacing with one that has the feature, and the operation is fine.
+/// Because they are different things to say and different things to do.
 /// "Written by a newer version than this one" is an application that needs
 /// updating, and the data is ahead of the code. "This build does not
-/// recognise it at all" may be either, and is the one to put in a bug report
-/// verbatim. [`AnyOperation::supported_kind`] flattens all three into
+/// recognise it at all" is the one to put in a bug report verbatim.
+/// [`AnyOperation::supported_kind`] flattens both into
 /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation) because
 /// control flow does not care which; a log line, a support ticket, and a
 /// message shown to a user all do.
@@ -1060,8 +1040,7 @@ pub enum OperationKind {
 #[non_exhaustive]
 pub enum OperationSupport {
     /// This build can observe the operation's typed state: the kind is one it
-    /// knows, the accessor for that kind is compiled in, and the recorded
-    /// state schema is one it reads.
+    /// knows, and the recorded state schema is one it reads.
     ///
     /// The matching `as_*` accessor on [`AnyOperation`] returns `Some`, and
     /// [`AnyOperation::supported_kind`] returns `Ok`.
@@ -1079,22 +1058,8 @@ pub enum OperationSupport {
     /// which is what to log, because "an operation from another version" on
     /// its own helps nobody.
     UnknownKind,
-    /// The kind is one this build knows, but this build was compiled without
-    /// the accessor for it, so no typed handle exists to hand back.
-    ///
-    /// Today this is exactly one case: [`OperationKind::Recovery`] in a build
-    /// without the crate's `experimental` feature. The record is fully
-    /// interpreted and [`AnyOperation::kind`] names it honestly, so an
-    /// activity list should still show the row; what is missing is any API in
-    /// *this* build for observing its progress, and calling that supported
-    /// would promise something that is not there.
-    ///
-    /// It is therefore a property of the reader rather than of the operation:
-    /// a build with the feature enabled reports
-    /// [`Observable`](OperationSupport::Observable) for the very same record.
-    NotCompiledIn,
-    /// The kind is known and its accessor is compiled in, but the record's
-    /// state was written at a schema version newer than this build reads.
+    /// The kind is known, but the record's state was written at a schema
+    /// version newer than this build reads.
     ///
     /// The kind discriminator is only half of what it takes to read an
     /// operation. A newer SDK can record a kind this build has always known
@@ -1105,10 +1070,9 @@ pub enum OperationSupport {
     /// meets it once, from [`AnyOperation::supported_kind`], instead of
     /// meeting it from a typed handle it was already holding.
     ///
-    /// Like [`NotCompiledIn`](OperationSupport::NotCompiledIn) this describes
-    /// the gap between the record and this build, not a defect in the record:
-    /// the operation is real, the state is intact, and a build of the version
-    /// that wrote it reads it fine.
+    /// This describes the gap between the record and this build, not a
+    /// defect in the record: the operation is real, the state is intact, and
+    /// a build of the version that wrote it reads it fine.
     StateSchemaTooNew,
 }
 
@@ -1124,44 +1088,17 @@ pub enum OperationSupport {
 const READABLE_STATE_SCHEMA: u32 = 1;
 
 impl OperationKind {
-    /// Whether a build like this one compiles a typed accessor for this kind,
-    /// and therefore has any way to observe such an operation's state.
-    ///
-    /// This is the `#[cfg]` on the *answer*, which is the only place it
-    /// belongs. Gating [`OperationKind::Recovery`] itself would make a
-    /// persisted recovery unnameable by a default build, which is precisely
-    /// what that variant exists to prevent; gating the answer says the true
-    /// thing instead — the operation exists regardless of the reader's
-    /// features, and this reader cannot observe it.
-    ///
-    /// The match is exhaustive rather than defaulting, even though
-    /// [`OperationKind`] is `#[non_exhaustive]` (which binds only outside this
-    /// crate): a kind added later must state whether this build can observe
-    /// it, and a compile error is the right way to be asked.
-    const fn has_accessor_in_this_build(self) -> bool {
-        match self {
-            OperationKind::EcashSend
-            | OperationKind::EcashReceive
-            | OperationKind::LnSend
-            | OperationKind::LnReceive
-            | OperationKind::OnchainSend
-            | OperationKind::OnchainReceive => true,
-            // `as_recovery` lives in `recovery.rs`, behind the off-by-default
-            // `experimental` feature, so whether this build has it is exactly
-            // whether that feature is on.
-            OperationKind::Recovery => cfg!(feature = "experimental"),
-            // Not a kind at all, but this build's failure to read one: there
-            // is no state type to name, so there is no accessor either.
-            OperationKind::Unknown => false,
-        }
-    }
-
     /// The newest state schema version this build can read for this kind.
     ///
     /// Zero for [`Unknown`](OperationKind::Unknown): this build reads no
     /// version of an unknown kind's state. The value is never consulted for
     /// one anyway, because `support_of` refuses such a record on the first of
-    /// the three conditions, before any version is compared.
+    /// the two conditions, before any version is compared.
+    ///
+    /// The match is exhaustive rather than defaulting, even though
+    /// [`OperationKind`] is `#[non_exhaustive]` (which binds only outside this
+    /// crate): a kind added later must state which schema this build reads
+    /// for it, and a compile error is the right way to be asked.
     const fn readable_state_schema(self) -> u32 {
         match self {
             OperationKind::EcashSend
@@ -1180,20 +1117,15 @@ impl OperationKind {
 ///
 /// Kept apart from [`AnyOperation::support`] because this is the part worth
 /// testing: it takes the two values that method reads off the handle and
-/// nothing else, so both halves of the answer — the feature-dependent one and
-/// the schema-dependent one — are checkable in a default build and in an
-/// `--all-features` build without a live operation.
+/// nothing else, so the whole answer is checkable without a live operation.
 ///
-/// The order of the checks is the order of the three conditions on
-/// [`AnyOperation`], and each is a precondition of the next: an unrecognised
-/// discriminator has no kind whose accessor could be looked for, and a kind
-/// with no accessor in this build has no state schema worth comparing.
+/// The order of the checks is the order of the two conditions on
+/// [`AnyOperation`], and the first is a precondition of the second: an
+/// unrecognised discriminator has no kind whose state schema could be
+/// compared.
 fn support_of(kind: OperationKind, raw: &RawOperationKind) -> OperationSupport {
     if matches!(kind, OperationKind::Unknown) {
         return OperationSupport::UnknownKind;
-    }
-    if !kind.has_accessor_in_this_build() {
-        return OperationSupport::NotCompiledIn;
     }
     match raw.schema_version {
         Some(recorded) if recorded > kind.readable_state_schema() => {
@@ -1217,9 +1149,6 @@ fn supported_kind_of(kind: OperationKind, raw: &RawOperationKind) -> Result<Oper
         OperationSupport::Observable => return Ok(kind),
         OperationSupport::UnknownKind => {
             "this build does not recognise that kind of operation".to_owned()
-        }
-        OperationSupport::NotCompiledIn => {
-            format!("this build was compiled without the API for {kind:?} operations")
         }
         OperationSupport::StateSchemaTooNew => format!(
             "its state was written at a newer schema version than this build reads (up to {})",
@@ -1379,22 +1308,16 @@ mod tests {
         assert_eq!(bare.schema_version, None);
     }
 
-    #[test]
-    fn recovery_is_not_unknown() {
-        // A recovery persisted by a build with the experimental feature on
-        // stays nameable by one with it off; the two must not collapse.
-        assert_ne!(OperationKind::Recovery, OperationKind::Unknown);
-    }
-
-    /// Every kind whose accessor is unconditional, in the order
-    /// [`AnyOperation`] declares them.
-    const ALWAYS_ACCESSIBLE: [OperationKind; 6] = [
+    /// Every kind this build knows, in the order [`AnyOperation`] declares
+    /// its accessors.
+    const KNOWN_KINDS: [OperationKind; 7] = [
         OperationKind::EcashSend,
         OperationKind::EcashReceive,
         OperationKind::LnSend,
         OperationKind::LnReceive,
         OperationKind::OnchainSend,
         OperationKind::OnchainReceive,
+        OperationKind::Recovery,
     ];
 
     /// A raw record carrying the given tag and schema version.
@@ -1411,11 +1334,10 @@ mod tests {
     }
 
     #[test]
-    fn the_six_unconditional_accessors_are_the_six_this_build_reports() {
-        // Naming each accessor without calling it: this compiles only in a
-        // build that has it, which is exactly what
-        // `has_accessor_in_this_build` claims about these kinds. The two must
-        // agree, or "supported" is a guess.
+    fn every_known_kind_has_an_accessor() {
+        // Naming each accessor without calling it: this compiles only if the
+        // accessor exists, so a kind added to `KNOWN_KINDS` without one is
+        // caught here rather than reported as supported on a guess.
         let _: fn(&AnyOperation) -> Option<Operation<EcashSendState>> = AnyOperation::as_ecash_send;
         let _: fn(&AnyOperation) -> Option<Operation<EcashReceiveState>> =
             AnyOperation::as_ecash_receive;
@@ -1425,17 +1347,16 @@ mod tests {
             AnyOperation::as_onchain_send;
         let _: fn(&AnyOperation) -> Option<Operation<OnchainReceiveState>> =
             AnyOperation::as_onchain_receive;
-        for kind in ALWAYS_ACCESSIBLE {
-            assert!(
-                kind.has_accessor_in_this_build(),
-                "{kind:?} has an accessor above but does not report one",
-            );
+        let _: fn(&AnyOperation) -> Option<Operation<RecoveryState>> = AnyOperation::as_recovery;
+        // And every one of them is a real kind, never the reading of one.
+        for kind in KNOWN_KINDS {
+            assert_ne!(kind, OperationKind::Unknown);
         }
     }
 
     #[test]
-    fn a_kind_this_build_can_observe_is_supported_at_or_below_its_schema() {
-        for kind in ALWAYS_ACCESSIBLE {
+    fn a_kind_this_build_knows_is_supported_at_or_below_its_schema() {
+        for kind in KNOWN_KINDS {
             for schema_version in [None, Some(0), Some(READABLE_STATE_SCHEMA)] {
                 let raw = recorded("mint_spend_oob", schema_version);
                 assert_eq!(
@@ -1466,11 +1387,10 @@ mod tests {
     #[test]
     fn a_state_schema_newer_than_this_build_reads_is_unsupported() {
         let newer = READABLE_STATE_SCHEMA + 1;
-        for kind in ALWAYS_ACCESSIBLE {
+        for kind in KNOWN_KINDS {
             let raw = recorded("mint_spend_oob", Some(newer));
             // The kind guard alone would have passed this: the discriminator
             // is one this build has always known.
-            assert!(kind.has_accessor_in_this_build());
             assert_eq!(
                 support_of(kind, &raw),
                 OperationSupport::StateSchemaTooNew,
@@ -1515,7 +1435,6 @@ mod tests {
         let reasons = [
             OperationSupport::Observable,
             OperationSupport::UnknownKind,
-            OperationSupport::NotCompiledIn,
             OperationSupport::StateSchemaTooNew,
         ];
         for (index, reason) in reasons.iter().enumerate() {
@@ -1530,62 +1449,6 @@ mod tests {
 
     #[test]
     fn unknown_reads_no_state_schema_at_all() {
-        assert!(!OperationKind::Unknown.has_accessor_in_this_build());
         assert_eq!(OperationKind::Unknown.readable_state_schema(), 0);
-    }
-
-    // Recovery is the one kind whose answer depends on how this crate was
-    // compiled, so it is asserted twice — once per build — and both runs are
-    // part of the gate.
-
-    #[cfg(not(feature = "experimental"))]
-    #[test]
-    fn recovery_is_unsupported_without_the_experimental_feature() {
-        let raw = recorded("recovery", Some(READABLE_STATE_SCHEMA));
-        // Nameable, as the variant's own documentation promises.
-        assert_ne!(OperationKind::Recovery, OperationKind::Unknown);
-        // But not observable: this build has no `as_recovery`.
-        assert!(!OperationKind::Recovery.has_accessor_in_this_build());
-        assert_eq!(
-            support_of(OperationKind::Recovery, &raw),
-            OperationSupport::NotCompiledIn
-        );
-        let err = supported_kind_of(OperationKind::Recovery, &raw)
-            .expect_err("a build with no recovery accessor must not report Recovery as supported");
-        assert_eq!(err.code, ErrorCode::UnsupportedOperation);
-        assert!(err.message.contains("Recovery"));
-        assert!(err.message.contains("compiled without"));
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn recovery_is_supported_with_the_experimental_feature() {
-        // Naming the accessor without calling it: it exists only in this
-        // build, which is what makes the answer below true rather than
-        // hopeful.
-        let _: fn(&AnyOperation) -> Option<Operation<crate::RecoveryState>> =
-            AnyOperation::as_recovery;
-        assert!(OperationKind::Recovery.has_accessor_in_this_build());
-        let raw = recorded("recovery", Some(READABLE_STATE_SCHEMA));
-        assert_eq!(
-            support_of(OperationKind::Recovery, &raw),
-            OperationSupport::Observable
-        );
-        assert_eq!(
-            supported_kind_of(OperationKind::Recovery, &raw).map_err(|e| e.code),
-            Ok(OperationKind::Recovery)
-        );
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn a_recovery_from_a_newer_schema_is_still_unsupported_with_the_feature() {
-        // The two conditions are independent: having the accessor does not
-        // make an unreadable state readable.
-        let raw = recorded("recovery", Some(READABLE_STATE_SCHEMA + 1));
-        assert_eq!(
-            support_of(OperationKind::Recovery, &raw),
-            OperationSupport::StateSchemaTooNew
-        );
     }
 }

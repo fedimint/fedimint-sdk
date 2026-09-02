@@ -435,9 +435,8 @@ pub struct OnchainSendFeeBreakdown {
 /// [`OnchainReceiveDetails::address`]: nothing about a deposit needs to be
 /// kept by the caller in order to be recoverable.
 ///
-/// Read [`Onchain::receive`] before assuming this address is new. It may be
-/// one an earlier call already handed out, and it may be handed out again
-/// until it has been used.
+/// The address is fresh for this operation; [`Onchain::receive`] says what
+/// that promises, and why one address should still go to one payer.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct OnchainReceive {
@@ -456,10 +455,19 @@ pub struct OnchainReceive {
 
 /// The lifecycle of an on-chain withdrawal.
 ///
-/// This maps one-to-one onto upstream `fedimint-wallet-client`'s
-/// `WithdrawState` (`Created`, `Succeeded(Txid)`, `Failed(String)`); the
-/// only change is that the payloads are named fields rather than positional
-/// ones, so they cross a foreign-function boundary as records.
+/// The three variants are the application-level lifecycle — accepted,
+/// broadcast, or did not happen — and both wallet module generations map
+/// onto them:
+///
+/// - The first wallet module's `WithdrawState` (`Created`, `Succeeded(Txid)`,
+///   `Failed(String)`) maps one-to-one; the only change is that the payloads
+///   are named fields rather than positional ones, so they cross a
+///   foreign-function boundary as records.
+/// - The second wallet module's send machine has no separate broadcast
+///   step to observe: its `Funding` is [`Created`](Self::Created), its
+///   `Success(txid)` is [`Succeeded`](Self::Succeeded), and both of its
+///   endings that produce no transaction — `Aborted`, the funding
+///   transaction rejected, and `Failure` — are [`Failed`](Self::Failed).
 ///
 /// The terms the withdrawal was executed on — destination, amount, fee,
 /// total debit — are not here. They belong to what the operation *is*
@@ -592,9 +600,21 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 
 /// The lifecycle of an on-chain deposit.
 ///
-/// This follows upstream `fedimint-wallet-client`'s `DepositStateV2` variant
-/// for variant, but not payload for payload. Upstream's variants are
-/// `WaitingForTransaction`,
+/// The five variants are the application-level lifecycle of a deposit —
+/// nothing seen, seen, confirmed, credited, or could not be credited — and
+/// both wallet module generations map onto them.
+///
+/// Under the second wallet module there is no per-address state machine to
+/// follow: the chain-side phases,
+/// [`WaitingForTransaction`](Self::WaitingForTransaction) through
+/// [`Confirmed`](Self::Confirmed), are the SDK's own observation of the
+/// address, and the module's claim machine — `Funding`, `Success`,
+/// `Aborted` — lands on [`Confirmed`](Self::Confirmed),
+/// [`Claimed`](Self::Claimed) and [`Failed`](Self::Failed).
+///
+/// Under the first, this follows upstream `fedimint-wallet-client`'s
+/// `DepositStateV2` variant for variant, but not payload for payload.
+/// Upstream's variants are `WaitingForTransaction`,
 /// `WaitingForConfirmation { btc_deposited, btc_out_point }`,
 /// `Confirmed { btc_deposited, btc_out_point }`,
 /// `Claimed { btc_deposited, btc_out_point }`, and `Failed(String)` — note
@@ -746,47 +766,60 @@ impl OperationState for OnchainReceiveState {
 /// [`address`](OnchainReceiveDetails::address) is a persisted field, and an
 /// operation id is genuinely enough to re-render the QR code.
 ///
-/// # Why four fields are optional, and what a caller can count on
+/// # Why five fields are optional, and what a caller can count on
 ///
-/// All four are the placement rule's case 3
-/// ([`OperationDetails`](crate::OperationDetails)): a fact that comes into
-/// existence at a transition and is *not* carried by every state after it,
-/// so the state announces it and this record keeps it. It takes that shape
-/// twice over here, for two different reasons:
+/// Each is a fact that may never come to exist, and they fill in as two
+/// groups, at two transitions:
 ///
-/// - [`txid`](OnchainReceiveDetails::txid),
-///   [`gross_deposited`](OnchainReceiveDetails::gross_deposited) and
-///   [`net_credit`](OnchainReceiveDetails::net_credit) are each announced by
-///   a state and dropped by [`Failed`](OnchainReceiveState::Failed), which
-///   can follow a transaction that was already seen and carries nothing but
-///   a reason. A deposit that arrived and then could not be claimed is
-///   precisely the one an application has to be able to describe, so the
-///   record keeps what that state does not.
-/// - [`fee`](OnchainReceiveDetails::fee) and
-///   [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) duplicate
-///   nothing at all: no state carries what the claim cost at any point, so
-///   this record is the only place either can be read and no amount of
-///   watching would recover them.
+/// - [`txid`](OnchainReceiveDetails::txid) and
+///   [`gross_deposited`](OnchainReceiveDetails::gross_deposited) are set
+///   when a transaction is seen, in the write that records
+///   [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation).
+///   They are the placement rule's case 3
+///   ([`OperationDetails`](crate::OperationDetails)): announced by that state
+///   and the two after it, and dropped by
+///   [`Failed`](OnchainReceiveState::Failed), which can follow a transaction
+///   that was already seen and carries nothing but a reason. A deposit that
+///   arrived and then could not be claimed is precisely the one an
+///   application has to be able to describe, so the record keeps what that
+///   state does not.
+/// - [`fee`](OnchainReceiveDetails::fee),
+///   [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) and
+///   [`net_credit`](OnchainReceiveDetails::net_credit) are set when the
+///   claim settles, in the write that records
+///   [`Claimed`](OnchainReceiveState::Claimed). The first two are carried by
+///   no state at any point, so this record is the only place either can be
+///   read and no amount of watching would recover them. The third duplicates
+///   the figure [`Claimed`](OnchainReceiveState::Claimed) carries — that
+///   state is final, so nothing drops it — and is here so that the record
+///   alone states the whole identity below, without a second call to
+///   [`Operation::state`](crate::Operation::state) to complete a receipt.
 ///
 /// The guarantee on all five is the same, and it is what makes them safe to
-/// read at any time: each goes from `None` to `Some` exactly once, in the
-/// same write that records the transition establishing it, and never changes
-/// to a different value and never reverts. So a caller need not order this
-/// call against [`Operation::state`](crate::Operation::state), and reading
-/// the record twice cannot produce two contradictory receipts.
+/// read at any time: each goes from `None` to `Some` **at most once**, in
+/// the same write that records the transition establishing it, and never
+/// changes to a different value and never reverts. So a caller need not
+/// order this call against [`Operation::state`](crate::Operation::state),
+/// and reading the record twice cannot produce two contradictory receipts.
 ///
-/// `None` means "not established yet", never "lost". A deposit still in
+/// `None` means "not established", never "lost" — and a field may stay
+/// `None` for good. A deposit still in
 /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction) has
-/// all five absent, which is simply the truth: nobody has paid.
+/// all five absent, which is simply the truth: nobody has paid. One that
+/// [`Failed`](OnchainReceiveState::Failed) after its transaction was seen
+/// has the first group and never the second: there was no claim, so there
+/// is no claim fee and no credit to report.
 ///
 /// # The aggregate, and the arithmetic these fields satisfy
 ///
 /// [`fee`](OnchainReceiveDetails::fee) is the **aggregate** of everything
 /// claiming the deposit cost, and it is deliberately not the wallet module's
-/// peg-in fee on its own. Claiming a deposit balances the wallet input into
-/// primary-module outputs; the primary module's fees on those outputs, and
-/// the denomination dust the split leaves behind, reduce the credit exactly
-/// as the peg-in fee does. So the identity is:
+/// peg-in fee on its own. A wallet module that sweeps the deposit on chain
+/// before crediting it deducts that network cost from the gross; and
+/// claiming a deposit balances the wallet input into primary-module outputs,
+/// so the primary module's fees on those outputs, and the denomination dust
+/// the split leaves behind, reduce the credit exactly as the peg-in fee
+/// does. So the identity is:
 /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
 /// millisatoshis, less [`fee`](OnchainReceiveDetails::fee), equals
 /// [`net_credit`](OnchainReceiveDetails::net_credit), which is the same
@@ -841,11 +874,13 @@ pub struct OnchainReceiveDetails {
     /// The aggregate of everything the federation charged to bring this
     /// deposit into the balance, once the claim has settled.
     ///
-    /// Not the wallet module's peg-in fee on its own: claiming a deposit
-    /// balances the wallet input into primary-module outputs, and the primary
-    /// module's fees and the denomination dust the split leaves behind reduce
-    /// the credit exactly as the peg-in fee does. This field is the sum of all
-    /// of it, which makes it the figure to read and the figure
+    /// Not the wallet module's peg-in fee on its own: a wallet module that
+    /// sweeps the deposit on chain deducts that network cost from the gross,
+    /// and claiming a deposit balances the wallet input into primary-module
+    /// outputs, so the primary module's fees and the denomination dust the
+    /// split leaves behind reduce the credit exactly as the peg-in fee does.
+    /// This field is the sum of all of it, which makes it the figure to read
+    /// and the figure
     /// [`net_credit`](OnchainReceiveDetails::net_credit) is computed from;
     /// [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) names the
     /// parts.

@@ -55,7 +55,7 @@ jobs:
           cache-workspaces: rust/fedimint-sdk
 
       - name: 'Test'
-        run: cargo test --locked --all-features
+        run: cargo test --locked
 
   check:
     name: 'Run clippy, fmt, docs and wasm'
@@ -82,21 +82,10 @@ jobs:
       - name: 'Check clippy'
         run: cargo clippy --locked --all-targets
 
-      - name: 'Check clippy (all features)'
-        run: cargo clippy --locked --all-targets --all-features
-
       - name: 'Check docs'
-        run: cargo doc --no-deps --all-features --locked
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-      # Default features too: this is what catches an intra-doc link from an
-      # ungated item into one behind `experimental`, which the all-features
-      # run cannot see.
-      - name: 'Check docs (default features)'
         run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
       - name: 'Check wasm'
-        run: cargo check --locked --target wasm32-unknown-unknown --all-features
+        run: cargo check --locked --target wasm32-unknown-unknown

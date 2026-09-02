@@ -323,8 +323,8 @@ impl Sdk {
     ///
     /// # A stale recovery intent does not survive a plain join
     ///
-    /// The experimental seed-recovery entry point persists its intent to
-    /// recover — and the operation id of the first attempt — *before*
+    /// [`Sdk::recover`] persists its intent to recover — and the operation
+    /// id of the first attempt — *before*
     /// asking the underlying client to join, so a failure between those two
     /// writes can leave an intent for a federation that never actually
     /// joined. This call treats such an intent as the leftover it is:
@@ -1365,10 +1365,8 @@ pub enum FederationStatus {
     /// persisted, so reopening lands it back here; only
     /// [`Sdk::forget_federation`] ends an unfinished one, by erasing it.
     ///
-    /// This state only arises when the SDK's recovery API — currently behind
-    /// the off-by-default `experimental` feature — has been used; the
-    /// variant is unconditional so that the set of statuses a binding must
-    /// handle does not change with a cargo feature.
+    /// This state only arises for a federation joined with [`Sdk::recover`];
+    /// one joined with [`Sdk::join`] never enters it.
     Recovering,
     /// Stored and intact, but not running, because the SDK could not or
     /// would not open it.

@@ -41,29 +41,37 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// does not say whether an ecash send reports what the user asked for or what
 /// the mint actually handed out. Those are different numbers.
 ///
-/// One rule, in three clauses:
+/// One rule, in three clauses. All three describe the **terms** of the
+/// transfer the operation set out to make, and they hold for every row
+/// whatever its outcome:
 ///
-/// 1. **`amount` is the counterparty figure** — what the other side received
-///    (outgoing) or sent (incoming). Gross of this wallet's fees, and
-///    *actual* rather than requested.
-/// 2. **`fee` is what this wallet paid** for that transfer: on top of the
-///    counterparty figure when outgoing, out of it when incoming.
-/// 3. **The balance therefore moves by `amount + fee` outgoing, and
-///    `amount - fee` incoming.**
+/// 1. **`amount` is the counterparty figure** of those terms — what the
+///    other side was to receive (outgoing) or to send (incoming). Gross of
+///    this wallet's fees, and as *executed* rather than as requested: an
+///    ecash send reports the notes actually issued, not the amount typed.
+/// 2. **`fee` is what this wallet was charged** on those terms: on top of
+///    the counterparty figure when outgoing, out of it when incoming.
+/// 3. **`direction` is which way the transfer was to move value.**
 ///
-/// A receive row is gross, then: the payer paid `amount`, and the credit that
-/// landed is `amount - fee`. A send row's `amount` is what the payee got, and
-/// the debit was `amount + fee`. No row folds a fee into `amount`, and no row
-/// reports a net figure there.
+/// For a row whose [`status`](ActivityItem::status) is
+/// [`Success`](ActivityStatus::Success) the terms are also what happened:
+/// the counterparty received or paid `amount`, this wallet paid `fee`, and
+/// the balance moved by `amount + fee` outgoing or `amount - fee` incoming.
+/// A successful receive row is gross, then: the payer paid `amount`, and the
+/// credit that landed is `amount - fee`. A successful send row's `amount` is
+/// what the payee got, and the debit was `amount + fee`. No row folds a fee
+/// into `amount`, and no row reports a net figure there. What the numbers
+/// mean for the other outcomes is stated under [The identity describes what
+/// was attempted](ActivityItem#the-identity-describes-what-was-attempted).
 ///
-/// | kind | `amount` — what the counterparty sent or received | `fee` |
+/// | kind | `amount` — the counterparty figure | `fee` |
 /// | --- | --- | --- |
 /// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes actually handed over, which the mint may have rounded **up** from the amount requested | what issuing those notes cost |
 /// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes redeemed | the reissuance fee taken out of it |
 /// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee bound by the executed quote, which is the fee actually charged |
 /// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated — the peg-in fee plus the primary module's fees and denomination dust, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated — the peg-in fee, the network cost of sweeping the deposit where the wallet module charges one, the primary module's fees and denomination dust, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
 /// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
 ///
@@ -75,8 +83,9 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// For the other buckets:
 ///
 /// - [`Refunded`](ActivityStatus::Refunded) and
-///   [`Canceled`](ActivityStatus::Canceled): the transfer did not happen and
-///   the value is back, so the net movement is zero apart from a fee already
+///   [`Canceled`](ActivityStatus::Canceled): the value went out and came
+///   back — a refunded payment's funding returned, a canceled send's notes
+///   reclaimed — so the net movement is zero apart from a fee already
 ///   spent. The fields go on describing the attempt — "1000 sat, refunded" is
 ///   what a list needs to show — and it is the bucket, not the numbers, that
 ///   says the money came back.
@@ -151,8 +160,11 @@ pub struct ActivityItem {
     /// user's own history and unsuitable as evidence of when anything
     /// actually happened.
     pub time: Timestamp,
-    /// What the counterparty sent or received: gross of this wallet's fees,
-    /// and actual rather than requested.
+    /// The counterparty figure of the terms the operation executed on: what
+    /// the other side was to send or receive, gross of this wallet's fees,
+    /// and as executed rather than as requested. For a
+    /// [`Success`](ActivityStatus::Success) row it is also what the other
+    /// side sent or received.
     ///
     /// Which figure that is for each kind, and what it deliberately is not,
     /// is fixed by the table in [What the numbers
@@ -167,13 +179,14 @@ pub struct ActivityItem {
     /// starts `None` and becomes known is written once and never changes
     /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee this wallet paid for the transfer, when it is known.
+    /// The fee this wallet was charged on the terms the operation executed
+    /// on, when it is known.
     ///
     /// Always a separate field from [`ActivityItem::amount`] and never folded
-    /// into it: an outgoing row debited `amount + fee`, an incoming row
-    /// credited `amount - fee`, and a list showing "1000 sat" wants the
-    /// number the user typed or the payee received rather than a
-    /// fee-inclusive total that matches neither.
+    /// into it: a successful outgoing row debited `amount + fee`, a
+    /// successful incoming row credited `amount - fee`, and a list showing
+    /// "1000 sat" wants the number the user typed or the payee received
+    /// rather than a fee-inclusive total that matches neither.
     ///
     /// `None` when the kind has no fee at all, or when the fee is not knowable
     /// yet — an operation still in flight, or an on-chain deposit whose
@@ -181,7 +194,7 @@ pub struct ActivityItem {
     /// `None` are different answers, and a UI should treat them so: the first
     /// says the transfer was free, the second that this row cannot say yet.
     pub fee: Option<Amount>,
-    /// Whether value moved in or out.
+    /// Which way the transfer was to move value: in or out.
     ///
     /// `None` for kinds that have no direction — a recovery, for example,
     /// is neither incoming nor outgoing. This is `Option` rather than a
@@ -189,7 +202,8 @@ pub struct ActivityItem {
     /// direction handles the no-direction case by not drawing an arrow at
     /// all, rather than by drawing a third kind of arrow.
     ///
-    /// It also selects which half of the accounting identity applies:
+    /// It also selects which half of the accounting identity applies to a
+    /// [`Success`](ActivityStatus::Success) row:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) credited `amount - fee`. A row with
     /// no direction has no identity to reconcile, and both figures are
@@ -274,8 +288,8 @@ pub enum Direction {
 /// | [`OnchainSendState::Failed`](crate::OnchainSendState::Failed) | [`Failed`](Self::Failed) |
 /// | [`OnchainReceiveState::Claimed`](crate::OnchainReceiveState::Claimed) | [`Success`](Self::Success) |
 /// | [`OnchainReceiveState::Failed`](crate::OnchainReceiveState::Failed) | [`Failed`](Self::Failed) |
-/// | `RecoveryState::Done` (experimental) | [`Success`](Self::Success) |
-/// | `RecoveryState::Failed` (experimental) | [`Failed`](Self::Failed) |
+/// | [`RecoveryState::Done`](crate::RecoveryState::Done) | [`Success`](Self::Success) |
+/// | [`RecoveryState::Failed`](crate::RecoveryState::Failed) | [`Failed`](Self::Failed) |
 ///
 /// The one placement that is a judgement rather than a reading is
 /// [`LnReceiveState::Expired`](crate::LnReceiveState::Expired). An invoice

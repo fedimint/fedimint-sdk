@@ -8,11 +8,6 @@ description = "High-level Fedimint client SDK: one ergonomic API over fedimint-c
 repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
-[features]
-# Unstable APIs, excluded from the 0.1 stability contract. Currently: recovery
-# (gated on upstream fedimint#8908 / fedimint#8934 and crash-recovery tests).
-experimental = []
-
 [dependencies]
 # Intentionally empty. The skeleton defines the full public API with
 # unimplemented!() bodies; fedimint-* et al. arrive with the implementation.

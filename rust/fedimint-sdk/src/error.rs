@@ -1300,16 +1300,10 @@ pub enum ErrorCode {
     /// configuration changed to drop that module.
     NotSupported,
     /// A persisted operation exists but this build cannot interpret it —
-    /// because of its SDK version, its cargo features, or its module set. The
-    /// operation is still observable (its kind and id are readable) but not
-    /// actionable.
-    ///
-    /// The features clause is not hypothetical: a build without the
-    /// `experimental` feature knows exactly what an
-    /// [`OperationKind::Recovery`](crate::OperationKind::Recovery) record is
-    /// and has no accessor compiled in for it, which is
-    /// [`OperationSupport::NotCompiledIn`](crate::OperationSupport::NotCompiledIn)
-    /// and reaches a caller as this code.
+    /// because of its SDK version or its module set. The operation is still
+    /// observable (its kind and id are readable) but not actionable.
+    /// [`OperationSupport`](crate::OperationSupport) names which of the two
+    /// it was.
     UnsupportedOperation,
     /// Storage already holds a seed and it does not match the mnemonic
     /// supplied to open it. [`ErrorDetails::SeedMismatch`] names the

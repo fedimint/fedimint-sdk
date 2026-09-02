@@ -52,7 +52,8 @@ impl InviteCode {
     /// per-federation call on [`Sdk`](crate::Sdk) takes —
     /// [`federation_status`](crate::Sdk::federation_status) and
     /// [`reopen_federation`](crate::Sdk::reopen_federation) among them, and
-    /// the seed-recovery calls of the `experimental` feature with them. An
+    /// [`recovery_status`](crate::Sdk::recovery_status) and
+    /// [`resume_recovery`](crate::Sdk::resume_recovery) with them. An
     /// application holding only an invite code can therefore find out where
     /// that federation stands *before* joining, and — the case that makes
     /// this accessor necessary rather than convenient — find its way back to

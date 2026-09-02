@@ -79,9 +79,11 @@ impl Lightning {
     /// [`Network::Testnet4`](crate::Network::Testnet4) issues `tb` invoices
     /// of its own. The structured
     /// [`ErrorDetails::NetworkMismatch`](crate::ErrorDetails::NetworkMismatch)
-    /// carries both networks — the federation's as `expected` and the
-    /// invoice's as `actual` — so a caller can name them without parsing the
-    /// message.
+    /// carries the federation's network as `expected`, every network the
+    /// invoice could have been for as `compatible` — one entry for a
+    /// currency that pins the network, two for `tb` — and the currency
+    /// prefix itself as `observed_prefix`, so a caller can name them without
+    /// parsing the message.
     ///
     /// Quoting is the deterministic place for that check: every payment
     /// passes through it, it happens before anything is committed, and the
@@ -262,20 +264,23 @@ impl LnQuote {
     /// to be added afterwards.
     ///
     /// This is the number to show as "you will pay", and it is more than a
-    /// display value: it is **the ceiling execution is authorised not to
-    /// exceed**. [`Lightning::send`] funds the payment for at most this much
-    /// or does not run at all — anything that would push the real debit above
-    /// it means the plan no longer holds, and the answer is
+    /// display value: it is **the debit execution is authorised to make**,
+    /// exactly. [`Lightning::send`] debits this much or does not run at all
+    /// — anything that would make the real debit differ means the plan no
+    /// longer holds, and the answer is
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) with
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
-    /// naming this total and the one the payment would now cost. A larger
-    /// charge against a smaller approval is never an outcome.
+    /// naming this total and the one the payment would now cost. A charge
+    /// that differs from the approval is never an outcome, and the same
+    /// figure is what [`LnSendDetails::total_debited`] then records.
     ///
-    /// The one component that cannot be pinned to the millisatoshi before the
-    /// funding transaction is assembled is denomination dust, which depends on
-    /// the notes actually spent. The quote resolves it upwards, so the bound
-    /// errs in the direction that protects the user: the debit is never more
-    /// than this, and may be a hair less.
+    /// What makes that exact rather than a ceiling is that the quote binds
+    /// the notes that will fund the payment along with everything else.
+    /// Denomination dust depends on which notes are spent, so a quote that
+    /// left note selection to execution could only bound the debit; this
+    /// one fixes the selection, and a selection that no longer holds when
+    /// [`Lightning::send`] runs — a note spent elsewhere in between — is a
+    /// changed quote, not a different debit.
     pub fn total(&self) -> Amount {
         unimplemented!()
     }
@@ -346,9 +351,9 @@ pub struct LnFeeBreakdown {
     /// Nobody charges it and it appears in no fee schedule, but it leaves the
     /// balance and does not come back, so it belongs in the number a user
     /// approves rather than in a footnote. It is also the one component that
-    /// depends on the notes actually spent, which is why
-    /// [`LnQuote::total`] is a bound resolved upwards rather than a
-    /// prediction.
+    /// depends on which notes are spent, which is why the quote binds its
+    /// note selection: that is what lets [`LnQuote::total`] be exact rather
+    /// than a bound.
     pub dust: Amount,
 }
 
@@ -426,16 +431,22 @@ pub struct LnReceive {
 ///
 /// The collapse maps funding-in-progress states onto
 /// [`Created`](Self::Created) and [`Funded`](Self::Funded), all the
-/// preimage-obtained states onto [`Success`](Self::Success), all the
-/// refund-completed states onto [`Refunded`](Self::Refunded), and the
-/// error and refund-failure states onto [`Failed`](Self::Failed).
+/// preimage-obtained states onto [`Success`](Self::Success), everything
+/// that ends with the funds spendable again onto
+/// [`Refunded`](Self::Refunded), and only a refund that itself failed, or
+/// an error nobody resolved, onto [`Failed`](Self::Failed). That last line
+/// is drawn by what happened to the money, not by what upstream named the
+/// state — the distinction this enum's own variants make is that
+/// [`Refunded`](Self::Refunded) means the funds are safe and
+/// [`Failed`](Self::Failed) means the operation did not resolve into a
+/// clean return.
 ///
 /// The preimage those success states carry is normalised on the way
 /// through: v1 reports it as a hex string and lnv2 reports it as raw bytes,
 /// and both arrive at a caller as one [`Preimage`].
 ///
-/// Two upstream variants fall outside those four buckets, and are called
-/// out rather than left to be discovered:
+/// Four upstream variants fall outside a one-to-one reading of those
+/// buckets, and are called out rather than left to be discovered:
 ///
 /// - **`LnPayState::Canceled`.** The payment was called off before the
 ///   gateway took it on, so the funds never left and no refund was needed.
@@ -447,6 +458,21 @@ pub struct LnReceive {
 ///   [`Operation::request_cancel`](crate::Operation::request_cancel) for
 ///   out-of-band ecash), so a distinct variant would name something no
 ///   application could ever have asked for.
+/// - **`InternalPayState::FundingFailed`**, and **lnv2's `Failure` when it
+///   follows `Funding` directly.** Both are the federation rejecting the
+///   funding transaction: the notes were never spent, so nothing left the
+///   balance and nothing needs refunding. Safe funds are
+///   [`Refunded`](Self::Refunded), as for `Canceled` above, and not
+///   [`Failed`](Self::Failed) — the operation did resolve cleanly, into no
+///   effect. lnv2 reports this `Failure` and the one below through the same
+///   public variant, so the implementation keys on whether the payment had
+///   reached [`Funded`](Self::Funded) — a `Failure` before it is a
+///   rejection, one after it is a refund that failed — and persists that
+///   phase, exactly as [`LnReceiveState`] requires of a receive.
+/// - **lnv2's `Failure` after `Refunding`.** The refund transaction was
+///   rejected and no preimage turned up either, so the money is neither
+///   paid nor back: [`Failed`](Self::Failed), the case that variant exists
+///   for.
 /// - **lnv2's `SendOperationState::Refunding`.** A refund that is *in
 ///   progress*, not one that completed — the money is neither paid nor back
 ///   yet. It is therefore **not final**, and maps onto
@@ -671,22 +697,23 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// [`Claimed`](Self::Claimed), which would assert the funds are spendable when
 /// they are not.
 ///
-/// # The v1 mapping is keyed on the reason *and* the phase
+/// # The v1 mapping is keyed on the reason, and for one reason on the phase
 ///
 /// v1's cancellation reason is **typed, not free-form**: upstream's
 /// `LnReceiveState::Canceled` carries a `LightningReceiveError`, whose variants
 /// are `Timeout`, `Rejected`, `ClaimRejected` and `InvalidPreimage`. No string
 /// is parsed anywhere in this mapping, and none needs to be.
 ///
-/// The typed variant is not sufficient on its own, though, because `Rejected`
-/// is emitted at two entirely different moments: for an offer the federation
-/// refused before anybody paid, and again after a claim had been accepted but
-/// the primary-module outputs failed to produce notes. The first means nothing
-/// happened; the second means somebody paid and the money did not arrive. So
-/// the mapping key is the pair **(typed reason, phase the operation had
-/// reached)**, where the phase that matters is whether the receive had ever
-/// reached [`Funded`](Self::Funded) — that is, whether a payment had been
-/// confirmed for it.
+/// Three of the four reasons map on their own. The fourth, `Rejected`, is
+/// emitted at two entirely different moments: for the transaction that
+/// registers the invoice being refused before anybody paid, and again after
+/// a claim had been accepted but the primary-module outputs failed to
+/// produce notes. The first means nothing happened; the second means
+/// somebody paid and the money did not arrive. For that one reason the
+/// mapping key is the pair **(reason, phase the operation had reached)**,
+/// where the phase that matters is whether the receive had ever reached
+/// [`Funded`](Self::Funded) — that is, whether a payment had been confirmed
+/// for it.
 ///
 /// | upstream v1 | phase reached | here |
 /// | --- | --- | --- |
@@ -695,34 +722,34 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// | `Funded`, `AwaitingFunds` | — | [`Funded`](Self::Funded) |
 /// | `Claimed` | — | [`Claimed`](Self::Claimed) |
 /// | `Canceled { Timeout }` | any | [`Expired`](Self::Expired) |
+/// | `Canceled { ClaimRejected }` | any | [`Failed`](Self::Failed) |
+/// | `Canceled { InvalidPreimage }` | any | [`Failed`](Self::Failed) |
 /// | `Canceled { Rejected }` | before [`Funded`](Self::Funded) | [`Canceled`](Self::Canceled) |
 /// | `Canceled { Rejected }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
-/// | `Canceled { ClaimRejected }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
-/// | `Canceled { InvalidPreimage }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
-/// | `Canceled { ClaimRejected \| InvalidPreimage }` | before [`Funded`](Self::Funded) | [`Canceled`](Self::Canceled) |
-///
-/// The last row is a fallback rather than an expected path — a claim cannot be
-/// rejected before there is a payment to claim — and it is listed so that the
-/// mapping is total on the pair rather than partial with a hole for an
-/// upstream ordering nobody has seen yet.
 ///
 /// Three rules generate the whole table, and they are what an implementation
 /// should encode:
 ///
 /// 1. `Timeout` is [`Expired`](Self::Expired). Nobody paid within the
 ///    invoice's lifetime; that is the benign ending.
-/// 2. Any other reason reaching a receive that had got to
-///    [`Funded`](Self::Funded) is [`Failed`](Self::Failed). A payment was
-///    confirmed and did not become spendable notes — including the `Rejected`
-///    that arrives after a claim was accepted and the primary outputs failed,
-///    which earlier revisions of this documentation described as a benign
-///    pre-payment cancellation. It is the opposite of benign.
-/// 3. Any other reason reaching a receive that never got past
-///    [`WaitingForPayment`](Self::WaitingForPayment) is
-///    [`Canceled`](Self::Canceled) — a genuine refusal before payment, with
-///    nothing owed to anyone.
+/// 2. `ClaimRejected` and `InvalidPreimage` are [`Failed`](Self::Failed),
+///    whatever phase the operation shows. Both presuppose a payment — a
+///    claim is only attempted for a funded contract, and a preimage is only
+///    decrypted for one — so each means somebody paid and the money did not
+///    become spendable notes. The phase cannot be consulted for them, and
+///    must not be: upstream reports its own `Funded` only once the claim
+///    transaction has been accepted, so both of these reasons arrive
+///    *before* it, on a receive still showing
+///    [`WaitingForPayment`](Self::WaitingForPayment). Reading that as a
+///    pre-payment cancellation would be exactly wrong.
+/// 3. `Rejected` is [`Canceled`](Self::Canceled) on a receive that never got
+///    past [`WaitingForPayment`](Self::WaitingForPayment) — a genuine refusal
+///    before payment, with nothing owed to anyone — and
+///    [`Failed`](Self::Failed) on one that had reached
+///    [`Funded`](Self::Funded), where it is the claim's primary outputs
+///    failing after a payment was confirmed.
 ///
-/// **This obliges the implementation to persist the phase.** The terminal
+/// **Rule 3 obliges the implementation to persist the phase.** The terminal
 /// upstream event does not say which moment it belongs to, and after a restart
 /// the SDK is not the process that watched the operation, so "did this receive
 /// ever reach [`Funded`](Self::Funded)?" must be durable rather than
@@ -730,6 +757,11 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// indistinguishable, which is precisely the bug this mapping fixes. The
 /// amounts on [`LnReceiveDetails`] are not a substitute: they answer what the
 /// receive was for, not how far it got.
+///
+/// None of this makes the SDK retry a claim. It maps the terminal events
+/// upstream emits; a claim the lightning client retries on its own emits no
+/// terminal event while it does so, and the receive stays
+/// [`Funded`](Self::Funded) until it does.
 ///
 /// lnv2 needs none of this arbitration, because it draws the distinction
 /// itself: its `ReceiveOperationState` has explicit pending and claiming

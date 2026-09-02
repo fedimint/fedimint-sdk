@@ -1,34 +1,15 @@
-//! Seed-based wallet recovery. **Experimental.**
-//!
-//! Everything in this module is behind the crate's off-by-default
-//! `experimental` cargo feature and is excluded from the 0.1 stability
-//! contract: names, shapes, and semantics here may change in a patch
-//! release. Build with `--features experimental` to get it, and treat
-//! anything built on it as provisional.
-//!
-//! # Why it is gated
+//! Seed-based wallet recovery.
 //!
 //! Recovery is the one operation whose failure mode is silent fund loss: a
 //! rescan that stops early, or that double-applies a checkpoint after a
-//! crash, produces a wallet that looks fine and is not. Two pieces of
-//! upstream work this SDK depends on for a correct implementation are still
-//! open — [fedimint/fedimint#8908](https://github.com/fedimint/fedimint/issues/8908)
-//! and [fedimint/fedimint#8934](https://github.com/fedimint/fedimint/issues/8934) —
-//! and beyond them the SDK owes its own crash-at-every-checkpoint
-//! idempotency tests: kill the process at each persisted checkpoint of a
+//! crash, produces a wallet that looks fine and is not. The contract in this
+//! module is written against that: a recovery either completes, and the
+//! wallet is restored, or it has not completed, and the wallet is not
+//! spendable. An implementation owes crash-at-every-checkpoint idempotency
+//! tests for it — kill the process at each persisted checkpoint of a
 //! recovery, restart, and assert the recovered wallet is identical to one
-//! recovered without interruption. The feature stays off until both the
-//! upstream fixes have landed and those tests pass, so that the default
-//! build never offers an API it cannot yet stand behind.
-//!
-//! The second of those issues is worth naming precisely here, because it
-//! bounds what [`RecoveryState::Done`] can honestly claim: LNv2 receives are
-//! not rediscovered by a restore, so a rescan can run to completion and
-//! still leave the wallet missing state it once had. `Done` therefore means
-//! "the rescan finished", which is the strongest completion signal upstream
-//! can currently give — not "every past receive is back". That gap is one of
-//! the two reasons this module is not part of the stability contract, and
-//! the SDK does not paper over it.
+//! recovered without interruption — and nothing here is relaxed to make
+//! those easier to pass.
 //!
 //! # The recovery lock
 //!
@@ -220,14 +201,11 @@
 //! erased. There is intentionally no call here to stop or cancel a running
 //! recovery, so the erase is the only mechanism that can end one.
 
-use crate::{
-    AnyOperation, Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk,
-};
+use crate::{Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk};
 
 impl Sdk {
     /// Joins a federation and restores this seed's wallet in it from the
-    /// federation's backup plus a rescan. **Experimental**, see the module
-    /// documentation.
+    /// federation's backup plus a rescan.
     ///
     /// Use this instead of [`Sdk::join`] when the instance was built from a
     /// mnemonic the user restored and the federation may already hold funds
@@ -313,7 +291,7 @@ impl Sdk {
     }
 
     /// Resumes, or retries, the recovery of a federation this instance
-    /// already holds. **Experimental**, see the module documentation.
+    /// already holds.
     ///
     /// This is the entry point [`Sdk::recover`] cannot be. By the time a
     /// recovery needs resuming the federation is joined, and `recover`
@@ -388,9 +366,8 @@ impl Sdk {
     /// this call deliberately does not do the second: turning a plainly
     /// joined federation into a recovering one would re-derive its client
     /// state from a backup while local state derived from that same seed
-    /// already exists, which is the double-application hazard
-    /// [fedimint#8908](https://github.com/fedimint/fedimint/issues/8908)
-    /// covers and this feature is gated on. A wallet that should have been
+    /// already exists, which is a double-application hazard no rescan can
+    /// be trusted to survive. A wallet that should have been
     /// recovered and was joined plainly instead has to take the erase path
     /// in the module documentation. (Reporting a well-formed id that this
     /// call does not apply to as `InvalidInput` matches
@@ -433,7 +410,7 @@ impl Sdk {
     }
 
     /// Where this federation's recovery stands, or `None` if it never had
-    /// one. **Experimental**, see the module documentation.
+    /// one.
     ///
     /// A read, not a request: it starts nothing, resumes nothing, contacts
     /// no guardian, and leaves the federation exactly as it was. It exists
@@ -476,45 +453,7 @@ impl Sdk {
     }
 }
 
-impl AnyOperation {
-    /// Recovers a typed handle if this is a seed recovery, and `None`
-    /// otherwise. **Experimental**, see the module documentation.
-    ///
-    /// This is the seventh accessor on
-    /// [`AnyOperation`](crate::AnyOperation), and the only feature-gated
-    /// one: it returns [`Operation<RecoveryState>`](crate::Operation), and
-    /// [`RecoveryState`] exists only behind the `experimental` feature. It
-    /// is defined here, next to [`Sdk::recover`], for exactly the reason
-    /// that method is — an inherent method may be added to a stable type
-    /// from a gated module, so the default build sees the other six
-    /// accessors and nothing else.
-    ///
-    /// Without it a recovery would be the one operation an application
-    /// could not reattach to after a restart. A process that dies mid-rescan
-    /// leaves a persisted recovery running; on the next build,
-    /// [`Federation::operation`](crate::Federation::operation) finds it and
-    /// [`kind`](crate::AnyOperation::kind) reports
-    /// [`OperationKind::Recovery`](crate::OperationKind::Recovery), but
-    /// without this accessor there would be no way to observe its progress —
-    /// the application would have to infer the state by attempting a spend
-    /// and catching [`Recovering`](crate::ErrorCode::Recovering), which is
-    /// precisely the error-driven discovery this crate rejects.
-    ///
-    /// This path needs the operation id, so it is the one to use when the
-    /// application kept it. When it did not, [`Sdk::recovery_status`] and
-    /// [`Sdk::resume_recovery`] reach the same recovery from the
-    /// [`FederationId`] alone; the module documentation lays out all three
-    /// routes.
-    ///
-    /// Returns `None` for every other kind, like the accessors it sits
-    /// beside.
-    pub fn as_recovery(&self) -> Option<Operation<RecoveryState>> {
-        unimplemented!()
-    }
-}
-
 /// A federation that is being recovered, plus the operation doing it.
-/// **Experimental**, see the module documentation.
 ///
 /// Returned by [`Sdk::recover`], which joins the federation and starts the
 /// first attempt, and by [`Sdk::resume_recovery`], which hands back the
@@ -567,8 +506,7 @@ pub struct Recovery {
     pub progress: Operation<RecoveryState>,
 }
 
-/// How a recovery is going. **Experimental**, see the module
-/// documentation.
+/// How a recovery is going.
 ///
 /// Deliberately coarse. Upstream recovery does not currently expose a
 /// meaningful completion fraction, and a made-up percentage would be worse
@@ -602,11 +540,9 @@ pub enum RecoveryState {
     /// other joined federation and the recovery lock is released.
     ///
     /// This is the only state that releases the lock, and the only one for
-    /// which [`is_complete`](Self::is_complete) is true. It says the rescan
-    /// finished — see the module documentation on
-    /// [fedimint#8934](https://github.com/fedimint/fedimint/issues/8934)
-    /// for why that is not quite the same as "nothing is missing", and why
-    /// this feature is gated while that is open.
+    /// which [`is_complete`](Self::is_complete) is true. It says the wallet
+    /// is restored: everything the seed owned in this federation that a
+    /// backup and a rescan can find has been found.
     Done,
     /// Final for this attempt, and the wallet is **not** recovered.
     ///
@@ -677,7 +613,7 @@ impl OperationState for RecoveryState {
     }
 }
 
-#[cfg(all(test, feature = "experimental"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
