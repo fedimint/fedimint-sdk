@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    Amount, Bolt11Invoice, GatewayId, Operation, OperationState, Preimage, Result, Timestamp,
+    Amount, Bolt11Invoice, GatewayId, NetMovement, Operation, OperationState, Preimage, Result,
+    Timestamp,
 };
 
 /// The lightning facade for one federation, backed by its lightning
@@ -1145,12 +1146,15 @@ pub enum LnReceiveState {
     /// Final: the amount is in the spendable balance.
     ///
     /// The amount that landed is
-    /// [`LnReceiveDetails::realized_net_credit`], which is `Some` by the time
-    /// this state is reached: the invoice's face value less the fee the
-    /// accepted claim actually charged. It is neither the face value nor the
-    /// estimate the invoice was issued against
-    /// ([`LnReceiveDetails::expected_net_credit`]) — those two can differ from
-    /// it, and only the realized figure says what the balance did.
+    /// [`LnReceiveDetails::realized_movement`], which is `Some` by the time
+    /// this state is reached: the invoice's face value less the whole
+    /// receive-side fee, in signed terms. It is neither the face value nor
+    /// the estimate the invoice was issued against
+    /// ([`LnReceiveDetails::expected_net_credit`]) — those two can differ
+    /// from it, and only the realized figure says what the balance did —
+    /// and for a receive too small to pay for its own claim it is a debit,
+    /// which "the amount is in the spendable balance" then overstates: the
+    /// record, not this state's name, is the receipt.
     Claimed,
     /// Final: the receive was refused **before** anyone paid it — for example
     /// because the gateway withdrew the offer or the federation rejected it.
@@ -1167,7 +1171,7 @@ pub enum LnReceiveState {
     /// Final: the invoice's expiry passed without it being paid.
     ///
     /// Nobody paid, so nothing was claimed and no fee was incurred:
-    /// [`LnReceiveDetails::realized_net_credit`] and
+    /// [`LnReceiveDetails::realized_movement`] and
     /// [`LnReceiveDetails::realized_fee`] both read zero here, while the
     /// quoted terms still show what the invoice would have credited.
     Expired,
@@ -1266,11 +1270,15 @@ pub enum LnReceiveState {
     ///   confirmed and the claim did not produce the notes, with no reclaim
     ///   call to fall back on. Upstream's state does not say whether the
     ///   claim was rejected or accepted and then failed in finalization;
-    ///   the record does. The fee is `Some`: the accepted claim's charge, or
-    ///   zero for a rejected one, read from the same per-transaction
-    ///   records. The credit is a *measurement*, because the second mint
-    ///   module commits each note it verifies before a later one can fail,
-    ///   so a failed issuance can leave a partial credit permanently in the
+    ///   the record does. The fee is `Some`, and it always includes the
+    ///   gateway's share — the contract it funded was the invoice less that
+    ///   share, which the gateway kept the moment the contract was funded —
+    ///   plus the accepted claim's charge, read from the per-transaction
+    ///   records, or nothing more for a rejected one. The movement is a
+    ///   *measurement*, because the second mint module commits each note it
+    ///   verifies before a later one can fail — reissued pre-existing notes
+    ///   among them, so it can be a debit — and a failed issuance can leave
+    ///   a partial credit permanently in the
     ///   balance: `Some`, possibly zero, counted as [the *Measuring*
     ///   section][measuring] of
     ///   [`EcashReceiveDetails`](crate::EcashReceiveDetails) describes,
@@ -1343,7 +1351,7 @@ impl OperationState for LnReceiveState {
 ///   application shows as "you will receive". Plain fields, readable from the
 ///   moment the operation exists.
 /// - **The realized half** — [`realized_fee`](LnReceiveDetails::realized_fee),
-///   [`realized_net_credit`](LnReceiveDetails::realized_net_credit) — is what
+///   [`realized_movement`](LnReceiveDetails::realized_movement) — is what
 ///   the balance actually did. `Option`, absent until the receive settles, then
 ///   written once and never revised.
 ///
@@ -1365,25 +1373,37 @@ impl OperationState for LnReceiveState {
 /// invoice_amount == expected_net_credit + quoted_fee
 /// ```
 ///
-/// The realized half satisfies the same relation, but **only for a receive
-/// that was actually claimed**:
+/// The realized half satisfies the same relation, in signed terms and **only
+/// for a receive that was actually claimed**:
 ///
 /// ```text
-/// invoice_amount == realized_net_credit + realized_fee   // Claimed only
+/// realized_movement == NetMovement::gross_less_fee(invoice_amount, realized_fee)   // Claimed only
 /// ```
 ///
+/// Signed, because the movement is a [`NetMovement`] and not an amount: the
+/// primary module balances the claim transaction by sweeping existing notes
+/// in and reissuing them beside the incoming value, charging per output, so a
+/// receive too small to cover its own claim is completed from the existing
+/// balance and the balance ends *lower* — a debit, which the identity still
+/// describes exactly. And `realized_fee` is the whole receive-side fee, the
+/// gateway's share included, which is what makes the identity hold at all:
+/// under the second lightning module the contract the gateway funds is the
+/// invoice *less* the gateway's fee, so a fee that counted only the claim
+/// transaction's charge would miss the identity by exactly that share.
+///
 /// A [`Failed`](LnReceiveState::Failed) receive satisfies an inequality
-/// instead, `realized_net_credit + realized_fee <= invoice_amount`. What the
-/// shortfall means depends on the road, per that state's docs. Where a claim
-/// was accepted it is principal that never materialised — spent from the
-/// contract by a claim whose notes did not all finalize — and it is the loss
-/// a receipt names. Where no claim was accepted both figures are zero and the
-/// shortfall is the whole invoice, which is not a loss to subtract: the payer
-/// was made whole (invalid preimage), the value went to whoever spent the
-/// contract (exhausted), or it is still locked in the contract (a rejected
+/// instead: `realized_movement` is at most `gross_less_fee(invoice_amount,
+/// realized_fee)` ([`NetMovement::is_at_most`]). What the shortfall means
+/// depends on the road, per that state's docs. Where a claim was accepted it
+/// is principal that never materialised — outputs of a claim whose notes did
+/// not all finalize, reissued pre-existing value among them — and it is the
+/// loss a receipt names. Where no claim was accepted the shortfall is the
+/// contract's value, which is not a loss to subtract: the payer was made
+/// whole (invalid preimage), the value went to whoever spent the contract
+/// (exhausted), or it is still locked in the contract (a rejected
 /// second-generation claim). In no case is it a fee, and it is folded into
-/// neither figure; the inequality is what keeps the subtraction from
-/// underflowing.
+/// neither figure; signed arithmetic is what keeps the subtraction
+/// well-defined.
 ///
 /// Both halves are recorded in full rather than as two numbers and a
 /// subtraction, so the convention is *observable* rather than assumed: a caller
@@ -1393,10 +1413,10 @@ impl OperationState for LnReceiveState {
 ///
 /// ## What the realized fields read at each ending
 ///
-/// | state | `realized_fee` | `realized_net_credit` |
+/// | state | `realized_fee` | `realized_movement` |
 /// | --- | --- | --- |
 /// | [`Created`](LnReceiveState::Created), [`WaitingForPayment`](LnReceiveState::WaitingForPayment), [`Funded`](LnReceiveState::Funded), [`ClaimRetrying`](LnReceiveState::ClaimRetrying) | `None` | `None` |
-/// | [`Claimed`](LnReceiveState::Claimed) | `Some` — what the accepted claim charged | `Some` — the invoice amount less that |
+/// | [`Claimed`](LnReceiveState::Claimed) | `Some` — the gateway's share plus what the accepted claim charged | `Some` — the invoice amount less that, in signed terms: a credit, or a debit for a receive too small to pay for its claim |
 /// | [`Expired`](LnReceiveState::Expired) | `Some(0)` | `Some(0)` |
 /// | [`Canceled`](LnReceiveState::Canceled) | `Some(0)` | `Some(0)` |
 /// | [`Failed`](LnReceiveState::Failed), invalid preimage | `Some(0)` — no claim was ever attempted | `Some(0)` — the payer was made whole, nothing landed |
@@ -1478,42 +1498,54 @@ pub struct LnReceiveDetails {
     /// It is what the wallet expects, not what it got: an invoice that expires
     /// unpaid still has an `expected_net_credit`, and it credited nothing. The
     /// figure that says what the balance did is
-    /// [`realized_net_credit`](LnReceiveDetails::realized_net_credit).
+    /// [`realized_movement`](LnReceiveDetails::realized_movement).
     pub expected_net_credit: Amount,
     /// Realized half. The receive-side fee actually charged, once the receive
     /// has settled.
     ///
-    /// `Some` from the fees the accepted claim recorded — which may differ from
-    /// [`quoted_fee`](LnReceiveDetails::quoted_fee), because the federation's
+    /// `Some` once a payment has settled, and it has two parts. The
+    /// gateway's share: under the second lightning module the contract the
+    /// gateway funds is the invoice *less* its fee, and that difference is
+    /// read from upstream's own record of the receive — the federation's
+    /// per-transaction fee accounting deliberately excludes what a service
+    /// provider keeps — while under the first the contract holds the full
+    /// invoice and the share is zero. And the federation's share: the fees
+    /// the accepted claim recorded, which may differ from what
+    /// [`quoted_fee`](LnReceiveDetails::quoted_fee) estimated because the
     /// input, output, change and dust costs depend on the inventory at claim
-    /// time rather than at invoice time. `Some(0)` for an invoice that expired
-    /// or was refused before payment: no claim was assembled, so nothing was
-    /// charged.
+    /// time rather than at invoice time. `Some(0)` for an invoice that
+    /// expired or was refused before payment: nobody paid, so neither share
+    /// exists.
     ///
     /// `None` only while the receive is still running. Every
     /// [`Failed`](LnReceiveState::Failed) road establishes it, per that
-    /// state's docs: a known `Some(0)` wherever no claim of ours was
-    /// accepted — an invalid preimage, where this wallet never attempted
-    /// one; a first-generation contract exhausted with every attempt
-    /// rejected; a second-generation claim the federation rejected — and
-    /// the accepted claim's own charge wherever a claim *was* accepted,
-    /// whether or not its notes then materialised —
-    /// acceptance is what incurs the charge, and upstream records every
-    /// transaction's fee at submission, keyed by the transaction and readable
-    /// through the operation, so it is never lost to a failure downstream.
-    /// Never zero as a stand-in for unknown, and never unknown at an ending.
+    /// state's docs. Where nobody's payment survived — an invalid preimage,
+    /// where the payer was made whole — it is a known `Some(0)`. Where the
+    /// payer *did* pay and no claim of ours was accepted — a first-generation
+    /// contract exhausted with every attempt rejected, a second-generation
+    /// claim the federation rejected — it is the gateway's share alone,
+    /// which the gateway kept the moment the contract was funded, and zero
+    /// only under the first module or a gateway that charged nothing. And
+    /// wherever a claim *was* accepted, whether or not its notes then
+    /// materialised, it is both shares: acceptance is what incurs the
+    /// federation's, and upstream records every transaction's fee at
+    /// submission, keyed by the transaction and readable through the
+    /// operation, so it is never lost to a failure downstream. Never zero as
+    /// a stand-in for unknown, and never unknown at an ending.
     pub realized_fee: Option<Amount>,
-    /// Realized half. What the balance actually gained.
+    /// Realized half. What the balance actually did — a credit, or a debit.
     ///
     /// `Some` and equal to [`invoice_amount`](LnReceiveDetails::invoice_amount)
-    /// less [`realized_fee`](LnReceiveDetails::realized_fee) for a receive that
-    /// reached [`Claimed`](LnReceiveState::Claimed) — the same value that state
-    /// refers to, so a receipt built from the record and one built from the
-    /// state cannot disagree.
+    /// less [`realized_fee`](LnReceiveDetails::realized_fee), in signed terms,
+    /// for a receive that reached [`Claimed`](LnReceiveState::Claimed) — the
+    /// same value that state refers to, so a receipt built from the record
+    /// and one built from the state cannot disagree. A [`NetMovement`] rather
+    /// than an amount because the claim can cost more than the invoice was
+    /// worth (the type's docs say how), and then the balance fell.
     ///
-    /// `Some(0)` for an [`Expired`](LnReceiveState::Expired) or
+    /// [`NetMovement::ZERO`] for an [`Expired`](LnReceiveState::Expired) or
     /// [`Canceled`](LnReceiveState::Canceled) invoice — never paid, so the
-    /// balance provably did not rise — and for three
+    /// balance provably did not move — and for three
     /// [`Failed`](LnReceiveState::Failed) roads: the invalid preimage, where
     /// no claim was ever attempted; the first generation's exhausted
     /// contract, where reconciliation found no child of ours that landed;
@@ -1521,9 +1553,10 @@ pub struct LnReceiveDetails {
     /// notes, where the first mint module's finalizer provably inserted
     /// nothing. For the second generation's failure the answer is a
     /// *measurement*: a failed issuance under the second mint module can
-    /// leave part of the notes permanently in the balance, so this reports
-    /// the reconciled credit — possibly zero, possibly not — counted as
-    /// [the *Measuring* section][measuring] of
+    /// leave part of the bundle permanently in the balance and lose the
+    /// rest, reissued pre-existing value included, so this reports the
+    /// reconciled movement — possibly zero, possibly a credit, possibly a
+    /// debit — counted as [the *Measuring* section][measuring] of
     /// [`EcashReceiveDetails`](crate::EcashReceiveDetails) describes. In no
     /// ending may
     /// [`expected_net_credit`](LnReceiveDetails::expected_net_credit) be
@@ -1533,7 +1566,7 @@ pub struct LnReceiveDetails {
     /// and never doubles as a zero.
     ///
     /// [measuring]: crate::EcashReceiveDetails#measuring-what-a-failed-issuance-left-behind
-    pub realized_net_credit: Option<Amount>,
+    pub realized_movement: Option<NetMovement>,
     /// The gateway that agreed to take the payment in, if there was one.
     ///
     /// `None` means no gateway took part — not that the gateway is unknown.
@@ -1618,7 +1651,7 @@ mod tests {
             quoted_fee: Amount::from_msats(500),
             expected_net_credit: Amount::from_msats(49_500),
             realized_fee: None,
-            realized_net_credit: None,
+            realized_movement: None,
             gateway_id: Some(gateway()),
             expires_at: Timestamp::from_epoch_millis(1_700_000_600_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
@@ -1864,28 +1897,52 @@ mod tests {
         let details = receive_details();
         assert!(!LnReceiveState::WaitingForPayment.is_final());
         assert_eq!(details.realized_fee, None);
-        assert_eq!(details.realized_net_credit, None);
+        assert_eq!(details.realized_movement, None);
     }
 
     #[test]
-    fn ln_receive_details_realized_net_credit_is_the_invoice_amount_less_the_fee() {
+    fn ln_receive_details_realized_movement_is_the_invoice_amount_less_the_fee() {
         // Claimed against a different inventory than the quote saw: the real
         // fee is 620 msat where 500 was quoted, so the credit is smaller than
         // the invoice promised.
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(620)),
-            realized_net_credit: Some(Amount::from_msats(49_380)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(49_380))),
             ..receive_details()
         };
         assert_eq!(
-            details
-                .realized_net_credit
-                .and_then(|credit| credit.checked_add(details.realized_fee.expect("fee"))),
-            Some(details.invoice_amount),
+            details.realized_movement,
+            Some(NetMovement::gross_less_fee(
+                details.invoice_amount,
+                details.realized_fee.expect("fee"),
+            )),
         );
         assert_ne!(details.realized_fee, Some(details.quoted_fee));
-        assert!(details.realized_net_credit < Some(details.expected_net_credit));
+        let landed = details.realized_movement.expect("claimed").credited();
+        assert!(landed < details.expected_net_credit);
         assert!(LnReceiveState::Claimed.is_final());
+    }
+
+    #[test]
+    fn ln_receive_details_a_tiny_receive_can_move_the_balance_down() {
+        // The claim's transaction cost more — the gateway's share plus the
+        // per-output fees on the notes the primary module reissued alongside
+        // the incoming value — than the invoice was worth, so the balance
+        // fell. A debit, and the success identity still holds in signed
+        // terms.
+        let details = LnReceiveDetails {
+            realized_fee: Some(Amount::from_msats(52_000)),
+            realized_movement: Some(NetMovement::Debit(Amount::from_msats(2_000))),
+            ..receive_details()
+        };
+        assert_eq!(
+            details.realized_movement,
+            Some(NetMovement::gross_less_fee(
+                details.invoice_amount,
+                details.realized_fee.expect("fee"),
+            )),
+        );
+        assert_eq!(shortfall_of(&details), 0);
     }
 
     #[test]
@@ -1894,16 +1951,16 @@ mod tests {
         // that is a measured zero rather than an absent figure.
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(0)),
-            realized_net_credit: Some(Amount::from_msats(0)),
+            realized_movement: Some(NetMovement::ZERO),
             ..receive_details()
         };
-        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         assert_eq!(details.realized_fee, Some(Amount::from_msats(0)));
         // The quoted half still says what the invoice would have credited.
         assert_eq!(details.expected_net_credit, Amount::from_msats(49_500));
         assert_ne!(
-            details.realized_net_credit,
-            Some(details.expected_net_credit)
+            details.realized_movement,
+            Some(NetMovement::Credit(details.expected_net_credit))
         );
         assert!(LnReceiveState::Expired.is_final());
     }
@@ -1912,10 +1969,10 @@ mod tests {
     fn ln_receive_details_realize_nothing_for_a_refusal_before_payment() {
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(0)),
-            realized_net_credit: Some(Amount::from_msats(0)),
+            realized_movement: Some(NetMovement::ZERO),
             ..receive_details()
         };
-        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         assert!(
             LnReceiveState::Canceled {
                 reason: "gateway withdrew the offer".to_owned(),
@@ -1931,26 +1988,29 @@ mod tests {
         // measurements, and both are provably zero.
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(0)),
-            realized_net_credit: Some(Amount::from_msats(0)),
+            realized_movement: Some(NetMovement::ZERO),
             ..receive_details()
         };
-        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         assert_eq!(details.realized_fee, Some(Amount::from_msats(0)));
         assert!(LnReceiveState::Failed.is_final());
     }
 
-    /// The shortfall a failed receive's inequality names: the invoice amount
-    /// less what landed and what was charged is the principal that never
-    /// materialised.
-    fn shortfall_of(details: &LnReceiveDetails) -> Amount {
-        let accounted = details
-            .realized_net_credit
-            .and_then(|credit| credit.checked_add(details.realized_fee?))
-            .expect("a settled receive has both figures");
-        details
-            .invoice_amount
-            .checked_sub(accounted)
-            .expect("the invariant keeps the subtraction from underflowing")
+    /// A movement as a signed millisatoshi count, for the arithmetic a signed
+    /// identity needs.
+    fn signed(movement: NetMovement) -> i128 {
+        i128::from(movement.credited().msats()) - i128::from(movement.debited().msats())
+    }
+
+    /// The shortfall a failed receive's inequality names: what came in less
+    /// what was charged, less what the balance actually did, is the value
+    /// that never became this wallet's.
+    fn shortfall_of(details: &LnReceiveDetails) -> i128 {
+        let fee = details.realized_fee.expect("a settled receive has a fee");
+        let movement = details
+            .realized_movement
+            .expect("a settled receive has a movement");
+        signed(NetMovement::gross_less_fee(details.invoice_amount, fee)) - signed(movement)
     }
 
     #[test]
@@ -1961,14 +2021,14 @@ mod tests {
         // landed, provably, and the cost is known.
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(480)),
-            realized_net_credit: Some(Amount::from_msats(0)),
+            realized_movement: Some(NetMovement::ZERO),
             ..receive_details()
         };
-        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         assert!(details.realized_fee > Some(Amount::from_msats(0)));
         // What the payer paid, less the fee, is principal that never
         // materialised — reported by neither figure, and not a fee.
-        assert_eq!(shortfall_of(&details), Amount::from_msats(49_520));
+        assert_eq!(shortfall_of(&details), 49_520);
         assert!(LnReceiveState::Failed.is_final());
     }
 
@@ -1980,16 +2040,17 @@ mod tests {
         // known alongside it.
         let details = LnReceiveDetails {
             realized_fee: Some(Amount::from_msats(480)),
-            realized_net_credit: Some(Amount::from_msats(700)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(700))),
             ..receive_details()
         };
-        assert!(details.realized_net_credit > Some(Amount::from_msats(0)));
+        let landed = details.realized_movement.expect("settled").credited();
+        assert!(landed > Amount::from_msats(0));
         assert!(
-            details.realized_net_credit < Some(details.expected_net_credit),
+            landed < details.expected_net_credit,
             "a partial credit is less than the receive expected to land"
         );
         assert!(details.realized_fee.is_some());
-        assert_eq!(shortfall_of(&details), Amount::from_msats(48_820));
+        assert_eq!(shortfall_of(&details), 48_820);
         assert!(LnReceiveState::Failed.is_final());
     }
 

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp, Txid};
+use crate::{Address, Amount, NetMovement, Operation, OperationState, Result, Sats, Timestamp, Txid};
 
 /// The on-chain facade for one federation, backed by its wallet module.
 ///
@@ -31,7 +31,7 @@ use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp,
 ///   [`OnchainSendDetails::quoted_total_debited`],
 ///   [`OnchainSendDetails::realized_total_debited`],
 ///   [`OnchainReceiveState::Claimed`],
-///   [`OnchainReceiveDetails::realized_net_credit`]). A peg-out's cost is
+///   [`OnchainReceiveDetails::realized_movement`]). A peg-out's cost is
 ///   not just the chain fee for the wallet output: it also covers funding
 ///   that output from the primary (mint) module and the change and dust
 ///   that funding leaves behind. Nor is a peg-in's cost only the wallet
@@ -1019,7 +1019,7 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// [`Failed`](Self::Failed), which carries only a diagnostic reason even
 /// though a deposit can fail after its transaction was seen. That is what
 /// [`OnchainReceiveDetails`] is for: the address, the transaction, the gross
-/// amount, the realized fee and the net credit are all on the details record
+/// amount, the realized fee and the movement are all on the details record
 /// too, and between that record and the current state an application never
 /// needs to have seen an earlier one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1103,9 +1103,10 @@ pub enum OnchainReceiveState {
         /// The gross amount that arrived on chain, before anything the
         /// federation charged to claim it.
         gross_deposited: Sats,
-        /// The amount actually credited to the balance: `gross_deposited`
-        /// less the aggregate of every federation-side cost of claiming the
-        /// deposit.
+        /// What the claim did to the balance: `gross_deposited` less the
+        /// aggregate of every federation-side cost of claiming the deposit,
+        /// in signed terms — a credit, or a debit when the claim cost more
+        /// than the deposit was worth.
         ///
         /// Computed by the SDK — upstream reports only the gross figure —
         /// from the fees the federation recorded against the accepted claim
@@ -1115,17 +1116,17 @@ pub enum OnchainReceiveState {
         /// [`OnchainReceiveDetails::realized_fee`] is the aggregate it is
         /// computed from and
         /// [`OnchainReceiveDetails::realized_fee_breakdown`] names the parts.
-        /// Denominated in millisatoshis, because those fees are, so the
-        /// credit need not be a whole number of satoshis.
+        /// Carries millisatoshis, because those fees are, so the movement
+        /// need not be a whole number of satoshis.
         ///
         /// This is the number the balance moved by, and it is the same value
-        /// as [`OnchainReceiveDetails::realized_net_credit`]. Being a state
+        /// as [`OnchainReceiveDetails::realized_movement`]. Being a state
         /// this deposit actually reached, it is a realized figure by nature —
         /// a deposit has no quoted terms, because there is no quote for one.
-        /// Zero, never a negative, for the claim the second wallet module's
-        /// scanner completes from the balance at a net loss; the record says
-        /// how much that drew.
-        net_credit: Amount,
+        /// A debit for the claim the second wallet module's scanner
+        /// completes from the balance at a net loss, of exactly what it
+        /// drew; [`NetMovement`] says why a receive can read that way.
+        movement: NetMovement,
     },
     /// Final: the deposit could not be claimed, and no further attempt will
     /// be made.
@@ -1164,7 +1165,7 @@ pub enum OnchainReceiveState {
     /// accepted shape the credit is not assumed lost outright: the second
     /// mint module commits each note it verifies before a later one fails,
     /// so a failed finalization can leave a *partial* credit permanently in
-    /// the balance — [`OnchainReceiveDetails::realized_net_credit`] reports
+    /// the balance — [`OnchainReceiveDetails::realized_movement`] reports
     /// the measured figure, counted as [the *Measuring* section][measuring]
     /// of [`EcashReceiveDetails`](crate::EcashReceiveDetails) describes. In
     /// the published first mint module an accepted claim's notes either all
@@ -1245,7 +1246,7 @@ impl OperationState for OnchainReceiveState {
 ///   duplicate nothing at all: no state carries what the claim cost at any
 ///   point, so this record is the only place either can be read and no amount
 ///   of watching would recover them.
-/// - [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
+/// - [`realized_movement`](OnchainReceiveDetails::realized_movement) is
 ///   the one duplication worth arguing about, and it is deliberate rather
 ///   than case 3. [`Claimed`](OnchainReceiveState::Claimed) is final and
 ///   sticky, so by the rule's case 2 the credit could have lived on that
@@ -1293,37 +1294,42 @@ impl OperationState for OnchainReceiveState {
 /// omits it.
 ///
 /// So the identity, for a deposit that reached
-/// [`Claimed`](OnchainReceiveState::Claimed), is:
+/// [`Claimed`](OnchainReceiveState::Claimed), is signed:
+/// [`realized_movement`](OnchainReceiveDetails::realized_movement) equals
+/// [`NetMovement::gross_less_fee`](crate::NetMovement::gross_less_fee) of
 /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
-/// millisatoshis, less
-/// [`realized_fee`](OnchainReceiveDetails::realized_fee), equals
-/// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit),
-/// which is the same value that state reports. It is **not** gross less a
+/// millisatoshis and [`realized_fee`](OnchainReceiveDetails::realized_fee),
+/// and it is the same value that state reports. It is **not** gross less a
 /// peg-in fee. An earlier draft of this record documented it that way, and
 /// that subtraction does not in general equal the balance movement, which is
 /// why the field was widened rather than re-explained.
 ///
-/// With one bound: the credit cannot go below zero. Under the second wallet
-/// module the scanner completes a claim from the balance when the remainder
-/// after the sweep fee cannot cover the processing fee — [`Onchain::receive`]
-/// explains why the SDK cannot veto that — and such a deposit reaches
-/// [`Claimed`](OnchainReceiveState::Claimed) with a fee *above* its gross.
-/// The identity then reads `realized_net_credit == 0`, and the excess —
-/// `realized_fee` less `gross_deposited` — is what the claim drew from the
-/// existing balance: a cost the receipt must show, derivable from two
-/// recorded figures by a subtraction that cannot underflow whenever the
-/// credit reads zero.
+/// Signed, because a claim can cost more than the deposit was worth and the
+/// balance then *falls*. Under the second wallet module the scanner completes
+/// a claim from the balance when the remainder after the sweep fee cannot
+/// cover the processing fee — [`Onchain::receive`] explains why the SDK
+/// cannot veto that — and under either module the primary module balances
+/// the claim by sweeping existing notes in and reissuing them beside the
+/// incoming value, charging per output. Such a deposit reaches
+/// [`Claimed`](OnchainReceiveState::Claimed) with a fee *above* its gross,
+/// and the identity reads as a debit of the excess: what the claim drew
+/// from the existing balance, which is a cost the receipt must show and
+/// which the movement states directly rather than leaving a zero to be
+/// explained.
 ///
-/// A deposit that [`Failed`](OnchainReceiveState::Failed) satisfies only the
-/// inequality `realized_net_credit + realized_fee <= gross_deposited`. Where
-/// a claim was accepted and its notes did not all finalize, the accepted
+/// A deposit that [`Failed`](OnchainReceiveState::Failed) satisfies only an
+/// inequality, again signed: `realized_movement` is at most `gross_less_fee`
+/// of the same two figures
+/// ([`NetMovement::is_at_most`](crate::NetMovement::is_at_most)). Where a
+/// claim was accepted and its notes did not all finalize, the accepted
 /// transaction's fee is unchanged by the failure while only some of its
 /// outputs became spendable, so the shortfall is principal that never
-/// materialised — not a fee, and folded into neither figure. Where no claim
-/// was ever accepted, both figures are zero and the shortfall is the whole
-/// deposit, still sitting unclaimed on chain. Either way the subtraction a
-/// receipt makes to name the loss cannot underflow, which is what the
-/// inequality is for.
+/// materialised — reissued pre-existing value among it, which is why the
+/// movement can be a debit here too — not a fee, and folded into neither
+/// figure. Where no claim was ever accepted, both figures are zero and the
+/// shortfall is the whole deposit, still sitting unclaimed on chain. Either
+/// way the subtraction a receipt makes to name the loss is well-defined in
+/// signed arithmetic, which is what the inequality is for.
 ///
 /// The aggregate is authoritative and is the figure to read;
 /// [`realized_fee_breakdown`](OnchainReceiveDetails::realized_fee_breakdown)
@@ -1383,7 +1389,7 @@ pub struct OnchainReceiveDetails {
     /// ([`network_claim`](OnchainReceiveFeeBreakdown::network_claim)).
     /// This field is the sum of all of it, which makes it the figure to read
     /// and the figure
-    /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit) is
+    /// [`realized_movement`](OnchainReceiveDetails::realized_movement) is
     /// computed from;
     /// [`realized_fee_breakdown`](OnchainReceiveDetails::realized_fee_breakdown)
     /// names the parts.
@@ -1400,7 +1406,7 @@ pub struct OnchainReceiveDetails {
     /// became spendable. The accepted aggregate on such a failure is the
     /// record telling the truth about a cost with little or no credit to
     /// show for it — how much credit is
-    /// [`realized_net_credit`](OnchainReceiveDetails::realized_net_credit)'s
+    /// [`realized_movement`](OnchainReceiveDetails::realized_movement)'s
     /// question, per [`Failed`](OnchainReceiveState::Failed).
     /// Millisatoshi-denominated, like every other fee in this facade.
     pub realized_fee: Option<Amount>,
@@ -1419,28 +1425,29 @@ pub struct OnchainReceiveDetails {
     /// [`OnchainReceiveFeeBreakdown`] for why a caller should not re-derive
     /// it by summing these.
     pub realized_fee_breakdown: Option<OnchainReceiveFeeBreakdown>,
-    /// **Realized.** The amount credited to the balance. For a deposit that
-    /// was claimed,
+    /// **Realized.** What the balance actually did — a credit, or a debit.
+    /// For a deposit that was claimed,
     /// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) in
     /// millisatoshis less
-    /// [`realized_fee`](OnchainReceiveDetails::realized_fee) — the aggregate,
-    /// not a peg-in fee alone.
+    /// [`realized_fee`](OnchainReceiveDetails::realized_fee) in signed terms
+    /// — the aggregate, not a peg-in fee alone.
     ///
     /// `None` until the deposit settles. For a claim that completes it
-    /// equals the [`Claimed`](OnchainReceiveState::Claimed) state's own net
+    /// equals the [`Claimed`](OnchainReceiveState::Claimed) state's own
     /// figure — the same value in both places, so a receipt built from the
-    /// record and one built from the state cannot disagree — and reads zero,
-    /// never a negative, for a claim whose fee exceeded the gross; the type's
-    /// documentation says how the excess is read. For a deposit
-    /// that [`Failed`](OnchainReceiveState::Failed) it is a measurement,
-    /// never the identity: `Some(0)` where no claim was accepted, and where
-    /// one was, the credit the partial note finalization left behind —
-    /// possibly zero, possibly not, per that state's docs — which sits
-    /// below gross less fee by the principal that never materialised. An
-    /// [`Amount`](crate::Amount) for the same reason the state's figure is
-    /// one: the fees deducted are millisatoshi-denominated, so the credit
-    /// need not be a whole number of satoshis.
-    pub realized_net_credit: Option<Amount>,
+    /// record and one built from the state cannot disagree — and it is a
+    /// debit, of exactly what the claim drew from the existing balance, for
+    /// a claim whose fee exceeded the gross; the type's documentation says
+    /// how that happens. For a deposit that
+    /// [`Failed`](OnchainReceiveState::Failed) it is a measurement, never
+    /// the identity: [`NetMovement::ZERO`] where no claim was accepted, and
+    /// where one was, the movement the partial note finalization left behind
+    /// — a credit, zero, or a debit, per that state's docs — which sits at or
+    /// below gross less fee by the principal that never materialised. It
+    /// carries an [`Amount`](crate::Amount) for the same reason the state's
+    /// figure does: the fees deducted are millisatoshi-denominated, so the
+    /// movement need not be a whole number of satoshis.
+    pub realized_movement: Option<NetMovement>,
     /// When the deposit address was allocated, by this device's clock.
     ///
     /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time).
@@ -1487,7 +1494,7 @@ impl crate::operation::DetailedOperationState for OnchainReceiveState {
 /// name one that did not exist, and a caller that had hard-coded the sum of
 /// the fields it knew about would quietly start understating what the deposit
 /// cost. And the aggregate is the figure
-/// [`OnchainReceiveDetails::realized_net_credit`] was actually computed from,
+/// [`OnchainReceiveDetails::realized_movement`] was actually computed from,
 /// so it is the only one guaranteed to reconcile with the balance movement.
 ///
 /// So: aggregate for arithmetic, breakdown for explanation.
@@ -1706,7 +1713,7 @@ mod tests {
             OnchainReceiveState::Claimed {
                 txid: a_txid(),
                 gross_deposited: Sats::from_sats(100_000),
-                net_credit: Amount::from_msats(99_998_500),
+                movement: NetMovement::Credit(Amount::from_msats(99_998_500)),
             }
             .is_final()
         );
@@ -1729,21 +1736,21 @@ mod tests {
         let state = OnchainReceiveState::Claimed {
             txid: a_txid(),
             gross_deposited: Sats::from_sats(100_000),
-            net_credit: Amount::from_msats(99_998_500),
+            movement: NetMovement::Credit(Amount::from_msats(99_998_500)),
         };
         match state {
             OnchainReceiveState::Claimed {
                 txid,
                 gross_deposited,
-                net_credit,
+                movement,
             } => {
                 assert_eq!(txid, a_txid());
                 assert_eq!(gross_deposited, Sats::from_sats(100_000));
                 // An aggregate fee of 1500 msat leaves a credit that is not
-                // a whole number of satoshis, which is why this field is an
-                // `Amount`: as `Sats` it could only have been wrong.
-                assert_eq!(net_credit, Amount::from_msats(99_998_500));
-                assert_eq!(net_credit.to_sats_exact(), None);
+                // a whole number of satoshis, which is why the movement
+                // carries an `Amount`: as `Sats` it could only have been wrong.
+                assert_eq!(movement, NetMovement::Credit(Amount::from_msats(99_998_500)));
+                assert_eq!(movement.credited().to_sats_exact(), None);
             }
             _ => unreachable!("constructed as Claimed"),
         }
@@ -1840,11 +1847,12 @@ mod tests {
         let gross = Sats::from_sats(100_000);
         let breakdown = a_receive_breakdown();
         let fee = aggregate_of(&breakdown);
-        let net = gross
-            .to_amount()
-            .expect("100 000 sat is representable in msat")
-            .checked_sub(fee)
-            .expect("the fee is smaller than the deposit");
+        let net = NetMovement::gross_less_fee(
+            gross
+                .to_amount()
+                .expect("100 000 sat is representable in msat"),
+            fee,
+        );
 
         let waiting = OnchainReceiveDetails {
             address: an_address(),
@@ -1852,21 +1860,21 @@ mod tests {
             gross_deposited: None,
             realized_fee: None,
             realized_fee_breakdown: None,
-            realized_net_credit: None,
+            realized_movement: None,
             created_at: Timestamp::from_epoch_millis(1),
         };
         // Nothing is known before a transaction is seen, and that is not a
         // failure to record anything.
         assert_eq!(waiting.txid, None);
         assert_eq!(waiting.realized_fee, None);
-        assert_eq!(waiting.realized_net_credit, None);
+        assert_eq!(waiting.realized_movement, None);
 
         let claimed = OnchainReceiveDetails {
             txid: Some(a_txid()),
             gross_deposited: Some(gross),
             realized_fee: Some(fee),
             realized_fee_breakdown: Some(breakdown),
-            realized_net_credit: Some(net),
+            realized_movement: Some(net),
             ..waiting.clone()
         };
         // The fields that were already fixed are untouched by the fill-in.
@@ -1883,17 +1891,17 @@ mod tests {
         let state = OnchainReceiveState::Claimed {
             txid: a_txid(),
             gross_deposited: gross,
-            net_credit: net,
+            movement: net,
         };
         match state {
             OnchainReceiveState::Claimed {
                 txid,
                 gross_deposited,
-                net_credit,
+                movement,
             } => {
                 assert_eq!(claimed.txid, Some(txid));
                 assert_eq!(claimed.gross_deposited, Some(gross_deposited));
-                assert_eq!(claimed.realized_net_credit, Some(net_credit));
+                assert_eq!(claimed.realized_movement, Some(movement));
             }
             _ => unreachable!("constructed as Claimed"),
         }
@@ -1914,23 +1922,21 @@ mod tests {
         assert_eq!(aggregate, Amount::from_msats(4_067));
         assert!(aggregate > breakdown.peg_in);
 
-        let net = gross_msats
-            .checked_sub(aggregate)
-            .expect("the fee is smaller than the deposit");
+        let net = NetMovement::gross_less_fee(gross_msats, aggregate);
         let claimed = OnchainReceiveDetails {
             address: an_address(),
             txid: Some(a_txid()),
             gross_deposited: Some(gross),
             realized_fee: Some(aggregate),
             realized_fee_breakdown: Some(breakdown.clone()),
-            realized_net_credit: Some(net),
+            realized_movement: Some(net),
             created_at: Timestamp::from_epoch_millis(1),
         };
 
         // The identity this record documents.
         assert_eq!(
-            claimed.realized_net_credit,
-            Some(Amount::from_msats(99_995_933))
+            claimed.realized_movement,
+            Some(NetMovement::Credit(Amount::from_msats(99_995_933)))
         );
         // And the identity it explicitly does not: `gross - peg_in` is a
         // different, larger number, which is the whole reason the field is
@@ -1938,28 +1944,34 @@ mod tests {
         let peg_in_only = gross_msats
             .checked_sub(breakdown.peg_in)
             .expect("the peg-in fee is smaller than the deposit");
-        assert_ne!(Some(peg_in_only), claimed.realized_net_credit);
-        assert!(Some(peg_in_only) > claimed.realized_net_credit);
-        // The credit is not a whole number of satoshis, which is why it is an
-        // `Amount`.
-        assert_eq!(net.to_sats_exact(), None);
+        let landed = claimed.realized_movement.expect("claimed").credited();
+        assert_ne!(peg_in_only, landed);
+        assert!(peg_in_only > landed);
+        // The credit is not a whole number of satoshis, which is why the
+        // movement carries an `Amount`.
+        assert_eq!(landed.to_sats_exact(), None);
     }
 
-    /// The shortfall a failed deposit's inequality names: what arrived, less
-    /// what landed and what was charged, is the principal that never became
-    /// this wallet's.
-    fn shortfall_of(details: &OnchainReceiveDetails) -> Amount {
-        let accounted = details
-            .realized_net_credit
-            .and_then(|credit| credit.checked_add(details.realized_fee?))
-            .expect("a settled deposit has both figures");
-        details
+    /// A movement as a signed millisatoshi count, for the arithmetic a signed
+    /// identity needs.
+    fn signed(movement: NetMovement) -> i128 {
+        i128::from(movement.credited().msats()) - i128::from(movement.debited().msats())
+    }
+
+    /// The shortfall a failed deposit's inequality names: what arrived less
+    /// what was charged, less what the balance actually did, is the value
+    /// that never became this wallet's.
+    fn shortfall_of(details: &OnchainReceiveDetails) -> i128 {
+        let gross = details
             .gross_deposited
             .expect("a settled deposit was seen")
             .to_amount()
-            .expect("representable in msat")
-            .checked_sub(accounted)
-            .expect("the invariant keeps the subtraction from underflowing")
+            .expect("representable in msat");
+        let fee = details.realized_fee.expect("a settled deposit has a fee");
+        let movement = details
+            .realized_movement
+            .expect("a settled deposit has a movement");
+        signed(NetMovement::gross_less_fee(gross, fee)) - signed(movement)
     }
 
     /// A deposit that failed after its transaction was seen without any claim
@@ -1980,21 +1992,21 @@ mod tests {
                 primary_module: nothing,
                 dust: nothing,
             }),
-            realized_net_credit: Some(nothing),
+            realized_movement: Some(NetMovement::ZERO),
             created_at: Timestamp::from_epoch_millis(1),
         };
         assert_eq!(details.txid, Some(a_txid()));
         assert_eq!(details.gross_deposited, Some(Sats::from_sats(100_000)));
         // Zero is not absence: the deposit settled, and this is the answer.
         assert_eq!(details.realized_fee, Some(nothing));
-        assert_eq!(details.realized_net_credit, Some(nothing));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         let breakdown = details
             .realized_fee_breakdown
             .as_ref()
             .expect("set with the fee");
         assert_eq!(aggregate_of(breakdown), nothing);
         // The whole deposit is the shortfall: it is still on chain, unclaimed.
-        assert_eq!(shortfall_of(&details), Amount::from_msats(100_000_000));
+        assert_eq!(shortfall_of(&details), 100_000_000);
     }
 
     /// A deposit whose claim was accepted — the aggregate fee charged in full
@@ -2011,27 +2023,27 @@ mod tests {
             gross_deposited: Some(Sats::from_sats(100_000)),
             realized_fee: Some(fee),
             realized_fee_breakdown: Some(breakdown),
-            realized_net_credit: Some(Amount::from_msats(64_000_000)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(64_000_000))),
             created_at: Timestamp::from_epoch_millis(1),
         };
         // The fee is the accepted transaction's, unchanged by the failure.
         assert_eq!(details.realized_fee, Some(Amount::from_msats(4_067)));
-        // The credit is below what the identity would give, by the outputs
+        // The movement is below what the identity would give, by the outputs
         // that never became notes — which is not a fee.
-        let identity = Amount::from_msats(100_000_000)
-            .checked_sub(fee)
-            .expect("the fee is smaller than the deposit");
-        assert!(details.realized_net_credit < Some(identity));
-        assert_eq!(shortfall_of(&details), Amount::from_msats(35_995_933));
+        let identity = NetMovement::gross_less_fee(Amount::from_msats(100_000_000), fee);
+        let movement = details.realized_movement.expect("settled");
+        assert_ne!(movement, identity);
+        assert!(movement.is_at_most(identity));
+        assert_eq!(shortfall_of(&details), 35_995_933);
     }
 
     /// A deposit the second wallet module's scanner claimed at a net loss:
     /// 300 sat arrived, the sweep fee took 250 of them, and the fixed
     /// processing fee exceeded the 50 that remained, so the claim drew the
-    /// rest from the balance. The credit is zero, not negative, and the
-    /// excess is readable from the two recorded figures.
+    /// rest from the balance. The movement is a debit, and the success
+    /// identity holds in signed terms.
     #[test]
-    fn receive_details_a_claim_at_a_loss_credits_zero_and_records_the_excess() {
+    fn receive_details_a_claim_at_a_loss_is_a_debit() {
         let gross = Sats::from_sats(300);
         let breakdown = OnchainReceiveFeeBreakdown {
             peg_in: Amount::from_msats(100_000),
@@ -2046,17 +2058,21 @@ mod tests {
             gross_deposited: Some(gross),
             realized_fee: Some(fee),
             realized_fee_breakdown: Some(breakdown),
-            realized_net_credit: Some(Amount::from_msats(0)),
+            realized_movement: Some(NetMovement::Debit(Amount::from_msats(50_000))),
             created_at: Timestamp::from_epoch_millis(1),
         };
         let gross_msats = gross.to_amount().expect("300 sat is representable in msat");
         assert!(fee > gross_msats);
-        assert_eq!(details.realized_net_credit, Some(Amount::from_msats(0)));
-        // What the claim drew from the balance.
         assert_eq!(
-            fee.checked_sub(gross_msats),
-            Some(Amount::from_msats(50_000))
+            details.realized_movement,
+            Some(NetMovement::gross_less_fee(gross_msats, fee))
         );
+        // Nothing was credited; what the claim drew from the balance is the
+        // debit.
+        let movement = details.realized_movement.expect("claimed");
+        assert_eq!(movement.credited(), Amount::from_msats(0));
+        assert_eq!(movement.debited(), Amount::from_msats(50_000));
+        assert_eq!(shortfall_of(&details), 0);
     }
 
     #[test]
@@ -2082,7 +2098,7 @@ mod tests {
             gross_deposited: None,
             realized_fee: None,
             realized_fee_breakdown: None,
-            realized_net_credit: None,
+            realized_movement: None,
             created_at: Timestamp::from_epoch_millis(0),
         };
         assert_eq!(round_trip_details::<OnchainSendState>(send.clone()), send);

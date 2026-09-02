@@ -54,10 +54,12 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///    movement.** They are what the operation was executed on and what the
 ///    user approved. What the balance finally did — how much a refund or a
 ///    reclaim actually gave back, what an accepted transaction actually
-///    charged — is recorded on the operation's own details record, not here.
-///    The one exception is an on-chain deposit, whose costs no quote or fee
-///    schedule predicts up front: its row reports the observed gross and the
-///    realized claim fee, per the table below.
+///    charged, whether a receive ended up a credit or a debit — is recorded
+///    on the operation's own details record, not here. An on-chain deposit,
+///    whose costs no quote or fee schedule predicts up front, reports the
+///    observed gross and the realized claim fee instead, per the table
+///    below; but even those two do not reconcile to the movement, which
+///    that record alone can state.
 ///
 /// A receive row is gross, then: the payer paid `amount`, and the credit
 /// expected to land is `amount - fee`. A send row's `amount` is what the
@@ -78,10 +80,13 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// ## The identity describes the attempt, and a return costs money
 ///
 /// A row's numbers describe the transfer the operation set out to make, on
-/// the terms it was quoted — every kind but an on-chain deposit, whose
-/// numbers are the realized ones and the one pair that does reconcile. Every
-/// universal claim in this section reads with that row carved out.
-/// [`Success`](ActivityStatus::Success) on
+/// the terms it was quoted — or, for an on-chain deposit, the gross that
+/// arrived and the fee its claim was charged. No row's pair reconciles with
+/// the balance, that one included: a receive's realized movement is a
+/// [`NetMovement`](crate::NetMovement) that can be a partial credit, or a
+/// debit when the claim cost more than the deposit was worth, and neither is
+/// `amount - fee` — an unsigned subtraction that would not even be defined
+/// for the debit. [`Success`](ActivityStatus::Success) on
 /// [`status`](ActivityItem::status) says that transfer completed as intended
 /// — not that these two numbers are what the balance did. A quote is not a
 /// ceiling, so even a successful send's realized debit can come out either
@@ -158,7 +163,7 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// Its `fee` is not. The federation-side costs of an on-chain operation are
 /// quoted in millisatoshis and can carry sub-satoshi precision, so `fee`
-/// here — and a deposit's net credit — may not divide by 1000. That is why
+/// here — and a deposit's movement — may not divide by 1000. That is why
 /// the on-chain quote reports its amount in `Sats` but its fee and total in
 /// `Amount`, and it is the reason to read a fee rather than derive one.
 ///
@@ -269,11 +274,14 @@ pub struct ActivityItem {
     /// It also selects which half of the accounting identity applies:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) was to credit `amount - fee` — in
-    /// both cases for the transfer as attempted and, the deposit row's
-    /// realized figures excepted, never a claim about what the balance
-    /// finally did, which the operation's details record holds even for a
-    /// [`Success`](ActivityStatus::Success) row. A row with no
-    /// direction has no identity to reconcile, and both figures are `None`.
+    /// both cases for the transfer as attempted, and never a claim about
+    /// what the balance finally did, which the operation's details record
+    /// holds even for a [`Success`](ActivityStatus::Success) row. The
+    /// direction is the transfer's, not the movement's: an incoming row
+    /// whose claim cost more than it brought in stays
+    /// [`Incoming`](Direction::Incoming) while its record shows a debit.
+    /// A row with no direction has no identity to reconcile, and both
+    /// figures are `None`.
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
     pub status: ActivityStatus,

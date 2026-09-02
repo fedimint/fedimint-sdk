@@ -31,7 +31,7 @@ mod preimage;
 mod timestamp;
 
 pub use address::Address;
-pub use amount::{Amount, Sats};
+pub use amount::{Amount, NetMovement, Sats};
 pub use ids::{Cursor, FederationId, GatewayId, OperationId, Txid};
 pub use invite::{FederationPreview, InviteCode};
 pub use invoice::Bolt11Invoice;

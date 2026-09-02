@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Amount, Notes, Operation, OperationState, Result, Timestamp};
+use crate::{Amount, NetMovement, Notes, Operation, OperationState, Result, Timestamp};
 
 /// The ecash facade for one federation, backed by its mint module.
 ///
@@ -884,8 +884,20 @@ impl OperationState for EcashSendState {
 /// acceptance to its fee and its materialised outputs — the latter counted
 /// as [the *Measuring* section][measuring] describes — and read the absence
 /// of a correlated operation as proof that nothing was submitted (see
-/// [`Ecash::send`]). A funding can take more than one accepted reissue, as
-/// `realized_total_debited` explains, so the figures are chain-wide:
+/// [`Ecash::send`]). The chain the reconciliation follows is the whole of
+/// it. A funding can take more than one accepted reissue, as
+/// `realized_total_debited` explains; and a *rejected* reissue is not the
+/// end of the chain either, because the input machine upstream attached to
+/// the notes reacts to the rejection exactly as it does for a receive (see
+/// [`EcashReceiveState`]) — submitting a refund of the same notes, note by
+/// note if the bundle is rejected again under the first mint module — and
+/// those refunds can be accepted, pay fees and materialise outputs, racing
+/// the observation of the rejection. So the send stays at
+/// [`Funding`](EcashSendState::Funding) until the correlated upstream
+/// operation has no machine still running and every transaction submitted
+/// under its id has resolved, and only then are the figures written,
+/// aggregated over every accepted transaction of that chain, refund children
+/// included. The figures are chain-wide:
 ///
 /// - `realized_total_debited` is the **net** decrease, as it is everywhere:
 ///   the inputs the accepted funding transactions consumed, less the outputs
@@ -905,8 +917,9 @@ impl OperationState for EcashSendState {
 ///   receipt leads with, and it is the one subtraction this record leaves to
 ///   the reader, because under this invariant it cannot underflow.
 ///
-/// A funding that never committed, or whose every reissue was rejected,
-/// writes the trio as zeros, the movement that did not happen. Which
+/// A funding that never committed, or whose every transaction — reissues
+/// and the refunds their rejection triggered alike — was rejected, writes
+/// the trio as zeros, the movement that did not happen. Which
 /// generation can leave the other shape is worth knowing: in the published
 /// first mint module an accepted reissue's notes either all finalize or the
 /// finalization never completes — its finalizer has no failure path for a
@@ -1216,7 +1229,7 @@ pub enum EcashReceiveState {
     /// Not necessarily nothing landed. A note-by-note refund under the first
     /// mint module, or a partial finalization under the second, can leave
     /// part of the value permanently in the balance, and
-    /// [`EcashReceiveDetails::realized_net_credit`] reports the measured
+    /// [`EcashReceiveDetails::realized_movement`] reports the measured
     /// figure rather than a presumed zero.
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
@@ -1277,19 +1290,31 @@ impl OperationState for EcashReceiveState {
 /// # Invariants
 ///
 /// - `expected_net_credit == notes_value - expected_fee`. The estimate is
-///   internally consistent: the fee comes *out of* the notes rather than
-///   being charged on top of them, which is why a receive nets down where a
-///   send totals up.
+///   internally consistent: the fee it predicts comes *out of* the notes
+///   rather than being charged on top of them, which is why a receive nets
+///   down where a send totals up. It is an estimate of the reissue's own
+///   cost for this value alone; what the primary module adds when it
+///   assembles the transaction (next bullet) is not in it, which is one more
+///   reason it is expected rather than realized.
 /// - The realized pair fills in *together* — both `None` or both `Some`,
 ///   never one without the other. They are written in the same transition, and
 ///   a record calling one of them known while the other is unknown would be
 ///   contradicting itself about whether the redemption has settled.
 /// - For a [`Done`](EcashReceiveState::Done) redemption,
-///   `realized_net_credit == notes_value - realized_fee`, and that credit is
-///   what the balance actually rose by. It may be smaller or larger than
-///   `expected_net_credit`; that difference is the whole reason both pairs
-///   are here. `realized_fee` aggregates every transaction the redemption
-///   took: a refund child counts exactly as the original reissue does.
+///   `realized_movement == notes_value - realized_fee` **in signed terms**:
+///   [`NetMovement::gross_less_fee`](crate::NetMovement::gross_less_fee) of
+///   the two. That is a credit whenever the fee fits inside the notes'
+///   value, and it is what the balance actually rose by; it may be smaller
+///   or larger than `expected_net_credit`, which is the whole reason both
+///   pairs are here. It can also be a *debit*. The primary module balances
+///   every transaction it finalizes by sweeping some of the wallet's
+///   existing notes in as inputs and reissuing them as outputs beside the
+///   incoming value, and it charges a fee per output, so a redemption too
+///   small to cover the outputs it needs is completed from the existing
+///   balance and the balance ends lower than it started. `realized_fee`
+///   aggregates every transaction the redemption took — a refund child
+///   counts exactly as the original reissue does — so the identity holds in
+///   either direction.
 /// - For a [`Failed`](EcashReceiveState::Failed) one, both figures are
 ///   *measurements*, and both are always established. `realized_fee` is the
 ///   aggregate charge of every transaction of the operation the federation
@@ -1298,21 +1323,25 @@ impl OperationState for EcashReceiveState {
 ///   charged nothing for the ones that were; upstream records each
 ///   transaction's fee at submission, keyed by the transaction and readable
 ///   through the operation, so the answer is exact in every case.
-///   `realized_net_credit` is the value that landed: under the first mint
-///   module the sum of the refund children that succeeded, each of which is
-///   all-or-nothing because its finalizer verifies every note before
-///   inserting any; under the second, additionally, the notes a failed
+///   `realized_movement` is what the balance actually did: under the first
+///   mint module the sum of the refund children that succeeded, each of
+///   which is all-or-nothing because its finalizer verifies every note
+///   before inserting any, less what those transactions consumed of the
+///   existing balance; under the second, additionally, the notes a failed
 ///   finalization committed before a later one failed — counted as the next
 ///   section describes. Possibly zero, possibly a partial credit that is
-///   permanently in the balance. The both-or-neither rule above holds for
-///   `Failed` too: the pair is written together at settlement, never one
-///   without the other. The `Done` identity does not, and an inequality
-///   takes its place: `realized_net_credit + realized_fee <= notes_value`,
-///   where the shortfall is the value of the notes that never became this
-///   wallet's — spent elsewhere first, or never finalized. That shortfall is
-///   principal, not a fee: it is folded into neither figure, and it is what
-///   a "you received X of Y" line subtracts to find, a subtraction this
-///   invariant keeps from underflowing.
+///   permanently in the balance, possibly a debit. The both-or-neither rule
+///   above holds for `Failed` too: the pair is written together at
+///   settlement, never one without the other. The `Done` identity does not,
+///   and an inequality takes its place, again in signed terms:
+///   `realized_movement <= notes_value - realized_fee`
+///   ([`NetMovement::is_at_most`](crate::NetMovement::is_at_most)). The
+///   shortfall is the value that never became this wallet's — notes spent
+///   elsewhere first, or outputs never finalized, the reissued pre-existing
+///   value among them. That shortfall is principal, not a fee: it is folded
+///   into neither figure, and it is what a "you received X of Y" line
+///   subtracts to find, in signed arithmetic the inequality keeps
+///   well-defined.
 ///
 /// # Measuring what a failed issuance left behind
 ///
@@ -1322,23 +1351,31 @@ impl OperationState for EcashReceiveState {
 /// fails it records a fieldless failure while the earlier inserts commit with
 /// it. Nothing upstream then says how far it got — the failure carries no
 /// count, every outpoint in the range reads the same aggregate state, and the
-/// spendable-note table carries no operation id. The credit such a failure
-/// left behind is therefore not observed but *reconstructed*, and doing so is
-/// an implementation obligation with three parts, stated in full here and
-/// relied on by every record in this crate that reports a measured partial
-/// credit —
+/// spendable-note table carries no operation id. And the bundle is not the
+/// incoming value alone: the primary module balances every transaction it
+/// finalizes by sweeping existing notes in as inputs and reissuing them as
+/// outputs in the same bundle, sorted in with the rest, so the notes that
+/// landed and the notes that did not are a mix of new value and old. What
+/// the balance did is therefore not observed but *reconstructed*, as **the
+/// outputs that materialised less the local inputs the transaction
+/// consumed**, and doing so is an implementation obligation with three parts,
+/// stated in full here and relied on by every record in this crate that
+/// reports a measured movement —
 /// [`LnReceiveDetails`](crate::LnReceiveDetails),
 /// [`OnchainReceiveDetails`](crate::OnchainReceiveDetails), and
 /// [`EcashSendDetails`] for a funding that failed:
 ///
-/// 1. **Attribution is by the notes the operation would have minted.** The
+/// 1. **Both sides of the subtraction are upstream's own durable state.** The
 ///    output machine persists, for its whole life and in its terminal state
 ///    too, the issuance requests it was created with, under the operation id
 ///    it was created for; and each request fixes its note's identifier
 ///    deterministically, because the spending key chosen at request time is
 ///    the note's nonce once it is signed. So the set of notes an operation
-///    *would* have produced is readable from upstream's own durable state,
-///    with no key material of the SDK's own to keep.
+///    *would* have produced is readable, with no key material of the SDK's
+///    own to keep. The inputs are persisted too: the input machine the same
+///    transaction attached carries every note it consumed — the wallet's own
+///    swept-in notes included, indistinguishable from any other — so the
+///    consumed side is a sum over that record, never a guess.
 /// 2. **The join runs against everything the client holds or has spent.** A
 ///    note that landed is either still in the spendable-note table or was
 ///    consumed since by a transaction this client built — and every such
@@ -1348,17 +1385,19 @@ impl OperationState for EcashReceiveState {
 ///    concurrent spend selected one of those notes before the reconciliation
 ///    ran, which no lock the SDK could hold would otherwise prevent, since
 ///    the failing transition commits inside the upstream executor.
-/// 3. **It completes before the failure is reported.** The credit is written
-///    in the same storage transaction that records the terminal state, never
-///    afterwards; and after a restart, the reconciliation of any such failure
-///    the executor produced in the SDK's absence is finished before the
-///    federation is exposed, so no caller can read a `Failed` whose credit is
-///    still being counted.
+/// 3. **It completes before the failure is reported.** The movement is
+///    written in the same storage transaction that records the terminal
+///    state, never afterwards; and after a restart, the reconciliation of any
+///    such failure the executor produced in the SDK's absence is finished
+///    before the federation is exposed, so no caller can read a `Failed`
+///    whose movement is still being counted.
 ///
-/// The first mint module needs none of this: its finalizer verifies every
-/// note before inserting any, so a failed finalization there inserted
-/// nothing, and the only partial credit it can produce is the
-/// per-transaction kind, counted by awaiting each refund child.
+/// The first mint module needs only the subtraction, not the join: its
+/// finalizer verifies every note before inserting any, so a failed
+/// finalization there inserted nothing, and the only partial credit it can
+/// produce is the per-transaction kind, counted by awaiting each refund child
+/// and netting off what each consumed — it sweeps existing notes into its
+/// transactions exactly as the second module does.
 ///
 /// `Debug` is derived, for the reason given on [`EcashSendDetails`]: [`Notes`]
 /// redacts itself, and a derive inherits that.
@@ -1386,7 +1425,7 @@ pub struct EcashReceiveDetails {
     /// This is the figure activity history reports as an ecash receive's
     /// [`amount`](crate::ActivityItem::amount), and it is what the sender
     /// gave up — not what this wallet gains; see
-    /// [`realized_net_credit`](EcashReceiveDetails::realized_net_credit).
+    /// [`realized_movement`](EcashReceiveDetails::realized_movement).
     pub notes_value: Amount,
     /// Expected: the reissuance fee predicted from the federation's fee
     /// schedule before the reissue is submitted, taken out of
@@ -1430,35 +1469,39 @@ pub struct EcashReceiveDetails {
     /// each
     /// transaction's fee at submission, keyed by the transaction and readable
     /// through the operation, so this fills in alongside
-    /// [`realized_net_credit`](EcashReceiveDetails::realized_net_credit)
+    /// [`realized_movement`](EcashReceiveDetails::realized_movement)
     /// for `Failed` exactly as for `Done`. The rule is "what actually
     /// moved", never "zero on failure".
     pub realized_fee: Option<Amount>,
-    /// Realized: what the balance actually rose by.
+    /// Realized: what the balance actually did — a credit, or a debit.
     ///
     /// `None` until the redemption settles, and present exactly when
     /// [`realized_fee`](EcashReceiveDetails::realized_fee) is. This is the
     /// number to show as "you received", and the only figure here that
-    /// reconciles with the balance:
+    /// reconciles with the balance. It is a [`NetMovement`] rather than an
+    /// amount because a redemption can leave the balance *lower*: see that
+    /// type, and the invariants above, for how a receive too small to cover
+    /// the outputs the primary module issues for it is completed from the
+    /// existing balance.
     ///
     /// - [`Done`](EcashReceiveState::Done) —
     ///   [`notes_value`](EcashReceiveDetails::notes_value) less
-    ///   [`realized_fee`](EcashReceiveDetails::realized_fee), which may sit a
-    ///   little above or below
-    ///   [`expected_net_credit`](EcashReceiveDetails::expected_net_credit).
-    /// - [`Failed`](EcashReceiveState::Failed) — the measured credit, not a
-    ///   presumed zero: the value of the notes that did land, which under
-    ///   the first mint module is the sum of the refund children that
-    ///   succeeded, and under the second is that plus what a failed
-    ///   finalization committed before failing, counted as the type's
-    ///   [*Measuring* section][measuring] describes. Below
-    ///   [`notes_value`](EcashReceiveDetails::notes_value) less the fee by
-    ///   exactly the value that never became this wallet's; never
-    ///   `notes_value` minus a zero fee, and never a number assumed rather
-    ///   than counted.
+    ///   [`realized_fee`](EcashReceiveDetails::realized_fee), in signed
+    ///   terms, which may sit above or below
+    ///   [`expected_net_credit`](EcashReceiveDetails::expected_net_credit)
+    ///   and, for a tiny redemption, below zero.
+    /// - [`Failed`](EcashReceiveState::Failed) — the measured movement, not
+    ///   a presumed zero: the notes that did land less what the transactions
+    ///   consumed of the existing balance, which under the first mint module
+    ///   is summed over the refund children that succeeded and under the
+    ///   second also counts what a failed finalization committed before
+    ///   failing, as the type's [*Measuring* section][measuring] describes.
+    ///   At or below `notes_value` less the fee, by exactly the value that
+    ///   never became this wallet's; never `notes_value` minus a zero fee,
+    ///   and never a number assumed rather than counted.
     ///
     /// [measuring]: EcashReceiveDetails#measuring-what-a-failed-issuance-left-behind
-    pub realized_net_credit: Option<Amount>,
+    pub realized_movement: Option<NetMovement>,
     /// When the redemption was created.
     ///
     /// A local clock reading, with the same caveat as
@@ -1556,7 +1599,7 @@ mod tests {
             expected_fee: Amount::from_msats(36),
             expected_net_credit: Amount::from_msats(1_500),
             realized_fee: None,
-            realized_net_credit: None,
+            realized_movement: None,
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
     }
@@ -1566,7 +1609,7 @@ mod tests {
     fn done_receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
             realized_fee: Some(Amount::from_msats(52)),
-            realized_net_credit: Some(Amount::from_msats(1_484)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(1_484))),
             ..receive_details()
         }
     }
@@ -1576,7 +1619,7 @@ mod tests {
     fn failed_receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
             realized_fee: Some(NOTHING),
-            realized_net_credit: Some(NOTHING),
+            realized_movement: Some(NetMovement::ZERO),
             ..receive_details()
         }
     }
@@ -1837,12 +1880,12 @@ mod tests {
     fn ecash_receive_details_realized_figures_are_absent_until_the_reissue_settles() {
         let pending = receive_details();
         assert_eq!(pending.realized_fee, None);
-        assert_eq!(pending.realized_net_credit, None);
+        assert_eq!(pending.realized_movement, None);
 
         for settled in [done_receive_details(), failed_receive_details()] {
             assert_eq!(
                 settled.realized_fee.is_some(),
-                settled.realized_net_credit.is_some(),
+                settled.realized_movement.is_some(),
             );
             assert!(settled.realized_fee.is_some());
         }
@@ -1853,18 +1896,20 @@ mod tests {
         let details = done_receive_details();
 
         assert_eq!(
-            details.notes_value.checked_sub(
+            details.realized_movement,
+            Some(NetMovement::gross_less_fee(
+                details.notes_value,
                 details
                     .realized_fee
-                    .expect("an accepted reissue recorded its fee")
-            ),
-            details.realized_net_credit
+                    .expect("an accepted reissue recorded its fee"),
+            ))
         );
         // The reason both pairs exist: the federation fixed the reissue's
         // costs when it accepted the transaction, and the local estimate did
         // not predict them exactly.
         assert_ne!(details.realized_fee, Some(details.expected_fee));
-        assert!(details.realized_net_credit < Some(details.expected_net_credit));
+        let landed = details.realized_movement.expect("done").credited();
+        assert!(landed < details.expected_net_credit);
     }
 
     #[test]
@@ -1874,26 +1919,32 @@ mod tests {
         // The reissue was rejected and so was every refund of the notes:
         // nothing was accepted, so the measured credit is zero — explicitly
         // not `notes_value` minus a fee — and nothing was charged.
-        assert_eq!(details.realized_net_credit, Some(NOTHING));
+        assert_eq!(details.realized_movement, Some(NetMovement::ZERO));
         assert_eq!(details.realized_fee, Some(NOTHING));
-        assert_ne!(details.realized_net_credit, Some(details.notes_value));
+        assert_ne!(
+            details.realized_movement,
+            Some(NetMovement::Credit(details.notes_value))
+        );
         // And zero is not absence: the redemption settled, and this is the
         // answer.
-        assert_ne!(details.realized_net_credit, None);
+        assert_ne!(details.realized_movement, None);
+    }
+
+    /// A movement as a signed millisatoshi count, for the arithmetic a signed
+    /// identity needs.
+    fn signed(movement: NetMovement) -> i128 {
+        i128::from(movement.credited().msats()) - i128::from(movement.debited().msats())
     }
 
     /// The shortfall a failed redemption's inequality names: what the notes
-    /// were worth, less what landed and what was charged, is the value that
-    /// never became this wallet's.
-    fn shortfall_of(details: &EcashReceiveDetails) -> Amount {
-        let landed = details
-            .realized_net_credit
-            .and_then(|credit| credit.checked_add(details.realized_fee?))
-            .expect("a settled redemption has both figures");
-        details
-            .notes_value
-            .checked_sub(landed)
-            .expect("the invariant keeps the subtraction from underflowing")
+    /// were worth less what was charged, less what the balance actually did,
+    /// is the value that never became this wallet's.
+    fn shortfall_of(details: &EcashReceiveDetails) -> i128 {
+        let fee = details.realized_fee.expect("a settled redemption has a fee");
+        let movement = details
+            .realized_movement
+            .expect("a settled redemption has a movement");
+        signed(NetMovement::gross_less_fee(details.notes_value, fee)) - signed(movement)
     }
 
     #[test]
@@ -1906,17 +1957,17 @@ mod tests {
         // involved.
         let details = EcashReceiveDetails {
             realized_fee: Some(Amount::from_msats(24)),
-            realized_net_credit: Some(Amount::from_msats(1_000)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(1_000))),
             ..failed_receive_details()
         };
-        assert!(details.realized_net_credit > Some(NOTHING));
+        assert!(details.realized_movement.expect("settled").credited() > NOTHING);
         // Under a schedule that charges for transactions, the accepted
         // refunds cost something even though the reissue was rejected:
         // "rejected means free" is exactly what this receipt does not say.
         assert!(details.realized_fee > Some(NOTHING));
         // The note that was spent elsewhere is the shortfall, and it is
         // principal rather than a fee.
-        assert_eq!(shortfall_of(&details), Amount::from_msats(512));
+        assert_eq!(shortfall_of(&details), 512);
     }
 
     #[test]
@@ -1927,17 +1978,18 @@ mod tests {
         // fee the reissue was charged.
         let details = EcashReceiveDetails {
             realized_fee: Some(Amount::from_msats(40)),
-            realized_net_credit: Some(Amount::from_msats(512)),
+            realized_movement: Some(NetMovement::Credit(Amount::from_msats(512))),
             ..failed_receive_details()
         };
-        assert!(details.realized_net_credit > Some(NOTHING));
+        let landed = details.realized_movement.expect("settled").credited();
+        assert!(landed > NOTHING);
         assert!(
-            details.realized_net_credit < Some(details.notes_value),
+            landed < details.notes_value,
             "a partial credit is less than the notes' face value"
         );
         // Credit plus fee stays below the face value; the rest never
         // finalized.
-        assert_eq!(shortfall_of(&details), Amount::from_msats(984));
+        assert_eq!(shortfall_of(&details), 984);
     }
 
     #[test]

@@ -494,5 +494,5 @@ pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, Sd
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
-    Mnemonic, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
+    Mnemonic, NetMovement, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
 };
