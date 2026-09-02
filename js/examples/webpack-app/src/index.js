@@ -163,8 +163,8 @@ let generatedWords = []
 const init = async () => {
   // Wipe DB logic to prevent stale mnemonic lockout
   if (localStorage.getItem('pendingWipe') === 'true') {
-    localStorage.removeItem('pendingWipe')
     await clearClientStorage()
+    localStorage.removeItem('pendingWipe')
   }
 
   // Dynamically import wallet after DB wipe to prevent WASM locks

@@ -69,11 +69,10 @@ const init = async () => {
   const wipeCount = Number(localStorage.getItem('wipeRetryCount') ?? '0')
 
   if (localStorage.getItem('pendingWipe') === 'true') {
-    localStorage.removeItem('pendingWipe')
-
     if (wipeCount >= MAX_WIPE_RETRIES) {
       // Prevent infinite reload loop — give up after N attempts.
       localStorage.removeItem('wipeRetryCount')
+      localStorage.removeItem('pendingWipe')
       console.error(
         `Storage wipe failed after ${MAX_WIPE_RETRIES} retries. Skipping.`,
       )
@@ -81,6 +80,7 @@ const init = async () => {
       localStorage.setItem('wipeRetryCount', String(wipeCount + 1))
       await clearClientStorage()
       localStorage.removeItem('wipeRetryCount')
+      localStorage.removeItem('pendingWipe')
     }
   }
 
