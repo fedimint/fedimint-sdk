@@ -106,7 +106,7 @@ init().catch((err) => {
     container.style.color = '#ff6b6b'
     container.style.padding = '2rem'
     container.style.fontFamily = 'sans-serif'
-    
+
     const h2 = document.createElement('h2')
     h2.textContent = 'Failed to initialize app'
     container.appendChild(h2)
@@ -118,7 +118,8 @@ init().catch((err) => {
     const pHelp = document.createElement('p')
     pHelp.style.color = '#888'
     pHelp.style.fontSize = '0.85em'
-    pHelp.textContent = "If this persists, clear your browser's site data for localhost."
+    pHelp.textContent =
+      "If this persists, clear your browser's site data for localhost."
     container.appendChild(pHelp)
 
     root.appendChild(container)

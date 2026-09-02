@@ -312,12 +312,12 @@ init().catch((err) => {
   const root = document.getElementById('loading-screen')
   if (root) {
     root.innerHTML = ''
-    
+
     const container = document.createElement('div')
     container.style.color = '#ff6b6b'
     container.style.padding = '2rem'
     container.style.fontFamily = 'sans-serif'
-    
+
     const h2 = document.createElement('h2')
     h2.textContent = 'Failed to initialize app'
     container.appendChild(h2)
