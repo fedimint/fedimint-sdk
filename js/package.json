@@ -48,7 +48,7 @@
     "ubrn:ios:release": "pnpm --filter react-native-bindings ubrn:ios:release"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.8",
+    "@changesets/cli": "^3.0.1",
     "@types/node": "^22.19.11",
     "@vitest/browser-playwright": "^4.1.11",
     "@vitest/coverage-v8": "^4.1.11",

@@ -103,16 +103,28 @@ jobs:
           node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
           cd ../../..
 
+      # changesets/action@v2 no longer writes ~/.npmrc from NPM_TOKEN, so the
+      # publish script below authenticates through this shared user config.
+      - name: Configure npm authentication
+        run: npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: PR or Publish to NPM
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         timeout-minutes: 10
         with:
           # package.json and .changeset/ live in the workspace root. The publish
           # command inherits this cwd, hence the flake ref one level up.
           cwd: js
-          publish: nix develop --accept-flake-config .. -c bash -c "export CI=true; pnpm changeset publish"
-          createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
+          # v2 renamed `publish` -> `publish-script` and
+          # `createGithubReleases` -> `create-github-releases`. push-git-tags now
+          # defaults to true even when releases are off, so pin it to main to keep
+          # feature-branch workflow_dispatch runs from tagging real versions.
+          publish-script: nix develop --accept-flake-config .. -c bash -c "export CI=true; pnpm changeset publish"
+          create-github-releases: ${{ github.ref == 'refs/heads/main' }}
+          push-git-tags: ${{ github.ref == 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
