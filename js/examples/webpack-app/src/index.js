@@ -1,4 +1,5 @@
 import './style.css' // Load CSS
+import { clearClientStorage } from '@fedimint/transport-web'
 
 const TESTNET_FEDERATION_CODE =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
@@ -162,7 +163,6 @@ const init = async () => {
   // Wipe DB logic to prevent stale mnemonic lockout
   if (localStorage.getItem('pendingWipe') === 'true') {
     localStorage.removeItem('pendingWipe')
-    const { clearClientStorage } = await import('@fedimint/core')
     await clearClientStorage()
   }
 
@@ -307,4 +307,25 @@ const init = async () => {
 window.checkIsOpen = checkIsOpen
 
 // Run initialization
-init()
+init().catch((err) => {
+  console.error('Failed to initialize App:', err)
+  const root = document.getElementById('loading-screen')
+  if (root) {
+    root.innerHTML = ''
+    
+    const container = document.createElement('div')
+    container.style.color = '#ff6b6b'
+    container.style.padding = '2rem'
+    container.style.fontFamily = 'sans-serif'
+    
+    const h2 = document.createElement('h2')
+    h2.textContent = 'Failed to initialize app'
+    container.appendChild(h2)
+
+    const pErr = document.createElement('p')
+    pErr.textContent = err.message
+    container.appendChild(pErr)
+
+    root.appendChild(container)
+  }
+})

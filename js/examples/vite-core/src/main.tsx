@@ -102,14 +102,25 @@ init().catch((err) => {
   // This is intentionally raw DOM because React is unavailable.
   const root = document.getElementById('root')
   if (root) {
-    root.innerHTML = `
-      <div style="color: #ff6b6b; padding: 2rem; font-family: sans-serif;">
-        <h2>Failed to initialize app</h2>
-        <p>${err.message}</p>
-        <p style="color: #888; font-size: 0.85em;">
-          If this persists, clear your browser's site data for localhost.
-        </p>
-      </div>
-    `
+    const container = document.createElement('div')
+    container.style.color = '#ff6b6b'
+    container.style.padding = '2rem'
+    container.style.fontFamily = 'sans-serif'
+    
+    const h2 = document.createElement('h2')
+    h2.textContent = 'Failed to initialize app'
+    container.appendChild(h2)
+
+    const pErr = document.createElement('p')
+    pErr.textContent = err.message
+    container.appendChild(pErr)
+
+    const pHelp = document.createElement('p')
+    pHelp.style.color = '#888'
+    pHelp.style.fontSize = '0.85em'
+    pHelp.textContent = "If this persists, clear your browser's site data for localhost."
+    container.appendChild(pHelp)
+
+    root.appendChild(container)
   }
 })
