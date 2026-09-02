@@ -191,7 +191,11 @@ const AppContent = () => {
   )
 }
 
-const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
+const OnboardingScreen = ({
+  onComplete,
+}: {
+  onComplete: () => Promise<void>
+}) => {
   const [step, setStep] = useState<'welcome' | 'generate' | 'restore'>(
     'welcome',
   )
@@ -234,7 +238,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
     try {
       const words = generatedMnemonic.split(' ')
       await director.setMnemonic(words)
-      onComplete()
+      await onComplete()
     } catch (err) {
       const msg = extractErrorMessage(err)
       if (
@@ -248,7 +252,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
         try {
           const existing = await director.getMnemonic()
           if (existing.join(' ') === generatedMnemonic) {
-            onComplete()
+            await onComplete()
           } else {
             // CRITICAL: DB has a DIFFERENT mnemonic than what was displayed.
             // The user wrote down the wrong key. Force a wipe.
@@ -288,7 +292,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
     setError('')
     try {
       await director.setMnemonic(words)
-      onComplete()
+      await onComplete()
     } catch (err) {
       const msg = extractErrorMessage(err)
       if (msg.includes('Wallet mnemonic already exists')) {
@@ -297,7 +301,7 @@ const OnboardingScreen = ({ onComplete }: { onComplete: () => void }) => {
           if (existing.join(' ') === words.join(' ')) {
             // The mnemonic in the DB already matches what they are trying to restore.
             // This happens if they generated it, went back without wiping, and pasted it here.
-            onComplete()
+            await onComplete()
             return
           }
         } catch (e) {

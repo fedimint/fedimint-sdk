@@ -11,7 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@fedimint/core": "workspace:*",
+    "@fedimint/core": "latest",
     "@fedimint/transport-web": "workspace:*"
   },
   "devDependencies": {
