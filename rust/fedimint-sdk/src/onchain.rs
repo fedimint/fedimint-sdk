@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::{Address, Amount, NetMovement, Operation, OperationState, Result, Sats, Timestamp, Txid};
+use crate::{
+    Address, Amount, NetMovement, Operation, OperationState, Result, Sats, Timestamp, Txid,
+};
 
 /// The on-chain facade for one federation, backed by its wallet module.
 ///
@@ -1749,7 +1751,10 @@ mod tests {
                 // An aggregate fee of 1500 msat leaves a credit that is not
                 // a whole number of satoshis, which is why the movement
                 // carries an `Amount`: as `Sats` it could only have been wrong.
-                assert_eq!(movement, NetMovement::Credit(Amount::from_msats(99_998_500)));
+                assert_eq!(
+                    movement,
+                    NetMovement::Credit(Amount::from_msats(99_998_500))
+                );
                 assert_eq!(movement.credited().to_sats_exact(), None);
             }
             _ => unreachable!("constructed as Claimed"),

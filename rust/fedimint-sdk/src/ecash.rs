@@ -1940,7 +1940,9 @@ mod tests {
     /// were worth less what was charged, less what the balance actually did,
     /// is the value that never became this wallet's.
     fn shortfall_of(details: &EcashReceiveDetails) -> i128 {
-        let fee = details.realized_fee.expect("a settled redemption has a fee");
+        let fee = details
+            .realized_fee
+            .expect("a settled redemption has a fee");
         let movement = details
             .realized_movement
             .expect("a settled redemption has a movement");
