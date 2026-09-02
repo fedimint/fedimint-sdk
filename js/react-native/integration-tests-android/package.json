@@ -1,0 +1,17 @@
+{
+  "name": "@fedimint/integration-tests-android",
+  "private": true,
+  "scripts": {
+    "test": "ts-node --project tsconfig.json src/runner.ts"
+  },
+  "dependencies": {
+    "appium": "^3.6.0",
+    "appium-uiautomator2-driver": "^8.5.0",
+    "webdriverio": "^9.31.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}

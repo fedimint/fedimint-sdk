@@ -1,0 +1,115 @@
+name: Android E2E (Appium)
+
+on:
+  pull_request:
+    paths:
+      - 'js/examples/react-native/**'
+      - 'js/react-native/react-native/**'
+      - 'js/react-native/react-native-bindings/**'
+      - 'js/react-native/integration-tests-android/**'
+      - 'rust/fedimint-client-uniffi/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build-android-bindings:
+    name: Build Android Bindings
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Same composite action react-native-pr.yml's own "Build Android" job
+      # uses: builds the native FFI lib + generated Kotlin/JS glue via
+      # `just build-android`, and uploads it as the `generated-bindings-android`
+      # artifact this workflow's second job downloads below.
+      - uses: ./.github/actions/build-rn-android
+
+  android-e2e:
+    name: Android E2E
+    needs: build-android-bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # No devimint/faucet dependency yet (the v1 mnemonic test is local-only),
+    # so this doesn't join the shared `devimint-tests` concurrency group from
+    # verify.yml. The moment a federation-touching test is added here, it
+    # will race the wasm job and other PRs' runs of this workflow for
+    # devimint's fixed faucet port (see issue #340) — reconsider concurrency
+    # then, either joining that group (accepting serialization) or waiting on
+    # a dynamic-port fix upstream.
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # GitHub-hosted Ubuntu runners have /dev/kvm but it isn't
+      # world-accessible by default; without this the emulator falls back to
+      # (very slow) software virtualization. Standard reactivecircus/
+      # android-emulator-runner incantation.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download prebuilt Android bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-bindings-android
+          path: js/react-native/react-native-bindings/
+
+      - name: Install deps & build the react-native JS wrapper
+        shell: bash
+        env:
+          FEDIMINT_SKIP_BINARY_DOWNLOAD: 'true'
+        run: |
+          nix develop --accept-flake-config -c bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js install --frozen-lockfile
+            pnpm --dir js run build:reactnative
+          EOF
+
+      - name: Run Android E2E tests
+        shell: bash
+        env:
+          TESTS_TO_RUN: all
+          # Bindings came from build-android-bindings above; skip
+          # run-android-e2e.sh's own `just build-android` call.
+          SKIP_BINDINGS_BUILD: 'true'
+        run: |
+          nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
+            set -euo pipefail
+            bash scripts/e2e-android/run-android-e2e.sh
+          EOF
+
+      - name: Upload logs & screenshots
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: android-e2e-logs
+          include-hidden-files: true
+          path: |
+            js/react-native/integration-tests-android/.appium/*.log
+            js/react-native/integration-tests-android/screenshots/*

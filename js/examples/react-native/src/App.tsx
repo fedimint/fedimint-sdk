@@ -92,8 +92,10 @@ const Btn: React.FC<{
   active?: boolean
   small?: boolean
   primary?: boolean
-}> = ({ title, onPress, disabled, active, small, primary }) => (
+  testID?: string
+}> = ({ title, onPress, disabled, active, small, primary, testID }) => (
   <TouchableOpacity
+    testID={testID}
     onPress={onPress}
     disabled={disabled}
     style={[
@@ -258,6 +260,7 @@ const MnemonicManager = () => {
           active={activeAction === 'set'}
         />
         <Btn
+          testID="GenerateMnemonicButton"
           title="Generate"
           onPress={() => handleAction('generate')}
           disabled={isLoading}
@@ -287,7 +290,10 @@ const MnemonicManager = () => {
 
       {!!mnemonicState && (
         <View style={s.mnemonicDisplay}>
-          <Text style={showMnemonic ? s.mnemonicText : s.mnemonicBlurred}>
+          <Text
+            testID="MnemonicText"
+            style={showMnemonic ? s.mnemonicText : s.mnemonicBlurred}
+          >
             {mnemonicState}
           </Text>
           <Row>

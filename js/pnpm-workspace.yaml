@@ -7,7 +7,17 @@ packages:
   - 'docs'
 
 allowBuilds:
+  # Appium's CLI works fine without its postinstall (verified with
+  # `appium --version`); uiautomator2 is installed explicitly via
+  # `appium driver install` at test-run time instead, not via this build
+  # script. edgedriver/geckodriver are Selenium's Edge/Firefox driver
+  # downloaders, pulled in transitively — irrelevant to Android/UiAutomator2
+  # testing. All three left disabled; flip `appium` to true if a future
+  # version's postinstall turns out to matter.
+  appium: false
+  edgedriver: false
   esbuild: true
+  geckodriver: false
   secp256k1: true
   sharp: true
   simple-git-hooks: true
