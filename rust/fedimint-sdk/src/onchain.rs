@@ -236,11 +236,12 @@ impl Onchain {
     /// or federation configuration it was built on has moved. In both cases
     /// the remedy is the same: quote again and re-confirm.
     ///
-    /// [`OnchainQuote::total`] is the ceiling this call is authorised
-    /// against. Nothing beyond it can be debited: a withdrawal that would
-    /// now cost more is a
+    /// [`OnchainQuote::total`] is exactly what this call debits. A
+    /// withdrawal that would now cost anything else is a
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) refusal, never a
-    /// silent overspend of the difference.
+    /// silent overspend of the difference and never a quietly smaller
+    /// debit either: the quote binds the notes that fund it along with the
+    /// fee, so there is nothing left to vary at execution.
     ///
     /// The returned operation reaches [`OnchainSendState::Succeeded`] once
     /// the federation has broadcast the transaction. That is the SDK's
@@ -334,12 +335,17 @@ impl OnchainQuote {
     /// point of aggregating the fee in millisatoshis is that this figure
     /// does not have to be approximated.
     ///
-    /// It is also a **ceiling**, not merely a prediction:
-    /// [`Onchain::send`] is authorised for this and no more. A withdrawal
-    /// that would cost more than this by the time it executes is refused
-    /// with [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so the user
-    /// re-approves a new number instead of quietly paying it. That is what
-    /// makes it safe to render as a commitment rather than an estimate.
+    /// It is also **the debit execution is authorised to make**, exactly,
+    /// not a ceiling or a prediction: [`Onchain::send`] debits this or does
+    /// not run. Like [`LnQuote::total`](crate::LnQuote::total), the quote
+    /// binds the notes that will fund the withdrawal along with the fee, so
+    /// the denomination dust in [`OnchainSendFeeBreakdown::change`] is fixed
+    /// here rather than at execution. A withdrawal that would cost anything
+    /// else by the time it executes is refused with
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so the user
+    /// re-approves a new number instead of quietly paying a different one.
+    /// That is what makes it safe to render as a commitment rather than an
+    /// estimate, and it is the figure [`OnchainSendDetails::total`] records.
     pub fn total(&self) -> Amount {
         unimplemented!()
     }
