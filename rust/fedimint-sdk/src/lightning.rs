@@ -727,7 +727,7 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// | `Funded`, `AwaitingFunds` | — | [`Funded`](Self::Funded) |
 /// | `Claimed` | — | [`Claimed`](Self::Claimed) |
 /// | `Canceled { Timeout }` | any | [`Expired`](Self::Expired) |
-/// | `Canceled { ClaimRejected }` | any | [`Failed`](Self::Failed) |
+/// | `Canceled { ClaimRejected }` | any | [`Funded`](Self::Funded), reclaiming; see rule 2 |
 /// | `Canceled { InvalidPreimage }` | any | [`Failed`](Self::Failed) |
 /// | `Canceled { Rejected }` | before [`Funded`](Self::Funded) | [`Canceled`](Self::Canceled) |
 /// | `Canceled { Rejected }` | at or after [`Funded`](Self::Funded) | [`Failed`](Self::Failed) |
@@ -737,17 +737,20 @@ impl crate::operation::DetailedOperationState for LnSendState {
 ///
 /// 1. `Timeout` is [`Expired`](Self::Expired). Nobody paid within the
 ///    invoice's lifetime; that is the benign ending.
-/// 2. `ClaimRejected` and `InvalidPreimage` end in [`Failed`](Self::Failed),
-///    whatever phase the operation shows. Both presuppose a funded contract
-///    — a claim is only attempted for one, and a preimage is only decrypted
-///    for one — so neither is a pre-payment cancellation, though their
-///    economics differ: after `ClaimRejected` the payment is confirmed and
-///    locked to this wallet, while `InvalidPreimage` unwinds it (see the
-///    variant). The phase cannot be consulted for them, and must not be:
-///    upstream reports its own `Funded` only once the claim transaction has
-///    been accepted, so both of these reasons arrive *before* it, on a
-///    receive still showing [`WaitingForPayment`](Self::WaitingForPayment).
-///    Reading that as a pre-payment cancellation would be exactly wrong.
+/// 2. `ClaimRejected` and `InvalidPreimage` are never a pre-payment
+///    cancellation, whatever phase the operation shows. Both presuppose a
+///    funded contract — a claim is only attempted for one, and a preimage
+///    is only decrypted for one — but they end differently. `InvalidPreimage`
+///    unwinds the payment (see [`Failed`](Self::Failed)) and is
+///    [`Failed`](Self::Failed) outright. `ClaimRejected` is **not final**:
+///    the payment is confirmed and still locked to this wallet, so the
+///    receive moves to [`Funded`](Self::Funded) and stays there while the
+///    reclaim below runs. The phase cannot be consulted for either, and must
+///    not be: upstream reports its own `Funded` only once the claim
+///    transaction has been accepted, so both of these reasons arrive
+///    *before* it, on a receive still showing
+///    [`WaitingForPayment`](Self::WaitingForPayment). Reading that as a
+///    pre-payment cancellation would be exactly wrong.
 /// 3. `Rejected` is [`Canceled`](Self::Canceled) on a receive that never got
 ///    past [`WaitingForPayment`](Self::WaitingForPayment) — a genuine refusal
 ///    before payment, with nothing owed to anyone — and
@@ -774,15 +777,23 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// [`Claimed`](Self::Claimed) or the reclaim itself fails and
 /// [`Failed`](Self::Failed) is the truth. [`Failed`](Self::Failed) is
 /// terminal, so it is only emitted once no further claim is possible; an
-/// application never sees a still-claimable payment finalised.
+/// application never sees a still-claimable payment finalised, and so never
+/// sees one pass the guards on
+/// [`Sdk::forget_federation`](crate::Sdk::forget_federation).
 ///
-/// lnv2 needs none of this arbitration, because it draws the distinction
-/// itself: its `ReceiveOperationState` has explicit pending and claiming
-/// states, mapping onto [`WaitingForPayment`](Self::WaitingForPayment) and
+/// lnv2 needs no phase arbitration, because it draws the pre-payment
+/// distinction itself: its `ReceiveOperationState` has explicit pending and
+/// claiming states, mapping onto
+/// [`WaitingForPayment`](Self::WaitingForPayment) and
 /// [`Funded`](Self::Funded); its claimed state maps onto
-/// [`Claimed`](Self::Claimed); its expired state onto
-/// [`Expired`](Self::Expired); and `Failure` — the payment confirmed, the
-/// ecash issuance failed — onto [`Failed`](Self::Failed) directly.
+/// [`Claimed`](Self::Claimed); and its expired state onto
+/// [`Expired`](Self::Expired). Rule 2 applies to it unchanged, though: a
+/// `Failure` after the claim transaction was accepted and its outputs failed
+/// to become notes is [`Failed`](Self::Failed), while a claim the federation
+/// rejects with the contract still claimable keeps the receive
+/// [`Funded`](Self::Funded) and drives the reclaim, exactly as for v1.
+/// Whether the lightning client reports those two as one state or two is its
+/// business; this contract is the same either way.
 ///
 /// Because those splits are judgements rather than a one-to-one mapping,
 /// this variant set is provisional and will be reconciled against the

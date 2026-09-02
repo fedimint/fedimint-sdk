@@ -651,9 +651,17 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// follow: the chain-side phases,
 /// [`WaitingForTransaction`](Self::WaitingForTransaction) through
 /// [`Confirmed`](Self::Confirmed), are the SDK's own observation of the
-/// address, and the module's claim machine — `Funding`, `Success`,
-/// `Aborted` — lands on [`Confirmed`](Self::Confirmed),
-/// [`Claimed`](Self::Claimed) and [`Failed`](Self::Failed).
+/// address, and the module's claim machine lands on them as follows. Its
+/// `Funding` is [`Confirmed`](Self::Confirmed), and its `Success` is
+/// [`Claimed`](Self::Claimed). Its `Aborted` is **not** [`Failed`](Self::Failed):
+/// an aborted claim leaves the output unspent and still claimable, and the
+/// wallet client reprocesses it as a fresh claim of its own. The deposit
+/// therefore stays [`Confirmed`](Self::Confirmed) across that retry, under
+/// the same operation id whatever identity the underlying client gives each
+/// attempt, until a claim succeeds. [`Failed`](Self::Failed) is terminal and
+/// is emitted only once no further claim is possible, so an application
+/// never sees a still-claimable deposit finalised — and never sees one pass
+/// the guards on [`Sdk::forget_federation`](crate::Sdk::forget_federation).
 ///
 /// Under the first, this follows upstream `fedimint-wallet-client`'s
 /// `DepositStateV2` variant for variant, but not payload for payload.
