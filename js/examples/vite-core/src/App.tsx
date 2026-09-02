@@ -75,6 +75,14 @@ const App = () => {
         if (cancelled) return
 
         if (hasMnemonic) {
+          // Verify user actually backed up the phrase
+          const backupConfirmed =
+            localStorage.getItem('backupConfirmed') === 'true'
+          if (!backupConfirmed) {
+            if (!cancelled) setPhase('onboarding')
+            return
+          }
+
           // Mnemonic exists, try to open the wallet
           try {
             const w = await getWallet()
@@ -215,6 +223,34 @@ const OnboardingScreen = ({
     return String(error)
   }
 
+  // Recover unconfirmed mnemonic on boot
+  useEffect(() => {
+    let cancelled = false
+    const recoverMnemonic = async () => {
+      try {
+        if (step === 'welcome') {
+          const hasMnemonic = await director.hasMnemonicSet()
+          if (
+            hasMnemonic &&
+            localStorage.getItem('backupConfirmed') !== 'true'
+          ) {
+            const existing = await director.getMnemonic()
+            if (cancelled) return
+            setGeneratedMnemonic(existing.join(' '))
+            setShowMnemonic(true)
+            setStep('generate')
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check unconfirmed backup', e)
+      }
+    }
+    recoverMnemonic()
+    return () => {
+      cancelled = true
+    }
+  }, [step])
+
   const handleGenerate = async () => {
     setIsLoading(true)
     setError('')
@@ -238,6 +274,7 @@ const OnboardingScreen = ({
     try {
       const words = generatedMnemonic.split(' ')
       await director.setMnemonic(words)
+      localStorage.setItem('backupConfirmed', 'true')
       await onComplete()
     } catch (err) {
       const msg = extractErrorMessage(err)
@@ -252,6 +289,7 @@ const OnboardingScreen = ({
         try {
           const existing = await director.getMnemonic()
           if (existing.join(' ') === generatedMnemonic) {
+            localStorage.setItem('backupConfirmed', 'true')
             await onComplete()
           } else {
             // CRITICAL: DB has a DIFFERENT mnemonic than what was displayed.
@@ -292,6 +330,7 @@ const OnboardingScreen = ({
     setError('')
     try {
       await director.setMnemonic(words)
+      localStorage.setItem('backupConfirmed', 'true')
       await onComplete()
     } catch (err) {
       const msg = extractErrorMessage(err)
@@ -301,6 +340,7 @@ const OnboardingScreen = ({
           if (existing.join(' ') === words.join(' ')) {
             // The mnemonic in the DB already matches what they are trying to restore.
             // This happens if they generated it, went back without wiping, and pasted it here.
+            localStorage.setItem('backupConfirmed', 'true')
             await onComplete()
             return
           }

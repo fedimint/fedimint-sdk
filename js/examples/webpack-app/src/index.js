@@ -176,7 +176,22 @@ const init = async () => {
 
     const hasMnemonic = await director.hasMnemonicSet()
     if (hasMnemonic) {
-      await completeOnboarding()
+      const backupConfirmed = localStorage.getItem('backupConfirmed') === 'true'
+      if (!backupConfirmed) {
+        const words = await director.getMnemonic()
+        generatedWords = words
+        const container = document.getElementById('mnemonic-words')
+        container.innerHTML = words
+          .map(
+            (word, i) =>
+              `<div class="mnemonic-word"><span class="word-index">${i + 1}.</span><span>${word}</span></div>`,
+          )
+          .join('')
+        showScreen('onboarding-screen')
+        showOnboardingStep('onboarding-generate')
+      } else {
+        await completeOnboarding()
+      }
     } else {
       showScreen('onboarding-screen')
       showOnboardingStep('onboarding-welcome')
@@ -219,6 +234,7 @@ const init = async () => {
     showError('')
     try {
       await director.setMnemonic(generatedWords)
+      localStorage.setItem('backupConfirmed', 'true')
       await completeOnboarding()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -229,6 +245,7 @@ const init = async () => {
         try {
           const existing = await director.getMnemonic()
           if (existing.join(' ') === generatedWords.join(' ')) {
+            localStorage.setItem('backupConfirmed', 'true')
             await completeOnboarding()
           } else {
             showError(
@@ -266,6 +283,7 @@ const init = async () => {
 
       try {
         await director.setMnemonic(words)
+        localStorage.setItem('backupConfirmed', 'true')
         await completeOnboarding()
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -276,6 +294,7 @@ const init = async () => {
           try {
             const existing = await director.getMnemonic()
             if (existing.join(' ') === words.join(' ')) {
+              localStorage.setItem('backupConfirmed', 'true')
               await completeOnboarding()
               return
             }
