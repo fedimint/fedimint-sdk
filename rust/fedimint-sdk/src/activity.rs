@@ -66,11 +66,11 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// | kind | `amount` — the counterparty figure | `fee` |
 /// | --- | --- | --- |
-/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes actually handed over, which the mint may have rounded **up** from the amount requested | what issuing those notes cost |
-/// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes redeemed | the reissuance fee taken out of it |
-/// | [`LnSend`](OperationKind::LnSend) | the invoice amount that reached the payee | the fee bound by the executed quote, which is the fee actually charged |
-/// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer paid | the receive-side fee taken out of it |
-/// | [`OnchainSend`](OperationKind::OnchainSend) | the amount arriving at the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
+/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes handed over, which the mint may have rounded **up** from the amount requested | what issuing those notes cost |
+/// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes presented | the reissuance fee taken out of it |
+/// | [`LnSend`](OperationKind::LnSend) | the invoice amount: what the payee receives on success | the fee bound by the executed quote |
+/// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer is asked for | the receive-side fee taken out of it |
+/// | [`OnchainSend`](OperationKind::OnchainSend) | the amount bound for the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
 /// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated — the peg-in fee, the network cost of sweeping the deposit where the wallet module charges one, the primary module's fees and denomination dust, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
 /// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
@@ -179,8 +179,8 @@ pub struct ActivityItem {
     /// starts `None` and becomes known is written once and never changes
     /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee this wallet was charged on the terms the operation executed
-    /// on, when it is known.
+    /// The fee the operation's terms carry — what this wallet pays for the
+    /// transfer if it succeeds — when it is known.
     ///
     /// Always a separate field from [`ActivityItem::amount`] and never folded
     /// into it: a successful outgoing row debited `amount + fee`, a
@@ -192,7 +192,7 @@ pub struct ActivityItem {
     /// yet — an operation still in flight, or an on-chain deposit whose
     /// claim fee only exists once something has arrived. `Some(zero)` and
     /// `None` are different answers, and a UI should treat them so: the first
-    /// says the transfer was free, the second that this row cannot say yet.
+    /// says the terms carry no fee, the second that this row cannot say yet.
     pub fee: Option<Amount>,
     /// Which way the transfer was to move value: in or out.
     ///
@@ -234,13 +234,17 @@ pub struct ActivityItem {
     pub is_final: bool,
 }
 
-/// Which way value moved.
+/// Which way a transfer moves value.
+///
+/// The intended direction of the operation's terms: it says which way the
+/// balance moves when the operation succeeds, and is the same for a row that
+/// is still pending, was refunded, or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Direction {
-    /// Value came into this federation's balance.
+    /// Value comes into this federation's balance.
     Incoming,
-    /// Value left this federation's balance.
+    /// Value leaves this federation's balance.
     Outgoing,
 }
 
@@ -285,6 +289,7 @@ pub enum Direction {
 /// | [`LnReceiveState::Expired`](crate::LnReceiveState::Expired) | [`Canceled`](Self::Canceled) |
 /// | [`LnReceiveState::Failed`](crate::LnReceiveState::Failed) | [`Failed`](Self::Failed) |
 /// | [`OnchainSendState::Succeeded`](crate::OnchainSendState::Succeeded) | [`Success`](Self::Success) |
+/// | [`OnchainSendState::Refunded`](crate::OnchainSendState::Refunded) | [`Refunded`](Self::Refunded) |
 /// | [`OnchainSendState::Failed`](crate::OnchainSendState::Failed) | [`Failed`](Self::Failed) |
 /// | [`OnchainReceiveState::Claimed`](crate::OnchainReceiveState::Claimed) | [`Success`](Self::Success) |
 /// | [`OnchainReceiveState::Failed`](crate::OnchainReceiveState::Failed) | [`Failed`](Self::Failed) |
@@ -341,15 +346,18 @@ pub enum ActivityStatus {
     Pending,
     /// Completed as intended.
     Success,
-    /// Ended without completing, and without the value being returned by a
-    /// refund or a cancellation.
+    /// Ended without completing, and without the value being known to be
+    /// safe in the balance.
     Failed,
-    /// Ended without completing, with the value returned to the balance —
-    /// a lightning payment that could not be routed, for example.
+    /// Ended without completing, and the value is safe in the balance —
+    /// returned after it was debited, as for a lightning payment that could
+    /// not be routed, or never debited at all, as for a funding transaction
+    /// the federation rejected.
     Refunded,
-    /// Ended without the value moving, because it was called off or simply
-    /// lapsed — reclaimed out-of-band ecash, a lightning receive withdrawn
-    /// before it was paid, or an invoice whose expiry passed unpaid.
+    /// Ended without completing, because the operation was called off or
+    /// simply lapsed: reclaimed out-of-band ecash, whose notes went out and
+    /// came back; a lightning receive withdrawn before it was paid; or an
+    /// invoice whose expiry passed unpaid.
     ///
     /// None of these is alarming, and none of them is
     /// [`Failed`](Self::Failed): nothing went wrong, the transfer just did

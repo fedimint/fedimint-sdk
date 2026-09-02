@@ -28,7 +28,7 @@ use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp,
 /// - **Exact millisatoshis.** Every fee, every total debit, and the net
 ///   amount a deposit credits to the balance
 ///   ([`OnchainQuote::fee`], [`OnchainQuote::total`],
-///   [`OnchainSendDetails::total_debited`],
+///   [`OnchainSendDetails::total`],
 ///   [`OnchainReceiveState::Claimed`],
 ///   [`OnchainReceiveDetails::net_credit`]). A peg-out's cost is not just
 ///   the chain fee for the wallet output: it also covers funding that
@@ -455,25 +455,34 @@ pub struct OnchainReceive {
 
 /// The lifecycle of an on-chain withdrawal.
 ///
-/// The three variants are the application-level lifecycle — accepted,
-/// broadcast, or did not happen — and both wallet module generations map
-/// onto them:
+/// The four variants are the application-level lifecycle — accepted,
+/// broadcast, did not happen with the funds safe, or did not resolve — and
+/// both wallet module generations map onto them. The last two are kept
+/// apart for the reason [`LnSendState`](crate::LnSendState) keeps
+/// `Refunded` and `Failed` apart: whether the money is known to be safe is
+/// exactly what an application has to tell the user.
 ///
-/// - The first wallet module's `WithdrawState` (`Created`, `Succeeded(Txid)`,
-///   `Failed(String)`) maps one-to-one; the only change is that the payloads
-///   are named fields rather than positional ones, so they cross a
-///   foreign-function boundary as records.
+/// - The first wallet module's `WithdrawState` has `Created`,
+///   `Succeeded(Txid)` and `Failed(String)`, and its `Failed` is one thing
+///   only: the funding transaction rejected before anything left the
+///   balance. It maps onto [`Refunded`](Self::Refunded), not
+///   [`Failed`](Self::Failed). The payloads become named fields rather than
+///   positional ones, so they cross a foreign-function boundary as records.
 /// - The second wallet module's send machine has no separate broadcast
 ///   step to observe: its `Funding` is [`Created`](Self::Created), its
-///   `Success(txid)` is [`Succeeded`](Self::Succeeded), and both of its
-///   endings that produce no transaction — `Aborted`, the funding
-///   transaction rejected, and `Failure` — are [`Failed`](Self::Failed).
+///   `Success(txid)` is [`Succeeded`](Self::Succeeded), its `Aborted` — the
+///   funding transaction rejected, nothing debited — is
+///   [`Refunded`](Self::Refunded), and its `Failure` — the funding accepted
+///   and then no transaction produced for it, which upstream documents as a
+///   programming error or a misbehaving federation — is
+///   [`Failed`](Self::Failed), the one ending whose monetary effect is
+///   unresolved.
 ///
 /// The terms the withdrawal was executed on — destination, amount, fee,
-/// total debit — are not here. They belong to what the operation *is*
-/// rather than to where it has got to, they are the same in every state,
-/// and a receipt has to be renderable for a withdrawal that failed as much
-/// as for one that succeeded. They live on [`OnchainSendDetails`].
+/// total — are not here. They belong to what the operation *is* rather
+/// than to where it has got to, they are the same in every state, and a
+/// receipt has to be renderable for a withdrawal that failed as much as for
+/// one that succeeded. They live on [`OnchainSendDetails`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainSendState {
@@ -488,7 +497,27 @@ pub enum OnchainSendState {
         /// The transaction id, for receipts and block explorers.
         txid: Txid,
     },
-    /// Final: the withdrawal did not happen.
+    /// Final: the withdrawal did not happen and the funds are in the
+    /// spendable balance.
+    ///
+    /// The federation rejected the transaction that would have funded the
+    /// withdrawal, so nothing was debited. Like
+    /// [`LnSendState::Refunded`](crate::LnSendState::Refunded) this is a
+    /// success from the SDK's point of view in that the money is safe; the
+    /// user quotes again.
+    Refunded {
+        /// Human-readable explanation. Diagnostic only — not a stable
+        /// contract, and not something to match on.
+        reason: String,
+    },
+    /// Final: the withdrawal failed in a way that did not resolve into a
+    /// clean return.
+    ///
+    /// The funding was accepted and no transaction came of it, so this
+    /// state cannot say where the funds are. Render it as an error the user
+    /// should report, and read the balance for the rest; it is not the
+    /// ordinary "rejected, try again" ending, which is
+    /// [`Refunded`](Self::Refunded).
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -502,7 +531,9 @@ impl OperationState for OnchainSendState {
     fn is_final(&self) -> bool {
         match self {
             OnchainSendState::Created => false,
-            OnchainSendState::Succeeded { .. } | OnchainSendState::Failed { .. } => true,
+            OnchainSendState::Succeeded { .. }
+            | OnchainSendState::Refunded { .. }
+            | OnchainSendState::Failed { .. } => true,
         }
     }
 }
@@ -524,7 +555,7 @@ impl OperationState for OnchainSendState {
 /// [`amount`](OnchainSendDetails::amount) is whole
 /// [`Sats`](crate::Sats) — it is an output in a Bitcoin transaction.
 /// [`fee`](OnchainSendDetails::fee) and
-/// [`total_debited`](OnchainSendDetails::total_debited) are millisatoshi
+/// [`total`](OnchainSendDetails::total) are millisatoshi
 /// [`Amount`](crate::Amount)s — they are federation-side figures that are
 /// not whole satoshis. See the [unit note](Onchain) and
 /// [`OnchainQuote::fee`].
@@ -556,12 +587,12 @@ pub struct OnchainSendDetails {
     /// at quote time. This is what a receipt shows and what a "sent to"
     /// line reads from after a restart.
     pub address: Address,
-    /// The amount arriving at [`address`](OnchainSendDetails::address), in
+    /// The amount bound for [`address`](OnchainSendDetails::address), in
     /// whole satoshis.
     ///
-    /// The counterparty figure: what the recipient receives, gross of this
-    /// wallet's fees. Not what left the balance — that is
-    /// [`total_debited`](OnchainSendDetails::total_debited).
+    /// The counterparty figure of the executed quote: what the recipient
+    /// receives when the withdrawal is broadcast, gross of this wallet's
+    /// fees. Not the debit — that is [`total`](OnchainSendDetails::total).
     pub amount: Sats,
     /// The aggregate fee as quoted, exactly.
     ///
@@ -572,8 +603,14 @@ pub struct OnchainSendDetails {
     /// cannot be re-derived afterwards — the mempool it was estimated
     /// against has moved on.
     pub fee: Amount,
-    /// What the withdrawal debits from the balance: `amount` converted to
-    /// millisatoshis plus [`fee`](OnchainSendDetails::fee).
+    /// The total the withdrawal was authorised for: `amount` converted to
+    /// millisatoshis plus [`fee`](OnchainSendDetails::fee), which is
+    /// [`OnchainQuote::total`].
+    ///
+    /// A term, not an outcome: it is what a
+    /// [`Succeeded`](OnchainSendState::Succeeded) withdrawal debited, and
+    /// what a [`Refunded`](OnchainSendState::Refunded) one never debited at
+    /// all. The state says which; this record says how much was at stake.
     ///
     /// Stored rather than recomputed on read, for two reasons. It is the
     /// exact number the user approved, and a receipt should show what was
@@ -581,7 +618,7 @@ pub struct OnchainSendDetails {
     /// reassembling it means [`Sats::to_amount`](crate::Sats::to_amount),
     /// which is fallible, so every reader would have to handle an overflow
     /// case in order to recover a value that was already known here.
-    pub total_debited: Amount,
+    pub total: Amount,
     /// When the withdrawal was started, by this device's clock.
     ///
     /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time):
@@ -660,10 +697,11 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// The one state that is deliberately not self-contained is
 /// [`Failed`](Self::Failed), which carries only a diagnostic reason even
 /// though a deposit can fail after its transaction was seen. That is what
-/// [`OnchainReceiveDetails`] is for: the address, the transaction, the gross
-/// amount, the fee and the net credit are all on the details record too, and
-/// between that record and the current state an application never needs to
-/// have seen an earlier one.
+/// [`OnchainReceiveDetails`] is for: the address, and the transaction and
+/// gross amount once one was seen, are on the details record too — a fee
+/// and a credit exist only for a claim that settled, so a failed deposit has
+/// none — and between that record and the current state an application
+/// never needs to have seen an earlier one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
@@ -724,9 +762,9 @@ pub enum OnchainReceiveState {
     /// Final: the deposit could not be claimed.
     ///
     /// Carries no transaction and no amount even when one was seen. What
-    /// arrived, and what it was going to cost, are on
-    /// [`OnchainReceiveDetails`], which is where a caller that only ever
-    /// saw this state reads them.
+    /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
+    /// only ever saw this state reads it; no claim settled, so that record
+    /// has no fee and no credit for it either.
     Failed {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -1030,6 +1068,16 @@ mod tests {
     }
 
     #[test]
+    fn onchain_send_state_refunded_is_final() {
+        assert!(
+            OnchainSendState::Refunded {
+                reason: String::new(),
+            }
+            .is_final()
+        );
+    }
+
+    #[test]
     fn onchain_send_state_failed_is_final() {
         assert!(
             OnchainSendState::Failed {
@@ -1123,19 +1171,19 @@ mod tests {
             address: an_address(),
             amount,
             fee,
-            total_debited: amount
+            total: amount
                 .to_amount()
                 .expect("25 000 sat is representable in msat")
                 .checked_add(fee)
                 .expect("no overflow at this magnitude"),
             created_at: Timestamp::from_epoch_millis(1),
         };
-        assert_eq!(details.total_debited, Amount::from_msats(26_234_567));
+        assert_eq!(details.total, Amount::from_msats(26_234_567));
         // The reason the fee and the total are `Amount`s: neither is a whole
         // number of satoshis, so a satoshi-typed accessor would have had to
         // round the debit down.
         assert_eq!(details.fee.to_sats_exact(), None);
-        assert_eq!(details.total_debited.to_sats_exact(), None);
+        assert_eq!(details.total.to_sats_exact(), None);
         // ... while what reaches the destination genuinely is whole sats.
         assert_eq!(details.amount, Sats::from_sats(25_000));
     }
@@ -1208,7 +1256,7 @@ mod tests {
             address: an_address(),
             amount: Sats::from_sats(1),
             fee: Amount::from_msats(1),
-            total_debited: Amount::from_msats(1_001),
+            total: Amount::from_msats(1_001),
             created_at: Timestamp::from_epoch_millis(0),
         };
         let receive = OnchainReceiveDetails {

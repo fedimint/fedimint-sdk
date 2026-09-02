@@ -11,9 +11,8 @@
 //! type-erased [`AnyOperation`] returned when an operation is looked up by
 //! id after a restart, and the [`OperationSupport`] answer that says how far
 //! *this* build can go with such a record — which is not a property of the
-//! record alone, because a build compiled without a kind's accessor, or older
-//! than the schema a state was written at, can read the row and still not
-//! observe the operation.
+//! record alone, because a build older than the schema a state was written
+//! at can read the row and still not observe the operation.
 //!
 //! It also defines the half of an operation that is *not* a state: the
 //! persisted [`OperationDetails`] record each kind keeps — the notes handed
@@ -432,8 +431,8 @@ impl<S: DetailedOperationState> Operation<S> {
     /// [`Internal`](crate::ErrorCode::Internal). Never
     /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation): a
     /// typed handle exists only for an operation this build can observe — a
-    /// kind it knows, an accessor it was compiled with, a state schema it
-    /// reads — and that determination is made once, earlier, by
+    /// kind it knows, at a state schema it reads — and that determination is
+    /// made once, earlier, by
     /// [`AnyOperation::supported_kind`]. The record is never absent for an
     /// operation that exists — it is written in the same storage transaction
     /// as the operation itself — so there is no `Option` here to unwrap.
@@ -993,9 +992,9 @@ pub enum OperationKind {
     /// `None`, exactly as they do for a mismatched kind — and
     /// [`AnyOperation::support`] is where the difference between those
     /// `None`s becomes visible: it reports
-    /// [`OperationSupport::UnknownKind`] for this case and one of two other
-    /// reasons for a record whose kind *is* known but whose state this build
-    /// cannot observe. All of them reach
+    /// [`OperationSupport::UnknownKind`] for this case and
+    /// [`OperationSupport::StateSchemaTooNew`] for a record whose kind *is*
+    /// known but whose state this build cannot observe. Both reach
     /// [`ErrorCode::UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation)
     /// through [`AnyOperation::supported_kind`], which is what makes that code
     /// reachable; this variant is the reason it exists, not the only route to

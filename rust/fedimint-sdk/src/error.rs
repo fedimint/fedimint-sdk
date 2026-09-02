@@ -1299,9 +1299,10 @@ pub enum ErrorCode {
     /// occurs when a facade obtained earlier is used after the federation's
     /// configuration changed to drop that module.
     NotSupported,
-    /// A persisted operation exists but this build cannot interpret it —
-    /// because of its SDK version or its module set. The operation is still
-    /// observable (its kind and id are readable) but not actionable.
+    /// A persisted operation exists but this build cannot interpret it: the
+    /// record names a kind this build does not know, or a state schema newer
+    /// than it reads. The operation is still observable (its id, and its kind
+    /// where known, are readable) but not actionable.
     /// [`OperationSupport`](crate::OperationSupport) names which of the two
     /// it was.
     UnsupportedOperation,

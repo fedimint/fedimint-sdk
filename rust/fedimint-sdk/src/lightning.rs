@@ -272,7 +272,7 @@ impl LnQuote {
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
     /// naming this total and the one the payment would now cost. A charge
     /// that differs from the approval is never an outcome, and the same
-    /// figure is what [`LnSendDetails::total_debited`] then records.
+    /// figure is what [`LnSendDetails::total`] then records.
     ///
     /// What makes that exact rather than a ceiling is that the quote binds
     /// the notes that will fund the payment along with everything else.
@@ -362,8 +362,10 @@ pub struct LnFeeBreakdown {
 /// Available from the quote before paying and from the final state
 /// afterwards, so an application can both preview and receipt it. The
 /// distinction is worth surfacing because it is the difference between a
-/// payment that costs a fee and one that does not, and because "this stayed
-/// inside the federation" is meaningful privacy information for a user.
+/// payment that pays a gateway and one that does not — the federation's own
+/// transaction costs apply either way, see [`LnQuote::fee`] — and because
+/// "this stayed inside the federation" is meaningful privacy information for
+/// a user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LightningRoute {
@@ -544,12 +546,13 @@ pub enum LnSendState {
         /// ever needed a gateway.
         route: LightningRoute,
     },
-    /// Final: the payment did not go through and the funds are back in the
-    /// spendable balance.
+    /// Final: the payment did not go through and the funds are in the
+    /// spendable balance — returned, or never debited.
     ///
     /// This is the ordinary failure of a lightning payment — no route, the
-    /// payee went away, the gateway gave up — and it is a success from the
-    /// SDK's point of view in that the money is safe.
+    /// payee went away, the gateway gave up, or the funding transaction was
+    /// rejected before anything left — and it is a success from the SDK's
+    /// point of view in that the money is safe.
     Refunded,
     /// Final: the payment failed in a way that did not resolve into a
     /// clean refund.
@@ -607,8 +610,8 @@ pub struct LnSendDetails {
     /// back off it, which is what lets a history screen render the payment
     /// without the application having kept the invoice itself.
     pub invoice: Bolt11Invoice,
-    /// What reaches the payee: the invoice's own amount, from
-    /// [`LnQuote::invoice_amount`].
+    /// The invoice's own amount, from [`LnQuote::invoice_amount`]: what the
+    /// payee receives when the payment succeeds.
     pub invoice_amount: Amount,
     /// The aggregate fee the executed quote committed to — [`LnQuote::fee`],
     /// every debit that funded the payment and not only the gateway's cut.
@@ -619,22 +622,22 @@ pub struct LnSendDetails {
     /// failed endings that most need a number to show. Both copies are the
     /// same value from the same quote, written once and never revised.
     pub fee: Amount,
-    /// What the payment was authorised for and funded against:
-    /// [`LnQuote::total`], equal to
-    /// [`invoice_amount`](LnSendDetails::invoice_amount) plus
+    /// The total the payment was authorised for: [`LnQuote::total`], equal
+    /// to [`invoice_amount`](LnSendDetails::invoice_amount) plus
     /// [`fee`](LnSendDetails::fee).
     ///
-    /// This says what left the balance to fund the payment, not what the
-    /// payment finally cost the user: a send that ends in
-    /// [`LnSendState::Refunded`] debited this and then gave it back, which is
-    /// what a receipt for a refund has to be able to say.
+    /// This is a term, not an outcome. It is what
+    /// [`LnSendState::Success`] debited, and what a
+    /// [`LnSendState::Refunded`] send either debited and got back or, when
+    /// the funding transaction was rejected, never debited at all; the state
+    /// says which, this record says how much was at stake.
     ///
     /// Stored rather than left to the caller's arithmetic so that a receipt
     /// screen and the approval screen before it can never disagree about the
     /// number the user said yes to.
-    pub total_debited: Amount,
-    /// How the payment was routed, from [`LnQuote::route`] — whether it left
-    /// the federation through a gateway, and which one.
+    pub total: Amount,
+    /// How the payment is routed, from [`LnQuote::route`] — whether it
+    /// leaves the federation through a gateway, and which one.
     ///
     /// Duplicated onto [`LnSendState::Success`] for the same case-3 reason as
     /// [`fee`](LnSendDetails::fee), and kept here so that "this stayed inside
@@ -691,11 +694,13 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// state. Splitting it out lets an application render "this invoice expired"
 /// as its own outcome.
 ///
-/// [`Failed`](Self::Failed) exists because a payment can arrive and then fail
-/// to become spendable ecash. That is neither [`Canceled`](Self::Canceled),
-/// which this enum reserves for a receive that ended *before* payment, nor
-/// [`Claimed`](Self::Claimed), which would assert the funds are spendable when
-/// they are not.
+/// [`Failed`](Self::Failed) exists because a receive can get past "nobody
+/// paid" and still not end in a credit: a payment can arrive and then fail
+/// to become spendable ecash, or the protocol can go wrong on a contract that
+/// was funded, unwinding the payment before anyone was paid. Neither is
+/// [`Canceled`](Self::Canceled), which this enum reserves for a receive that
+/// ended before anything was funded, nor [`Claimed`](Self::Claimed), which
+/// would assert the funds are spendable when they are not.
 ///
 /// # The v1 mapping is keyed on the reason, and for one reason on the phase
 ///
@@ -732,16 +737,17 @@ impl crate::operation::DetailedOperationState for LnSendState {
 ///
 /// 1. `Timeout` is [`Expired`](Self::Expired). Nobody paid within the
 ///    invoice's lifetime; that is the benign ending.
-/// 2. `ClaimRejected` and `InvalidPreimage` are [`Failed`](Self::Failed),
-///    whatever phase the operation shows. Both presuppose a payment — a
-///    claim is only attempted for a funded contract, and a preimage is only
-///    decrypted for one — so each means somebody paid and the money did not
-///    become spendable notes. The phase cannot be consulted for them, and
-///    must not be: upstream reports its own `Funded` only once the claim
-///    transaction has been accepted, so both of these reasons arrive
-///    *before* it, on a receive still showing
-///    [`WaitingForPayment`](Self::WaitingForPayment). Reading that as a
-///    pre-payment cancellation would be exactly wrong.
+/// 2. `ClaimRejected` and `InvalidPreimage` end in [`Failed`](Self::Failed),
+///    whatever phase the operation shows. Both presuppose a funded contract
+///    — a claim is only attempted for one, and a preimage is only decrypted
+///    for one — so neither is a pre-payment cancellation, though their
+///    economics differ: after `ClaimRejected` the payment is confirmed and
+///    locked to this wallet, while `InvalidPreimage` unwinds it (see the
+///    variant). The phase cannot be consulted for them, and must not be:
+///    upstream reports its own `Funded` only once the claim transaction has
+///    been accepted, so both of these reasons arrive *before* it, on a
+///    receive still showing [`WaitingForPayment`](Self::WaitingForPayment).
+///    Reading that as a pre-payment cancellation would be exactly wrong.
 /// 3. `Rejected` is [`Canceled`](Self::Canceled) on a receive that never got
 ///    past [`WaitingForPayment`](Self::WaitingForPayment) — a genuine refusal
 ///    before payment, with nothing owed to anyone — and
@@ -758,10 +764,17 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// amounts on [`LnReceiveDetails`] are not a substitute: they answer what the
 /// receive was for, not how far it got.
 ///
-/// None of this makes the SDK retry a claim. It maps the terminal events
-/// upstream emits; a claim the lightning client retries on its own emits no
-/// terminal event while it does so, and the receive stays
-/// [`Funded`](Self::Funded) until it does.
+/// **Rule 2 obliges the implementation not to give up early.** A rejected
+/// claim is not the end of the payment: the contract is funded, still locked
+/// to this wallet's key, and the lightning client offers a reclaim for
+/// exactly that case. So `ClaimRejected` moves the receive to
+/// [`Funded`](Self::Funded) — a payment is confirmed — and the SDK drives the
+/// reclaim under the same operation id, whatever operation identity the
+/// underlying client gives the attempt, until the receive is
+/// [`Claimed`](Self::Claimed) or the reclaim itself fails and
+/// [`Failed`](Self::Failed) is the truth. [`Failed`](Self::Failed) is
+/// terminal, so it is only emitted once no further claim is possible; an
+/// application never sees a still-claimable payment finalised.
 ///
 /// lnv2 needs none of this arbitration, because it draws the distinction
 /// itself: its `ReceiveOperationState` has explicit pending and claiming
@@ -793,8 +806,8 @@ pub enum LnReceiveState {
     /// invoice's face value less the receive-side fee — not the invoice's face
     /// value.
     Claimed,
-    /// Final: the receive was cancelled before it was paid — for example
-    /// because the gateway withdrew the offer.
+    /// Final: the receive was called off before anything was funded — for
+    /// example because the gateway withdrew the offer.
     Canceled {
         /// Human-readable explanation. Diagnostic only — not a stable
         /// contract, and not something to match on.
@@ -802,21 +815,30 @@ pub enum LnReceiveState {
     },
     /// Final: the invoice's expiry passed without it being paid.
     Expired,
-    /// Final: the payment arrived but the ecash for it was never issued.
+    /// Final: the receive got past "nobody paid" and no ecash was issued for
+    /// it.
     ///
     /// This is the one genuinely bad outcome of a receive, and it is not the
-    /// ordinary "nobody paid" ending — somebody *did* pay. The payment was
-    /// confirmed and then the step that turns it into spendable notes did
-    /// not complete, so the amount is **not in the balance** and will not
-    /// arrive by waiting. Unlike [`Expired`](Self::Expired) and
-    /// [`Canceled`](Self::Canceled), where nothing moved and nothing is
-    /// owed, this needs an operator's attention: the funds exist somewhere
-    /// between the payer and this wallet and recovering them is not
-    /// something the application can do by retrying.
+    /// ordinary "nobody paid" ending. The amount is **not in the balance**
+    /// and will not arrive by waiting, and no further claim is possible —
+    /// the implementation exhausts the underlying client's reclaim before
+    /// emitting this (see the mapping notes). It covers two economies, and
+    /// the application cannot tell them apart from this state:
     ///
-    /// Render it as an error the user should report, not as an expired
-    /// invoice. Deliberately payload-free; see the enum's mapping notes for
-    /// why, and for how v1 and lnv2 reach (or do not reach) this state.
+    /// - **A payment was confirmed and did not become spendable notes.** The
+    ///   payer is out of pocket, the funds exist somewhere between the payer
+    ///   and this wallet, and recovering them is an operator's job.
+    /// - **The protocol went wrong on a funded contract and unwound the
+    ///   payment.** An invalid preimage is the case: the gateway takes its
+    ///   funding back and fails the payer's payment, so nobody was paid and
+    ///   nothing is owed — but it is a protocol anomaly, not a lapse, and
+    ///   it is not [`Canceled`](Self::Canceled).
+    ///
+    /// Unlike [`Expired`](Self::Expired) and [`Canceled`](Self::Canceled),
+    /// where nothing was ever funded, this warrants attention. Render it as an
+    /// error the user should report, not as an expired invoice. Deliberately
+    /// payload-free; see the enum's mapping notes for why, and for how v1 and
+    /// lnv2 reach (or do not reach) this state.
     Failed,
 }
 
@@ -983,7 +1005,7 @@ mod tests {
             invoice: Bolt11Invoice::from_raw("lnbcrt1000n1pexample".to_owned()),
             invoice_amount: Amount::from_msats(100_000),
             fee: Amount::from_msats(1_050),
-            total_debited: Amount::from_msats(101_050),
+            total: Amount::from_msats(101_050),
             route: LightningRoute::Gateway {
                 gateway_id: GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned()),
             },
@@ -1030,11 +1052,11 @@ mod tests {
     }
 
     #[test]
-    fn ln_send_details_total_debited_is_the_amount_plus_the_aggregate_fee() {
+    fn ln_send_details_total_is_the_amount_plus_the_aggregate_fee() {
         let details = send_details();
         assert_eq!(
             details.invoice_amount.checked_add(details.fee),
-            Some(details.total_debited),
+            Some(details.total),
         );
     }
 
