@@ -69,7 +69,7 @@ const joinFederation = async (event) => {
     joinResult.innerHTML = 'Joined!'
     joinResult.style.color = 'green'
   } catch (e) {
-    joinResult.innerHTML = `Error: ${e}`
+    joinResult.textContent = `Error: ${e}`
     joinResult.style.color = 'red'
   }
 }
@@ -82,7 +82,7 @@ const RedeemECash = async () => {
     redeemResult.innerHTML = 'Redeemed!'
     redeemResult.style.color = 'green'
   } catch (e) {
-    redeemResult.innerHTML = `Error: ${e}`
+    redeemResult.textContent = `Error: ${e}`
     redeemResult.style.color = 'red'
   }
 }
@@ -95,7 +95,7 @@ const sendLightning = async () => {
     payResult.innerHTML = 'Paid!'
     payResult.style.color = 'green'
   } catch (e) {
-    payResult.innerHTML = `Error: ${e}`
+    payResult.textContent = `Error: ${e}`
     payResult.style.color = 'red'
   }
 }
@@ -124,7 +124,7 @@ const GenerateLightningInvoice = async () => {
     InvoiceBtn.disabled = false
   } catch (e) {
     InvoiceBtn.textContent = 'Generate Invoice'
-    error.innerHTML = `Error: ${e}`
+    error.textContent = `Error: ${e}`
     InvoiceBtn.disabled = false
   }
 }
