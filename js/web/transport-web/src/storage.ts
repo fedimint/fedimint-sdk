@@ -26,13 +26,13 @@ export const clearClientStorage = async (): Promise<void> => {
       if (typeof window.indexedDB.databases === 'function') {
         const dbs = await window.indexedDB.databases()
         const deletePromises = dbs
-          .filter((db) => db.name && db.name.includes('fedimint'))
+          .filter((db) => db.name === 'fedimint')
           .map((db) => {
             return new Promise<void>((resolve, reject) => {
               const req = window.indexedDB.deleteDatabase(db.name!)
               req.onsuccess = () => resolve()
               req.onerror = () => reject(req.error)
-              req.onblocked = () => resolve()
+              req.onblocked = () => reject(new Error('Database is blocked by another tab'))
             })
           })
         await Promise.all(deletePromises)
