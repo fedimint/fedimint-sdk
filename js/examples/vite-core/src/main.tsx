@@ -21,8 +21,8 @@ class AppErrorBoundary extends React.Component<
     console.error('Unhandled app error:', error, info)
   }
 
-  handleWipe = async () => {
-    await clearClientStorage()
+  handleWipe = () => {
+    localStorage.setItem('pendingWipe', 'true')
     window.location.reload()
   }
 

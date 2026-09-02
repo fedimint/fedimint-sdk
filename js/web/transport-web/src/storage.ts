@@ -17,9 +17,9 @@ export const clearClientStorage = async (): Promise<void> => {
   } catch (e: any) {
     if (e?.name !== 'NotFoundError') {
       console.error('Failed to wipe OPFS DB:', e)
+      throw e
     }
   }
-
   // 2. Wipe IndexedDB
   try {
     if (typeof window !== 'undefined' && window.indexedDB) {
@@ -37,10 +37,20 @@ export const clearClientStorage = async (): Promise<void> => {
             })
           })
         await Promise.all(deletePromises)
-        console.log('Fedimint IndexedDB databases wiped successfully.')
+      } else {
+        // Fallback for Firefox / older Safari
+        await new Promise<void>((resolve, reject) => {
+          const req = window.indexedDB.deleteDatabase('fedimint')
+          req.onsuccess = () => resolve()
+          req.onerror = () => reject(req.error)
+          req.onblocked = () =>
+            reject(new Error('Database is blocked by another tab'))
+        })
       }
+      console.log('Fedimint IndexedDB databases wiped successfully.')
     }
   } catch (e) {
     console.warn('Failed to clean up IndexedDB:', e)
+    throw e
   }
 }
