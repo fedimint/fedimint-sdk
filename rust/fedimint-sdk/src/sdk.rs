@@ -745,13 +745,11 @@ impl Sdk {
     /// The reclaimable-value condition is the non-obvious one: notes handed
     /// out but not yet redeemed are still worth money to the sender until
     /// their reclaim window closes, and the record needed to reclaim them
-    /// lives in exactly the state this call would delete. Reclaimable
-    /// *incoming* value is guarded too, through the non-final rule rather
-    /// than a condition of its own: a lightning receive whose payment
-    /// arrived but whose claim was rejected sits in the non-final
-    /// [`ClaimRetrying`](crate::LnReceiveState::ClaimRetrying), and the
-    /// local receive keys its retry depends on are likewise state this call
-    /// would delete.
+    /// lives in exactly the state this call would delete. Incoming value
+    /// still settling is guarded too, through the non-final rule rather
+    /// than a condition of its own: a receive whose payment has arrived but
+    /// has not yet been claimed is non-final, and the local receive keys its
+    /// claim depends on are likewise state this call would delete.
     ///
     /// Every guard here is protecting value the caller **could still move**
     /// if they did something else first: spend the balance down, let an
@@ -1190,13 +1188,7 @@ impl SdkBuilder {
     ///    closed with [`Sdk::close_federation`], is revalidated (including
     ///    the module-generation rule described on [`Sdk::join`]) and
     ///    started, and its unfinished operations resume from where they were
-    ///    persisted. Before its handle is handed out, the SDK reconciles any
-    ///    issuance failure the underlying client's executor produced while
-    ///    the SDK was not running — the partial credit such a failure leaves
-    ///    is reconstructed, not observed, per [the *Measuring*
-    ///    section][measuring] of
-    ///    [`EcashReceiveDetails`](crate::EcashReceiveDetails) — so no record
-    ///    is ever readable with a credit still being counted.
+    ///    persisted.
     ///
     ///    A federation whose wallet was still being reconstructed from the
     ///    seed comes back [`Recovering`](FederationStatus::Recovering) — that
@@ -1262,8 +1254,6 @@ impl SdkBuilder {
     /// could not be completed is a
     /// [`Forgetting`](FederationStatus::Forgetting) — neither is a reason for
     /// this call to fail.
-    ///
-    /// [measuring]: crate::EcashReceiveDetails#measuring-what-a-failed-issuance-left-behind
     pub async fn build(self) -> Result<Sdk> {
         unimplemented!()
     }

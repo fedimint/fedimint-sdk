@@ -601,7 +601,6 @@ impl From<Diagnostic> for Error {
 /// | `MixedModuleGenerations` | 1 | `modules: list<record { kind: str, generation: u32 }>` |
 /// | `QuoteExpired` | 1 | `expires_at: u64` — epoch milliseconds, `already_executed: bool` |
 /// | `QuoteTermsChanged` | 1 | `quoted_total: u64`, `current_total: u64` — millisatoshis |
-/// | `FundingFailed` | 1 | `operation_id: str` |
 /// | `BalanceNotEmpty` | 1 | `remaining: u64` — millisatoshis |
 /// | `StorageInUse` | 1 | `location: str` |
 /// | `SeedMismatch` | 1 | `location: str` |
@@ -1040,19 +1039,6 @@ pub enum ErrorDetails {
         /// The total debit the same payment would cost now.
         current_total: Amount,
     },
-    /// An ecash send's funding failed after its operation was durably
-    /// recorded. Accompanies [`ErrorCode::FundingFailed`].
-    ///
-    /// The id is the payload's whole point: the failed call returns no
-    /// handle, so this detail is the caller's only deterministic route to
-    /// the persisted operation that receipts whatever the funding moved —
-    /// activity scanning cannot disambiguate concurrent identical sends.
-    FundingFailed {
-        /// The id of the send operation the failed call had persisted,
-        /// resolvable with
-        /// [`Federation::operation`](crate::Federation::operation).
-        operation_id: crate::OperationId,
-    },
     /// A federation was asked to be permanently forgotten while spendable
     /// balance remained in it. Accompanies [`ErrorCode::BalanceNotEmpty`].
     BalanceNotEmpty {
@@ -1152,7 +1138,6 @@ impl ErrorDetails {
             ErrorDetails::MixedModuleGenerations { .. } => "MixedModuleGenerations",
             ErrorDetails::QuoteExpired { .. } => "QuoteExpired",
             ErrorDetails::QuoteTermsChanged { .. } => "QuoteTermsChanged",
-            ErrorDetails::FundingFailed { .. } => "FundingFailed",
             ErrorDetails::BalanceNotEmpty { .. } => "BalanceNotEmpty",
             ErrorDetails::StorageInUse { .. } => "StorageInUse",
             ErrorDetails::SeedMismatch { .. } => "SeedMismatch",
@@ -1180,7 +1165,6 @@ impl ErrorDetails {
             | ErrorDetails::MixedModuleGenerations { .. }
             | ErrorDetails::QuoteExpired { .. }
             | ErrorDetails::QuoteTermsChanged { .. }
-            | ErrorDetails::FundingFailed { .. }
             | ErrorDetails::BalanceNotEmpty { .. }
             | ErrorDetails::StorageInUse { .. }
             | ErrorDetails::SeedMismatch { .. }
@@ -1408,21 +1392,6 @@ pub enum ErrorCode {
     /// [`ErrorDetails::QuoteTermsChanged`] carries the total debit that was
     /// quoted and the total it moved to.
     QuoteChanged,
-    /// An ecash send's funding failed after the attempt was durably
-    /// recorded, and the persisted operation — not this error — is the
-    /// receipt for whatever moved.
-    ///
-    /// This is not a refusal but a report about money possibly in motion:
-    /// the funding transaction may have been accepted before note
-    /// production failed, so the caller must not treat the failed call as
-    /// "nothing happened". [`ErrorDetails::FundingFailed`] carries the
-    /// operation id, which is the *only* deterministic route to the record
-    /// — the call that failed returned no handle, and scanning activity is
-    /// ambiguous under concurrent identical sends. Resolve it with
-    /// [`Federation::operation`](crate::Federation::operation) and read the
-    /// realized figures from the details once the operation settles at
-    /// [`FundingFailed`](crate::EcashSendState::FundingFailed).
-    FundingFailed,
     /// The bolt11 invoice specifies no amount, and such an invoice cannot be
     /// paid.
     ///
@@ -1525,9 +1494,6 @@ mod tests {
             ErrorDetails::QuoteTermsChanged {
                 quoted_total: Amount::from_msats(101_000),
                 current_total: Amount::from_msats(103_500),
-            },
-            ErrorDetails::FundingFailed {
-                operation_id: crate::OperationId::from_raw("op-0123".to_owned()),
             },
             ErrorDetails::BalanceNotEmpty {
                 remaining: Amount::from_msats(7_000),

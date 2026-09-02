@@ -131,11 +131,10 @@
 //!         let mut updates = payment.updates();
 //!         while let Some(state) = updates.next().await? {
 //!             match state {
-//!                 LnSendState::Success { preimage, quoted_fee, .. } => {
-//!                     // The fee the quote committed to. What the payment
-//!                     // finally cost is on `Operation::details`, because
-//!                     // only an accepted transaction fixes it.
-//!                     println!("paid, quoted fee {quoted_fee}, preimage {preimage}");
+//!                 LnSendState::Success { preimage, fee, .. } => {
+//!                     // The fee the quote bound, and therefore the fee that
+//!                     // was charged.
+//!                     println!("paid, fee {fee}, preimage {preimage}");
 //!                 }
 //!                 // Not an error: the payment did not go through, and the
 //!                 // money is back in the balance.
@@ -494,5 +493,5 @@ pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, Sd
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
-    Mnemonic, NetMovement, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
+    Mnemonic, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
 };
