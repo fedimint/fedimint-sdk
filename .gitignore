@@ -26,6 +26,7 @@ tasks
 
 # Rust
 rust/fedimint-client-uniffi/target/
+rust/fedimint-sdk/target/
 
 .conductor
 .claude
