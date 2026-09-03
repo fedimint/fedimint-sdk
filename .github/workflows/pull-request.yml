@@ -6,8 +6,6 @@ on:
       - 'js/react-native/react-native/**'
       - 'js/react-native/react-native-bindings/**'
       - 'rust/fedimint-client-uniffi/**'
-      - 'rust/fedimint-sdk/**'
-      - '.github/workflows/rust-sdk-ci.yaml'
       - 'nix/**'
   workflow_dispatch:
 
