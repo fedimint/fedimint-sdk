@@ -7,8 +7,8 @@
 //!
 //! - [`Mnemonic`] parses with `FromStr` but has **no `Display`**, and no
 //!   `Debug` either. That is a central safety contract of this crate rather
-//!   than an omission — a seed phrase must not be formattable into a log
-//!   line — and the words come out only through the explicit
+//!   than an omission: a seed phrase must not be formattable into a log
+//!   line, and the words come out only through the explicit
 //!   [`Mnemonic::words`]. See that type for the full rationale.
 //! - [`Network`] is a small `Copy` enum, matched on rather than printed or
 //!   parsed.

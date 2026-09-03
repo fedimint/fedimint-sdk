@@ -3,7 +3,7 @@
 /// A Bitcoin address, for on-chain withdrawals.
 ///
 /// Parsing an `Address` only checks that the string is a well-formed
-/// address for *some* Bitcoin network — it does not yet know which
+/// address for *some* Bitcoin network: it does not yet know which
 /// federation it will be used with, so it cannot check network agreement at
 /// parse time. That check happens later, when the address is used to
 /// request an on-chain quote against a specific federation: if the
@@ -45,7 +45,7 @@ impl core::str::FromStr for Address {
 
     /// Parses a Bitcoin address from its canonical string form. Returns
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
-    /// malformed value. Does not check network agreement — see the type
+    /// malformed value. Does not check network agreement; see the type
     /// documentation.
     fn from_str(_s: &str) -> Result<Self, Self::Err> {
         unimplemented!()

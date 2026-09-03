@@ -55,7 +55,7 @@ impl core::str::FromStr for FederationId {
 /// federation.
 ///
 /// `OperationId`s are generated when an operation is created and are stable
-/// for that operation's entire lifetime, including across process restarts —
+/// for that operation's entire lifetime, including across process restarts:
 /// they are what operation lookup and activity history use to name a
 /// specific piece of ongoing or past work. The id alone does not reveal what
 /// kind of operation it names; a dedicated accessor elsewhere in the crate
@@ -187,7 +187,7 @@ impl core::str::FromStr for Txid {
 /// A `Cursor` is obtained only from a previous page of activity results and
 /// is meant to be passed back verbatim to fetch the following page. Callers
 /// must not construct one from an arbitrary string or attempt to interpret
-/// its contents — its internal format is free to change between SDK
+/// its contents: its internal format is free to change between SDK
 /// versions since it is never meant to be handled as anything but an opaque
 /// value obtained from, and returned to, this crate. It still implements
 /// [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr) like
