@@ -19,24 +19,12 @@ use super::Amount;
 /// # `Display` prints the notes, `Debug` never does
 ///
 /// This value **is** the money: anyone holding the string can redeem it, so
-/// it is a bearer instrument in exactly the way a banknote is. The two
-/// formatting traits therefore mean different things here, and the split is
-/// deliberate:
-///
-/// - **[`Display`](core::fmt::Display) is the escape hatch**, and it is the
-///   only one. Printing the notes is the whole point of the type — they have
-///   to reach a receiver somehow — so a caller that writes `{notes}` is
-///   making a visible, deliberate choice to emit spendable value, the same
-///   way [`Mnemonic::words`](crate::Mnemonic::words) is the deliberate way to
-///   get a seed phrase out.
-/// - **[`Debug`] is not an escape hatch** and is redacted. `{:?}` is what
-///   application logging, crash reporters, tracing spans, and `assert!`
-///   failure messages reach for, and none of those is a place to put a
-///   bearer token. Derived `Debug` would also leak *transitively*: a struct
-///   holding a `Notes` prints its fields, so [`EcashSend`](crate::EcashSend)
-///   — which does derive `Debug` — would print the token merely by being
-///   logged, without anyone ever formatting a `Notes` on purpose. Redacting
-///   here fixes that everywhere at once.
+/// it is a bearer instrument in exactly the way a banknote is.
+/// [`Display`](core::fmt::Display) prints the notes and is the deliberate,
+/// visible way to get the value out. [`Debug`] is redacted instead, because
+/// it is what logging, crash reporters and `assert!` failures reach for, and
+/// a struct holding a `Notes` (such as [`EcashSend`](crate::EcashSend))
+/// would otherwise print the token merely by being logged.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Notes {
     notes: String,
@@ -57,7 +45,7 @@ impl Notes {
     ///
     /// This reads the value encoded in the notes themselves and does not
     /// contact the federation, so it does not confirm the notes are still
-    /// redeemable (they could already have been spent or reclaimed) — only
+    /// redeemable (they could already have been spent or reclaimed), only
     /// a receive call does that.
     pub fn value(&self) -> Amount {
         unimplemented!()
@@ -66,26 +54,16 @@ impl Notes {
 
 impl core::fmt::Debug for Notes {
     /// Prints `Notes(<redacted>)`: the type name and nothing else, never the
-    /// token.
-    ///
-    /// Hand-written rather than derived because the wrapped string is
-    /// spendable value. `Debug` output ends up in log lines, crash reports,
-    /// tracing spans, and `assert!` messages without anybody deciding that it
-    /// should, and a derive would additionally leak the token through every
-    /// struct that contains one — [`EcashSend`](crate::EcashSend) derives
-    /// `Debug`, so `{:?}` on it would print the notes it carries. The value
-    /// is still reachable, deliberately and visibly, through
-    /// [`Display`](core::fmt::Display).
+    /// token. The value is still reachable, deliberately and visibly,
+    /// through [`Display`](core::fmt::Display).
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Notes(<redacted>)")
     }
 }
 
 impl core::fmt::Display for Notes {
-    /// Writes the ecash token itself, in its canonical string form.
-    ///
-    /// This is the deliberate way to get the value out — to show a QR code,
-    /// to put it in a message — and it is the *only* way; see the type-level
+    /// Writes the ecash token itself, in its canonical string form. This is
+    /// the deliberate way to get the value out; see the type-level
     /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.notes;

@@ -3,7 +3,7 @@
 /// A millisatoshi amount.
 ///
 /// This is the unit used for federation balances, ecash notes, and
-/// lightning payments — anywhere the protocol itself operates in
+/// lightning payments: anywhere the protocol itself operates in
 /// millisatoshis. All arithmetic is checked: [`Amount::checked_add`] and
 /// [`Amount::checked_sub`] return `None` on overflow or underflow instead of
 /// panicking or wrapping, and there is no `+`/`-` operator overload.
@@ -15,7 +15,7 @@
 ///
 /// Across a foreign-function boundary (for example, into JavaScript via
 /// wasm), this type is represented as a 64-bit integer and must cross as a
-/// `BigInt`, never a native `number` — a JS `number` cannot represent the
+/// `BigInt`, never a native `number`: a JS `number` cannot represent the
 /// full `u64` range without silent precision loss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Amount(u64);

@@ -33,7 +33,7 @@ impl Timestamp {
 impl core::fmt::Display for Timestamp {
     /// Formats as the bare integer epoch-millisecond value, e.g.
     /// `"1700000000000"`. This is a machine-readable representation, not a
-    /// human calendar rendering — callers that need the latter should
+    /// human calendar rendering: callers that need the latter should
     /// convert `epoch_millis()` with their platform's date/time formatting.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)

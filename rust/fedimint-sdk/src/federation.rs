@@ -17,7 +17,7 @@ use crate::{
 /// [activity](Federation::activity).
 ///
 /// Like the other handles in this crate it is a cheap clone over shared
-/// state — every clone talks to the same running federation client — and it
+/// state: every clone talks to the same running federation client, and it
 /// is `Send + Sync` on native targets, with the same types compiled for a
 /// single-threaded host on wasm.
 ///
@@ -32,7 +32,7 @@ use crate::{
 ///
 /// "Fails with
 /// [`FederationClosed`](crate::ErrorCode::FederationClosed)" applies to the
-/// **fallible** calls — [`balance`](Federation::balance),
+/// **fallible** calls: [`balance`](Federation::balance),
 /// [`operation`](Federation::operation),
 /// [`activity`](Federation::activity), [`backup`](Federation::backup), and
 /// every call made through a facade. The rest of this type returns plain
@@ -52,8 +52,8 @@ use crate::{
 ///   federation had that module, closed or not, and the failure surfaces
 ///   from the facade call as
 ///   [`FederationClosed`](crate::ErrorCode::FederationClosed). Returning
-///   `None` instead would be a lie with a specific documented meaning —
-///   "this federation has no mint module" — and would make a closed
+///   `None` instead would be a lie with a specific documented meaning:
+///   "this federation has no mint module", and would make a closed
 ///   federation indistinguishable from one that never supported ecash at
 ///   all. [`meta`](Federation::meta), which is unconditional, behaves the
 ///   same way.
@@ -90,7 +90,7 @@ impl Federation {
     /// is requested, failing with
     /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on
     /// disagreement. There is no second check at send time, because
-    /// [`Onchain::send`](crate::Onchain::send) takes only a quote — the
+    /// [`Onchain::send`](crate::Onchain::send) takes only a quote: the
     /// address is bound into the quote when it is issued.
     pub fn network(&self) -> Network {
         unimplemented!()
@@ -105,9 +105,9 @@ impl Federation {
     /// The ecash balance: the value this instance currently holds as its
     /// own, uncommitted notes.
     ///
-    /// Value that is committed to an in-flight operation — funding a
+    /// Value that is committed to an in-flight operation, funding a
     /// lightning payment, sitting in out-of-band notes that have not been
-    /// redeemed or reclaimed, waiting on an on-chain deposit to confirm — is
+    /// redeemed or reclaimed, waiting on an on-chain deposit to confirm, is
     /// not counted here.
     ///
     /// Holding is not spending, and this method takes no position on the
@@ -115,7 +115,7 @@ impl Federation {
     /// federation's status, not by this number. The case where the two
     /// diverge is a recovery-locked federation: while the rescan proceeds
     /// the balance reported here is partial, still moving, and worth
-    /// showing as progress — yet none of it is spendable, and every spend
+    /// showing as progress, yet none of it is spendable, and every spend
     /// or receive is refused with
     /// [`Recovering`](crate::ErrorCode::Recovering) no matter what this
     /// method returned. It settles when recovery finishes. On a
@@ -158,26 +158,14 @@ impl Federation {
 
     /// The ecash facade, or `None` if this federation has no mint module.
     ///
-    /// # Why `Option` and not an error
+    /// `None` means exactly one thing: this federation has no mint module. It does not mean
+    /// "closed": a closed federation that has a mint module still returns `Some`, and the
+    /// facade's calls fail with
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). See the type documentation.
     ///
-    /// Capability discovery must not be error-driven. An application needs
-    /// to know whether to draw a "send ecash" button *before* the user
-    /// presses it; a design where the only way to find out is to try the
-    /// operation and catch a failure forces every UI to either attempt
-    /// operations speculatively or hard-code assumptions about federation
-    /// configuration. Returning `None` makes the absent capability an
-    /// ordinary value to branch on.
-    ///
-    /// [`ErrorCode::NotSupported`](crate::ErrorCode::NotSupported) still
-    /// exists, but only for the narrow residual case: a facade that was
-    /// obtained while the module was present, then used after the
-    /// federation's configuration changed to drop it.
-    ///
-    /// `None` therefore means one thing only, and it is not "closed": a
-    /// closed federation that has a mint module still returns `Some`, and
-    /// the facade's calls fail with
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). See the
-    /// type documentation.
+    /// [`ErrorCode::NotSupported`](crate::ErrorCode::NotSupported) covers the narrower case of
+    /// a facade obtained while the module was present, then used after the federation's
+    /// configuration changed to drop it.
     pub fn ecash(&self) -> Option<Ecash> {
         unimplemented!()
     }
@@ -213,7 +201,7 @@ impl Federation {
     /// handle to the operation that has been running all along.
     ///
     /// The call is asynchronous and fallible because it reads persistent
-    /// state — the operation log lives in storage, not in memory, and a
+    /// state: the operation log lives in storage, not in memory, and a
     /// lookup can fail the way any read can.
     ///
     /// `Ok(None)` means precisely that this federation has no operation
@@ -246,7 +234,7 @@ impl Federation {
     /// each following one. At most `limit` items are returned; fewer is
     /// normal, and an empty page with no cursor means the end.
     ///
-    /// The history is *local* — see [`ActivityItem`](crate::ActivityItem)
+    /// The history is *local*, see [`ActivityItem`](crate::ActivityItem)
     /// for exactly what that excludes.
     ///
     /// # Errors
@@ -273,8 +261,8 @@ impl Federation {
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
     /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
-    /// recovery is incomplete — which is not the same as still running, since
-    /// a recovery that stopped short leaves the lock in place — and
+    /// recovery is incomplete, which is not the same as still running, since
+    /// a recovery that stopped short leaves the lock in place, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn backup(&self) -> Result<()> {
         unimplemented!()
@@ -318,25 +306,15 @@ impl BalanceUpdates {
     /// The first call returns the current balance immediately; each later
     /// call resolves when the balance changes.
     ///
-    /// # Why this is not `Option`-shaped
-    ///
-    /// [`OperationUpdates::next`](crate::OperationUpdates::next) returns
-    /// `Result<Option<_>>`, where `Ok(None)` means "a final state was
-    /// observed and the subscription closed cleanly". A balance has no
-    /// final state — a federation's balance can always change again — so
-    /// that case simply cannot arise here, and an `Option` would be a
-    /// permanently-`Some` wrapper that every caller has to unwrap for no
-    /// reason. The only way this stream ends is the federation being closed
-    /// or the SDK shutting down, and that is a condition callers must
-    /// notice, so it surfaces as
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed). The
-    /// asymmetry with `OperationUpdates` is deliberate and reflects a real
-    /// difference between the two streams.
+    /// Unlike [`OperationUpdates::next`](crate::OperationUpdates::next), this never resolves
+    /// to a clean end: a balance has no final state, so the only way this stream ends is the
+    /// federation being closed or the SDK shutting down, reported as an error rather than
+    /// folded into an `Option`.
     ///
     /// # Errors
     ///
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once the
-    /// federation is closed or the SDK shut down — the terminal condition
+    /// federation is closed or the SDK shut down, the terminal condition
     /// for this stream. Other errors are infrastructure failures:
     /// [`Storage`](crate::ErrorCode::Storage) or
     /// [`Internal`](crate::ErrorCode::Internal).
