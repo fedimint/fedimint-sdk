@@ -4,42 +4,29 @@ use std::sync::Arc;
 
 use crate::{Amount, Notes, Operation, OperationState, Result, Timestamp};
 
-/// The ecash facade for one federation, backed by its mint module.
+/// The ecash facade for one federation.
 ///
 /// Obtained from [`Federation::ecash`](crate::Federation::ecash), which
-/// returns `None` when the federation has no mint module. Like the other
-/// facades it is a cheap clone over the federation's shared state.
+/// returns `None` when the federation has no mint module.
 ///
 /// Ecash here means *out-of-band* ecash: notes the sender takes out of
 /// their balance and hands to a receiver over some channel the federation
-/// knows nothing about — a chat message, a QR code, a file. The receiver
+/// knows nothing about, a chat message, a QR code, a file. The receiver
 /// redeems them against the same federation. Ordinary in-federation
 /// spending is not a separate concept; it is what lightning and on-chain
 /// operations do with the balance.
 ///
-/// # Sending is quoted, like every other outgoing value in this crate
-///
-/// [`Ecash::quote`] plans a send and [`Ecash::send`] executes that plan.
-/// The indirection is not ceremony: the value a send takes out of the
-/// balance is generally *more* than the amount asked for, because a mint
-/// issues notes in fixed denominations and rounds a request up, and because
-/// assembling the notes can itself cost a fee. Quoting is what puts the real
-/// figure in front of a user before they agree to it, exactly as
-/// [`Lightning::quote`](crate::Lightning::quote) and
-/// [`Onchain::quote`](crate::Onchain::quote) do.
-///
-/// Receiving is not quoted, because it presents the caller with no decision:
-/// see [`Ecash::receive`].
-///
-/// # The recovery lock
+/// [`Ecash::quote`] plans a send and [`Ecash::send`] executes that plan,
+/// exactly as [`Lightning::quote`](crate::Lightning::quote) and
+/// [`Onchain::quote`](crate::Onchain::quote) do for their kinds of value.
+/// Receiving is not quoted, because it presents the caller with no
+/// decision: see [`Ecash::receive`].
 ///
 /// Every call on this facade, sending and receiving alike, is refused with
 /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for the
-/// federation is **incomplete**. Incomplete is not the same as "still
-/// running": a recovery that stopped without finishing leaves the lock in
-/// place, and only a recovery that runs to completion releases it. A wallet
-/// whose note set was never fully discovered is not safe to spend from
-/// either way, since a note the rescan never reached can be double-spent.
+/// federation is incomplete. A wallet whose note set was never fully
+/// discovered is not safe to spend from, since a note the rescan never
+/// reached can be double-spent.
 #[derive(Debug, Clone)]
 pub struct Ecash {
     inner: Arc<EcashInner>,
@@ -48,47 +35,29 @@ pub struct Ecash {
 impl Ecash {
     /// Plans an out-of-band send and returns an executable quote for it.
     ///
-    /// Quoting is a separate step from sending because the value that leaves
-    /// the balance is **not** the value the caller asked for, and the
-    /// difference is the caller's money. Two things move it:
+    /// The value that leaves the balance is generally *more* than `amount`:
+    /// a mint issues notes in fixed denominations, so the receiver ends up
+    /// with the smallest value the mint can represent at or above `amount`,
+    /// and assembling that value can itself cost a fee. The returned
+    /// [`EcashQuote`] is that plan, frozen: it binds the requested amount,
+    /// the note value that will actually be produced, the fee and the total
+    /// debit. Show it, then hand it back to [`Ecash::send`], which executes
+    /// exactly what was shown.
     ///
-    /// - **The mint rounds up.** Notes exist in fixed denominations, so what
-    ///   the receiver can redeem is the smallest value the mint can
-    ///   represent at or above `amount` — mintv2 rounds a request up to a
-    ///   multiple of 512 msat — and the sender is debited that larger figure
-    ///   rather than the one they typed.
-    /// - **Assembling the notes can cost a fee.** When the wallet holds no
-    ///   combination of notes that adds up, a larger note has to be
-    ///   re-issued into smaller ones first, and that self-reissue is charged
-    ///   for: the mint's own fee, the primary module's fee, and whatever the
-    ///   federation's configuration says about change and dust. Both
-    ///   published mint generations expose a send fee quote for exactly this
-    ///   reason.
-    ///
-    /// The returned [`EcashQuote`] is that plan, frozen: it binds the
-    /// requested amount, the note value that will actually be produced, the
-    /// fee, the total debit, and the note inventory and federation
-    /// configuration all of those were computed against. Show it, then hand
-    /// it back to [`Ecash::send`], which executes exactly what was shown. A
-    /// user cannot be quoted one debit and charged another, and no send takes
-    /// value the caller was never shown.
-    ///
-    /// `amount` is a floor rather than a promise — the least the receiver
+    /// `amount` is a floor rather than a promise, the least the receiver
     /// must be able to redeem. [`EcashQuote::notes_value`] is what they will
     /// actually be able to redeem, and it is the number to put in front of a
     /// user beside [`EcashQuote::fee`] and [`EcashQuote::total`].
     ///
     /// Quoting neither debits the balance nor records anything: it plans.
-    /// Quotes expire, and a plan that is no longer executable is refused by
-    /// [`Ecash::send`] rather than silently re-derived — see
-    /// [`EcashQuote::expires_at`].
+    /// Quotes expire; see [`EcashQuote::expires_at`].
     ///
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount,
     /// which no note can carry,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance) when
-    /// the balance cannot cover the rounded-up note value plus the fee —
+    /// the balance cannot cover the rounded-up note value plus the fee,
     /// which can happen for an `amount` the balance would have covered
     /// exactly, and is itself a reason for this call to exist,
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for
@@ -100,6 +69,15 @@ impl Ecash {
     /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, amount: Amount) -> Result<EcashQuote> {
+        // Implementation notes (delete once implemented):
+        // - mintv2 rounds a requested amount up to a multiple of 512 msat; that rounded
+        //   value is `EcashQuote::notes_value`.
+        // - When the wallet holds no combination of notes that adds up, a larger note is
+        //   re-issued into smaller ones first; that self-reissue is what `EcashQuote::fee`
+        //   charges for (the mint's own fee, the primary module's fee, change and dust).
+        // - Bind the note inventory and federation configuration used into the quote, so
+        //   a change to either invalidates it as `QuoteChanged` rather than silently
+        //   re-deriving a different plan.
         unimplemented!()
     }
 
@@ -107,15 +85,13 @@ impl Ecash {
     /// out-of-band notes.
     ///
     /// The quote is consumed: it describes one send and can fund one send.
-    /// Execution follows the plan exactly — same note value, same fee, same
-    /// total debit — or it does not happen:
+    /// Execution follows the plan exactly, same note value, same fee, same
+    /// total debit, or it does not happen:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
-    /// quote depends on moved underneath it (the notes it planned to spend
-    /// went to another operation, the federation's fee schedule or
-    /// configuration changed). Both mean the same thing to a caller: quote
-    /// again and re-confirm with the user.
+    /// quote depends on moved underneath it. Both mean the same thing to a
+    /// caller: quote again and re-confirm with the user.
     ///
     /// The balance is debited by [`EcashQuote::total`] and the returned
     /// [`EcashSend::notes`] are ready to hand to a receiver. Until someone
@@ -126,21 +102,13 @@ impl Ecash {
     ///
     /// Notes that go unredeemed do not vanish. The SDK schedules an
     /// automatic reclaim, so a send to someone who never opens the message
-    /// eventually returns to the sender's balance instead of being lost.
-    /// The default period is **one day**, matching what the existing
-    /// JavaScript SDK uses today; the exact value is subject to
-    /// confirmation when this facade is implemented. The moment it is
-    /// scheduled for is persisted as [`EcashSendDetails::reclaim_at`], so an
-    /// application that restarted can still say when the notes stop being
-    /// redeemable. Its outcome is reported through the state machine like
-    /// any other: [`EcashSendState::Canceled`] when the reclaim wins,
+    /// eventually returns to the sender's balance instead of being lost. The
+    /// moment it is scheduled for is persisted as
+    /// [`EcashSendDetails::reclaim_at`], so an application that restarted can
+    /// still say when the notes stop being redeemable. Its outcome is
+    /// reported as an operation state, like any other:
+    /// [`EcashSendState::Canceled`] when the reclaim wins,
     /// [`EcashSendState::Redeemed`] when the receiver got there first.
-    ///
-    /// The quote is the only argument, deliberately. Tuning the reclaim
-    /// period, or constraining note selection, belongs on a later additive
-    /// `quote_with`-style call, where it becomes part of the plan the user
-    /// approves, rather than on an options struct here, where it could
-    /// change what the approved quote costs.
     ///
     /// # Errors
     ///
@@ -157,6 +125,19 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
+        // Implementation notes (delete once implemented):
+        // - Re-check the note inventory and federation configuration the quote was bound
+        //   to before spending; a change to either is `QuoteChanged`, not a different debit.
+        // - Write `EcashSendDetails` in the same storage transaction that creates the
+        //   operation, so a process that dies right after this call still finds the notes,
+        //   the amounts and the reclaim time on the next start.
+        // - Schedule the automatic reclaim to fire one day after send, matching the
+        //   existing JavaScript SDK's default. The exact value is subject to confirmation
+        //   when this facade is implemented.
+        // - Tuning the reclaim period, or constraining note selection, belongs on a later
+        //   additive `quote_with`-style call rather than an options struct here, so it
+        //   becomes part of the plan the user approves rather than changing an approved
+        //   quote's cost after the fact.
         unimplemented!()
     }
 
@@ -168,14 +149,12 @@ impl Ecash {
     /// [`EcashReceiveState::Done`] is the point at which the value is
     /// spendable.
     ///
-    /// There is deliberately no quote on this side, because a redemption
-    /// presents the caller with no decision: the notes carry the value they
-    /// carry, the reissuance fee comes out of it rather than being charged on
-    /// top of it, and the only alternative to accepting both is not
-    /// redeeming at all. Nothing is hidden by that — the gross value, the
-    /// fee, and the net credit are all recorded in [`EcashReceiveDetails`]
-    /// before this call returns, so a receipt never depends on having
-    /// watched the operation.
+    /// There is no quote on this side, because a redemption presents the
+    /// caller with no decision: the notes carry the value they carry, and
+    /// the reissuance fee comes out of it rather than being charged on top of
+    /// it. The gross value, the fee and the net credit are all recorded in
+    /// [`EcashReceiveDetails`] before this call returns, so a receipt never
+    /// depends on having watched the operation.
     ///
     /// Redeem promptly. Notes are subject to the sender's automatic reclaim
     /// (see [`Ecash::send`]), and losing the race means the operation ends
@@ -193,6 +172,10 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self, notes: &Notes) -> Result<Operation<EcashReceiveState>> {
+        // Implementation notes (delete once implemented):
+        // - Compute the reissuance fee locally from the notes and the federation's fee
+        //   schedule, before submitting, so `EcashReceiveDetails` can be written in full
+        //   in the same storage transaction that creates the operation.
         unimplemented!()
     }
 }
@@ -201,41 +184,22 @@ impl Ecash {
 ///
 /// Produced by [`Ecash::quote`] and consumed by [`Ecash::send`]. As with
 /// [`LnQuote`](crate::LnQuote) and [`OnchainQuote`](crate::OnchainQuote),
-/// the accessors expose exactly what a user must approve and nothing else:
-/// which notes will be spent, and whether they have to be re-issued to
-/// assemble the value, is the SDK's business, and the contract with a caller
-/// is "display these numbers, then give the quote back" rather than "inspect
-/// and reassemble the plan".
+/// the accessors expose exactly what a user must approve: display these
+/// numbers, then give the quote back.
 ///
-/// # Why the requested amount and the actual note value differ
-///
-/// This asymmetry is the entire reason this quote exists, and it is the
-/// ordinary case rather than an edge case:
-///
-/// - **A mint issues notes in fixed denominations.** A request for 1234 msat
-///   cannot be met exactly, so it is satisfied with notes worth *more* — the
-///   smallest value the mint can represent at or above the request. mintv2
-///   makes this explicit by rounding the requested value up to a multiple of
-///   512 msat. The rounding is always upward, so
-///   [`notes_value`](EcashQuote::notes_value) is never below
-///   [`requested_amount`](EcashQuote::requested_amount).
-/// - **Assembling those notes can cost a fee.** If the notes already held
-///   cannot be combined into the value, some of them are re-issued to split
-///   them, and the mint, the primary module, and the federation's change and
-///   dust rules all charge for that.
-///
-/// So the debit is [`notes_value`](EcashQuote::notes_value) plus
-/// [`fee`](EcashQuote::fee), and both can exceed what the user typed. An
-/// interface must show [`total`](EcashQuote::total) before the user agrees,
-/// because that is the number their balance moves by; showing them the
-/// amount they typed instead would be showing them the one figure that is
-/// guaranteed not to be what they pay.
-///
-/// A quote is also the SDK's own record of what it committed to. The fee and
-/// the resolved note value are quoted once and appear nowhere in the send's
-/// progress stream, so the executed quote is what lets
-/// [`EcashSendDetails`] report the terms a receipt needs, for the whole life
-/// of the operation and after a restart.
+/// The requested amount and the actual note value can differ, and this is
+/// the ordinary case rather than an edge case: a mint issues notes in fixed
+/// denominations, so a request is satisfied with notes worth at least as
+/// much, never less, and assembling those notes can itself cost a fee. So
+/// the debit is [`notes_value`](EcashQuote::notes_value) plus
+/// [`fee`](EcashQuote::fee), and both can exceed what the user typed. Show
+/// [`total`](EcashQuote::total) before the user agrees, because that is the
+/// number their balance moves by.
+// Implementation notes (delete once implemented):
+// - mintv2 rounds a request up to a multiple of 512 msat.
+// - The resolved note value and fee are quoted once and appear nowhere in the send's
+//   progress stream, so the executed quote is what `EcashSendDetails` copies its terms
+//   from, for the whole life of the operation and after a restart.
 #[derive(Debug)]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
@@ -246,18 +210,16 @@ impl EcashQuote {
     ///
     /// Kept so that a confirmation screen or a receipt can show what was
     /// requested next to what will actually be issued. It is a floor, and it
-    /// is **not** the figure the balance moves by; see
-    /// [`EcashQuote::total`].
+    /// is not the figure the balance moves by; see [`EcashQuote::total`].
     pub fn requested_amount(&self) -> Amount {
         unimplemented!()
     }
 
-    /// The value the notes will actually carry — what the receiver can
+    /// The value the notes will actually carry, what the receiver can
     /// redeem.
     ///
-    /// At or above [`EcashQuote::requested_amount`], never below it; see the
-    /// type documentation for why it is often above. This is the figure
-    /// activity history reports as an ecash send's
+    /// At or above [`EcashQuote::requested_amount`], never below it. This is
+    /// the figure activity history reports as an ecash send's
     /// [`amount`](crate::ActivityItem::amount).
     pub fn notes_value(&self) -> Amount {
         unimplemented!()
@@ -285,12 +247,11 @@ impl EcashQuote {
     /// When this quote stops being executable.
     ///
     /// Past this point [`Ecash::send`] fails with
-    /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired). Expiry is not the
-    /// only way a quote can stop being executable: it is bound to the note
-    /// inventory it planned against, so notes spent by another operation in
-    /// the meantime invalidate it too, reported as
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged). The remedy for both
-    /// is the same — quote again and re-confirm.
+    /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired). A quote can also
+    /// stop being executable before this point, if notes it planned to
+    /// spend are spent by another operation in the meantime; that is
+    /// reported as [`QuoteChanged`](crate::ErrorCode::QuoteChanged). The
+    /// remedy for both is the same: quote again and re-confirm.
     pub fn expires_at(&self) -> Timestamp {
         unimplemented!()
     }
@@ -301,15 +262,13 @@ impl EcashQuote {
 ///
 /// Both halves matter. The notes are what the sender transmits; the
 /// operation is how the sender learns whether they were redeemed or came
-/// back. Dropping the operation does not stop the reclaim timer — it keeps
+/// back. Dropping the operation does not stop the reclaim timer, it keeps
 /// running in the background like any other operation.
 ///
-/// # This is a convenience, not the only copy
-///
-/// The notes, the amounts, and the fee the executed quote bound are all
-/// persisted before [`Ecash::send`] returns, and are readable afterwards
-/// through [`Operation::details`](crate::Operation::details) as an
-/// [`EcashSendDetails`] — from the operation id alone, in a later process,
+/// Everything here is also persisted before [`Ecash::send`] returns, and
+/// readable afterwards through
+/// [`Operation::details`](crate::Operation::details) as an
+/// [`EcashSendDetails`], from the operation id alone, in a later process,
 /// with nobody having kept this struct. That is what makes an out-of-band
 /// send survivable: a sender whose application dies between issuing the
 /// notes and delivering them can still find them and still hand them over,
@@ -318,9 +277,9 @@ impl EcashQuote {
 #[non_exhaustive]
 pub struct EcashSend {
     /// The notes to give to the receiver. Their value is already out of the
-    /// sender's spendable balance, and it is
-    /// [`EcashQuote::notes_value`] — the value the mint actually issued, not
-    /// the amount that was requested.
+    /// sender's spendable balance, and it is [`EcashQuote::notes_value`],
+    /// the value the mint actually issued, not the amount that was
+    /// requested.
     ///
     /// The same notes are persisted as [`EcashSendDetails::notes`] and can be
     /// read back after a restart; this field is the copy the creating call
@@ -333,62 +292,28 @@ pub struct EcashSend {
 impl Operation<EcashSendState> {
     /// Asks for the notes back, before the receiver redeems them.
     ///
-    /// # What `Ok(())` means, exactly
-    ///
-    /// **`Ok(())` means the cancellation intent has been committed to local
-    /// storage and will survive a restart or a period offline.** That is the
-    /// whole postcondition. It does not mean the federation has been
-    /// contacted, that a reclaim has been attempted, or that the notes came
-    /// back.
-    ///
-    /// This is a deliberate choice about where the boundary sits, and it is
-    /// what makes the result actionable. Had the call waited on the network,
-    /// it could return
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) or
-    /// [`Timeout`](crate::ErrorCode::Timeout) *after* durably recording the
-    /// intent, and the caller would be left with the one answer nothing can
-    /// be done with: "maybe accepted". They could not retry safely without
-    /// wondering whether they were duplicating a request already in flight,
-    /// and they could not report failure without possibly contradicting a
-    /// reclaim that then succeeds. Committing locally first removes that
-    /// state: the request is recorded, the SDK keeps trying on its own, and a
-    /// device that was offline at the moment of the call still reclaims when
-    /// it comes back.
+    /// `Ok(())` means the cancellation intent has been committed to local
+    /// storage and will survive a restart or a period offline. It does not
+    /// mean the federation has been contacted, that a reclaim has been
+    /// attempted, or that the notes came back: the SDK pursues the request
+    /// in the background from here, so a device offline at the moment of
+    /// the call still reclaims once it comes back online.
     ///
     /// The outcome arrives where every other outcome does, as a state:
     /// [`EcashSendState::Canceled`] if the notes came back,
-    /// [`EcashSendState::Redeemed`] if the receiver got them. Between the
-    /// request and the outcome the operation sits in
-    /// [`EcashSendState::CancelRequested`]. The protocol race is real —
-    /// the receiver may be redeeming at this very moment and only the
-    /// federation decides who wins — and it resolves through those states,
-    /// not through this return value.
+    /// [`EcashSendState::Redeemed`] if the receiver got them first. Between
+    /// the request and the outcome the operation sits in
+    /// [`EcashSendState::CancelRequested`]. The receiver may be redeeming at
+    /// this very moment, and only the federation decides who wins that race.
     ///
-    /// This is the only cancellation in the crate, because it is the only
-    /// place where cancelling is a real protocol action rather than an
-    /// attempt to un-send money that has already moved.
-    ///
-    /// # Requesting a cancel on a settled send is not an error
-    ///
-    /// If the send has already reached a final state — the notes came back
-    /// ([`EcashSendState::Canceled`]) or the receiver redeemed them
-    /// ([`EcashSendState::Redeemed`]) — this returns `Ok(())` and does
-    /// nothing. The postcondition the call promises already holds: no
-    /// cancellation is pending, and the outcome is recorded in the state,
-    /// where the caller reads it. This is the same idempotent framing
-    /// [`Sdk::close_federation`](crate::Sdk::close_federation) and
-    /// [`Sdk::forget_federation`](crate::Sdk::forget_federation) use.
-    ///
-    /// It is also unavoidable in practice: the request and the redemption
-    /// race, so a caller that checks the state and then cancels can always
-    /// be beaten between the two calls. Failing that race would make an
-    /// ordinary, correct sequence look broken, and would tell the caller
-    /// nothing that reading the state does not already tell them.
+    /// Calling this on a send that already reached a final state
+    /// ([`EcashSendState::Canceled`] or [`EcashSendState::Redeemed`]) is not
+    /// an error: it returns `Ok(())` and does nothing, since no cancellation
+    /// is pending and the outcome is already recorded in the state.
     ///
     /// # Errors
     ///
-    /// Only failures that stop the intent from being recorded at all — which
-    /// is why no network error appears here:
+    /// Only failures that stop the intent from being recorded at all:
     /// [`Storage`](crate::ErrorCode::Storage) if the request cannot be
     /// committed durably, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
@@ -397,72 +322,53 @@ impl Operation<EcashSendState> {
     /// failure of this call: the intent is already durable and the SDK
     /// pursues it in the background.
     pub async fn request_cancel(&self) -> Result<()> {
+        // Implementation notes (delete once implemented):
+        // - The boundary is deliberate: waiting on the network here would let this call
+        //   return `FederationUnreachable` or `Timeout` after the intent was already
+        //   durable, leaving the caller unable to tell whether a retry would duplicate a
+        //   request already in flight.
+        // - This is the only cancellation in the crate, because it is the only place
+        //   where cancelling is a real protocol action rather than an attempt to un-send
+        //   money that has already moved.
         unimplemented!()
     }
 }
 
 /// The lifecycle of an out-of-band ecash send.
 ///
-/// # Relationship to the upstream state machine
-///
-/// Upstream `fedimint-mint-client` models this as `SpendOOBState`, whose
-/// variants are `Created`, `UserCanceledProcessing`, `UserCanceledSuccess`,
-/// `UserCanceledFailure`, `Success`, and `Refunded`. Two of those names
-/// mean the opposite of what they suggest when read in isolation, because
-/// they are named from the point of view of the *cancellation attempt*
-/// rather than the send: upstream `Success` means the automatic reclaim
-/// **failed**, i.e. the receiver redeemed the notes, and upstream
-/// `Refunded` means the reclaim **succeeded**, i.e. the notes returned to
-/// the sender.
-///
-/// This enum is named from the point of view of the send, and collapses the
-/// upstream set accordingly:
-///
-/// | upstream `SpendOOBState`                   | here                          |
-/// | ------------------------------------------ | ----------------------------- |
-/// | `Created`                                  | [`Created`](Self::Created)    |
-/// | `UserCanceledProcessing`                   | [`CancelRequested`](Self::CancelRequested) |
-/// | `UserCanceledSuccess`, `Refunded`          | [`Canceled`](Self::Canceled)  |
-/// | `UserCanceledFailure`, `Success`           | [`Redeemed`](Self::Redeemed)  |
-///
-/// The two pairs collapse because the distinction upstream draws inside
-/// each — whether the notes came back because the user asked or because the
-/// timer fired, and whether the receiver won against an explicit cancel or
-/// against no cancel at all — is a distinction about *why*, not about what
-/// happened to the money. An application asking "did my notes come back?"
-/// needs the second question answered, and gets one variant per answer.
-///
-/// The mapping is total: every upstream variant lands somewhere here, and
-/// there is no variant here without an upstream counterpart.
-///
-/// # There is no failure state, and that is the point
-///
-/// An ecash send has exactly two terminal outcomes — the notes came back
+/// An ecash send has exactly two terminal outcomes: the notes came back
 /// ([`Canceled`](Self::Canceled)) or the receiver got them
-/// ([`Redeemed`](Self::Redeemed)) — because those are the only two things
-/// that can happen to the money. Upstream's `SpendOOBState` has no state for
-/// a failed send either: its `UserCanceledFailure` names a failed
-/// *cancellation*, which is precisely the receiver having redeemed, and maps
-/// to [`Redeemed`](Self::Redeemed) above.
-///
-/// Infrastructure failure does not become a third outcome. If storage cannot
-/// be read, no guardian answers, or the federation handle is closed, that is
-/// a failure of the *observation*, and it surfaces exactly where the crate's
-/// central convention says it does: as `Err` from
+/// ([`Redeemed`](Self::Redeemed)), because those are the only two things
+/// that can happen to the money. There is no failure state: if storage
+/// cannot be read, no guardian answers, or the federation handle is closed,
+/// that is a failure to *observe* the send, reported as `Err` from
 /// [`Operation::state`](crate::Operation::state),
-/// [`Operation::await_final`](crate::Operation::await_final), or
-/// [`OperationUpdates::next`](crate::OperationUpdates::next). The send
-/// itself keeps running, unaffected by the fact that nobody could see it.
-///
-/// Recording such a failure as a terminal state would be a lie about money,
-/// not just about naming. Bearer notes that are out in the world can still
-/// be redeemed by a receiver, and can still be reclaimed by the sender's
-/// pending reclaim, long after some call failed to observe them. A state
-/// declaring the operation over would tell an application the value is
-/// settled when it is not, and — because
-/// [`Sdk::forget_federation`](crate::Sdk::forget_federation) refuses while
-/// reclaimable outgoing value remains — could let a federation's local state
-/// be deleted while notes it could still have reclaimed were outstanding.
+/// [`Operation::await_final`](crate::Operation::await_final) or
+/// [`OperationUpdates::next`](crate::OperationUpdates::next), not a state
+/// of the send itself. The send keeps running, unaffected by the fact that
+/// nobody could see it: bearer notes out in the world can still be redeemed
+/// or reclaimed long after some call failed to observe them. See
+/// [`Sdk::forget_federation`](crate::Sdk::forget_federation), which refuses
+/// while reclaimable outgoing value remains.
+// Implementation notes (delete once implemented):
+//
+// Upstream `fedimint-mint-client` models this as `SpendOOBState`: `Created`,
+// `UserCanceledProcessing`, `UserCanceledSuccess`, `UserCanceledFailure`, `Success`,
+// `Refunded`. Two of those names mean the opposite of what they suggest read in
+// isolation, since they are named from the point of view of the cancellation attempt
+// rather than the send: `Success` means the automatic reclaim failed (the receiver
+// redeemed), `Refunded` means the reclaim succeeded (the notes returned).
+//
+// | upstream `SpendOOBState`          | here                                        |
+// | ---------------------------------- | ------------------------------------------- |
+// | `Created`                          | `Created`                                    |
+// | `UserCanceledProcessing`           | `CancelRequested`                            |
+// | `UserCanceledSuccess`, `Refunded`  | `Canceled`                                   |
+// | `UserCanceledFailure`, `Success`   | `Redeemed`                                   |
+//
+// The mapping is total. The two pairs collapse because upstream's internal
+// distinction (asked for vs. timer fired; won against an explicit cancel vs. no
+// cancel at all) is about why, not about what happened to the money.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashSendState {
@@ -470,9 +376,9 @@ pub enum EcashSendState {
     /// left the spendable balance; nobody has redeemed or reclaimed it
     /// yet.
     Created,
-    /// A reclaim has been requested — either by
+    /// A reclaim has been requested, either by
     /// [`request_cancel`](Operation::request_cancel) or by the automatic
-    /// reclaim timer — and is being processed. Not final: the request may
+    /// reclaim timer, and is being processed. Not final: the request may
     /// still lose to a redemption.
     CancelRequested,
     /// Final: the notes were reclaimed and their value is back in the
@@ -498,19 +404,9 @@ impl OperationState for EcashSendState {
 ///
 /// The persisted record for an [`Operation<EcashSendState>`](crate::Operation),
 /// read with [`Operation::details`](crate::Operation::details). Every field
-/// is fixed when the send is created: the artifact it produced, and the terms
-/// the executed [`EcashQuote`] committed to. That is case 1 of
-/// [`OperationDetails`](crate::OperationDetails)'s placement rule — such
-/// values live in the record and nowhere else — and it is why nothing here is
-/// an `Option`: no field on this record is established by a later transition,
-/// so none of them fills in after the fact.
-///
-/// Without this record an ecash send would be the operation least able to
-/// survive a restart. [`EcashSendState`] carries no payload at all; its four
-/// variants say only where the send has got to. So the notes, the amounts and
-/// the fee would exist solely in the value [`Ecash::send`] returned, and an
-/// application that restarted before delivering them would have debited its
-/// user for bearer value it could no longer display, receipt, or even name.
+/// is fixed when the send is created and never changes afterwards, so an
+/// application that restarted before delivering the notes can still display,
+/// receipt or hand them over, from the operation id alone.
 ///
 /// # Invariants
 ///
@@ -519,10 +415,7 @@ impl OperationState for EcashSendState {
 /// - `notes_value >= requested_amount`. A mint rounds a request up, never
 ///   down; see [`EcashQuote`] for why.
 ///
-/// `Debug` is derived rather than written by hand, deliberately: [`Notes`]
-/// redacts its own `Debug`, so a derive keeps the bearer token out of every
-/// log line, tracing span and assertion message that renders this record —
-/// and keeps doing so without this type having to remember to.
+/// `Debug` output redacts the notes, as [`Notes`] itself does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EcashSendDetails {
@@ -531,15 +424,14 @@ pub struct EcashSendDetails {
     ///
     /// Kept here because it is the artifact the whole operation exists to
     /// produce, and no state carries it. This record therefore holds
-    /// spendable value for as long as the notes are unredeemed, which is what
-    /// makes it useful — it is the caller's own bearer artifact, not a
-    /// secret they did not already have.
+    /// spendable value for as long as the notes are unredeemed: it is the
+    /// caller's own bearer artifact, not a secret they did not already have.
     pub notes: Notes,
     /// What the caller asked [`Ecash::quote`] for.
     ///
     /// Kept so that a receipt can show what was requested beside what was
-    /// actually issued. It is **not** the figure the balance moved by, and
-    /// activity history deliberately does not report it — see
+    /// actually issued. It is not the figure the balance moved by, and
+    /// activity history deliberately does not report it; see
     /// [`ActivityItem`](crate::ActivityItem)'s note on requested versus
     /// actual.
     pub requested_amount: Amount,
@@ -547,8 +439,8 @@ pub struct EcashSendDetails {
     /// redeem.
     ///
     /// At or above [`requested_amount`](EcashSendDetails::requested_amount),
-    /// because a mint issues fixed denominations and rounds a request up
-    /// (mintv2 to a multiple of 512 msat). This is the figure activity
+    /// because a mint issues fixed denominations and rounds a request up to
+    /// one it can represent. This is the figure activity
     /// history reports as an ecash send's
     /// [`amount`](crate::ActivityItem::amount).
     pub notes_value: Amount,
@@ -563,17 +455,15 @@ pub struct EcashSendDetails {
     /// [`notes_value`](EcashSendDetails::notes_value) plus
     /// [`fee`](EcashSendDetails::fee).
     ///
-    /// Recorded rather than left to each caller to add up. It is the number
-    /// the user approved on the quote and the number a receipt shows, and
-    /// storing it means no generated binding has to redo checked arithmetic
-    /// on money to recover it.
+    /// The number the user approved on the quote and the number a receipt
+    /// shows.
     pub total_debited: Amount,
     /// When the automatic reclaim is scheduled for.
     ///
     /// Fixed when the send is created and never rewritten, so this is when
     /// the reclaim was *due* rather than when anything happened: a send that
-    /// settles early — the receiver redeems, or
-    /// [`request_cancel`](Operation::request_cancel) wins — keeps the
+    /// settles early, the receiver redeems, or
+    /// [`request_cancel`](Operation::request_cancel) wins, keeps the
     /// schedule it was created with, and the outcome is read from the state.
     /// Before this moment a receiver can redeem freely; from it the reclaim
     /// is under way, and a receiver who has not redeemed is racing it.
@@ -596,12 +486,10 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 }
 
 /// The lifecycle of redeeming out-of-band ecash notes.
-///
-/// This maps one-to-one onto upstream `fedimint-mint-client`'s
-/// `ReissueExternalNotesState` (`Created`, `Issuing`, `Done`,
-/// `Failed(String)`); there is no collapsing or renaming here beyond
-/// carrying the failure reason as a named field so it crosses a
-/// foreign-function boundary as a record rather than a positional tuple.
+// Implementation notes (delete once implemented):
+// - Maps one-to-one onto upstream `fedimint-mint-client`'s `ReissueExternalNotesState`
+//   (`Created`, `Issuing`, `Done`, `Failed(String)`); the only change is carrying the
+//   failure reason as a named field rather than a positional tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashReceiveState {
@@ -612,10 +500,10 @@ pub enum EcashReceiveState {
     Issuing,
     /// Final: the notes were reissued and their value is spendable.
     Done,
-    /// Final: the notes could not be redeemed — most often because they
+    /// Final: the notes could not be redeemed, most often because they
     /// were already spent or had been reclaimed by the sender.
     Failed {
-        /// Human-readable explanation. Diagnostic only — not a stable
+        /// Human-readable explanation. Diagnostic only, not a stable
         /// contract, and not something to match on.
         reason: String,
     },
@@ -636,44 +524,30 @@ impl OperationState for EcashReceiveState {
 ///
 /// The persisted record for an
 /// [`Operation<EcashReceiveState>`](crate::Operation), read with
-/// [`Operation::details`](crate::Operation::details). As with
-/// [`EcashSendDetails`], every field is fixed when the redemption is created,
-/// which is case 1 of [`OperationDetails`](crate::OperationDetails)'s
-/// placement rule: it lives here and nowhere else, and nothing on it is an
-/// `Option` because nothing on it is established by a later transition.
-/// [`EcashReceiveState`] carries no amounts either — only a diagnostic reason
-/// on failure — so this record is the whole of what a redemption can be
-/// receipted from.
+/// [`Operation::details`](crate::Operation::details). Every field is fixed
+/// when the redemption is created and never changes afterwards.
+/// [`EcashReceiveState`] carries no amounts, only a diagnostic reason on
+/// failure, so this record is the whole of what a redemption can be
+/// receipted from. The fee is known and recorded before the federation
+/// answers: the notes state their own value, and the federation's fee
+/// schedule is part of the configuration this client already holds.
 ///
 /// # Invariants
 ///
 /// - `net_credit == notes_value - fee`. That is what the balance rises by
 ///   when the operation reaches [`EcashReceiveState::Done`]. The fee comes
-///   *out of* the notes rather than being charged on top of them, which is
+///   out of the notes rather than being charged on top of them, which is
 ///   why a receive nets down where a send totals up.
 ///
-/// # Why the fee is known before the federation answers
-///
-/// A redemption has no quote, and it does not need one to record its terms:
-/// the notes state their own value, and the federation's fee schedule is part
-/// of the configuration this client already holds, so the reissuance fee is
-/// computed locally before the redemption is submitted rather than learned
-/// from the federation afterwards. That is what lets all three amounts be
-/// plain values here.
-///
-/// Should an implementation find otherwise, [`fee`](EcashReceiveDetails::fee)
-/// and [`net_credit`](EcashReceiveDetails::net_credit) become `Option`
-/// *together* — never one without the other. Each is derivable from the other
-/// given [`notes_value`](EcashReceiveDetails::notes_value), so a record
-/// reporting one as known and the other as unknown would be contradicting
-/// itself.
-///
-/// `Debug` is derived, for the reason given on [`EcashSendDetails`]: [`Notes`]
-/// redacts itself, and a derive inherits that.
+/// `Debug` output redacts the notes, as [`Notes`] itself does.
+// Implementation notes (delete once implemented):
+// - Should the fee turn out not to be knowable locally after all, `fee` and `net_credit`
+//   become `Option` together, never one without the other: each is derivable from the
+//   other given `notes_value`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EcashReceiveDetails {
-    /// The notes this redemption consumed — the ones handed to
+    /// The notes this redemption consumed, the ones handed to
     /// [`Ecash::receive`].
     ///
     /// Kept because no state carries them and a redemption that has to be
@@ -688,7 +562,7 @@ pub struct EcashReceiveDetails {
     ///
     /// This is the figure activity history reports as an ecash receive's
     /// [`amount`](crate::ActivityItem::amount), and it is what the sender
-    /// gave up — not what this wallet gains; see
+    /// gave up, not what this wallet gains; see
     /// [`net_credit`](EcashReceiveDetails::net_credit).
     pub notes_value: Amount,
     /// The reissuance fee, taken out of
@@ -699,10 +573,7 @@ pub struct EcashReceiveDetails {
     /// [`notes_value`](EcashReceiveDetails::notes_value) minus
     /// [`fee`](EcashReceiveDetails::fee).
     ///
-    /// The number to show as "you received". Recorded rather than derived for
-    /// the same reason [`EcashSendDetails::total_debited`] is: it is the
-    /// figure a receipt and a balance reconciliation both need, and no
-    /// binding should have to compute it.
+    /// The number to show as "you received".
     pub net_credit: Amount,
     /// When the redemption was created.
     ///
@@ -739,9 +610,8 @@ mod tests {
     /// in the `Debug` output of a record that carries it.
     const TOKEN: &str = "notes-secret-bearer-value-0123456789";
 
-    /// A send whose numbers are the case this facade was reworked for: 1234
-    /// msat requested, satisfied by 1536 msat of notes (three 512-msat
-    /// multiples, as mintv2 rounds), with a fee on top.
+    /// A send whose request is rounded up: 1234 msat requested, satisfied by
+    /// 1536 msat of notes (three 512-msat denominations), with a fee on top.
     fn send_details() -> EcashSendDetails {
         EcashSendDetails {
             notes: Notes::from_raw(TOKEN.to_owned()),

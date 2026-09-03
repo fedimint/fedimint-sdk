@@ -6,7 +6,7 @@ use super::{Amount, Timestamp};
 ///
 /// `Bolt11Invoice` is opaque: callers obtain one by parsing an invoice
 /// string a payee gave them, read it through the accessors below, and pass
-/// it to a quote call — they never construct or reassemble one field by
+/// it to a quote call; they never construct or reassemble one field by
 /// field. It round-trips through [`Display`](core::fmt::Display) (recovering
 /// the original bolt11 string) and [`FromStr`](core::str::FromStr) with a
 /// validating parse.
@@ -30,10 +30,9 @@ impl Bolt11Invoice {
     /// amountless (the payer would choose the amount).
     ///
     /// `None` means the invoice cannot be paid through this SDK at all, and
-    /// no amount the caller supplies can change that: fedimint does not
+    /// no amount the caller supplies can change that: Fedimint does not
     /// support paying amountless BOLT11 invoices, deliberately, because it
-    /// cannot be done safely — it is a permanent upstream position rather
-    /// than a gap waiting to be filled. Quoting such an invoice fails with
+    /// cannot be done safely. Quoting such an invoice fails with
     /// [`ErrorCode::AmountlessInvoice`](crate::ErrorCode::AmountlessInvoice),
     /// so checking this accessor is how an application declines the invoice
     /// with a useful message instead of surfacing a failed quote.

@@ -12,20 +12,18 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// # This is local history, not complete history
 ///
-/// An activity row exists because *this SDK instance recorded it* while it
-/// was happening. That has consequences worth being explicit about, because
-/// the alternative reading — that this is the federation's record of the
-/// account — is wrong and would be a bad thing to build a UI on:
+/// An activity row exists because this SDK instance recorded it while it
+/// was happening, not because the federation kept a record of the account:
 ///
-/// - **Restoring a seed does not restore this history.** Recovery
-///   reconstructs what the federation and the backup can prove — notes,
-///   spendable balance, recoverable operations — not a narrative of past
-///   activity. A wallet restored on a new device has a correct balance and
-///   an empty or partial activity list, and that is not a bug.
-/// - **Activity from another device or another client is not here.** The
-///   same seed used in another application produces rows in *that*
-///   application's storage.
-/// - **Forgetting a federation erases its rows** along with the rest of its
+/// - Restoring a seed does not restore this history. Recovery reconstructs
+///   what the federation and the backup can prove (notes, spendable
+///   balance, recoverable operations), not a narrative of past activity.
+///   A wallet restored on a new device has a correct balance and an empty
+///   or partial activity list.
+/// - Activity from another device or another client is not here. The same
+///   seed used in another application produces rows in that application's
+///   own storage.
+/// - Forgetting a federation erases its rows along with the rest of its
 ///   local state.
 ///
 /// An application that needs durable, portable history must keep its own,
@@ -34,46 +32,38 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// # What the numbers mean
 ///
 /// [`amount`](ActivityItem::amount) and [`fee`](ActivityItem::fee) are
-/// defined here, once, for every kind — because two bindings rendering the
-/// same row have to produce the same two numbers, and "the principal,
-/// excluding fee" does not make that true. It does not say whether an
-/// incoming row is what the payer sent or what landed in the balance, and it
-/// does not say whether an ecash send reports what the user asked for or what
-/// the mint actually handed out. Those are different numbers.
+/// defined here, once, for every kind, so that two bindings rendering the
+/// same row produce the same two numbers. One rule, in three clauses, all
+/// describing the terms of the transfer the operation set out to make, and
+/// holding for every row whatever its outcome:
 ///
-/// One rule, in three clauses. All three describe the **terms** of the
-/// transfer the operation set out to make, and they hold for every row
-/// whatever its outcome:
-///
-/// 1. **`amount` is the counterparty figure** of those terms — what the
-///    other side was to receive (outgoing) or to send (incoming). Gross of
-///    this wallet's fees, and as *executed* rather than as requested: an
-///    ecash send reports the notes actually issued, not the amount typed.
-/// 2. **`fee` is what this wallet was charged** on those terms: on top of
-///    the counterparty figure when outgoing, out of it when incoming.
-/// 3. **`direction` is which way the transfer was to move value.**
+/// 1. `amount` is the counterparty figure of those terms: what the other
+///    side was to receive (outgoing) or to send (incoming). Gross of this
+///    wallet's fees, and as executed rather than as requested: an ecash
+///    send reports the notes actually issued, not the amount typed.
+/// 2. `fee` is what this wallet was charged on those terms: on top of the
+///    counterparty figure when outgoing, out of it when incoming.
+/// 3. `direction` is which way the transfer was to move value.
 ///
 /// For a row whose [`status`](ActivityItem::status) is
 /// [`Success`](ActivityStatus::Success) the terms are also what happened:
 /// the counterparty received or paid `amount`, this wallet paid `fee`, and
 /// the balance moved by `amount + fee` outgoing or `amount - fee` incoming.
-/// A successful receive row is gross, then: the payer paid `amount`, and the
-/// credit that landed is `amount - fee`. A successful send row's `amount` is
-/// what the payee got, and the debit was `amount + fee`. No row folds a fee
-/// into `amount`, and no row reports a net figure there. What the numbers
-/// mean for the other outcomes is stated under [The identity describes what
-/// was attempted](ActivityItem#the-identity-describes-what-was-attempted).
+/// No row folds a fee into `amount`, and no row reports a net figure there.
+/// What the numbers mean for the other outcomes is stated under [The
+/// identity describes what was
+/// attempted](ActivityItem#the-identity-describes-what-was-attempted).
 ///
-/// | kind | `amount` — the counterparty figure | `fee` |
+/// | kind | `amount` (the counterparty figure) | `fee` |
 /// | --- | --- | --- |
-/// | [`EcashSend`](OperationKind::EcashSend) | the value of the notes handed over, which the mint may have rounded **up** from the amount requested | what issuing those notes cost |
-/// | [`EcashReceive`](OperationKind::EcashReceive) | the face value of the notes presented | the reissuance fee taken out of it |
-/// | [`LnSend`](OperationKind::LnSend) | the invoice amount: what the payee receives on success | the fee bound by the executed quote |
-/// | [`LnReceive`](OperationKind::LnReceive) | the invoice's face value: what the payer is asked for | the receive-side fee taken out of it |
-/// | [`OnchainSend`](OperationKind::OnchainSend) | the amount bound for the destination address | every federation-side cost of funding the withdrawal, aggregated as quoted — peg-out and network fees plus mint funding, change and dust |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | the gross amount that arrived on chain, before anything the federation charged to claim it; `None` until a transaction is seen | every federation-side cost of claiming the deposit, aggregated — the peg-in fee, the network cost of sweeping the deposit where the wallet module charges one, the primary module's fees and denomination dust, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
-/// | [`Recovery`](OperationKind::Recovery) | `None` — nothing was transferred | `None` |
-/// | [`Unknown`](OperationKind::Unknown) | `None` — nothing may be guessed | `None` |
+/// | [`EcashSend`](OperationKind::EcashSend) | value of the notes handed over, may be rounded up from the request | cost of issuing those notes |
+/// | [`EcashReceive`](OperationKind::EcashReceive) | face value of the notes presented | reissuance fee taken out of it |
+/// | [`LnSend`](OperationKind::LnSend) | invoice amount, what the payee receives on success | fee bound by the executed quote |
+/// | [`LnReceive`](OperationKind::LnReceive) | invoice's face value, what the payer is asked for | receive-side fee taken out of it |
+/// | [`OnchainSend`](OperationKind::OnchainSend) | amount bound for the destination address | all federation-side funding costs, aggregated (peg-out, network, mint funding, change, dust) |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain; `None` until a transaction is seen | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
+/// | [`Recovery`](OperationKind::Recovery) | `None`, nothing was transferred | `None` |
+/// | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
 ///
 /// ## The identity describes what was attempted
 ///
@@ -84,10 +74,10 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 ///
 /// - [`Refunded`](ActivityStatus::Refunded) and
 ///   [`Canceled`](ActivityStatus::Canceled): the value went out and came
-///   back — a refunded payment's funding returned, a canceled send's notes
-///   reclaimed — so the net movement is zero apart from a fee already
-///   spent. The fields go on describing the attempt — "1000 sat, refunded" is
-///   what a list needs to show — and it is the bucket, not the numbers, that
+///   back (a refunded payment's funding returned, a canceled send's notes
+///   reclaimed), so the net movement is zero apart from a fee already
+///   spent. The fields go on describing the attempt, "1000 sat, refunded" is
+///   what a list needs to show, and it is the bucket, not the numbers, that
 ///   says the money came back.
 /// - [`Failed`](ActivityStatus::Failed): the transfer neither completed nor
 ///   resolved into a clean return, so the balance effect is not something
@@ -104,27 +94,25 @@ use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 /// 1234 msat may be satisfied by notes worth more than that, and selecting
 /// them may itself cost a fee. `amount` is the value of the notes the
 /// receiver can redeem, which is the only figure that reconciles with what
-/// left the balance. What the caller asked for is not thrown away — it is on
-/// the send's own details record, as `EcashSendDetails::requested_amount` —
+/// left the balance. What the caller asked for is not thrown away, it is on
+/// the send's own details record, as `EcashSendDetails::requested_amount`,
 /// so a receipt can show both without this row carrying a third number.
 ///
 /// ## On-chain rows mix two denominations, exactly
 ///
-/// An on-chain operation's chain-side figures are whole
-/// [`Sats`](crate::Sats) — a transaction output cannot be a fraction of a
-/// satoshi — while this row is in millisatoshi [`Amount`]s so that one list
-/// can mix kinds. The conversion is
-/// [`Sats::to_amount`](crate::Sats::to_amount), which rounds nothing: a
-/// satoshi is exactly 1000 msat. So an on-chain row's `amount` is always a
-/// whole multiple of 1000 msat, and a caller that wants satoshis back should
-/// use [`Amount::to_sats_exact`](crate::Amount::to_sats_exact) rather than
-/// dividing and hoping.
+/// An on-chain operation's chain-side figures are whole [`Sats`](crate::Sats)
+/// (a transaction output cannot be a fraction of a satoshi), while this row
+/// is in millisatoshi [`Amount`]s so that one list can mix kinds. The
+/// conversion is [`Sats::to_amount`](crate::Sats::to_amount), which rounds
+/// nothing: a satoshi is exactly 1000 msat. So an on-chain row's `amount` is
+/// always a whole multiple of 1000 msat, and a caller that wants satoshis
+/// back should use [`Amount::to_sats_exact`](crate::Amount::to_sats_exact)
+/// rather than dividing and hoping.
 ///
-/// Its `fee` is not. The federation-side costs of an on-chain operation are
+/// Its `fee` is not: the federation-side costs of an on-chain operation are
 /// quoted in millisatoshis and can carry sub-satoshi precision, so `fee`
-/// here — and a deposit's net credit — may not divide by 1000. That is why
-/// the on-chain quote reports its amount in `Sats` but its fee and total in
-/// `Amount`, and it is the reason to read a fee rather than derive one.
+/// here, and a deposit's net credit, may not divide by 1000. Read a fee
+/// rather than deriving one from a chain-side figure.
 ///
 /// ## When two numbers are not enough
 ///
@@ -168,9 +156,8 @@ pub struct ActivityItem {
     ///
     /// Which figure that is for each kind, and what it deliberately is not,
     /// is fixed by the table in [What the numbers
-    /// mean](ActivityItem#what-the-numbers-mean) — that table is the
-    /// contract, and it is what stops two bindings from rendering the same
-    /// row differently.
+    /// mean](ActivityItem#what-the-numbers-mean), which is the contract that
+    /// stops two bindings from rendering the same row differently.
     ///
     /// `None` for a kind with no single counterparty figure: a recovery,
     /// which transfers nothing; a row this SDK cannot interpret, where any
@@ -179,8 +166,8 @@ pub struct ActivityItem {
     /// starts `None` and becomes known is written once and never changes
     /// afterwards.
     pub amount: Option<Amount>,
-    /// The fee the operation's terms carry — what this wallet pays for the
-    /// transfer if it succeeds — when it is known.
+    /// The fee the operation's terms carry, what this wallet pays for the
+    /// transfer if it succeeds, when it is known.
     ///
     /// Always a separate field from [`ActivityItem::amount`] and never folded
     /// into it: a successful outgoing row debited `amount + fee`, a
@@ -189,14 +176,14 @@ pub struct ActivityItem {
     /// rather than a fee-inclusive total that matches neither.
     ///
     /// `None` when the kind has no fee at all, or when the fee is not knowable
-    /// yet — an operation still in flight, or an on-chain deposit whose
+    /// yet, an operation still in flight, or an on-chain deposit whose
     /// claim fee only exists once something has arrived. `Some(zero)` and
     /// `None` are different answers, and a UI should treat them so: the first
     /// says the terms carry no fee, the second that this row cannot say yet.
     pub fee: Option<Amount>,
     /// Which way the transfer was to move value: in or out.
     ///
-    /// `None` for kinds that have no direction — a recovery, for example,
+    /// `None` for kinds that have no direction, a recovery, for example,
     /// is neither incoming nor outgoing. This is `Option` rather than a
     /// third "neither" variant on [`Direction`] so that a UI branching on
     /// direction handles the no-direction case by not drawing an arrow at
@@ -213,7 +200,7 @@ pub struct ActivityItem {
     pub status: ActivityStatus,
     /// Whether the operation has finished.
     ///
-    /// `true` once it has reached a state it will never leave — the same
+    /// `true` once it has reached a state it will never leave, the same
     /// predicate [`OperationState::is_final`](crate::OperationState::is_final)
     /// applies to a typed state.
     ///
@@ -252,8 +239,8 @@ pub enum Direction {
 ///
 /// Coarse on purpose: this is the summary a list row shows, and the full
 /// detail lives on the operation itself, reachable through
-/// [`ActivityItem::operation_id`]. Mapping a rich state machine down to a
-/// handful of buckets is the whole job of this type.
+/// [`ActivityItem::operation_id`]. Mapping a rich set of operation states
+/// down to a handful of buckets is the whole job of this type.
 ///
 /// Every variant here is an *outcome*. Whether the operation has finished is
 /// a separate axis, carried by [`ActivityItem::is_final`], and the two are
@@ -298,10 +285,8 @@ pub enum Direction {
 ///
 /// The one placement that is a judgement rather than a reading is
 /// [`LnReceiveState::Expired`](crate::LnReceiveState::Expired). An invoice
-/// that simply lapsed unpaid is not [`Failed`](Self::Failed) — nothing
-/// broke, and that variant exists precisely because lapsing unpaid is the
-/// commonest way a receive ends and is not worth alarming a user about — so
-/// it joins the withdrawn-invoice case under
+/// that simply lapsed unpaid is not [`Failed`](Self::Failed), nothing
+/// broke, so it joins the withdrawn-invoice case under
 /// [`Canceled`](Self::Canceled).
 ///
 /// # An uninterpretable row
@@ -310,35 +295,26 @@ pub enum Direction {
 /// [`OperationKind::Unknown`](crate::OperationKind::Unknown) was written by a
 /// version of the SDK that understood something this one does not, so its
 /// outcome cannot be interpreted and must not be guessed at. Such a row
-/// reports [`Unknown`](Self::Unknown).
-///
-/// It does **not** report [`Pending`](Self::Pending). An earlier revision of
-/// this documentation said it did, on the reasoning that "this SDK cannot
-/// tell that it finished" is the honest answer; it is not, for two reasons.
-/// It is a claim about the money — a payment that settled long ago rendered
-/// for ever as one still in flight — and it is not even true: finality is
-/// recorded independently of the outcome, so the SDK can tell, and
-/// [`ActivityItem::is_final`] says so. A finished row this build cannot read
-/// therefore reports `status == Unknown` with `is_final == true`, and one that
-/// is genuinely still running reports the same status with
-/// `is_final == false`. The two cases are distinguishable, which is the whole
-/// point.
+/// reports [`Unknown`](Self::Unknown), never [`Pending`](Self::Pending):
+/// finality is recorded independently of the outcome, so a finished row this
+/// build cannot read reports `status == Unknown` with `is_final == true`,
+/// and one still running reports the same status with `is_final == false`.
+/// See [`ActivityItem::is_final`].
 ///
 /// [`amount`](crate::ActivityItem::amount),
 /// [`fee`](crate::ActivityItem::fee) and
-/// [`direction`](crate::ActivityItem::direction) stay `None`: the fields are
-/// absent precisely so there is nothing to render wrongly. What the row
-/// actually said about itself is still readable — resolve
-/// [`operation_id`](crate::ActivityItem::operation_id) with
-/// [`Federation::operation`](crate::Federation::operation) and read
-/// [`AnyOperation::raw_kind`](crate::AnyOperation::raw_kind) — so an
-/// application can log or display *which* thing it did not understand instead
-/// of only that something was unrecognised. Render it as an opaque entry:
-/// not as a stalled payment, and not as a failure.
+/// [`direction`](crate::ActivityItem::direction) stay `None`, so there is
+/// nothing to render wrongly. What the row actually said about itself is
+/// still readable: resolve [`operation_id`](crate::ActivityItem::operation_id)
+/// with [`Federation::operation`](crate::Federation::operation) and read
+/// [`AnyOperation::raw_kind`](crate::AnyOperation::raw_kind), so an
+/// application can log or display which thing it did not understand instead
+/// of only that something was unrecognised. Render it as an opaque entry,
+/// not as a stalled payment and not as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ActivityStatus {
-    /// Still in flight — the operation has not reached a final state.
+    /// Still in flight: the operation has not reached a final state.
     ///
     /// Reported only for rows this SDK version can interpret. A row it
     /// cannot interpret reports [`Unknown`](Self::Unknown) instead, whether
@@ -349,7 +325,7 @@ pub enum ActivityStatus {
     /// Ended without completing, and without the value being known to be
     /// safe in the balance.
     Failed,
-    /// Ended without completing, and the value is safe in the balance —
+    /// Ended without completing, and the value is safe in the balance,
     /// returned after it was debited, as for a lightning payment that could
     /// not be routed, or never debited at all, as for a funding transaction
     /// the federation rejected.
@@ -369,7 +345,7 @@ pub enum ActivityStatus {
     /// in two situations:
     ///
     /// - the row's [`kind`](crate::ActivityItem::kind) is
-    ///   [`OperationKind::Unknown`](crate::OperationKind::Unknown) — a record
+    ///   [`OperationKind::Unknown`](crate::OperationKind::Unknown), a record
     ///   written by a build that understood a module or an operation this one
     ///   does not; and
     /// - the kind is one this build knows but the persisted final state is a
@@ -382,7 +358,7 @@ pub enum ActivityStatus {
     /// above](ActivityStatus#an-uninterpretable-row).
     ///
     /// Whether such an operation has finished is a separate question, and one
-    /// the SDK does answer — read [`ActivityItem::is_final`]. A UI should show
+    /// the SDK does answer: read [`ActivityItem::is_final`]. A UI should show
     /// the row, its time, and that its outcome is unknown, and should show
     /// neither an amount nor a failure.
     Unknown,
@@ -530,7 +506,7 @@ mod tests {
             true,
         );
         // The gross figure is what the payer paid, so the credit is smaller
-        // than the row's amount — never the other way round.
+        // than the row's amount, never the other way round.
         let credited = received
             .amount
             .and_then(|amount| received.fee.and_then(|fee| amount.checked_sub(fee)));

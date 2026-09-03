@@ -1,33 +1,29 @@
-//! One ergonomic API over `fedimint-client`, and the single surface every
-//! language binding generates from.
+//! One ergonomic Fedimint client API, and the single surface every language
+//! binding generates from.
 //!
 //! An application that wants a Fedimint wallet has to join federations, hold
 //! ecash, pay and receive over Lightning, move value on chain, and keep the
-//! user informed while all of that runs in the background. Doing that
-//! directly against `fedimint-client` means assembling module clients,
-//! driving their state machines, choosing and verifying gateways, and
-//! inventing a persistence and reattachment story for every long-running
-//! action. This crate does that work once and exposes the result as a small
-//! set of handles: an [`Sdk`] built over one [`Storage`] and one
+//! user informed while all of that runs in the background, including
+//! choosing and verifying gateways and reattaching to work still running
+//! after a restart. This crate does that work once and exposes the result as
+//! a small set of handles: an [`Sdk`] built over one [`Storage`] and one
 //! [`Mnemonic`], a [`Federation`] for each federation joined, a facade per
 //! capability ([`Ecash`], [`Lightning`], [`Onchain`], [`Meta`]), and an
 //! [`Operation`] for anything that takes longer than a single call.
 //!
-//! It is also the *one* place that surface is defined. The Swift, Kotlin and
-//! JavaScript SDKs are meant to be generated from these types rather than
-//! written against `fedimint-client` independently, so a semantic settled
-//! here — that a refunded payment is a state rather than an error, that a
-//! quote is executed rather than re-derived at send time — is settled for
+//! It is also the *one* place that surface is defined: the Swift, Kotlin and
+//! JavaScript SDKs are generated from these types, so a semantic settled
+//! here, that a refunded payment is a state rather than an error, that a
+//! quote is executed rather than re-derived at send time, is settled for
 //! every platform at once, and a fix made here is a fix everywhere.
 //!
 //! # Status
 //!
 //! This crate is currently an **API skeleton**. The types, the signatures,
-//! and the contract documented throughout are real and are what review is
-//! about; the bodies behind them are `unimplemented!()`, and the crate has
-//! no dependencies at all. Implementation lands module by module behind this
-//! surface. The example below is compiled by the test suite, and must never
-//! be run.
+//! and the contract documented throughout are real; the bodies behind them
+//! are `unimplemented!()`, and the crate has no dependencies at all.
+//! Implementation lands module by module behind this surface. The example
+//! below is compiled by the test suite, and must never be run.
 //!
 //! # A worked example
 //!
@@ -195,7 +191,7 @@
 //! the input did not parse, the federation was closed. What happened to a
 //! payment is never reported that way. A lightning payment that could not be
 //! routed and was refunded, an invoice that expired unpaid, ecash the
-//! receiver redeemed before the sender tried to reclaim it — each of those is
+//! receiver redeemed before the sender tried to reclaim it: each of those is
 //! a perfectly successful call that yields an ordinary **state**
 //! ([`LnSendState::Refunded`], [`LnReceiveState::Expired`],
 //! [`EcashSendState::Redeemed`]).
@@ -220,8 +216,8 @@
 //! API asks a caller to hand over a pre-parsed structure or to know a wire
 //! format.
 //!
-//! That is what lets a binding carry all of them as plain strings — a Swift
-//! `String`, a Kotlin `String`, a JavaScript string — while the validation
+//! That is what lets a binding carry all of them as plain strings: a Swift
+//! `String`, a Kotlin `String`, a JavaScript string, while the validation
 //! stays in one place. No language needs its own bech32 or bolt11 parser, no
 //! two languages can disagree about what counts as a valid invite code, and
 //! a value can be stored in a preference, passed through a deep link, or put
@@ -236,7 +232,7 @@
 //! [`OperationUpdates`] are observation handles, not ownership: dropping a
 //! handle ends nothing at all, dropping a subscriber ends only that
 //! subscription, and dropping a pending
-//! [`next`](OperationUpdates::next) future ends only that one wait — the
+//! [`next`](OperationUpdates::next) future ends only that one wait: the
 //! subscriber stays usable and no transition is lost. None of the three ever
 //! stops the work.
 //!
@@ -245,13 +241,13 @@
 //! into a protocol that will resolve one way or the other; pretending
 //! otherwise would only produce handles whose `drop` silently abandons money
 //! in flight. Where a cancellation genuinely exists it is a named request on
-//! that specific operation — [`Operation::request_cancel`] for out-of-band
-//! ecash — and even then the outcome arrives as a state, because the receiver
+//! that specific operation ([`Operation::request_cancel`] for out-of-band
+//! ecash), and even then the outcome arrives as a state, because the receiver
 //! may redeem the notes before the reclaim lands.
 //!
 //! [`Operation::updates`] hands out an independent subscriber per call: each
 //! sees the current state immediately and then every transition, and no
-//! subscriber can consume another's updates. It is not a replay of history —
+//! subscriber can consume another's updates. It is not a replay of history:
 //! subscribing to a settled operation shows the settled state and then a
 //! clean close.
 //!
@@ -271,7 +267,7 @@
 //!
 //! ## One module generation per federation
 //!
-//! All of a federation's modules must be of the same generation — all v1, or
+//! All of a federation's modules must be of the same generation: all v1, or
 //! all v2. There is no per-module override and no caller-facing opt-out: a
 //! federation running a mixed set is rejected with
 //! [`ErrorCode::UnsupportedFederation`], whose message names the modules that
@@ -292,31 +288,24 @@
 //! move between threads and tasks without ceremony; wasm compiles the very
 //! same types for a single-threaded host, where those bounds cost nothing.
 //! The subscribers ([`OperationUpdates`], [`BalanceUpdates`]) are the
-//! exception: each is one cursor, so neither is `Clone` — call
+//! exception: each is one cursor, so neither is `Clone`. Call
 //! [`Operation::updates`] or [`Federation::balance_updates`] again for a
 //! second, independent subscription.
-//!
-//! The implementation will require tokio on native targets, because
-//! `fedimint-client` does. That is a note about what embedding the finished
-//! SDK will involve, not a dependency of this crate today — the skeleton has
-//! none, and the async functions here are runtime-agnostic signatures.
 //!
 //! # How this maps onto the language bindings
 //!
 //! "One API for every platform" means **one semantic model plus mechanical,
-//! per-target adapters that share conformance tests** — not literal type
-//! identity across Rust, UniFFI and wasm. Chasing identity would mean
-//! degrading the Rust API to the intersection of what three foreign type
-//! systems can express. Instead, the model — what an operation is, when a
-//! quote stops being valid, which outcomes are states — is defined once here
-//! and every adapter is checked against the same tests, so the *behaviour* is
-//! identical even where the spelling is not.
+//! per-target adapters that share conformance tests**, not literal type
+//! identity across Rust, Swift, Kotlin and TypeScript. The model (what an
+//! operation is, when a quote stops being valid, which outcomes are states)
+//! is defined once here and every adapter is checked against the same tests,
+//! so the *behaviour* is identical even where the spelling is not.
 //!
 //! The adaptations are known, deliberate, and short:
 //!
 //! - **Generics are monomorphised.** [`Operation`] is generic over its state
 //!   type in Rust; the FFI layer emits one concrete type per operation kind
-//!   instead, because neither UniFFI nor TypeScript can carry the generic.
+//!   instead, because the target languages cannot carry the generic.
 //! - **Subscriber cursors gain a lock.** [`OperationUpdates::next`] and
 //!   [`BalanceUpdates::next`] take `&mut self`, which is how Rust states
 //!   "one consumer at a time". The bindings wrap each subscriber behind a
@@ -328,13 +317,13 @@
 //! - **Quotes are consumed semantically.** [`Lightning::send`] and
 //!   [`Onchain::send`] take a quote by value; in a binding the quote crosses
 //!   as an object whose second use fails with
-//!   [`ErrorCode::QuoteExpired`] rather than paying twice — that code covers
+//!   [`ErrorCode::QuoteExpired`] rather than paying twice: that code covers
 //!   a quote that is no longer valid *because it was already executed*, not
 //!   only one whose validity window lapsed. The type system stops it in
 //!   Rust; the runtime stops it everywhere else.
 //! - **Maps cross as maps.** A [`BTreeMap`](std::collections::BTreeMap)
 //!   becomes the binding's native dictionary. Rust keeps `BTreeMap` rather
-//!   than `HashMap` so that iteration order is deterministic — metadata
+//!   than `HashMap` so that iteration order is deterministic: metadata
 //!   rendered in a list should not shuffle between runs.
 //! - **`u64` crosses wasm as `BigInt`.** Never as a JavaScript `number`:
 //!   millisatoshi amounts and timestamps exceed the 53-bit range where
@@ -343,7 +332,7 @@
 //!
 //! Keeping that adapter layer mechanical constrains the API shape here, so
 //! three rules hold throughout: **no tuples** in public signatures (they
-//! become positional, unnamed records in every target — a named struct says
+//! become positional, unnamed records in every target: a named struct says
 //! what the fields are), **no borrowed returns** (lifetimes have no
 //! counterpart across a foreign-function boundary; everything returned is
 //! owned or a handle), and **no `impl Trait` in public signatures** (an
@@ -359,32 +348,16 @@
 //! callers it means matches need a wildcard arm, which the compiler enforces,
 //! so a variant added in a later release is not a breaking change. It does
 //! **not** mean a generated Swift, Kotlin or TypeScript decoder tolerates a
-//! tag it has never seen. UniFFI's generated Swift decoder throws
-//! `unexpectedEnumCase` on an unknown discriminant, and no attribute on the
-//! Rust side changes that. A pre-generated binding pinned to an older SDK,
+//! tag it has never seen. A pre-generated binding pinned to an older SDK,
 //! meeting an [`ErrorCode`], a [`Network`], an [`OperationKind`] or an
-//! operation-state variant added since, fails to decode it — it does not
-//! quietly receive an "unknown" case.
-//!
-//! So forward tolerance at the boundary is not free, and there are exactly
-//! two ways to have it:
-//!
-//! - **Regenerate the binding against the SDK version it talks to.** This is
-//!   the default expectation here and the cheap answer: the binding and the
-//!   SDK ship together, so no vintage gap exists to tolerate.
-//! - **Hand-write an adapter for the boundary, and test it across versions.**
-//!   For a fieldless enum this is cheap in principle — carry the variant's
-//!   stable *name* across as a length-delimited string, so an unfamiliar one
-//!   is read and skipped like any other string, and project it into the
-//!   target's own enum with an explicit unknown fallback. What it costs is a
-//!   per-target map that must be kept in step and a cross-version conformance
-//!   suite that decodes a newer producer's output with an older consumer's
-//!   adapter. Without those tests the tolerance is a claim, not a property.
+//! operation-state variant added since, fails to decode it: it does not
+//! quietly receive an "unknown" case. The binding and the SDK therefore ship
+//! together, regenerated against each other.
 //!
 //! One boundary here does not rely on either, because its wire form was
 //! designed for it: an error's structured detail crosses as
-//! [`RawErrorDetails`] — a version, a kind string, and a length-delimited
-//! opaque payload. A reader of any vintage consumes that record completely
+//! [`RawErrorDetails`] (a version, a kind string, and a length-delimited
+//! opaque payload). A reader of any vintage consumes that record completely
 //! and skips a payload whose kind it has never heard of, keeping it as
 //! [`DetailEnvelope::Opaque`], and the typed [`ErrorDetails`] cases are
 //! projected locally from what it does recognise. That is the shape to copy
@@ -395,7 +368,7 @@
 //! and a record written by a newer build is still a real record of real money.
 //! This is why [`Federation::operation`] returns an operation it cannot
 //! interpret as `Ok(Some(_))` with [`OperationKind::Unknown`] instead of
-//! failing the lookup — an application can then list it honestly as "an
+//! failing the lookup: an application can then list it honestly as "an
 //! operation from another version", where a failure would have made it
 //! invisible. Note what makes that work where the enum-level claim above does
 //! not: the mapping happens *inside this crate*, onto a variant every binding
@@ -403,38 +376,27 @@
 //! not know. Acting on such an operation, as opposed to observing that it
 //! exists, is what [`ErrorCode::UnsupportedOperation`] reports.
 //!
-//! # What the binding layers must guarantee
+//! # What every binding guarantees
 //!
-//! Three requirements belong to this design rather than to any one binding,
-//! and are recorded here so they are not rediscovered per platform:
-//!
-//! - **The wasm entry point installs a panic hook on its very first line.**
-//!   Without one, a panic inside a spawned task surfaces in the browser as a
-//!   bare `unreachable` trap with no message and no location, which is
-//!   effectively undebuggable. With one, it surfaces as a message and a stack
-//!   position. It has to be the first statement, because a panic during
-//!   initialisation is exactly the panic worth seeing.
-//! - **The UniFFI response path keeps a strict no-panic discipline.** That
-//!   layer is built with `panic = "abort"`, so a panic there does not unwind
-//!   into a catchable error — it takes the entire host application down.
-//!   Every value crossing back out is produced without unwrapping,
-//!   indexing, or slicing something that could be absent.
-//! - **Every in-flight operation terminates observably.** If the transport,
-//!   the worker, or the runtime behind the SDK dies, everything outstanding
-//!   must fail with the underlying error. An operation that is left pending
-//!   for ever is worse than one that fails: a caller can retry a failure or
-//!   show it, but a promise that never settles hangs a screen with no way
-//!   out and no diagnostic.
-//!
-//! # Further reading
-//!
-//! The design of this API, and the review that amended it, live in
-//! [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344).
+//! Every in-flight [`Operation`] terminates observably: if the transport,
+//! worker, or runtime behind the SDK dies, everything outstanding fails
+//! with the underlying error rather than being left pending forever. A
+//! caller can retry or show a failure; a promise that never settles hangs a
+//! screen with no way out and no diagnostic.
+//
+// Implementation notes (delete once implemented):
+// - The wasm entry point must install a panic hook on its very first line, before anything
+//   else runs, so a panic during initialisation surfaces as a message and stack position
+//   instead of a bare `unreachable` trap with nothing to debug from.
+// - The UniFFI response path is built with `panic = "abort"`, so it must keep a strict
+//   no-panic discipline: every value crossing back out is produced without unwrapping,
+//   indexing, or slicing something that could be absent, since a panic there takes the whole
+//   host application down rather than unwinding into a catchable error.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
-// Skeleton-phase allowances — remove both when implementation starts. Parameters
+// Skeleton-phase allowances: remove both when implementation starts. Parameters
 // are deliberately named (they are rustdoc-visible API contract) but unused, and
 // the private placeholder `inner` fields are never constructed or read while
 // every body is unimplemented!(). CI builds this crate through

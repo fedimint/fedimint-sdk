@@ -21,7 +21,7 @@ use crate::Result;
 ///   available locally without asking anyone, and is what a
 ///   [`FederationPreview`](crate::FederationPreview) shows before joining.
 /// - **Consensus metadata** lives in the federation's meta module, is
-///   agreed by the guardians at runtime, and is *revisioned* — the
+///   agreed by the guardians at runtime, and is *revisioned*: the
 ///   guardians can change it, and each change bumps a revision number.
 ///   Not every federation runs a meta module.
 ///
@@ -33,8 +33,8 @@ use crate::Result;
 /// from consensus, because consensus metadata is the one the guardians can
 /// update; keys present in only one source appear unchanged.
 ///
-/// The raw sources stay available separately —
-/// [`Meta::config_metadata`] and [`Meta::consensus_metadata`] — so an
+/// The raw sources stay available separately:
+/// [`Meta::config_metadata`] and [`Meta::consensus_metadata`], so an
 /// application that needs to know *where* a value came from, or that needs
 /// the consensus revision, is not forced to work backwards from the merged
 /// result.
@@ -54,15 +54,15 @@ use crate::Result;
 /// 2. **Parse as JSON.** If the decoded text does not parse as JSON, the
 ///    consensus document again contributes nothing.
 /// 3. **Require a top-level object.** If the document parses to anything
-///    other than a JSON object — an array, a bare string, a number, a
-///    boolean, `null` — it has no top-level entries to project, so it
+///    other than a JSON object (an array, a bare string, a number, a
+///    boolean, `null`), it has no top-level entries to project, so it
 ///    contributes nothing.
 /// 4. **Project each top-level entry by its value's type.** A **string**
 ///    value contributes its contents, unquoted. A **number**, **boolean**,
 ///    or **`null`** contributes its JSON text (`42`, `true`, `null`) and
 ///    stops being distinguishable from a string that happens to read the
 ///    same. A **nested object or array** cannot be projected to a string and
-///    is **skipped** — that key contributes nothing from consensus.
+///    is **skipped**: that key contributes nothing from consensus.
 /// 5. **Skipped is "not defined", never "defined as empty".** A key skipped
 ///    by rule 4 is treated exactly as though consensus had not defined it:
 ///    the configuration value for that key stands if there is one, and if
@@ -72,8 +72,8 @@ use crate::Result;
 ///
 /// Note what rules 1 to 3 mean in practice: a consensus document that is not
 /// UTF-8 JSON with an object at its root is *invisible* to the merged view.
-/// That is deliberate — a partial or guessed projection would be worse than
-/// none — and it is also why the merged view is never evidence that the meta
+/// That is deliberate: a partial or guessed projection would be worse than
+/// none, and it is also why the merged view is never evidence that the meta
 /// module is empty.
 ///
 /// None of this destroys anything. Everything the projection skips or
@@ -117,8 +117,8 @@ impl Meta {
     /// The whole merged view.
     ///
     /// Every key from either source, with consensus values winning where both
-    /// define one — subject, exactly as [`Meta::get`] is, to the projection
-    /// rules on [`Meta`]. A key is present here only if the projection could
+    /// define one, subject to the same projection rules as [`Meta::get`]. A
+    /// key is present here only if the projection could
     /// represent it as a string: an undecodable, unparseable, or non-object
     /// consensus document contributes no keys, and a key whose consensus
     /// value is a nested object or array is skipped in favour of the
@@ -155,7 +155,7 @@ impl Meta {
     /// `None` is an ordinary answer, not a failure: a federation without a
     /// meta module is perfectly well-formed, and this is why [`Meta`]
     /// itself is unconditional while the capability facades are
-    /// `Option`-returning — the absence lives here, at the level of the one
+    /// `Option`-returning: the absence lives here, at the level of the one
     /// thing that can actually be absent.
     ///
     /// The returned value is unprojected and carries its revision, so an
@@ -184,12 +184,12 @@ pub struct ConsensusMetadata {
     pub revision: u64,
     /// The metadata document as raw bytes, exactly as consensus stores it.
     ///
-    /// Commonly, but not necessarily, UTF-8 JSON. Upstream's meta value is an
-    /// arbitrary byte string with no encoding guarantee, so this field is
+    /// Commonly, but not necessarily, UTF-8 JSON. The meta module's value is
+    /// an arbitrary byte string with no encoding guarantee, so this field is
     /// `Vec<u8>` rather than `String`: a `String` could not hold what the
     /// guardians actually agreed on, and anything that did not decode would
     /// have to be mangled or dropped to fit. The SDK does not require,
-    /// validate, reformat, or re-encode any of it — this is the unprojected
+    /// validate, reformat, or re-encode any of it: this is the unprojected
     /// value, byte for byte, for the application to interpret.
     ///
     /// The flat, string-valued projection used by [`Meta::get`] and
