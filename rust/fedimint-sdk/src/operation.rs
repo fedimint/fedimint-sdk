@@ -22,6 +22,7 @@
 //! never replays the ones before it.
 
 use std::any::Any;
+use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -171,13 +172,38 @@ pub trait DetailedOperationState: OperationState {
 ///
 /// The handle is a cheap clone over shared state, like the other handles in
 /// this crate.
-#[derive(Debug, Clone)]
 pub struct Operation<S: OperationState> {
     inner: Arc<OperationInner>,
-    _state: PhantomData<S>,
+    driver: Arc<dyn Driver<S>>,
+}
+
+impl<S: OperationState> Clone for Operation<S> {
+    /// A clone observes the same operation through the same driver; both are behind an `Arc`, so
+    /// this costs two refcount bumps.
+    fn clone(&self) -> Operation<S> {
+        Operation {
+            inner: self.inner.clone(),
+            driver: self.driver.clone(),
+        }
+    }
+}
+
+impl<S: OperationState> fmt::Debug for Operation<S> {
+    /// Hand-written rather than derived: a driver is a trait object with no `Debug`, and the
+    /// state type has none either ([`OperationState`] does not require one).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Operation")
+            .field("id", &self.inner.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: OperationState> Operation<S> {
+    /// Builds a typed handle over a loaded record and the driver for its kind.
+    pub(crate) fn attach(inner: Arc<OperationInner>, driver: Arc<dyn Driver<S>>) -> Operation<S> {
+        Operation { inner, driver }
+    }
+
     /// This operation's id, stable for its whole lifetime including across
     /// restarts.
     ///
@@ -186,7 +212,7 @@ impl<S: OperationState> Operation<S> {
     /// correlate an [`ActivityItem`](crate::ActivityItem) with a live
     /// handle.
     pub fn id(&self) -> OperationId {
-        unimplemented!()
+        OperationId::from_upstream(self.inner.id)
     }
 
     /// Reads the current state.
@@ -209,7 +235,21 @@ impl<S: OperationState> Operation<S> {
     /// [`Observable`](OperationSupport::Observable), so a record this build
     /// cannot read is refused before a handle for it exists.
     pub async fn state(&self) -> Result<S> {
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+        let record = self.inner.reload().await?;
+        let state = self
+            .driver
+            .current(&self.inner.federation, self.inner.id, &record)
+            .await?;
+        if state.is_final() {
+            // "Persist a value as soon as it is observed": a history row must be able to say an
+            // operation finished without decoding its state again, and this is one of the two
+            // places a final state is first seen.
+            self.inner
+                .record_final_state(self.driver.encode_state(&state)?)
+                .await?;
+        }
+        Ok(state)
     }
 
     /// Opens a new, independent subscription to this operation's states.
@@ -282,7 +322,19 @@ impl<S: DetailedOperationState> Operation<S> {
     /// typed handle exists only for an operation this build can observe, and
     /// that is checked once, earlier, by [`AnyOperation::supported_kind`].
     pub async fn details(&self) -> Result<S::Details> {
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+        let record = self.inner.reload().await?;
+        let decoded = self.driver.decode_details(&record.details)?;
+        match decoded.downcast::<S::Details>() {
+            Ok(details) => Ok(*details),
+            // Unreachable through the public API: a typed handle is only ever built with the
+            // driver its own kind registered. It is an `Internal` rather than a panic because
+            // the binding layer is built with `panic = "abort"`.
+            Err(_) => Err(Error::new(
+                ErrorCode::Internal,
+                "this operation's details record does not match its kind",
+            )),
+        }
     }
 }
 
@@ -1094,10 +1146,88 @@ impl Backfiller for ProbeBackfiller {
     }
 }
 
-/// Placeholder for the shared per-operation state a typed handle and its
-/// subscribers observe.
+/// The shared per-operation state a typed handle and every subscriber of it observe.
+///
+/// Holds the federation the operation belongs to, its id, and the record as it read when the
+/// handle was made. The cached record is what the cheap, infallible accessors answer from
+/// ([`AnyOperation::kind`] and [`AnyOperation::raw_kind`] promise to read no storage); anything
+/// that must see a field filled in since then reloads it.
 #[derive(Debug)]
-struct OperationInner;
+pub(crate) struct OperationInner {
+    /// The federation this operation belongs to, which owns the namespace it is recorded in and
+    /// the drivers that observe it.
+    pub(crate) federation: Arc<FederationInner>,
+    /// The client's own id for the operation, which is also the key of its record.
+    pub(crate) id: UpstreamOperationId,
+    /// The record as it read when this handle was made.
+    pub(crate) record: OperationRecord,
+}
+
+impl OperationInner {
+    /// Reads this operation's record again.
+    ///
+    /// The cached copy is a snapshot taken when the handle was made; a field documented as
+    /// filling in later has to be read from storage to be seen.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage) if the namespace cannot be read, and
+    /// [`Internal`](crate::ErrorCode::Internal) if the record has gone, which can only happen if
+    /// something outside this crate wrote to its namespace.
+    pub(crate) async fn reload(&self) -> Result<OperationRecord> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let db = self.federation.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        dbtx.get_value(&crate::db::OperationRecordKey(self.id))
+            .await
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("no record for operation {}", self.id.fmt_full()),
+                )
+            })
+    }
+
+    /// Records a final state on this operation's record, once.
+    ///
+    /// Called the first time a final state is observed, from either
+    /// [`Operation::state`] or [`OperationUpdates::next`], so that an operation reads as
+    /// finished without its state having to be decoded again. Writing it twice is not an error
+    /// and not a second write: the first value stands, because a final state is final.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage).
+    pub(crate) async fn record_final_state(&self, encoded: String) -> Result<()> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let db = self.federation.db();
+        let id = self.id;
+        db.autocommit(
+            |dbtx, _| {
+                let encoded = encoded.clone();
+                Box::pin(async move {
+                    let key = crate::db::OperationRecordKey(id);
+                    let Some(mut record) = dbtx.get_value(&key).await else {
+                        // The operation log is authoritative and this record is a decoration
+                        // over it; nothing to decorate is not a failure to observe.
+                        return Ok(());
+                    };
+                    if record.final_state.is_some() {
+                        return Ok(());
+                    }
+                    record.final_state = Some(encoded);
+                    dbtx.insert_entry(&key, &record).await;
+                    Ok::<(), core::convert::Infallible>(())
+                })
+            },
+            Some(100),
+        )
+        .await
+        .map_err(crate::db::storage_error)
+    }
+}
 
 /// Placeholder for the shared state behind a type-erased operation handle.
 #[derive(Debug)]
@@ -1535,6 +1665,124 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         #[cfg(not(target_family = "wasm"))]
         assert_send_sync::<Arc<dyn Driver<ProbeState>>>();
+    }
+
+    /// Writes a probe record straight into a namespace, for the tasks that land before
+    /// `create_operation` does.
+    async fn probe_record(
+        federation: &Arc<FederationInner>,
+        id: UpstreamOperationId,
+    ) -> OperationRecord {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let record = OperationRecord {
+            schema_version: READABLE_STATE_SCHEMA,
+            kind: "probe".to_owned(),
+            module: "probe_module".to_owned(),
+            created_at: crate::db::now_millis(),
+            details: serde_json::to_string(&ProbeDetailsWire::from(&probe_details()))
+                .expect("the probe wire record serialises"),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+        let db = federation.db();
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&crate::db::OperationRecordKey(id), &record)
+            .await;
+        dbtx.commit_tx().await;
+        record
+    }
+
+    /// A probe operation over a fresh in-memory namespace, observed through `driver`.
+    async fn probe_operation_with(driver: Arc<dyn Driver<ProbeState>>) -> Operation<ProbeState> {
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let id = UpstreamOperationId([5u8; 32]);
+        let record = probe_record(&federation, id).await;
+        Operation::attach(
+            Arc::new(OperationInner {
+                federation,
+                id,
+                record,
+            }),
+            driver,
+        )
+    }
+
+    /// A probe operation whose subscriptions replay `scripts` in order.
+    ///
+    /// Returns the driver too, so a test can change what `current` reports and count
+    /// subscriptions.
+    async fn probe_operation(
+        scripts: Vec<Vec<Result<ProbeState>>>,
+    ) -> (Arc<ScriptedDriver>, Operation<ProbeState>) {
+        let driver = ScriptedDriver::new(scripts);
+        let operation = probe_operation_with(driver.clone() as Arc<dyn Driver<ProbeState>>).await;
+        (driver, operation)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_handle_reports_the_id_it_was_created_with() {
+        let (_driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(
+            operation.id(),
+            crate::OperationId::from_upstream(UpstreamOperationId([5u8; 32]))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_reports_what_the_driver_reports_now() {
+        let (driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(operation.state().await.expect("state"), ProbeState::Running);
+        driver.set_current(ProbeState::Done);
+        assert_eq!(operation.state().await.expect("state"), ProbeState::Done);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_records_a_final_state_the_first_time_it_sees_one() {
+        let (driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(
+            operation.inner.reload().await.expect("record").final_state,
+            None
+        );
+        driver.set_current(ProbeState::Done);
+        operation.state().await.expect("state");
+        assert_eq!(
+            operation.inner.reload().await.expect("record").final_state,
+            Some("\"Done\"".to_owned())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn details_return_the_record_written_when_the_operation_was_created() {
+        let (_driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(operation.details().await.expect("details"), probe_details());
+        // Twice, with the same answer: a details record is not consumed by reading it.
+        assert_eq!(operation.details().await.expect("details"), probe_details());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn every_fallible_call_on_a_closed_federation_says_so() {
+        let (_driver, live) = probe_operation(vec![]).await;
+        // The same record, reached through a federation that has since been closed.
+        let closed = FederationInner::detached(live.inner.federation.db(), false);
+        let operation = Operation::attach(
+            Arc::new(OperationInner {
+                federation: closed,
+                id: live.inner.id,
+                record: live.inner.record.clone(),
+            }),
+            ScriptedDriver::new(vec![]) as Arc<dyn Driver<ProbeState>>,
+        );
+        assert_eq!(
+            operation.state().await.expect_err("closed").code,
+            ErrorCode::FederationClosed
+        );
+        assert_eq!(
+            operation.details().await.expect_err("closed").code,
+            ErrorCode::FederationClosed
+        );
     }
 
     #[test]
