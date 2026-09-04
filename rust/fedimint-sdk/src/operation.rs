@@ -702,7 +702,7 @@ pub enum OperationSupport {
 /// `OperationKind::readable_state_schema` rather than compared directly, so
 /// that a kind whose state schema is later revised on its own becomes a
 /// one-line divergence there instead of a redesign here.
-const READABLE_STATE_SCHEMA: u32 = 1;
+pub(crate) const READABLE_STATE_SCHEMA: u32 = 1;
 
 impl OperationKind {
     /// The newest state schema version this build can read for this kind.
