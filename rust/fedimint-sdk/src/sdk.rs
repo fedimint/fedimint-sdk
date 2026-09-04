@@ -16,7 +16,7 @@ use fedimint_core::db::{DatabaseKeyPrefix, DatabaseValue};
 use fedimint_core::module::AmountUnit;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 
-use crate::db::{FederationRecord, StoredStatus};
+use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
 use crate::federation::FederationInner;
 use crate::federation::{read_lock, write_lock};
 use crate::storage::StorageLock;
@@ -295,6 +295,7 @@ impl Sdk {
         //   join, unless the client's own durable state corroborates that a recovery was
         //   committed. This matters because the erase path bypasses the balance guard for
         //   recovery-locked federations.
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let id = invite.inner().federation_id();
 
@@ -570,6 +571,7 @@ impl Sdk {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
     /// whole instance has been shut down.
     pub async fn reopen_federation(&self, id: &FederationId) -> Result<Federation> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let upstream = id.inner();
         let Some(existing) = self.inner.federation_inner(&upstream) else {
@@ -678,6 +680,7 @@ impl Sdk {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
     /// whole instance has been shut down.
     pub async fn close_federation(&self, id: &FederationId) -> Result<()> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let Some(federation) = self.inner.federation_inner(&id.inner()) else {
             // An id naming no open federation is not an error, and this storage having never
@@ -691,13 +694,28 @@ impl Sdk {
 
         federation.stop().await?;
 
-        // Persisted before it becomes observable, and persisted as a choice: later builds must
-        // stop reopening this federation, which is exactly what separates it from a quarantine.
+        // Set the moment the client is retired, mirroring `forget_federation`'s status update
+        // right after `quiesce`: the federation is already stopped here, and it must never be
+        // observable as `Running` while the durable write below is still pending, or has failed.
+        federation.set_status(FederationStatus::Closed);
+
+        // Persisted as a choice, not merely as a fact: later builds must stop reopening this
+        // federation, which is exactly what separates it from a quarantine.
         let mut record = federation.record();
         record.status = StoredStatus::Closed;
-        crate::db::write_federation(&self.inner.db, &federation.id, &record).await?;
+        if let Err(err) = crate::db::write_federation(&self.inner.db, &federation.id, &record).await
+        {
+            // The federation is already stopped and that cannot be undone. Reporting it as
+            // `Running` from here on, while every call on it keeps failing `FederationClosed`,
+            // would be worse than quarantining it: quarantine is retried by later builds and by
+            // `reopen_federation`, exactly like a federation `restore` could not bring back.
+            federation.set_status(FederationStatus::Quarantined {
+                diagnostic: err.clone().into(),
+            });
+            self.inner.announce(&federation);
+            return Err(err);
+        }
         federation.set_record(record);
-        federation.set_status(FederationStatus::Closed);
         self.inner.announce(&federation);
         Ok(())
     }
@@ -827,6 +845,7 @@ impl Sdk {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) after
     /// shutdown. Never [`Recovering`](crate::ErrorCode::Recovering).
     pub async fn forget_federation(&self, id: &FederationId) -> Result<()> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let upstream = id.inner();
         let Some(federation) = self.inner.federation_inner(&upstream) else {
@@ -859,6 +878,10 @@ impl Sdk {
             && !recovering
             && let Some(client) = client.as_ref()
         {
+            // An `Err` here is treated as nothing to guard against. At this pin the only way
+            // `get_balance_for_unit` fails is "primary module not available", where a balance is
+            // meaningless and there is nothing spendable to protect; a future upstream change
+            // that grows a second failure mode would need this reconsidered.
             if let Ok(balance) = client.get_balance_for_unit(AmountUnit::BITCOIN).await
                 && balance.msats != 0
             {
@@ -957,6 +980,7 @@ impl Sdk {
     /// terminate" callback if there is one, and await it if you are allowed
     /// to. Do not build anything on being able to.
     ///
+    ///
     /// # What survives an abrupt kill
     ///
     /// If the process dies without this call, then on the next
@@ -992,6 +1016,7 @@ impl Sdk {
     /// [`Storage`](crate::ErrorCode::Storage) if the final flush fails. The
     /// instance is closed either way.
     pub async fn shutdown(&self) -> Result<()> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         if self.inner.shutdown_tx.send_replace(true) {
             // Idempotent: a second call has nothing left to stop.
             return Ok(());
@@ -1226,6 +1251,7 @@ impl SdkBuilder {
             status_tx: tokio::sync::broadcast::Sender::new(STATUS_CAPACITY),
             shutdown_tx: tokio::sync::watch::Sender::new(false),
             lock: std::sync::Mutex::new(lock),
+            lifecycle: tokio::sync::Mutex::new(()),
         });
 
         // Steps 3 and 4: finish committed erases, then reopen everything else. They run
@@ -1540,6 +1566,16 @@ pub(crate) struct SdkInner {
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// The single-opener claim, released by `shutdown` or by dropping the last handle.
     lock: std::sync::Mutex<Option<StorageLock>>,
+    /// Serializes `join`, `close_federation`, `reopen_federation`, `forget_federation` and
+    /// `shutdown` against each other, instance-wide, for the whole body of each call.
+    ///
+    /// Without it, two concurrent `join`s of the same invite both pass the `AlreadyJoined` check
+    /// before either has written a row, and both end up writing into one federation namespace;
+    /// two concurrent `reopen_federation`s of the same id both open a client over that same
+    /// namespace. Taken first, before any other lock or the client's own `RwLock`, so a lifecycle
+    /// call never waits on this mutex while holding something a concurrent lifecycle call would
+    /// need.
+    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl core::fmt::Debug for SdkInner {
@@ -1808,7 +1844,10 @@ impl SdkInner {
         self.announce(&federation);
     }
 
-    /// Opens a federation's client, finishing an interrupted join first if there was one.
+    /// Opens a federation's client, finishing an interrupted join first if there was one, then
+    /// re-validates against what the client actually opened rather than the stored record: a
+    /// federation's configuration is guardian-controlled and can have drifted since this
+    /// federation was last read.
     ///
     /// A `Joining` row means a join was committed and the client state was not finished being
     /// written. No value can exist in that namespace, because the caller never received a handle
@@ -1820,16 +1859,54 @@ impl SdkInner {
         id: &config::FederationId,
         record: &FederationRecord,
     ) -> Result<ClientHandleArc> {
-        crate::modules::check_generation(&record_kinds(record))?;
-        if record.status == StoredStatus::Joining {
+        let client = if record.status == StoredStatus::Joining {
             crate::db::wipe_federation(&self.db, id).await?;
             let client = self.join_client(id, record).await?;
             let mut opened = record.clone();
             opened.status = StoredStatus::Open;
             crate::db::write_federation(&self.db, id, &opened).await?;
-            return Ok(client);
+            client
+        } else {
+            self.open_client(id).await?
+        };
+
+        if let Err(err) = self.revalidate(id, &client, record).await {
+            // Not a federation this SDK can keep operating on: shut the freshly opened client
+            // down rather than leave it running unsupervised, and report the refusal so the
+            // caller quarantines the federation with this diagnostic.
+            let _ = crate::federation::shutdown_client(client).await;
+            return Err(err);
         }
-        self.open_client(id).await
+        Ok(client)
+    }
+
+    /// Checks a freshly opened client's live configuration against the module-generation rule,
+    /// and refreshes the stored record when the capabilities, network or generation it reports
+    /// no longer match what was last written.
+    async fn revalidate(
+        &self,
+        id: &config::FederationId,
+        client: &ClientHandleArc,
+        record: &FederationRecord,
+    ) -> Result<()> {
+        let config = client.config().await;
+        let kinds = crate::modules::module_kinds(&config);
+        let generation = crate::modules::check_generation(&kinds)?;
+        let capabilities: StoredCapabilities = crate::modules::capabilities_of(&kinds).into();
+        let network: StoredNetwork =
+            crate::modules::network_of(&self.module_inits, &config)?.into();
+
+        if record.capabilities != capabilities
+            || record.network != network
+            || record.generation != generation
+        {
+            let mut refreshed = record.clone();
+            refreshed.capabilities = capabilities;
+            refreshed.network = network;
+            refreshed.generation = generation;
+            crate::db::write_federation(&self.db, id, &refreshed).await?;
+        }
+        Ok(())
     }
 }
 
@@ -1842,34 +1919,6 @@ impl Drop for SdkInner {
     fn drop(&mut self) {
         self.release_lock();
     }
-}
-
-/// The module kinds a stored record stands for, for the generation re-check on every open.
-///
-/// The capability flags are the durable summary of the last configuration that validated, so this
-/// re-derives the kind names from them plus the recorded generation rather than storing the list
-/// twice.
-fn record_kinds(record: &FederationRecord) -> Vec<String> {
-    let suffix = if record.generation == Some(2) {
-        "v2"
-    } else {
-        ""
-    };
-    let mut kinds = Vec::new();
-    if record.capabilities.ecash {
-        kinds.push(format!("mint{suffix}"));
-    }
-    if record.capabilities.lightning {
-        kinds.push(if suffix.is_empty() {
-            "ln".to_owned()
-        } else {
-            "lnv2".to_owned()
-        });
-    }
-    if record.capabilities.onchain {
-        kinds.push(format!("wallet{suffix}"));
-    }
-    kinds
 }
 
 /// How long a call waits for a federation's guardians before it reports a timeout.
@@ -2340,6 +2389,22 @@ mod tests {
             assert_eq!(err.code, crate::ErrorCode::StorageInUse);
             drop(first);
         }
+
+        // No test here exercises `close_federation`'s write-failure -> quarantine path (the
+        // federation is already stopped, but the durable write of `Closed` fails). That needs a
+        // `Database` whose commit fails on demand, and no such backend exists among the ones this
+        // crate already builds: `MemDatabase` always commits. Building one means implementing
+        // `fedimint_core::db::IRawDatabase` by hand, whose trait methods are `async fn` desugared
+        // by the `async-trait` crate; `fedimint_core::async_trait_maybe_send!`, upstream's own
+        // helper for implementing its traits from another crate, expands to `::async_trait::
+        // async_trait`, a path resolved in *this* crate's extern prelude, not `fedimint-core`'s,
+        // so using it here needs `async-trait` added as this crate's own direct dependency.
+        // Adding a dependency to cover one test is not the cheap fault injection this warranted.
+        // The fix is reviewed by inspection instead: setting the in-memory status right after the
+        // federation is retired, before its durable write is even attempted, is the same ordering
+        // `forget_federation` below already uses (its own phase 1 sets `Closed` right after
+        // `quiesce`); the quarantine-on-failure half is new here and has no analogue to lean on,
+        // which is exactly why a dedicated test was attempted before settling for this note.
 
         #[tokio::test(flavor = "multi_thread")]
         async fn closing_an_unknown_federation_is_not_an_error() {
