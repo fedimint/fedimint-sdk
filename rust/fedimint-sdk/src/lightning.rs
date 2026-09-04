@@ -612,6 +612,11 @@ mod tests {
     use super::*;
     use crate::operation::DetailedOperationState;
 
+    /// A real compressed secp256k1 public key, from that crate's own test
+    /// suite. A gateway id is a public key, so the 30-character hex string this
+    /// fixture used before could never have been one.
+    const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
+
     /// A send record with the numbers of one plausible payment: 100,000 msat
     /// to the payee, 1,050 msat of aggregate fee, 101,050 msat debited.
     fn send_details() -> LnSendDetails {
@@ -621,7 +626,7 @@ mod tests {
             fee: Amount::from_msats(1_050),
             total: Amount::from_msats(101_050),
             route: LightningRoute::Gateway {
-                gateway_id: GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned()),
+                gateway_id: GATEWAY_ID.parse().expect("a valid gateway id"),
             },
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
@@ -638,9 +643,7 @@ mod tests {
             invoice_amount: Amount::from_msats(50_000),
             fee: Amount::from_msats(500),
             net_credit: Amount::from_msats(49_500),
-            gateway_id: Some(GatewayId::from_raw(
-                "0266e4598d1d3c415f572a8488830b".to_owned(),
-            )),
+            gateway_id: Some(GATEWAY_ID.parse().expect("a valid gateway id")),
             expires_at: Timestamp::from_epoch_millis(1_700_000_600_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
@@ -685,7 +688,7 @@ mod tests {
         assert_eq!(
             details.route,
             LightningRoute::Gateway {
-                gateway_id: GatewayId::from_raw("0266e4598d1d3c415f572a8488830b".to_owned()),
+                gateway_id: GATEWAY_ID.parse().expect("a valid gateway id"),
             },
         );
     }

@@ -854,9 +854,9 @@ mod tests {
     /// The all-zero txid, which is not a real one; these tests never look at
     /// its value, only carry it through a payload.
     fn a_txid() -> Txid {
-        Txid::from_raw(
-            "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-        )
+        "0000000000000000000000000000000000000000000000000000000000000000"
+            .parse()
+            .expect("a well-formed transaction id")
     }
 
     /// A real regtest address, taken from `bitcoin`'s own test suite: the
