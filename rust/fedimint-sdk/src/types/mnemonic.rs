@@ -65,6 +65,9 @@ impl Mnemonic {
     pub fn generate() -> crate::Result<Mnemonic> {
         use fedimint_core::secp256k1::rand::RngCore;
 
+        // Both failures below carry `ErrorCode::Entropy`; hoisted so that call is written once.
+        let entropy_error = |message: &str| Error::new(ErrorCode::Entropy, message);
+
         // 128 bits of entropy is exactly a 12-word phrase
         // (bip39-2.2.2/src/lib.rs:207). The buffer zeroizes itself on drop: it
         // holds the seed before the mnemonic does.
@@ -76,20 +79,11 @@ impl Mnemonic {
         // layers are built with `panic = "abort"`, so a panic here would take
         // the host application down instead of surfacing `Entropy`.
         let mut rng = fedimint_core::secp256k1::rand::rngs::OsRng;
-        rng.try_fill_bytes(entropy.as_mut_slice()).map_err(|_| {
-            Error::new(
-                ErrorCode::Entropy,
-                "the platform's secure random source was unavailable",
-            )
-        })?;
+        rng.try_fill_bytes(entropy.as_mut_slice())
+            .map_err(|_| entropy_error("the platform's secure random source was unavailable"))?;
         let phrase =
             fedimint_bip39::Mnemonic::from_entropy_in(Language::English, entropy.as_slice())
-                .map_err(|_| {
-                    Error::new(
-                        ErrorCode::Entropy,
-                        "the platform's secure random source was unavailable",
-                    )
-                })?;
+                .map_err(|_| entropy_error("could not build a mnemonic from the drawn entropy"))?;
         Ok(Self { phrase })
     }
 

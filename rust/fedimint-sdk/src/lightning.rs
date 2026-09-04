@@ -651,7 +651,7 @@ mod tests {
             fee: Amount::from_msats(500),
             net_credit: Amount::from_msats(49_500),
             gateway_id: Some(GATEWAY_ID.parse().expect("a valid gateway id")),
-            expires_at: Timestamp::from_epoch_millis(1_700_000_600_000),
+            expires_at: Timestamp::from_epoch_millis(1_700_003_600_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
     }

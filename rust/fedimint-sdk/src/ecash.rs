@@ -610,15 +610,16 @@ mod tests {
     /// may appear in the `Debug` output of a record that carries it.
     const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
 
-    /// A send whose request is rounded up: 1234 msat requested, satisfied by
-    /// 1536 msat of notes (three 512-msat denominations), with a fee on top.
+    /// A send whose request is rounded up: 750 msat requested, satisfied by 1000 msat of
+    /// notes (the fixture token's real value, since a mint issues fixed denominations),
+    /// with a fee on top.
     fn send_details() -> EcashSendDetails {
         EcashSendDetails {
             notes: TOKEN.parse().expect("a valid ecash token"),
-            requested_amount: Amount::from_msats(1_234),
-            notes_value: Amount::from_msats(1_536),
-            fee: Amount::from_msats(64),
-            total_debited: Amount::from_msats(1_600),
+            requested_amount: Amount::from_msats(750),
+            notes_value: Amount::from_msats(1_000),
+            fee: Amount::from_msats(50),
+            total_debited: Amount::from_msats(1_050),
             reclaim_at: Timestamp::from_epoch_millis(1_700_086_400_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
@@ -627,9 +628,9 @@ mod tests {
     fn receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
             notes: TOKEN.parse().expect("a valid ecash token"),
-            notes_value: Amount::from_msats(1_536),
+            notes_value: Amount::from_msats(1_000),
             fee: Amount::from_msats(36),
-            net_credit: Amount::from_msats(1_500),
+            net_credit: Amount::from_msats(964),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
     }
@@ -700,8 +701,8 @@ mod tests {
         assert!(rendered.contains("Notes(<redacted>)"), "{rendered}");
         // A details record exists to be rendered and logged, so everything
         // that is not the bearer token has to survive `Debug`.
-        assert!(rendered.contains("1536"), "{rendered}");
-        assert!(rendered.contains("1600"), "{rendered}");
+        assert!(rendered.contains("1000"), "{rendered}");
+        assert!(rendered.contains("1050"), "{rendered}");
     }
 
     #[test]
@@ -709,7 +710,7 @@ mod tests {
         let rendered = format!("{:?}", receive_details());
         assert!(!rendered.contains(TOKEN), "{rendered}");
         assert!(rendered.contains("Notes(<redacted>)"), "{rendered}");
-        assert!(rendered.contains("1500"), "{rendered}");
+        assert!(rendered.contains("964"), "{rendered}");
     }
 
     #[test]

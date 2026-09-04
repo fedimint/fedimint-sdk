@@ -54,12 +54,16 @@ impl core::str::FromStr for Preimage {
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // `hex` 0.4.3 through fedimint's re-export, the same decoder upstream
-        // uses for its own preimage parsing. Decoding into `[u8; 32]` is what
-        // enforces the length, and the error names a bad character or a bad
-        // length, never the settled secret itself.
-        let bytes: [u8; 32] = fedimint_core::hex::FromHex::from_hex(s.trim()).map_err(|err| {
-            Error::new(ErrorCode::InvalidInput, format!("invalid preimage: {err}"))
+        // `hex` 0.4.3 through fedimint's re-export, the same decoder upstream uses for its own
+        // preimage parsing. Decoding into `[u8; 32]` is what enforces the length. The message
+        // below is fixed rather than built from `err`: `hex` 0.4.3's `InvalidHexCharacter`
+        // display echoes the offending character from the input back into the message, which
+        // a fixed message avoids repeating.
+        let bytes: [u8; 32] = fedimint_core::hex::FromHex::from_hex(s.trim()).map_err(|_err| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                "invalid preimage: expected 64 hex characters",
+            )
         })?;
         Ok(Self { preimage: bytes })
     }
