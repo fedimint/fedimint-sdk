@@ -23,7 +23,6 @@
 
 use std::any::Any;
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use fedimint_core::core::OperationId as UpstreamOperationId;
@@ -272,7 +271,16 @@ impl<S: OperationState> Operation<S> {
     ///
     /// Dropping the returned subscriber ends only that subscription.
     pub fn updates(&self) -> OperationUpdates<S> {
-        unimplemented!()
+        OperationUpdates {
+            inner: self.inner.clone(),
+            driver: self.driver.clone(),
+            stream: None,
+            last: None,
+            resubscribed: false,
+            finished: false,
+            handoff: None,
+            closed: self.inner.federation.closed(),
+        }
     }
 
     /// Waits until the operation reaches a final state and returns it.
@@ -290,7 +298,23 @@ impl<S: OperationState> Operation<S> {
     /// closing the federation while this is pending yields
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn await_final(&self) -> Result<S> {
-        unimplemented!()
+        let mut updates = self.updates();
+        let mut last = None;
+        while let Some(state) = updates.next().await? {
+            let reached_the_end = state.is_final();
+            last = Some(state);
+            if reached_the_end {
+                break;
+            }
+        }
+        last.ok_or_else(|| {
+            // Unreachable: `next` only answers `None` once it has handed out a final state, and
+            // that hand-off is what fills `last`.
+            Error::new(
+                ErrorCode::Internal,
+                "this operation's subscription closed without a final state",
+            )
+        })
     }
 }
 
@@ -349,10 +373,42 @@ impl<S: DetailedOperationState> Operation<S> {
 /// same position with no transition lost. Dropping the subscriber itself ends
 /// that subscription and nothing else: other subscribers keep their own
 /// cursors, and the operation keeps running either way.
-#[derive(Debug)]
 pub struct OperationUpdates<S: OperationState> {
     inner: Arc<OperationInner>,
-    _state: PhantomData<S>,
+    driver: Arc<dyn Driver<S>>,
+    /// The stream this subscriber is reading, opened lazily on the first `next`.
+    stream: Option<BoxStream<'static, Result<S>>>,
+    /// The last state handed to the caller: this subscriber's cursor.
+    last: Option<S>,
+    /// Whether the stream has already been re-established once since the last hand-off.
+    resubscribed: bool,
+    /// Whether a final state has been handed out, after which there is nothing left to say.
+    finished: bool,
+    /// A final state that has been reached but not yet durably persisted and returned.
+    ///
+    /// Set before the persist that follows a final state, and cleared only once that persist
+    /// has actually succeeded and the state is on its way back to the caller. This is what makes
+    /// that stretch cancellation-safe despite containing an `await`: dropping `next` while this
+    /// is `Some` loses nothing, because the next call retries the persist from here instead of
+    /// re-reading the stream, and `last`/`finished` do not move until it succeeds.
+    handoff: Option<S>,
+    /// Fires when the federation stops running, for any reason.
+    ///
+    /// Raced against the stream on every `next`, because a stream whose federation has gone will
+    /// never yield again and an outstanding `next` has to resolve rather than wait for a
+    /// transition that is not coming.
+    closed: tokio::sync::watch::Receiver<bool>,
+}
+
+impl<S: OperationState> fmt::Debug for OperationUpdates<S> {
+    /// Hand-written for the same reason [`Operation`]'s is: a boxed stream and a driver have no
+    /// `Debug`, and neither does the state type.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OperationUpdates")
+            .field("id", &self.inner.id)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: OperationState> OperationUpdates<S> {
@@ -391,12 +447,125 @@ impl<S: OperationState> OperationUpdates<S> {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<Option<S>> {
-        // Implementation notes (delete once implemented):
-        // The cursor must advance when a state is handed to the caller, never when the future is
-        // merely polled. Consuming from a shared queue inside the future, or buffering only while
-        // someone is awaiting, drops states under the `select!` usage the doc above promises is
-        // safe.
-        unimplemented!()
+        // The cursor is `self.last`, `self.resubscribed`, `self.finished` and `self.handoff`,
+        // and every one of them lives on the subscriber rather than inside this future. For a
+        // non-final state that is enough on its own: it is taken from the stream and returned in
+        // the same poll, with no `await` in between, so dropping this future either way leaves
+        // nothing half-done. A final state has one `await` on the way out, the persist below,
+        // and `self.handoff` is what makes that stretch safe too: it is set before the persist
+        // and only cleared once the persist has actually succeeded, so `last`/`finished` never
+        // move ahead of a write that might not have happened, and a dropped or failed persist is
+        // retried by the next call instead of losing the state it was about to hand out.
+        loop {
+            if let Some(state) = self.handoff.clone() {
+                let encoded = self.driver.encode_state(&state)?;
+                self.inner.record_final_state(encoded).await?;
+                self.handoff = None;
+                self.last = Some(state.clone());
+                self.finished = true;
+                return Ok(Some(state));
+            }
+            if self.finished {
+                return Ok(None);
+            }
+            self.inner.federation.ensure_open()?;
+            if self.stream.is_none() {
+                let stream = self
+                    .driver
+                    .subscribe(&self.inner.federation, self.inner.id, &self.inner.record)
+                    .await?;
+                self.stream = Some(stream);
+            }
+            // The check above only catches a federation that had already stopped when this call
+            // started. Racing the stream against the federation's `closed` watch is what catches
+            // one that stops while this call is parked: after that the stream will never yield
+            // again, and the contract is that every outstanding `next` resolves promptly rather
+            // than waiting for a transition that is not coming.
+            let mut watch_fired = false;
+            let item = {
+                let OperationUpdates { stream, closed, .. } = self;
+                let Some(stream) = stream.as_mut() else {
+                    // Unreachable: the block above just established it. An `Internal` rather
+                    // than an `expect`, because the binding layer is built with
+                    // `panic = "abort"`.
+                    return Err(Error::new(
+                        ErrorCode::Internal,
+                        "this operation's subscription went missing",
+                    ));
+                };
+                tokio::select! {
+                    item = futures::StreamExt::next(stream) => item,
+                    _ = closed.changed() => {
+                        watch_fired = true;
+                        None
+                    }
+                }
+            };
+            if watch_fired {
+                // `changed` also resolves once the sender is gone, which cannot happen while
+                // this subscriber holds the federation through an `Arc`; reading that as a stop
+                // is both the safe answer and what keeps this loop from spinning. The value
+                // itself is read back rather than assumed, because a federation that comes back
+                // to life flips the watch the other way and this subscriber simply carries on.
+                if self.closed.has_changed().is_err() || *self.closed.borrow_and_update() {
+                    return Err(Error::new(
+                        ErrorCode::FederationClosed,
+                        "this federation stopped running",
+                    ));
+                }
+                continue;
+            }
+            match item {
+                Some(Ok(state)) => {
+                    // Taken from the stream and either returned or handed to `self.handoff` in
+                    // this same poll, with no `await` in between, so the caller either receives
+                    // the state (a non-final one, directly; a final one, once the handoff above
+                    // has persisted it) or this state never left the stream at all.
+                    if let Some(previous) = &self.last
+                        && self.driver.same_state(previous, &state)
+                    {
+                        continue;
+                    }
+                    self.resubscribed = false;
+                    if state.is_final() {
+                        self.handoff = Some(state);
+                        continue;
+                    }
+                    self.last = Some(state.clone());
+                    return Ok(Some(state));
+                }
+                Some(Err(err)) => return Err(err),
+                None => {
+                    // Belt-and-braces: `self.last` and `self.finished` are only ever set
+                    // together, by the handoff retry above, so a final `self.last` implies
+                    // `self.finished` already returned `Ok(None)` at the top of this loop before
+                    // the stream was ever polled again. Kept as a guard rather than removed,
+                    // since nothing prevents a future change from setting one without the other.
+                    if self.last.as_ref().is_some_and(OperationState::is_final) {
+                        self.finished = true;
+                        return Ok(None);
+                    }
+                    // A stream that ended without a final state did not finish, it was cut off:
+                    // the client's notifier ends a subscriber's stream when it falls more than
+                    // ten thousand transitions behind, with only a log line to say so
+                    // (`fedimint-client-module/src/sm/notifier.rs:146-154`, and the lag
+                    // error it reacts to, in
+                    // `fedimint-core/src/util/broadcaststream.rs:61-67`).
+                    // Subscribing again re-reads the current state, which the dedupe above drops,
+                    // and carries on. Once per hand-off, so a stream that cannot be established
+                    // is reported rather than spun on.
+                    if self.resubscribed {
+                        return Err(Error::new(
+                            ErrorCode::Internal,
+                            "this operation's updates could not be followed: the subscription \
+                             ended twice without reaching a final state",
+                        ));
+                    }
+                    self.resubscribed = true;
+                    self.stream = None;
+                }
+            }
+        }
     }
 }
 
@@ -1812,5 +1981,322 @@ mod tests {
                 .backfill("mint", &serde_json::Value::Null)
                 .is_none()
         );
+    }
+
+    /// A driver whose one subscription is fed by hand, for the timing the scripted driver
+    /// cannot express: a state that arrives while nobody is awaiting.
+    struct ChannelDriver {
+        stream: std::sync::Mutex<Option<BoxStream<'static, Result<ProbeState>>>>,
+    }
+
+    impl ChannelDriver {
+        /// A driver and the sender that feeds its one subscription.
+        fn new() -> (
+            Arc<ChannelDriver>,
+            futures::channel::mpsc::UnboundedSender<Result<ProbeState>>,
+        ) {
+            let (sender, receiver) = futures::channel::mpsc::unbounded();
+            let driver = ChannelDriver {
+                stream: std::sync::Mutex::new(Some(Box::pin(receiver) as BoxStream<'static, _>)),
+            };
+            (Arc::new(driver), sender)
+        }
+    }
+
+    impl Driver<ProbeState> for ChannelDriver {
+        fn current<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<ProbeState>> {
+            Box::pin(async { Ok(ProbeState::Running) })
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
+            Box::pin(async move {
+                let stream = self
+                    .stream
+                    .lock()
+                    .expect("test mutex is never poisoned")
+                    .take();
+                Ok(stream.unwrap_or_else(|| Box::pin(futures::stream::empty())))
+            })
+        }
+
+        fn same_state(&self, previous: &ProbeState, next: &ProbeState) -> bool {
+            previous == next
+        }
+
+        fn encode_state(&self, state: &ProbeState) -> Result<String> {
+            Ok(format!("{state:?}"))
+        }
+
+        fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+            Err(Error::new(
+                ErrorCode::Internal,
+                "the channel probe has no details",
+            ))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_first_next_yields_the_current_state_without_waiting() {
+        use futures::FutureExt;
+
+        let (_driver, operation) = probe_operation(vec![vec![Ok(ProbeState::Running)]]).await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates
+                .next()
+                .now_or_never()
+                .expect("the current state is available at once")
+                .expect("next"),
+            Some(ProbeState::Running)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repeated_state_is_handed_out_only_once() {
+        // Two upstream events that mean the same thing here: the mappings are many-to-one, so
+        // this is the normal case rather than a defect in a driver.
+        let (_driver, operation) = probe_operation(vec![vec![
+            Ok(ProbeState::Running),
+            Ok(ProbeState::Running),
+            Ok(ProbeState::Done),
+        ]])
+        .await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_final_state_is_followed_by_none_for_ever() {
+        let (_driver, operation) = probe_operation(vec![vec![
+            Ok(ProbeState::Running),
+            Ok(ProbeState::Done),
+            Ok(ProbeState::Running),
+        ]])
+        .await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+        // The subscription closed at the final state; the state after it in the script is not a
+        // transition this subscriber can be told about, because there are none after a final
+        // state.
+        assert_eq!(updates.next().await.expect("next"), None);
+        assert_eq!(updates.next().await.expect("next"), None);
+        assert_eq!(updates.next().await.expect("next"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_subscriptions_see_the_same_sequence_and_neither_steals_from_the_other() {
+        let (driver, operation) = probe_operation(vec![
+            vec![Ok(ProbeState::Running), Ok(ProbeState::Done)],
+            vec![Ok(ProbeState::Running), Ok(ProbeState::Done)],
+        ])
+        .await;
+        let mut screen = operation.updates();
+        let mut sync = operation.updates();
+        assert_eq!(
+            screen.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        assert_eq!(sync.next().await.expect("next"), Some(ProbeState::Running));
+        assert_eq!(screen.next().await.expect("next"), Some(ProbeState::Done));
+        assert_eq!(sync.next().await.expect("next"), Some(ProbeState::Done));
+        assert_eq!(screen.next().await.expect("next"), None);
+        assert_eq!(sync.next().await.expect("next"), None);
+        assert_eq!(driver.subscriptions(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stream_that_ends_short_is_subscribed_to_again() {
+        // The client's notifier ends a subscriber's stream when it falls behind, with nothing
+        // but a log line to say so, so "the stream ended" never means "the operation finished".
+        let (driver, operation) = probe_operation(vec![
+            vec![Ok(ProbeState::Running)],
+            vec![Ok(ProbeState::Running), Ok(ProbeState::Done)],
+        ])
+        .await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        // The truncation is invisible to the caller: the second subscription's repeat of the
+        // current state is dropped and the transition after it is what arrives.
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+        assert_eq!(updates.next().await.expect("next"), None);
+        assert_eq!(driver.subscriptions(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stream_that_ends_short_twice_running_is_an_error() {
+        let (driver, operation) =
+            probe_operation(vec![vec![Ok(ProbeState::Running)], vec![], vec![]]).await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        let err = updates
+            .next()
+            .await
+            .expect_err("a subscription that cannot be re-established must not look finished");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert_eq!(driver.subscriptions(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_state_reached_while_no_future_was_pending_is_still_delivered() {
+        use futures::FutureExt;
+
+        let (driver, sender) = ChannelDriver::new();
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        // Nothing has happened yet, so this cannot resolve; dropping it is exactly what
+        // `select!` and a timeout do to the losing branch.
+        assert!(updates.next().now_or_never().is_none());
+        // The transition happens while no future is pending.
+        sender
+            .unbounded_send(Ok(ProbeState::Running))
+            .expect("the subscription is still open");
+        // And it is still the next thing this subscriber is told, with the cursor where it was.
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        sender
+            .unbounded_send(Ok(ProbeState::Done))
+            .expect("the subscription is still open");
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+        assert_eq!(updates.next().await.expect("next"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_error_from_the_stream_reaches_the_caller_unchanged() {
+        let (_driver, operation) = probe_operation(vec![vec![
+            Ok(ProbeState::Running),
+            Err(Error::new(ErrorCode::Storage, "the disk went away")),
+        ]])
+        .await;
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect("next"),
+            Some(ProbeState::Running)
+        );
+        let err = updates.next().await.expect_err("the storage failure");
+        assert_eq!(err.code, ErrorCode::Storage);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn await_final_reads_until_the_operation_settles() {
+        let (_driver, operation) = probe_operation(vec![vec![
+            Ok(ProbeState::Running),
+            Ok(ProbeState::Running),
+            Ok(ProbeState::Done),
+        ]])
+        .await;
+        assert_eq!(
+            operation.await_final().await.expect("final"),
+            ProbeState::Done
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn await_final_returns_at_once_for_an_operation_that_already_settled() {
+        let (_driver, operation) = probe_operation(vec![vec![Ok(ProbeState::Done)]]).await;
+        assert_eq!(
+            operation.await_final().await.expect("final"),
+            ProbeState::Done
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_final_state_a_subscriber_hands_out_is_recorded() {
+        let (_driver, operation) =
+            probe_operation(vec![vec![Ok(ProbeState::Running), Ok(ProbeState::Done)]]).await;
+        let mut updates = operation.updates();
+        while updates.next().await.expect("next").is_some() {}
+        assert_eq!(
+            operation.inner.reload().await.expect("record").final_state,
+            Some("\"Done\"".to_owned())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_on_a_closed_federation_says_so() {
+        let (_driver, live) = probe_operation(vec![vec![Ok(ProbeState::Running)]]).await;
+        let closed = FederationInner::detached(live.inner.federation.db(), false);
+        let operation = Operation::attach(
+            Arc::new(OperationInner {
+                federation: closed,
+                id: live.inner.id,
+                record: live.inner.record.clone(),
+            }),
+            ScriptedDriver::new(vec![vec![Ok(ProbeState::Running)]]) as Arc<dyn Driver<ProbeState>>,
+        );
+        // `updates` itself cannot fail, so the closure is reported where a caller can act on it.
+        let mut updates = operation.updates();
+        assert_eq!(
+            updates.next().await.expect_err("closed").code,
+            ErrorCode::FederationClosed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subscriber_parked_on_a_stream_is_released_when_the_federation_stops() {
+        let (driver, _sender) = ChannelDriver::new();
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        let federation = operation.inner.federation.clone();
+        // The `next` below parks on a stream nothing will ever feed. Closing the federation is
+        // what has to release it: with only the check at the top of the loop this waits for
+        // ever, and the shutdown that is waiting for the subscriber waits with it.
+        let (released, ()) = tokio::join!(updates.next(), async {
+            tokio::task::yield_now().await;
+            federation.set_status(crate::FederationStatus::Closed);
+        });
+        let err = released.expect_err("the subscriber is released");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_final_state_left_in_handoff_is_retried_and_persisted() {
+        // Stands in for a `next()` future dropped after it committed to handing out a final
+        // state but before the persist that follows completed: `self.handoff` is exactly what
+        // that in-flight future would have left behind, planted directly here because neither
+        // the scripted nor the channel driver can pause a real subscriber mid-persist. Nothing
+        // reads the stream in this test at all, which is the point: the handoff alone must be
+        // enough to finish the job.
+        let (_driver, operation) = probe_operation(vec![vec![]]).await;
+        let mut updates = operation.updates();
+        updates.handoff = Some(ProbeState::Done);
+        assert_eq!(
+            operation.inner.reload().await.expect("record").final_state,
+            None
+        );
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+        // Persisted by the retry, not lost with the future that first reached it.
+        assert_eq!(
+            operation.inner.reload().await.expect("record").final_state,
+            Some("\"Done\"".to_owned())
+        );
+        // And the subscription is closed for good, exactly as if the persist had gone through
+        // on the first attempt.
+        assert_eq!(updates.next().await.expect("next"), None);
     }
 }
