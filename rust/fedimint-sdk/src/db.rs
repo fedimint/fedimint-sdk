@@ -562,6 +562,17 @@ pub(crate) fn now_millis() -> u64 {
     u64::try_from(fedimint_core::time::duration_since_epoch().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Milliseconds since the Unix epoch for a time the client recorded.
+///
+/// A time before the epoch is reported as zero rather than as an error: it can only come from a
+/// machine whose clock was wrong when the entry was written, and a history row out of order is a
+/// better outcome than a lookup that fails.
+pub(crate) fn millis_of(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 /// Maps a database failure onto the crate's transient storage code.
 ///
 /// [`ErrorCode::Storage`](crate::ErrorCode::Storage) is documented as a backend fault, which is
