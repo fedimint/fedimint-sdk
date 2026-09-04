@@ -45,9 +45,37 @@ fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev =
 # entropy buffer `Mnemonic::generate` draws into.
 bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
 zeroize = "1"
+futures = "0.3.32"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
+# lock: this one is the SDK's single-opener claim, and it has to fail fast on
+# contention rather than block. See src/storage.rs.
+fd-lock = "4"
 fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+js-sys = "0.3.83"
+# `macros` is not about tests here: `tokio::select!` lives behind it, and both
+# subscription types select a stream against a shutdown watch on every target.
+tokio = { version = "1.48.0", features = ["sync", "macros"] }
+# Pinned exactly, matching fedimint's own `[workspace.dependencies]`: it has to
+# agree with the `wasm-bindgen-cli` the nix build provides, and two versions of
+# it in one graph do not link.
+wasm-bindgen = "=0.2.106"
+wasm-bindgen-futures = "0.4.56"
+web-sys = { version = "0.3.83", features = [
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetFileOptions",
+    "FileSystemSyncAccessHandle",
+    "StorageManager",
+    "WorkerGlobalScope",
+    "WorkerNavigator",
+] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tempfile = "3.20.0"
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros"] }
