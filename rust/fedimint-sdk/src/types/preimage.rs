@@ -13,13 +13,15 @@
 /// Like the rest of the crate's string-shaped values it is opaque and has a
 /// canonical hex form, round-tripping through
 /// [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr) with
-/// a validating parse. A binding therefore carries it as a plain string —
-/// a Swift `String`, a Kotlin `String`, a JavaScript string — without
+/// a validating parse. A binding therefore carries it as a plain string:
+/// a Swift `String`, a Kotlin `String`, a JavaScript string, without
 /// needing hex handling or a length check of its own.
 ///
-/// The SDK also normalises how upstream reports it: fedimint's v1 lightning
-/// module hands back the preimage as a hex string while lnv2 hands back raw
-/// bytes, and both arrive here as one `Preimage`.
+/// The SDK normalises this value to one hex form regardless of how a given
+/// federation's lightning module reports it internally.
+// Implementation notes (delete once implemented):
+// - v1's lightning module hands back the preimage as a hex string, lnv2 hands back raw bytes.
+//   Normalise both to one `Preimage`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Preimage {
     preimage: String,

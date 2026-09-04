@@ -9,7 +9,7 @@ use super::{FederationId, Network};
 /// An invite code carries everything needed to locate and connect to a
 /// federation's guardians before anything has been persisted locally. It is
 /// opaque: callers pass it to a preview or join call rather than picking it
-/// apart, with one deliberate exception —
+/// apart, with one deliberate exception:
 /// [`federation_id`](InviteCode::federation_id), the key that every
 /// per-federation call takes, is readable from the code without a network
 /// round trip. It round-trips through [`Display`](core::fmt::Display) and
@@ -20,23 +20,15 @@ use super::{FederationId, Network};
 ///
 /// # `Display` prints the code, `Debug` never does
 ///
-/// An invite code is not always public. It can embed an `api_secret`, which
-/// is the credential a private federation requires before its guardians will
-/// answer at all — so the code is a bearer credential, and printing one can
-/// hand a reader access to a federation that was meant to be closed. The two
-/// formatting traits are therefore split deliberately:
-///
-/// - **[`Display`](core::fmt::Display) is the escape hatch**, and it is the
-///   only one. Rendering the code is what the type is for — it has to be
-///   shown, scanned, and shared — so `{invite}` is a visible, deliberate
-///   choice, the same way [`Mnemonic::words`](crate::Mnemonic::words) is the
-///   deliberate way to get a seed phrase out.
-/// - **[`Debug`] is not an escape hatch** and is redacted. `{:?}` is what
-///   logging, crash reporters, tracing spans, and `assert!` failure messages
-///   reach for, none of which should receive a credential nobody chose to
-///   publish. Derived `Debug` would also leak *transitively*: any struct
-///   holding an `InviteCode` and deriving `Debug` would print it merely by
-///   being logged, without anyone formatting the code on purpose.
+/// An invite code is not always public: it can embed an `api_secret`, the
+/// credential a private federation requires before its guardians will answer
+/// at all, so the code is a bearer credential and printing one can hand a
+/// reader access to a federation meant to be closed.
+/// [`Display`](core::fmt::Display) prints the code and is the deliberate way
+/// to render, scan or share it. [`Debug`] is redacted instead, because it is
+/// what logging, crash reporters and `assert!` failures reach for, and any
+/// struct holding an `InviteCode` would otherwise print it merely by being
+/// logged.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct InviteCode {
     code: String,
@@ -47,23 +39,18 @@ impl InviteCode {
     ///
     /// Read from the code itself, which encodes it: no network round trip,
     /// no join, and the same value [`FederationPreview::id`] reports after
-    /// one. This is the one thing a caller may take out of an otherwise
-    /// opaque code, and it is exposed because it is the key every
-    /// per-federation call on [`Sdk`](crate::Sdk) takes —
-    /// [`federation_status`](crate::Sdk::federation_status) and
-    /// [`reopen_federation`](crate::Sdk::reopen_federation) among them, and
+    /// one. It is the key every per-federation call on [`Sdk`](crate::Sdk)
+    /// takes, including [`federation_status`](crate::Sdk::federation_status),
+    /// [`reopen_federation`](crate::Sdk::reopen_federation),
     /// [`recovery_status`](crate::Sdk::recovery_status) and
-    /// [`resume_recovery`](crate::Sdk::resume_recovery) with them. An
-    /// application holding only an invite code can therefore find out where
-    /// that federation stands *before* joining, and — the case that makes
-    /// this accessor necessary rather than convenient — find its way back to
-    /// a federation that a failed seed recovery left committed but not
-    /// open, since that call's error carries no id and enumerating stored
-    /// federations cannot say which row a particular failed call produced.
+    /// [`resume_recovery`](crate::Sdk::resume_recovery). An application
+    /// holding only an invite code can therefore check where that federation
+    /// stands before joining, and find its way back to a federation that a
+    /// failed seed recovery left committed but not open, when nothing else
+    /// identifies which stored federation that failed call produced.
     ///
-    /// Not a credential: a federation id is public. The `Debug` redaction
-    /// covers the code as a whole because of the `api_secret` it can embed,
-    /// and reading the id out of it hands over nothing that was secret.
+    /// Not a credential: a federation id is public, unlike the `api_secret`
+    /// the code as a whole may embed.
     pub fn federation_id(&self) -> FederationId {
         let _ = &self.code;
         unimplemented!()
@@ -82,25 +69,16 @@ impl InviteCode {
 
 impl core::fmt::Debug for InviteCode {
     /// Prints `InviteCode(<redacted>)`: the type name and nothing else, never
-    /// the code.
-    ///
-    /// Hand-written rather than derived because an invite code may embed a
-    /// federation's `api_secret`, making it a credential rather than a public
-    /// identifier. `Debug` output reaches log lines, crash reports, tracing
-    /// spans, and `assert!` messages without anybody deciding that it should,
-    /// and a derive would additionally leak the code through every struct
-    /// that contains one and derives `Debug`. The value stays reachable,
-    /// deliberately and visibly, through [`Display`](core::fmt::Display).
+    /// the code. The value stays reachable, deliberately and visibly,
+    /// through [`Display`](core::fmt::Display).
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("InviteCode(<redacted>)")
     }
 }
 
 impl core::fmt::Display for InviteCode {
-    /// Writes the invite code itself, in its canonical string form.
-    ///
-    /// This is the deliberate way to get the value out — to render a QR code,
-    /// to share a link — and it is the *only* way; see the type-level
+    /// Writes the invite code itself, in its canonical string form. This is
+    /// the deliberate way to get the value out; see the type-level
     /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let _ = &self.code;
@@ -123,7 +101,7 @@ impl core::str::FromStr for InviteCode {
 /// committing to anything.
 ///
 /// A `FederationPreview` is fetched (from the federation's guardians, over
-/// the network) without joining or persisting any state locally — it lets an
+/// the network) without joining or persisting any state locally: it lets an
 /// application show the user what they're about to join. Producing one also
 /// validates the federation-wide rule that every module must share the same
 /// generation (all v1 or all v2, never mixed); a federation that fails that
@@ -151,7 +129,7 @@ pub struct FederationPreview {
     ///
     /// Presence here does not imply a corresponding facade after joining.
     /// The SDK exposes facades for the mint, lightning and wallet modules
-    /// only, while this list is the federation's full module set — a
+    /// only, while this list is the federation's full module set: a
     /// federation may run modules this SDK has no facade for, and they
     /// appear here all the same.
     ///
