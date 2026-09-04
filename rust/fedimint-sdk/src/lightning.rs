@@ -699,9 +699,9 @@ mod tests {
         // different numbers.
         let details = send_details();
         let state = LnSendState::Success {
-            preimage: Preimage::from_raw(
-                "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-            ),
+            preimage: "0000000000000000000000000000000000000000000000000000000000000000"
+                .parse()
+                .expect("a well-formed preimage"),
             fee: details.fee,
             route: details.route.clone(),
         };
@@ -811,9 +811,9 @@ mod tests {
     fn ln_send_state_success_is_final() {
         assert!(
             LnSendState::Success {
-                preimage: Preimage::from_raw(
-                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-                ),
+                preimage: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .parse()
+                    .expect("a well-formed preimage"),
                 fee: Amount::from_msats(0),
                 route: LightningRoute::Internal,
             }
