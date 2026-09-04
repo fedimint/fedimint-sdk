@@ -1,5 +1,7 @@
 //! The Bitcoin network a federation operates on.
 
+use fedimint_core::bitcoin;
+
 /// The Bitcoin network a federation's on-chain module is configured for.
 ///
 /// Every federation operates on exactly one network; this value is read
@@ -37,4 +39,34 @@ pub enum Network {
     /// A privately operated regression-test network, typically used for
     /// local development.
     Regtest,
+}
+
+impl Network {
+    /// Every network this enum can name.
+    ///
+    /// Crate-internal. It exists so that "which networks is this value
+    /// compatible with?" can be answered by asking each candidate in turn,
+    /// which is the only way `bitcoin` offers: a validated address keeps no
+    /// `Network` of its own.
+    pub(crate) const ALL: [Network; 5] = [
+        Network::Bitcoin,
+        Network::Testnet,
+        Network::Testnet4,
+        Network::Signet,
+        Network::Regtest,
+    ];
+
+    /// This network as the `bitcoin` crate spells it.
+    ///
+    /// Crate-internal: no conversion between this enum and an upstream type is
+    /// part of the public API.
+    pub(crate) fn to_bitcoin(self) -> bitcoin::Network {
+        match self {
+            Network::Bitcoin => bitcoin::Network::Bitcoin,
+            Network::Testnet => bitcoin::Network::Testnet,
+            Network::Testnet4 => bitcoin::Network::Testnet4,
+            Network::Signet => bitcoin::Network::Signet,
+            Network::Regtest => bitcoin::Network::Regtest,
+        }
+    }
 }
