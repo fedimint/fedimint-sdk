@@ -355,6 +355,7 @@ impl Sdk {
             Some(client),
         ));
         self.inner.insert(federation.clone());
+        crate::federation::reconcile_on_open(&federation).await;
         self.inner.announce(&federation);
         Ok(Federation::new(federation))
     }
@@ -637,6 +638,7 @@ impl Sdk {
             Some(client),
         ));
         self.inner.insert(federation.clone());
+        crate::federation::reconcile_on_open(&federation).await;
         self.inner.announce(&federation);
         Ok(Federation::new(federation))
     }
@@ -1859,6 +1861,7 @@ impl SdkInner {
             },
         };
         federation.set_status(status);
+        crate::federation::reconcile_on_open(&federation).await;
         self.announce(&federation);
     }
 

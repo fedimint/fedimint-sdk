@@ -107,9 +107,8 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 /// A caller never needs to have seen an earlier state: whatever it takes to
 /// render or complete a reattached operation, [`Operation::details`] and the
 /// current state supply between them.
-// Implementation notes (delete once implemented):
-// - The record must be committed in the same storage transaction that creates the operation,
-//   before the creating call returns.
+// The record must be committed in the same storage transaction that creates the operation,
+// before the creating call returns.
 // - Fields fill in at most once and never move: set at creation, or set in the same write that
 //   records the transition establishing them. `None` becomes `Some` at most once and a value
 //   never changes to a different value or reverts.
@@ -120,6 +119,17 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 // - `Debug` is a supertrait bound (unlike on `OperationState`) because every record derives it
 //   under this crate's `missing_debug_implementations` lint; types that must not appear in a log
 //   (see `Notes`) redact their own `Debug` instead of relying on a container to omit them.
+//
+// Fedimint does not let an embedder join the transaction the module commits its own operation
+// log entry in: no module's creation method takes a `dbtx`, and the `_dbtx` variants that would
+// allow it hang off `ClientContext`, which only a module implementation holds
+// (fedimint-client-module/src/module/mod.rs:400, :662, :865). So the record is written
+// immediately after the module call returns and before the creating call hands back a handle,
+// which is what the crate's durability contract actually promises (see the durability section on
+// `Sdk`), and a crash in the window between the two commits is repaired by
+// `FederationInner::reconcile_operations`, which rebuilds a record from the log entry the module
+// did commit. See fedimint#TBD (filed with this pull request) for the upstream change that would
+// close the window; the note is deleted once it lands.
 pub trait OperationDetails:
     sealed::Sealed + Clone + core::fmt::Debug + Send + Sync + 'static
 {
@@ -1886,7 +1896,7 @@ mod tests {
     /// `AnyOperation::from_record` is a pure wrapper over a record that has already been read, so
     /// it never writes storage; but the typed accessors it hands back reload from storage on
     /// every call (`Operation::state`, for instance), so the record has to actually be persisted
-    /// here first, exactly the way `probe_record` does it for `probe_operation_with`.
+    /// here first.
     async fn any_operation(kind: &str, module: &str, schema_version: u32) -> AnyOperation {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 
@@ -2021,47 +2031,20 @@ mod tests {
         assert_send_sync::<Arc<dyn Driver<ProbeState>>>();
     }
 
-    /// Writes a probe record straight into a namespace, for the tasks that land before
-    /// `create_operation` does.
-    async fn probe_record(
-        federation: &Arc<FederationInner>,
-        id: UpstreamOperationId,
-    ) -> OperationRecord {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-
-        let record = OperationRecord {
-            schema_version: READABLE_STATE_SCHEMA,
-            kind: "probe".to_owned(),
-            module: "probe_module".to_owned(),
-            created_at: crate::db::now_millis(),
-            details: serde_json::to_string(&ProbeDetailsWire::from(&probe_details()))
-                .expect("the probe wire record serialises"),
-            phase: None,
-            cancel_requested_at: None,
-            final_state: None,
-        };
-        let db = federation.db();
-        let mut dbtx = db.begin_transaction().await;
-        dbtx.insert_entry(&crate::db::OperationRecordKey(id), &record)
-            .await;
-        dbtx.commit_tx().await;
-        record
-    }
-
     /// A probe operation over a fresh in-memory namespace, observed through `driver`.
     async fn probe_operation_with(driver: Arc<dyn Driver<ProbeState>>) -> Operation<ProbeState> {
         let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
         let federation = FederationInner::detached(db, true);
-        let id = UpstreamOperationId([5u8; 32]);
-        let record = probe_record(&federation, id).await;
-        Operation::attach(
-            Arc::new(OperationInner {
-                federation,
-                id,
-                record,
-            }),
-            driver,
-        )
+        federation
+            .create_operation(
+                UpstreamOperationId([5u8; 32]),
+                "probe",
+                "probe_module",
+                &ProbeDetailsWire::from(&probe_details()),
+                driver,
+            )
+            .await
+            .expect("creating an operation over an empty namespace cannot fail")
     }
 
     /// A probe operation whose subscriptions replay `scripts` in order.
