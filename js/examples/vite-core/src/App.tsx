@@ -215,12 +215,30 @@ const OnboardingScreen = ({
   const [error, setError] = useState('')
   const [copyFeedback, setCopyFeedback] = useState('')
 
+  // Helper function to extract error messages directly
   const extractErrorMessage = (error: any): string => {
-    if (error instanceof Error) return error.message
-    if (typeof error === 'object' && error !== null) {
-      return error.error || error.message || String(error)
+    let errorMsg = 'Operation failed'
+
+    if (typeof error === 'string') {
+      errorMsg = error
+    } else if (error instanceof Error) {
+      errorMsg = error.message
+    } else if (typeof error === 'object' && error !== null) {
+      // Handle RPC error objects
+      const rpcError = error as any
+      if (rpcError.error) {
+        errorMsg =
+          typeof rpcError.error === 'string'
+            ? rpcError.error
+            : JSON.stringify(rpcError.error)
+      } else if (rpcError.message) {
+        errorMsg =
+          typeof rpcError.message === 'string'
+            ? rpcError.message
+            : JSON.stringify(rpcError.message)
+      }
     }
-    return String(error)
+    return errorMsg
   }
 
   // Recover unconfirmed mnemonic on boot
@@ -728,11 +746,11 @@ const JoinFederation = ({
             <details className="preview-details">
               <summary>Guardian Endpoints</summary>
               <div className="guardian-list">
-                {Object.entries(
-                  previewData.config.global.api_endpoints as Record<
+                {(
+                  Object.entries(previewData.config.global.api_endpoints) as [
                     string,
-                    any
-                  >,
+                    { name: string; url: string },
+                  ][]
                 ).map(([id, peer]) => (
                   <div key={id} className="guardian-item">
                     <div>
@@ -747,8 +765,11 @@ const JoinFederation = ({
             <details className="preview-details">
               <summary>Module Configuration</summary>
               <div className="module-list">
-                {Object.entries(
-                  previewData.config.modules as Record<string, any>,
+                {(
+                  Object.entries(previewData.config.modules) as [
+                    string,
+                    { kind: string },
+                  ][]
                 ).map(([id, module]) => (
                   <div key={id} className="module-item">
                     <strong>{module.kind}</strong>
