@@ -1,0 +1,16 @@
+# `getrandom` picks its wasm backend from a cfg flag as well as from a Cargo
+# feature, and the flag is the half a downstream crate can set. This is the
+# same flag fedimint's own build environment sets
+# (nix/flakebox.nix: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS), kept here
+# so that `cargo check --target wasm32-unknown-unknown` works with no ambient
+# environment.
+#
+# Cargo ignores `target.<triple>.rustflags` whenever the RUSTFLAGS environment
+# variable is set, and actions-rust-lang/setup-rust-toolchain sets it (to
+# `-D warnings`) by default, so in CI this file has no effect. The wasm check
+# was verified to pass both ways at the pinned revision: `getrandom` resolves
+# to 0.3.4 there, which selects the backend from the feature alone. The file
+# is what keeps the local build working if the lock ever moves back to a
+# `getrandom` where the cfg is mandatory.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

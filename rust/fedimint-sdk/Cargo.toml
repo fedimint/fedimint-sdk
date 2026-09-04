@@ -9,8 +9,36 @@ repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
 [dependencies]
-# Intentionally empty. The skeleton defines the full public API with
-# unimplemented!() bodies; fedimint-* et al. arrive with the implementation.
-# No foreign error-type crates may ever appear here — the public error surface
+# The SDK tracks fedimint `master`, not a published release. Every fedimint
+# crate below is a git dependency pinned to one revision, and that revision
+# must equal the one the repo's flake.nix pins for its `fedimint` and
+# `fedimint-wasm` inputs: the client under test and the federation the tests
+# run it against have to come from the same commit. Bump all three together;
+# the `pins-agree` job in .github/workflows/rust-sdk-ci.yaml fails the build
+# when they drift. Git dependencies also mean this crate cannot go to
+# crates.io, which is what `publish = false` above already says.
+#
+# No foreign error-type crate may ever appear here — the public error surface
 # is crate-owned (see fedimint/fedimint#8821 for the upstream structured-error
-# work this stays decoupled from).
+# work this stays decoupled from), which is also why `anyhow` is absent even
+# though every upstream call returns it.
+fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
