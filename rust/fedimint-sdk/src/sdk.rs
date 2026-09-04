@@ -594,8 +594,8 @@ impl Sdk {
         }
 
         let record = existing.record();
-        let client = match self.inner.start(&upstream, &record).await {
-            Ok(client) => client,
+        let (client, revalidated) = match self.inner.start(&upstream, &record).await {
+            Ok(started) => started,
             Err(err) => {
                 // A failed reopen leaves the same quarantine this call reports, so later builds
                 // retry it too. `close_federation` is how an application gives up instead.
@@ -607,8 +607,12 @@ impl Sdk {
             }
         };
 
+        // Built on `revalidated`, not the pre-`start` snapshot in `record`: `start` may have
+        // refreshed the capabilities, network or generation against the client's live
+        // configuration, and only flipping `status` here keeps that refresh rather than
+        // overwriting it with the stale values `record` still holds.
         let recovering = client.has_pending_recoveries();
-        let mut opened = record;
+        let mut opened = revalidated;
         opened.status = StoredStatus::Open;
         crate::db::write_federation(&self.inner.db, &upstream, &opened).await?;
 
@@ -1836,7 +1840,12 @@ impl SdkInner {
         ));
         self.insert(federation.clone());
         let status = match self.start(id, &record).await {
-            Ok(client) => {
+            Ok((client, revalidated)) => {
+                // Set before `install`/`announce`, so a refresh `start` made against the client's
+                // live configuration is what `network()`/`capabilities()` and the announced
+                // `FederationInfo` report from here on, not the pre-revalidation snapshot in
+                // `record`.
+                federation.set_record(revalidated);
                 let recovering = client.has_pending_recoveries();
                 federation.install(client).await;
                 if recovering {
@@ -1863,41 +1872,51 @@ impl SdkInner {
     /// to receive with, so the namespace is wiped and the join is redone from the stored invite.
     /// That is deterministic, where trying to tell a half-written client database from a complete
     /// one is not.
+    ///
+    /// The returned record is whatever `revalidate` actually persisted, which is not necessarily
+    /// `record` itself: a caller that goes on to write its own status change onto `record` instead
+    /// would silently discard a capabilities, network or generation refresh this call just made.
     pub(crate) async fn start(
         &self,
         id: &config::FederationId,
         record: &FederationRecord,
-    ) -> Result<ClientHandleArc> {
-        let client = if record.status == StoredStatus::Joining {
+    ) -> Result<(ClientHandleArc, FederationRecord)> {
+        let (client, opened) = if record.status == StoredStatus::Joining {
             crate::db::wipe_federation(&self.db, id).await?;
             let client = self.join_client(id, record).await?;
             let mut opened = record.clone();
             opened.status = StoredStatus::Open;
             crate::db::write_federation(&self.db, id, &opened).await?;
-            client
+            (client, opened)
         } else {
-            self.open_client(id).await?
+            (self.open_client(id).await?, record.clone())
         };
 
-        if let Err(err) = self.revalidate(id, &client, record).await {
-            // Not a federation this SDK can keep operating on: shut the freshly opened client
-            // down rather than leave it running unsupervised, and report the refusal so the
-            // caller quarantines the federation with this diagnostic.
-            let _ = crate::federation::shutdown_client(client).await;
-            return Err(err);
+        match self.revalidate(id, &client, &opened).await {
+            Ok(revalidated) => Ok((client, revalidated)),
+            Err(err) => {
+                // Not a federation this SDK can keep operating on: shut the freshly opened client
+                // down rather than leave it running unsupervised, and report the refusal so the
+                // caller quarantines the federation with this diagnostic.
+                let _ = crate::federation::shutdown_client(client).await;
+                Err(err)
+            }
         }
-        Ok(client)
     }
 
     /// Checks a freshly opened client's live configuration against the module-generation rule,
     /// and refreshes the stored record when the capabilities, network or generation it reports
     /// no longer match what was last written.
+    ///
+    /// Returns the record now on file: the refreshed one when a refresh was written, or `record`
+    /// itself, unchanged, otherwise. Callers must build on this return value rather than on
+    /// `record`, or a refresh this call just persisted is invisible to them.
     async fn revalidate(
         &self,
         id: &config::FederationId,
         client: &ClientHandleArc,
         record: &FederationRecord,
-    ) -> Result<()> {
+    ) -> Result<FederationRecord> {
         let config = client.config().await;
         let kinds = crate::modules::module_kinds(&config);
         let generation = crate::modules::check_generation(&kinds)?;
@@ -1914,8 +1933,9 @@ impl SdkInner {
             refreshed.network = network;
             refreshed.generation = generation;
             crate::db::write_federation(&self.db, id, &refreshed).await?;
+            return Ok(refreshed);
         }
-        Ok(())
+        Ok(record.clone())
     }
 }
 
@@ -2414,6 +2434,16 @@ mod tests {
         // `forget_federation` below already uses (its own phase 1 sets `Closed` right after
         // `quiesce`); the quarantine-on-failure half is new here and has no analogue to lean on,
         // which is exactly why a dedicated test was attempted before settling for this note.
+
+        // No test here exercises `reopen_federation`/`restore` preserving `start`'s revalidated
+        // record instead of clobbering it with the pre-revalidation snapshot: `start` only
+        // refreshes the record when the live client's configuration disagrees with what was last
+        // written, which needs a client actually opened against a federation, and neither
+        // `plant_closed_federation` below nor any other planted-record helper in this module opens
+        // one. Exercising the refresh itself needs a real federation whose configuration changed
+        // between two opens, which is beyond what `tests/integration.rs`'s devimint harness drives
+        // today. Reviewed by inspection instead: `reopen_federation` and `restore` both now build
+        // on `start`'s returned record rather than on the snapshot taken before calling it.
 
         #[tokio::test(flavor = "multi_thread")]
         async fn closing_an_unknown_federation_is_not_an_error() {
