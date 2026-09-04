@@ -1,10 +1,18 @@
 //! A joined federation, and the capability facades hanging off it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
+use fedimint_client::{Client, ClientHandleArc};
+use fedimint_core::config;
+use fedimint_core::db::Database;
+use fedimint_core::module::AmountUnit;
+use futures::StreamExt;
+
+use crate::db::FederationRecord;
+use crate::sdk::SdkInner;
 use crate::{
-    ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, InviteCode, Lightning, Meta,
-    Network, Onchain, OperationId, Result,
+    ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
+    FederationStatus, InviteCode, Lightning, Meta, Network, Onchain, OperationId, Result,
 };
 
 /// A handle to one federation this SDK instance has joined.
@@ -71,7 +79,7 @@ pub struct Federation {
 impl Federation {
     /// This federation's id.
     pub fn id(&self) -> FederationId {
-        unimplemented!()
+        FederationId::from_upstream(self.inner.id)
     }
 
     /// The federation's human-readable name, when its configuration
@@ -81,7 +89,7 @@ impl Federation {
     /// two federations may present the same name. Identity is
     /// [`Federation::id`].
     pub fn name(&self) -> Option<String> {
-        unimplemented!()
+        self.inner.record().name
     }
 
     /// The Bitcoin network this federation operates on.
@@ -93,13 +101,13 @@ impl Federation {
     /// [`Onchain::send`](crate::Onchain::send) takes only a quote: the
     /// address is bound into the quote when it is issued.
     pub fn network(&self) -> Network {
-        unimplemented!()
+        self.inner.record().network.into()
     }
 
     /// An invite code for this federation, suitable for sharing so someone
     /// else can join it.
     pub fn invite_code(&self) -> InviteCode {
-        unimplemented!()
+        InviteCode::from_upstream(self.inner.record().invite)
     }
 
     /// The ecash balance: the value this instance currently holds as its
@@ -128,7 +136,22 @@ impl Federation {
     /// [`Storage`](crate::ErrorCode::Storage),
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self) -> Result<Amount> {
-        unimplemented!()
+        // Reading a balance is not fund-touching: a recovery-locked federation's number is
+        // partial and worth showing as progress, and it is the spends that are refused.
+        let client = self.inner.client(false).await?;
+        let balance = client
+            .get_balance_for_unit(AmountUnit::BITCOIN)
+            .await
+            .map_err(|err| {
+                // The one way this fails in practice is a client with no primary module, which
+                // happens when API-version negotiation left every module out. That is not the
+                // caller's doing and not a storage fault.
+                crate::Error::new(
+                    crate::ErrorCode::Internal,
+                    format!("this federation cannot report a balance: {err}"),
+                )
+            })?;
+        Ok(Amount::from_msats(balance.msats))
     }
 
     /// Opens a new, independent subscription to the balance.
@@ -142,7 +165,15 @@ impl Federation {
     /// [`next`](BalanceUpdates::next) yields
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub fn balance_updates(&self) -> BalanceUpdates {
-        unimplemented!()
+        BalanceUpdates {
+            inner: Arc::new(BalanceUpdatesInner {
+                federation: self.inner.clone(),
+                cursor: tokio::sync::Mutex::new(BalanceCursor {
+                    stream: None,
+                    last: None,
+                }),
+            }),
+        }
     }
 
     /// What this federation can do.
@@ -153,7 +184,7 @@ impl Federation {
     /// them for the case where a screen needs to know about several
     /// capabilities at once without taking handles it will not use.
     pub fn capabilities(&self) -> Capabilities {
-        unimplemented!()
+        self.inner.record().capabilities.into()
     }
 
     /// The ecash facade, or `None` if this federation has no mint module.
@@ -167,19 +198,25 @@ impl Federation {
     /// a facade obtained while the module was present, then used after the federation's
     /// configuration changed to drop it.
     pub fn ecash(&self) -> Option<Ecash> {
-        unimplemented!()
+        self.capabilities()
+            .ecash
+            .then(|| Ecash::new(self.inner.clone()))
     }
 
     /// The lightning facade, or `None` if the federation has no lightning
     /// module. See [`Federation::ecash`] for why this is an `Option`.
     pub fn lightning(&self) -> Option<Lightning> {
-        unimplemented!()
+        self.capabilities()
+            .lightning
+            .then(|| Lightning::new(self.inner.clone()))
     }
 
     /// The on-chain facade, or `None` if this federation has no wallet
     /// module. See [`Federation::ecash`] for why this is an `Option`.
     pub fn onchain(&self) -> Option<Onchain> {
-        unimplemented!()
+        self.capabilities()
+            .onchain
+            .then(|| Onchain::new(self.inner.clone()))
     }
 
     /// The metadata facade.
@@ -190,7 +227,7 @@ impl Federation {
     /// metadata, which [`Meta`] reports as an absent value rather than as a
     /// missing facade.
     pub fn meta(&self) -> Meta {
-        unimplemented!()
+        Meta::new(self.inner.clone())
     }
 
     /// Looks up an operation by id, whatever kind it is.
@@ -267,6 +304,11 @@ impl Federation {
     pub async fn backup(&self) -> Result<()> {
         unimplemented!()
     }
+
+    /// Wraps shared federation state in a handle.
+    pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
+        Federation { inner }
+    }
 }
 
 /// Which capabilities a federation offers.
@@ -319,14 +361,436 @@ impl BalanceUpdates {
     /// [`Storage`](crate::ErrorCode::Storage) or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<Amount> {
-        unimplemented!()
+        let mut cursor = self.inner.cursor.lock().await;
+        let mut closed = self.inner.federation.closed();
+        loop {
+            if *closed.borrow_and_update() {
+                return Err(crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this federation is not running",
+                ));
+            }
+
+            if cursor.stream.is_none() {
+                let client = self.inner.federation.client(false).await?;
+                // Upstream's balance stream never yields and never ends when a client has no
+                // primary module, so a read has to prove there is one before a caller is handed
+                // something that could hang for the life of the process.
+                let initial = client
+                    .get_balance_for_unit(AmountUnit::BITCOIN)
+                    .await
+                    .map_err(|err| {
+                        crate::Error::new(
+                            crate::ErrorCode::Internal,
+                            format!("this federation cannot report a balance: {err}"),
+                        )
+                    })?;
+                let _ = initial;
+                cursor.stream = Some(client.subscribe_balance_changes(AmountUnit::BITCOIN).await);
+            }
+
+            let stream = cursor
+                .stream
+                .as_mut()
+                .expect("the stream was just established");
+            let next = tokio::select! {
+                next = stream.next() => next,
+                _ = closed.changed() => continue,
+            };
+            let Some(balance) = next else {
+                // The stream only ends when the client behind it is gone, which from a caller's
+                // point of view is the federation no longer running.
+                return Err(crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this federation is not running",
+                ));
+            };
+
+            let balance = Amount::from_msats(balance.msats);
+            if cursor.last == Some(balance) {
+                continue;
+            }
+            cursor.last = Some(balance);
+            return Ok(balance);
+        }
     }
 }
 
-/// Placeholder for the shared per-federation client state.
+/// The shared per-federation state every [`Federation`] clone and every facade talks to.
+///
+/// The optional client is the whole lifecycle in one field: `None` is a federation that is closed,
+/// quarantined, or on its way out, and taking the write lock is how a close, an erase or a
+/// shutdown waits for the calls already in flight before it takes the client away.
 #[derive(Debug)]
-struct FederationInner;
+pub(crate) struct FederationInner {
+    pub(crate) id: config::FederationId,
+    /// The instance this federation belongs to. Weak, because the instance owns the federations.
+    pub(crate) sdk: Weak<SdkInner>,
+    /// This federation's slice of the root store, which is also what the client was given.
+    pub(crate) db: Database,
+    /// `None` while the federation is not running, for any reason.
+    client: tokio::sync::RwLock<Option<ClientHandleArc>>,
+    /// The last configuration that validated, which is what the descriptive accessors answer from.
+    record: std::sync::RwLock<FederationRecord>,
+    /// The observable status, which is richer than the stored one: quarantine and recovery are
+    /// facts about a running instance rather than about the storage.
+    status: std::sync::RwLock<FederationStatus>,
+    /// Flipped once the federation stops running, so a pending subscriber resolves promptly
+    /// instead of waiting on a stream that will never yield again.
+    closed: tokio::sync::watch::Sender<bool>,
+}
 
-/// Placeholder for one balance subscription's state.
-#[derive(Debug)]
-struct BalanceUpdatesInner;
+impl FederationInner {
+    /// Assembles the shared state for one federation.
+    ///
+    /// `client` is `None` for a federation the instance remembers but is not running.
+    pub(crate) fn new(
+        id: config::FederationId,
+        sdk: Weak<SdkInner>,
+        db: Database,
+        record: FederationRecord,
+        status: FederationStatus,
+        client: Option<ClientHandleArc>,
+    ) -> FederationInner {
+        let running = client.is_some();
+        FederationInner {
+            id,
+            sdk,
+            db,
+            client: tokio::sync::RwLock::new(client),
+            record: std::sync::RwLock::new(record),
+            status: std::sync::RwLock::new(status),
+            closed: tokio::sync::watch::Sender::new(!running),
+        }
+    }
+
+    /// A read guard over the live client, or the reason there is not one.
+    ///
+    /// Every facade call holds one of these for its whole duration, which is what makes a close or
+    /// an erase wait for work already in flight rather than pulling the client out from under it.
+    /// `fund_touching` marks the calls a recovery-locked federation refuses: sends, receives and
+    /// taking a fresh backup, as opposed to reading a balance or a name.
+    pub(crate) async fn client(&self, fund_touching: bool) -> Result<ClientGuard<'_>> {
+        if fund_touching && self.status() == FederationStatus::Recovering {
+            return Err(crate::Error::new(
+                crate::ErrorCode::Recovering,
+                "this federation's wallet is still being reconstructed",
+            ));
+        }
+        let guard = self.client.read().await;
+        if guard.is_none() {
+            return Err(crate::Error::new(
+                crate::ErrorCode::FederationClosed,
+                "this federation is not running",
+            ));
+        }
+        Ok(ClientGuard(guard))
+    }
+
+    /// This federation's slice of the store, for records the SDK keeps beside the client's.
+    pub(crate) fn db(&self) -> Database {
+        self.db.clone()
+    }
+
+    /// A snapshot of the last configuration that validated.
+    pub(crate) fn record(&self) -> FederationRecord {
+        read_lock(&self.record).clone()
+    }
+
+    /// Replaces the cached configuration snapshot. The durable write is the caller's job.
+    pub(crate) fn set_record(&self, record: FederationRecord) {
+        *write_lock(&self.record) = record;
+    }
+
+    /// What the SDK can currently do with this federation.
+    pub(crate) fn status(&self) -> FederationStatus {
+        read_lock(&self.status).clone()
+    }
+
+    /// Records a new status and, when it is not an open one, releases everything waiting on the
+    /// federation so a pending subscriber resolves instead of hanging.
+    pub(crate) fn set_status(&self, status: FederationStatus) {
+        let open = matches!(
+            status,
+            FederationStatus::Running | FederationStatus::Recovering
+        );
+        *write_lock(&self.status) = status;
+        self.closed.send_replace(!open);
+    }
+
+    /// The listing record for this federation.
+    pub(crate) fn info(&self) -> FederationInfo {
+        let record = self.record();
+        FederationInfo {
+            id: crate::FederationId::from_upstream(self.id),
+            name: record.name,
+            network: record.network.into(),
+            status: self.status(),
+        }
+    }
+
+    /// Whether this federation is one of the two open states.
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(
+            self.status(),
+            FederationStatus::Running | FederationStatus::Recovering
+        )
+    }
+
+    /// Puts a freshly opened client in place. Callers set the status separately, after the
+    /// durable write that makes the transition observable.
+    pub(crate) async fn install(&self, client: ClientHandleArc) {
+        *self.client.write().await = Some(client);
+    }
+
+    /// Retires the federation and hands back its client, if it had one.
+    ///
+    /// Taking the write lock is the quiesce: it waits for every call already holding a
+    /// [`ClientGuard`], and once it returns nothing new can take one. The client's own workers are
+    /// told to stop here so their state is flushed before eligibility for anything is judged; the
+    /// handle is still readable afterwards, which is what lets an erase check a balance.
+    pub(crate) async fn quiesce(&self) -> Option<ClientHandleArc> {
+        let taken = self.client.write().await.take();
+        self.closed.send_replace(true);
+        if let Some(client) = taken.as_ref() {
+            client.task_group().shutdown();
+        }
+        taken
+    }
+
+    /// Retires the federation and shuts its client down.
+    pub(crate) async fn stop(&self) -> Result<()> {
+        let Some(client) = self.quiesce().await else {
+            return Ok(());
+        };
+        shutdown_client(client).await
+    }
+
+    /// A receiver that fires when this federation stops running.
+    pub(crate) fn closed(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.closed.subscribe()
+    }
+}
+
+/// Shuts a client down, waiting for its workers.
+///
+/// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. If a caller is
+/// still holding a clone, the best that can be done is to stop the executor and let the eventual
+/// drop clean up, which upstream also logs about.
+pub(crate) async fn shutdown_client(client: ClientHandleArc) -> Result<()> {
+    let Some(handle) = Arc::into_inner(client) else {
+        return Err(crate::Error::new(
+            crate::ErrorCode::Internal,
+            "the federation's client is still in use elsewhere",
+        ));
+    };
+    handle.shutdown().await;
+    Ok(())
+}
+
+// `FederationInner` gets no `Drop`. An earlier draft of this plan gave it one, to stop
+// `ClientHandle::drop` panicking when the last `Sdk` clone was dropped outside a tokio runtime:
+// against 0.12.0 that `Drop` called `RuntimeHandle::current()`, which panics when no runtime is
+// entered, and the workaround was to `mem::forget` the handle. At the pinned revision upstream
+// checks `RuntimeHandle::try_current()` and falls back to a non-blocking partial shutdown with an
+// `error!` line instead (`fedimint-client/src/client/handle.rs:161-200`), so dropping a handle
+// anywhere is degraded rather than fatal, and forgetting one would leak the client and the store's
+// file lock for no reason. `Sdk::shutdown` is still the way to get a clean stop.
+
+/// A read guard over one federation's live client.
+///
+/// Holding it keeps a close, an erase or a shutdown waiting until the call is done.
+pub(crate) struct ClientGuard<'a>(tokio::sync::RwLockReadGuard<'a, Option<ClientHandleArc>>);
+
+impl core::ops::Deref for ClientGuard<'_> {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        let handle: &fedimint_client::ClientHandle = self
+            .0
+            .as_ref()
+            .expect("a client guard is only built while the client is live");
+        handle
+    }
+}
+
+impl core::fmt::Debug for ClientGuard<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ClientGuard")
+    }
+}
+
+/// One independent balance subscription's state.
+///
+/// The upstream stream is created on the first `next()` rather than here, so that handing out a
+/// subscriber stays infallible even for a federation that has no client to subscribe to.
+pub(crate) struct BalanceUpdatesInner {
+    federation: Arc<FederationInner>,
+    cursor: tokio::sync::Mutex<BalanceCursor>,
+}
+
+impl core::fmt::Debug for BalanceUpdatesInner {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BalanceUpdates")
+            .field("federation", &self.federation.id)
+            .finish()
+    }
+}
+
+/// Where one balance subscription has got to.
+struct BalanceCursor {
+    /// The upstream stream, once the first `next()` has established there is a client to open it
+    /// on. Upstream's own stream hangs forever when a client has no primary module, so it is only
+    /// opened after a balance read has proved there is one.
+    stream: Option<fedimint_core::util::BoxStream<'static, fedimint_core::Amount>>,
+    /// The last value handed out, so a repeat is not delivered as a change.
+    last: Option<Amount>,
+}
+
+/// Reads a lock without propagating poisoning.
+///
+/// A panic in one thread must not turn every later status read into a panic of its own: these
+/// locks guard plain snapshots, and a half-written one is not a possibility.
+pub(crate) fn read_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Writes a lock without propagating poisoning. See [`read_lock`].
+pub(crate) fn write_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use std::sync::Weak;
+
+    use fedimint_core::PeerId;
+    use fedimint_core::config::FederationId as UpstreamFederationId;
+    use fedimint_core::db::Database;
+    use fedimint_core::db::mem_impl::MemDatabase;
+    use fedimint_core::module::registry::ModuleDecoderRegistry;
+    use fedimint_core::util::SafeUrl;
+
+    use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
+    use crate::{ErrorCode, FederationStatus};
+
+    use super::*;
+
+    fn closed_federation(capabilities: StoredCapabilities) -> Arc<FederationInner> {
+        let id = UpstreamFederationId::dummy();
+        let root = Database::new(MemDatabase::new(), ModuleDecoderRegistry::default());
+        let record = FederationRecord {
+            invite: fedimint_core::invite_code::InviteCode::new(
+                SafeUrl::parse("wss://guardian.example:5000").expect("a valid url"),
+                PeerId::from(0),
+                id,
+                None,
+            ),
+            network: StoredNetwork::Regtest,
+            status: StoredStatus::Closed,
+            capabilities,
+            generation: Some(1),
+            name: Some("Test Federation".to_owned()),
+        };
+        Arc::new(FederationInner::new(
+            id,
+            Weak::new(),
+            root.with_prefix(crate::db::federation_prefix(&id).to_vec()),
+            record,
+            FederationStatus::Closed,
+            None,
+        ))
+    }
+
+    fn everything() -> StoredCapabilities {
+        StoredCapabilities {
+            ecash: true,
+            lightning: true,
+            onchain: true,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_federation_refuses_every_fallible_call() {
+        let federation = Federation::new(closed_federation(everything()));
+        let err = federation
+            .balance()
+            .await
+            .expect_err("a closed federation refuses");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[test]
+    fn a_closed_federation_still_describes_itself() {
+        // A history screen has to be able to label rows with a federation that was
+        // closed underneath it, so none of these may fail or go blank.
+        let federation = Federation::new(closed_federation(everything()));
+        assert_eq!(federation.name().as_deref(), Some("Test Federation"));
+        assert_eq!(federation.network(), crate::Network::Regtest);
+        assert_eq!(
+            federation.capabilities(),
+            crate::Capabilities {
+                ecash: true,
+                lightning: true,
+                onchain: true
+            }
+        );
+        assert_eq!(
+            federation.id(),
+            crate::FederationId::from_upstream(UpstreamFederationId::dummy())
+        );
+        // The invite code renders, and renders redacted.
+        assert_eq!(
+            format!("{:?}", federation.invite_code()),
+            "InviteCode(<redacted>)"
+        );
+    }
+
+    #[test]
+    fn facade_accessors_answer_for_the_module_set_not_for_the_state() {
+        // `None` means "this federation has no mint module", so a closed federation
+        // that has one must still hand out the facade; the failure belongs on the
+        // facade's own calls.
+        let federation = Federation::new(closed_federation(everything()));
+        assert!(federation.ecash().is_some());
+        assert!(federation.lightning().is_some());
+        assert!(federation.onchain().is_some());
+
+        let mint_only = Federation::new(closed_federation(StoredCapabilities {
+            ecash: true,
+            lightning: false,
+            onchain: false,
+        }));
+        assert!(mint_only.ecash().is_some());
+        assert!(mint_only.lightning().is_none());
+        assert!(mint_only.onchain().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_federation_still_hands_out_a_balance_subscriber() {
+        // The error belongs where a caller can act on it rather than being
+        // swallowed by an accessor that cannot return one.
+        let federation = Federation::new(closed_federation(everything()));
+        let mut updates = federation.balance_updates();
+        let err = updates
+            .next()
+            .await
+            .expect_err("the first call reports the closure");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recovering_federation_refuses_only_fund_touching_calls() {
+        let inner = closed_federation(everything());
+        inner.set_status(FederationStatus::Recovering);
+        // Without a client there is nothing to hand out either way, but the
+        // recovery lock has to be reported as itself rather than as a closure.
+        let err = inner
+            .client(true)
+            .await
+            .expect_err("a recovery-locked federation refuses fund-touching work");
+        assert_eq!(err.code, ErrorCode::Recovering);
+    }
+}

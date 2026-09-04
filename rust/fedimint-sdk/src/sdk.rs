@@ -2,6 +2,16 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
+
+use fedimint_client::RootSecret;
+use fedimint_client::module_init::ClientModuleInitRegistry;
+use fedimint_connectors::ConnectorRegistry;
+use fedimint_core::config;
+use fedimint_core::db::Database;
+
+use crate::federation::FederationInner;
+use crate::storage::StorageLock;
 use crate::{
     Diagnostic, Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Network, Result,
     Storage,
@@ -14,9 +24,10 @@ use crate::{
 /// [`Sdk::builder`]) and keeps for the lifetime of the process. It is a
 /// cheap handle over shared internal state: cloning it costs an atomic
 /// refcount bump and every clone observes the same federations, the same
-/// storage, and the same background work. It is `Send` and `Sync` on every
-/// target, including wasm, so clones can be moved between threads and tasks
-/// freely.
+/// storage, and the same background work. It is `Send + Sync` on native
+/// targets, so clones move between threads and tasks freely; wasm compiles the
+/// same types for a single-threaded host, where those bounds are neither
+/// available nor needed.
 ///
 /// # One seed, many federations
 ///
@@ -1113,11 +1124,52 @@ impl FederationStatusUpdates {
     }
 }
 
-/// Placeholder for the shared instance state. Handles hold this behind an
-/// `Arc` so cloning an [`Sdk`] shares one set of federations, one storage,
-/// and one pool of background work.
-#[derive(Debug)]
-struct SdkInner;
+/// The shared instance state every [`Sdk`] clone observes.
+///
+/// One storage, one seed, one connector registry, one module registry, and every federation the
+/// storage remembers in whatever state, so a closed or quarantined one still has somewhere to be
+/// described from.
+pub(crate) struct SdkInner {
+    /// The root, unprefixed database. Federations get `db.with_prefix(..)` slices of it.
+    pub(crate) db: Database,
+    /// One transport registry shared by every federation, as upstream assumes.
+    pub(crate) connectors: ConnectorRegistry,
+    /// The canonical module init registry, cloned per federation.
+    pub(crate) module_inits: ClientModuleInitRegistry,
+    /// The instance seed, in the form `fedimint-client` wants it. Every federation is handed this
+    /// same value: the client hashes the federation id in itself, twice, and applications must
+    /// not do that derivation any more.
+    pub(crate) root_secret: RootSecret,
+    /// Exactly the string the caller gave `Storage::at` or `Storage::in_browser`, for the error
+    /// details that name a location.
+    pub(crate) location: String,
+    /// Held for the instance's lifetime so `export_mnemonic` needs no storage read and keeps
+    /// working after shutdown.
+    mnemonic: Mnemonic,
+    /// Every federation the storage remembers, open or not.
+    federations: std::sync::RwLock<BTreeMap<config::FederationId, Arc<FederationInner>>>,
+    /// Status changes, fanned out to every subscriber.
+    status_tx: tokio::sync::broadcast::Sender<FederationInfo>,
+    /// Set once, by `shutdown`; every subscriber and every fallible call watches it.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// The single-opener claim, released by `shutdown` or by dropping the last handle.
+    lock: std::sync::Mutex<Option<StorageLock>>,
+}
+
+impl core::fmt::Debug for SdkInner {
+    /// Prints the instance without its seed: `Debug` output ends up in logs and crash reports,
+    /// and the mnemonic is the one value in here that must never appear in either.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sdk")
+            .field("location", &self.location)
+            .field(
+                "federations",
+                &crate::federation::read_lock(&self.federations).len(),
+            )
+            .field("shut_down", &*self.shutdown_tx.borrow())
+            .finish()
+    }
+}
 
 /// Placeholder for one federation-status subscription's state.
 #[derive(Debug)]
