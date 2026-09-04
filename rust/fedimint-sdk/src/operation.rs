@@ -21,9 +21,16 @@
 //! an operation back up, because a subscription yields the current state and
 //! never replays the ones before it.
 
+use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_core::task::{MaybeSend, MaybeSync};
+use fedimint_core::util::{BoxFuture, BoxStream};
+
+use crate::db::OperationRecord;
+use crate::federation::FederationInner;
 use crate::{
     EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
     OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
@@ -790,6 +797,303 @@ fn describe_record(raw: &RawOperationKind) -> String {
     described
 }
 
+/// The SDK's own operation-kind tags, the vocabulary [`OperationRecord::kind`] is written in.
+///
+/// SDK-owned rather than the module kind the client records, because the two do not line up in
+/// either direction: one module produces several kinds (the mint produces both an out-of-band
+/// send and a redemption) and one kind spans two module generations (a lightning send is `ln` on
+/// one federation and `lnv2` on another). A tag is written once when an operation is created and
+/// read for the life of the record, so these strings are storage format: change one and every
+/// record written before the change reads back as [`OperationKind::Unknown`].
+pub(crate) mod kinds {
+    /// Ecash spent out of band.
+    pub(crate) const ECASH_SEND: &str = "ecash_send";
+    /// Ecash notes redeemed into the balance.
+    pub(crate) const ECASH_RECEIVE: &str = "ecash_receive";
+    /// An outgoing lightning payment.
+    pub(crate) const LN_SEND: &str = "ln_send";
+    /// An incoming lightning payment.
+    pub(crate) const LN_RECEIVE: &str = "ln_receive";
+    /// An on-chain withdrawal.
+    pub(crate) const ONCHAIN_SEND: &str = "onchain_send";
+    /// An on-chain deposit.
+    pub(crate) const ONCHAIN_RECEIVE: &str = "onchain_receive";
+    /// Restoring a wallet from its seed.
+    pub(crate) const RECOVERY: &str = "recovery";
+}
+
+/// This build's reading of a persisted kind tag.
+///
+/// A tag this build does not know is [`OperationKind::Unknown`], which is a real answer rather
+/// than a failure: the operation is still recorded, still has an id, and
+/// [`AnyOperation::raw_kind`] still says what it was written as.
+pub(crate) fn kind_of_tag(tag: &str) -> OperationKind {
+    match tag {
+        kinds::ECASH_SEND => OperationKind::EcashSend,
+        kinds::ECASH_RECEIVE => OperationKind::EcashReceive,
+        kinds::LN_SEND => OperationKind::LnSend,
+        kinds::LN_RECEIVE => OperationKind::LnReceive,
+        kinds::ONCHAIN_SEND => OperationKind::OnchainSend,
+        kinds::ONCHAIN_RECEIVE => OperationKind::OnchainReceive,
+        kinds::RECOVERY => OperationKind::Recovery,
+        _ => OperationKind::Unknown,
+    }
+}
+
+/// How one kind of operation is observed.
+///
+/// One implementation per state enum, written beside the facade that creates that kind. The
+/// engine in this module owns everything the API promises about *observing* an operation, and a
+/// driver owns everything specific to one kind: which client call to make, how to fold the
+/// module's own state machine onto the SDK's state enum, and how the details record is spelled
+/// as JSON.
+///
+/// Object-safe on purpose: [`driver_for`] answers with one of these per kind, and
+/// `AnyOperation`'s accessors hand the matching one to a typed [`Operation`].
+//
+// `MaybeSend`/`MaybeSync` and `BoxFuture`/`BoxStream` rather than `Send`/`Sync` and
+// `Box<dyn Future + Send>`: on `target_family = "wasm"` these expand to no bound at all
+// (`fedimint-core/src/task.rs:504-536`, `fedimint-core/src/util/mod.rs:31-35`),
+// which is what lets one set of types compile for both a threaded host and a browser.
+//
+// Every method takes the federation rather than a `&Client`, so that a driver decides for itself
+// whether it needs a live client and with which `fund_touching` value, and so the engine's own
+// unit tests can drive it with no client at all. The lifetimes are named rather than elided:
+// with `&self` and a second reference argument, an elided output lifetime binds to `&self` and no
+// implementation that touches the other argument compiles.
+pub(crate) trait Driver<S>: MaybeSend + MaybeSync + 'static
+where
+    S: OperationState,
+{
+    /// The state the operation is in now, read without subscribing.
+    fn current<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: UpstreamOperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<S>>;
+
+    /// A fresh, independent stream that yields the current state first and then every
+    /// transition, ending once a final state has been yielded.
+    ///
+    /// The stream may also end without a final state, which is not the operation finishing: the
+    /// client's notifier ends a subscriber's stream when it falls behind, and the engine treats
+    /// that as a signal to subscribe again.
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: UpstreamOperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<S>>>>;
+
+    /// Whether `next` says nothing `previous` did not already say.
+    ///
+    /// Every real state enum answers `previous == next`. It is a method rather than a
+    /// `PartialEq` bound because [`OperationState`] deliberately does not require one, and
+    /// adding a supertrait to a public trait to serve a private engine would be the wrong way
+    /// round. The engine needs it because the mappings are many-to-one: two different upstream
+    /// events can be the same state here, and a subscriber must not see the same state twice.
+    fn same_state(&self, previous: &S, next: &S) -> bool;
+
+    /// The state as it is persisted on [`OperationRecord::final_state`].
+    ///
+    /// Called only for a final state, so that a history row can report a finished operation as
+    /// finished without decoding it.
+    fn encode_state(&self, state: &S) -> Result<String>;
+
+    /// The details record this kind persisted at creation, decoded from its JSON.
+    ///
+    /// Type-erased because [`Operation::details`] is one generic body over every kind: the
+    /// concrete type is `S::Details`, which exists only for an `S` that implements
+    /// [`DetailedOperationState`], and a trait object cannot name it. The caller downcasts
+    /// straight back, so the erasure never escapes this module.
+    ///
+    /// A kind with no details record ([`RecoveryState`](crate::RecoveryState)) returns
+    /// [`Internal`](crate::ErrorCode::Internal); no caller can reach it, because
+    /// [`Operation::details`] does not exist for such a kind.
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>>;
+}
+
+/// Rebuilds an SDK operation record from the client's own operation log entry.
+///
+/// The operation log is authoritative and the SDK's record is a decoration over it, so a crash
+/// between the module's own commit and the SDK's write leaves an entry with no record. A facade
+/// registers one of these for each module kind it owns and reconciliation asks each in turn.
+pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
+    /// What the SDK would have written for this entry, or `None` if this backfiller does not
+    /// recognise it.
+    ///
+    /// `module_kind` is [`OperationLogEntry::operation_module_kind`], and `meta` is the entry's
+    /// own JSON, read with `try_meta` so that a shape this build does not know is a `None` here
+    /// rather than a panic.
+    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled>;
+}
+
+/// What a [`Backfiller`] recovered from a log entry.
+#[derive(Debug, Clone)]
+pub(crate) struct Backfilled {
+    /// The SDK kind tag, from [`kinds`].
+    pub(crate) kind: &'static str,
+    /// The details record as JSON, rebuilt from the module's own meta.
+    pub(crate) details: String,
+    /// The phase the entry proves was reached, if the meta says.
+    pub(crate) phase: Option<u32>,
+}
+
+/// A driver for one of the seven kinds, with its state type recovered by matching.
+///
+/// [`driver_for`] is one function over the whole kind vocabulary, so it has one return type,
+/// while a [`Driver<S>`](Driver) is generic in the state enum it observes and the seven state
+/// enums share nothing a trait object could name. This enum is the join: the caller knows which
+/// variant the kind it asked about must be, and a variant that does not match is the same `None`
+/// as no driver at all.
+pub(crate) enum ErasedDriver {
+    /// Observes [`EcashSendState`](crate::EcashSendState).
+    EcashSend(Arc<dyn Driver<EcashSendState>>),
+    /// Observes [`EcashReceiveState`](crate::EcashReceiveState).
+    EcashReceive(Arc<dyn Driver<EcashReceiveState>>),
+    /// Observes [`LnSendState`](crate::LnSendState).
+    LnSend(Arc<dyn Driver<LnSendState>>),
+    /// Observes [`LnReceiveState`](crate::LnReceiveState).
+    LnReceive(Arc<dyn Driver<LnReceiveState>>),
+    /// Observes [`OnchainSendState`](crate::OnchainSendState).
+    OnchainSend(Arc<dyn Driver<OnchainSendState>>),
+    /// Observes [`OnchainReceiveState`](crate::OnchainReceiveState).
+    OnchainReceive(Arc<dyn Driver<OnchainReceiveState>>),
+    /// Observes [`RecoveryState`](crate::RecoveryState).
+    Recovery(Arc<dyn Driver<RecoveryState>>),
+}
+
+/// The driver this build observes `kind` with, if it has one.
+///
+/// A build-wide lookup rather than per-federation state, because which kinds can be observed is
+/// a property of the build. A record only ever carries a tag the federation that wrote it could
+/// produce, so a federation with no mint module has no `ecash_send` record to look up in the
+/// first place, and a driver that does need a live client asks the federation for one itself and
+/// reports honestly when there is none.
+///
+/// No driver is not an error anywhere: [`AnyOperation`]'s accessor for that kind answers `None`,
+/// exactly as it does for a kind mismatch, and the record stays findable, listable and correctly
+/// labelled.
+//
+// A driver holds nothing — every method takes the federation it should act on — so building one
+// per lookup costs an `Arc` allocation and no state, which is what lets the arms below be plain
+// expressions rather than a table of cached singletons.
+pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
+    match kind {
+        // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
+        // kind: ecash and lightning in T7-T8, on-chain in T9, recovery in T12. Until an arm is
+        // filled in this build cannot observe that kind, which is a real answer rather than a
+        // gap: the record is still found, still listed, and still says what it is.
+        //
+        // The probe stands in for the ecash-send driver so that the type-erased accessors are
+        // exercised end to end before any facade exists; T7 replaces the pair of arms below with
+        // a single unconditional one.
+        #[cfg(test)]
+        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(ProbeEcashSendDriver))),
+        #[cfg(not(test))]
+        kinds::ECASH_SEND => None,
+        kinds::ECASH_RECEIVE => None,
+        kinds::LN_SEND => None,
+        kinds::LN_RECEIVE => None,
+        kinds::ONCHAIN_SEND => None,
+        kinds::ONCHAIN_RECEIVE => None,
+        kinds::RECOVERY => None,
+        // A tag this build does not know, which `kind_of_tag` already reads as
+        // `OperationKind::Unknown`.
+        _ => None,
+    }
+}
+
+/// The backfillers this build has, in the order reconciliation offers a log entry to them.
+///
+/// A list rather than a lookup keyed by kind, because a backfiller is asked about an upstream
+/// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
+/// module is the only thing that can tell them apart.
+pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
+    // One entry per facade that owns a module kind, added by the task that writes the facade:
+    // ecash and lightning in T7-T8, on-chain in T9. The probe entry is the engine's own fixture
+    // and exists only in a test build.
+    #[cfg(test)]
+    {
+        vec![Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>]
+    }
+    #[cfg(not(test))]
+    {
+        Vec::new()
+    }
+}
+
+/// A driver for a real kind, so the type-erased accessors can be exercised end to end.
+///
+/// The engine's own behaviour is covered against `ProbeState`; this exists to check the wiring
+/// from a persisted tag to a typed handle, which needs one of the seven public state enums.
+//
+// At file scope rather than inside `mod tests`, because `driver_for` above returns it and
+// `federation.rs`'s tests use it too, and a `mod tests` is private to its own file.
+#[cfg(test)]
+pub(crate) struct ProbeEcashSendDriver;
+
+#[cfg(test)]
+impl Driver<EcashSendState> for ProbeEcashSendDriver {
+    fn current<'a>(
+        &'a self,
+        _federation: &'a FederationInner,
+        _id: UpstreamOperationId,
+        _record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<EcashSendState>> {
+        Box::pin(async { Ok(EcashSendState::Redeemed) })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        _federation: &'a FederationInner,
+        _id: UpstreamOperationId,
+        _record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashSendState>>>> {
+        Box::pin(async {
+            Ok(
+                Box::pin(futures::stream::iter(vec![Ok(EcashSendState::Redeemed)]))
+                    as BoxStream<'static, _>,
+            )
+        })
+    }
+
+    fn same_state(&self, previous: &EcashSendState, next: &EcashSendState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &EcashSendState) -> Result<String> {
+        Ok(format!("{state:?}"))
+    }
+
+    fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        Err(Error::new(
+            ErrorCode::Internal,
+            "the ecash probe has no details",
+        ))
+    }
+}
+
+/// A backfiller that claims the probe module's entries, for the reconciliation tests.
+///
+/// The only one this build has, so the reconciliation tests distinguish a claimed entry from an
+/// unclaimed one by the module kind they write the log entry under rather than by which
+/// backfillers are installed.
+#[cfg(test)]
+pub(crate) struct ProbeBackfiller;
+
+#[cfg(test)]
+impl Backfiller for ProbeBackfiller {
+    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled> {
+        (module_kind == "probe_module").then(|| Backfilled {
+            kind: kinds::ECASH_SEND,
+            details: meta.to_string(),
+            phase: Some(1),
+        })
+    }
+}
+
 /// Placeholder for the shared per-operation state a typed handle and its
 /// subscribers observe.
 #[derive(Debug)]
@@ -844,6 +1148,141 @@ mod tests {
 
     impl DetailedOperationState for ProbeState {
         type Details = ProbeDetails;
+    }
+
+    /// The JSON shape [`ProbeDetails`] persists as.
+    ///
+    /// Every real details record has one of these beside it, for the same reason this one does:
+    /// the record itself holds the crate's own value types (notes, an invoice, an address),
+    /// which are not serde types and should not become serde types just because one storage
+    /// format wants them to be. The wire record is where the JSON shape is pinned, and it is
+    /// what a facade hands to `create_operation`.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct ProbeDetailsWire {
+        artifact: String,
+        settled_at: Option<u64>,
+    }
+
+    impl From<&ProbeDetails> for ProbeDetailsWire {
+        fn from(details: &ProbeDetails) -> ProbeDetailsWire {
+            ProbeDetailsWire {
+                artifact: details.artifact.clone(),
+                settled_at: details.settled_at.map(Timestamp::epoch_millis),
+            }
+        }
+    }
+
+    impl From<ProbeDetailsWire> for ProbeDetails {
+        fn from(wire: ProbeDetailsWire) -> ProbeDetails {
+            ProbeDetails {
+                artifact: wire.artifact,
+                settled_at: wire.settled_at.map(Timestamp::from_epoch_millis),
+            }
+        }
+    }
+
+    /// The details record every probe operation is created with.
+    fn probe_details() -> ProbeDetails {
+        ProbeDetails {
+            artifact: "the notes, the invoice, the address".to_owned(),
+            settled_at: None,
+        }
+    }
+
+    /// A driver that replays scripted states instead of talking to a federation.
+    ///
+    /// One script per `subscribe` call, taken in order, so a test can say what a second
+    /// subscription sees and what a re-subscription after a truncated stream sees. It exercises
+    /// the engine, which is the part of the observation contract that is written once; the six
+    /// real drivers are checked against the modules they map.
+    struct ScriptedDriver {
+        /// One script per subscription, in order. An exhausted queue yields an empty stream.
+        scripts: std::sync::Mutex<std::collections::VecDeque<Vec<Result<ProbeState>>>>,
+        /// What `current` reports.
+        current: std::sync::Mutex<ProbeState>,
+        /// How many subscriptions were opened.
+        subscriptions: std::sync::Mutex<usize>,
+    }
+
+    impl ScriptedDriver {
+        /// A driver whose subscriptions replay `scripts` in order.
+        fn new(scripts: Vec<Vec<Result<ProbeState>>>) -> Arc<ScriptedDriver> {
+            Arc::new(ScriptedDriver {
+                scripts: std::sync::Mutex::new(scripts.into()),
+                current: std::sync::Mutex::new(ProbeState::Running),
+                subscriptions: std::sync::Mutex::new(0),
+            })
+        }
+
+        /// How many subscriptions have been opened so far.
+        fn subscriptions(&self) -> usize {
+            *self
+                .subscriptions
+                .lock()
+                .expect("test mutex is never poisoned")
+        }
+
+        /// Changes what `current` will report from now on.
+        fn set_current(&self, state: ProbeState) {
+            *self.current.lock().expect("test mutex is never poisoned") = state;
+        }
+    }
+
+    impl Driver<ProbeState> for ScriptedDriver {
+        fn current<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<ProbeState>> {
+            Box::pin(async move {
+                Ok(self
+                    .current
+                    .lock()
+                    .expect("test mutex is never poisoned")
+                    .clone())
+            })
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
+            Box::pin(async move {
+                let script = {
+                    let mut scripts = self.scripts.lock().expect("test mutex is never poisoned");
+                    scripts.pop_front().unwrap_or_default()
+                };
+                *self
+                    .subscriptions
+                    .lock()
+                    .expect("test mutex is never poisoned") += 1;
+                Ok(Box::pin(futures::stream::iter(script)) as BoxStream<'static, _>)
+            })
+        }
+
+        fn same_state(&self, previous: &ProbeState, next: &ProbeState) -> bool {
+            previous == next
+        }
+
+        fn encode_state(&self, state: &ProbeState) -> Result<String> {
+            Ok(match state {
+                ProbeState::Running => "\"Running\"".to_owned(),
+                ProbeState::Done => "\"Done\"".to_owned(),
+            })
+        }
+
+        fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+            let wire: ProbeDetailsWire = serde_json::from_str(json).map_err(|err| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("could not read this operation's details record: {err}"),
+                )
+            })?;
+            Ok(Box::new(ProbeDetails::from(wire)))
+        }
     }
 
     /// Generic over the pattern rather than over one kind: this compiles only
@@ -1060,5 +1499,70 @@ mod tests {
     #[test]
     fn unknown_reads_no_state_schema_at_all() {
         assert_eq!(OperationKind::Unknown.readable_state_schema(), 0);
+    }
+
+    #[test]
+    fn every_tag_this_build_writes_reads_back_as_its_kind() {
+        let pairs = [
+            (kinds::ECASH_SEND, OperationKind::EcashSend),
+            (kinds::ECASH_RECEIVE, OperationKind::EcashReceive),
+            (kinds::LN_SEND, OperationKind::LnSend),
+            (kinds::LN_RECEIVE, OperationKind::LnReceive),
+            (kinds::ONCHAIN_SEND, OperationKind::OnchainSend),
+            (kinds::ONCHAIN_RECEIVE, OperationKind::OnchainReceive),
+            (kinds::RECOVERY, OperationKind::Recovery),
+        ];
+        for (tag, kind) in pairs {
+            assert_eq!(kind_of_tag(tag), kind, "{tag}");
+        }
+        // A module kind is not a kind tag: a record backfilled from a log entry this build
+        // cannot place reads back as unknown, which is exactly what makes it observable
+        // without being actionable.
+        assert_eq!(kind_of_tag("mint"), OperationKind::Unknown);
+        assert_eq!(kind_of_tag(""), OperationKind::Unknown);
+        // Every tag is distinct, or two kinds would collide in storage.
+        let mut tags: Vec<_> = pairs.iter().map(|(tag, _)| *tag).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), pairs.len());
+    }
+
+    #[test]
+    fn a_driver_is_shareable_on_the_targets_that_have_threads() {
+        // The crate promises `Operation` is `Send + Sync` on native targets
+        // (`lib.rs:281-293`), and the driver is inside it, so the bound has to hold here.
+        #[cfg(not(target_family = "wasm"))]
+        fn assert_send_sync<T: Send + Sync>() {}
+        #[cfg(not(target_family = "wasm"))]
+        assert_send_sync::<Arc<dyn Driver<ProbeState>>>();
+    }
+
+    #[test]
+    fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
+        // The one arm T6 fills in is the probe fixture standing in for the ecash-send driver
+        // T7 writes. Every other kind is a record this build can find, list and label but not
+        // observe, which the accessors report as `None` rather than as a failure.
+        assert!(matches!(
+            driver_for(kinds::ECASH_SEND),
+            Some(ErasedDriver::EcashSend(_))
+        ));
+        assert!(driver_for(kinds::LN_SEND).is_none());
+        assert!(driver_for(kinds::RECOVERY).is_none());
+        // A tag this build does not know is not a lookup failure either.
+        assert!(driver_for("something_else").is_none());
+        // Backfillers are a list rather than a lookup: one is asked about an upstream module
+        // kind, and one module kind can produce several of the SDK's kinds.
+        let backfillers = backfillers();
+        assert_eq!(backfillers.len(), 1);
+        assert!(
+            backfillers[0]
+                .backfill("probe_module", &serde_json::Value::Null)
+                .is_some()
+        );
+        assert!(
+            backfillers[0]
+                .backfill("mint", &serde_json::Value::Null)
+                .is_none()
+        );
     }
 }
