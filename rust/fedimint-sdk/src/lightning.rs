@@ -617,11 +617,18 @@ mod tests {
     /// fixture used before could never have been one.
     const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
 
+    /// A real regtest invoice for 100_000 msat, so the fixture's numbers and
+    /// its invoice agree. Built once from fixed inputs; the parse now checks a
+    /// bech32 checksum, so a placeholder string no longer works here.
+    const SEND_INVOICE: &str = "lnbcrt1u1pj48ugqdq2vdhkven9v5pp5g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zqsp5242424242424242424242424242424242424242424242424242s9qrsgqcqzys2reg4wsryjt5w8z33ugydecgfmgyvtttwa7e0yzlm803z203j9hqspa4lr6m09cd808xkw9uh4sxc8wf3w6k0gaf5zrqm7zhcxug0vqqpdkpja";
+    /// A real regtest invoice for 50_000 msat with the description `"coffee"`.
+    const RECEIVE_INVOICE: &str = "lnbcrt500n1pj48ugqdq2vdhkven9v5pp5venxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenqsp5wamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwams9qrsgqcqzys5kgh9l4h6e67k4ettmrxnlqvw233ym34zqj6fyhypm4ajk2uu635nnv56unxj48ptuy9p00ezgwjc47nvd7m5w38p5qey34eyulqatqpjh6ntz";
+
     /// A send record with the numbers of one plausible payment: 100,000 msat
     /// to the payee, 1,050 msat of aggregate fee, 101,050 msat debited.
     fn send_details() -> LnSendDetails {
         LnSendDetails {
-            invoice: Bolt11Invoice::from_raw("lnbcrt1000n1pexample".to_owned()),
+            invoice: SEND_INVOICE.parse().expect("a valid regtest invoice"),
             invoice_amount: Amount::from_msats(100_000),
             fee: Amount::from_msats(1_050),
             total: Amount::from_msats(101_050),
@@ -637,7 +644,7 @@ mod tests {
     /// and the fee comes out of it.
     fn receive_details() -> LnReceiveDetails {
         LnReceiveDetails {
-            invoice: Bolt11Invoice::from_raw("lnbcrt500n1pexample".to_owned()),
+            invoice: RECEIVE_INVOICE.parse().expect("a valid regtest invoice"),
             description: "coffee".to_owned(),
             requested_amount: Amount::from_msats(50_000),
             invoice_amount: Amount::from_msats(50_000),
@@ -760,7 +767,9 @@ mod tests {
         assert!(!LnReceiveState::WaitingForPayment.is_final());
         assert_eq!(
             details.invoice,
-            Bolt11Invoice::from_raw("lnbcrt500n1pexample".to_owned()),
+            RECEIVE_INVOICE
+                .parse::<Bolt11Invoice>()
+                .expect("a valid regtest invoice"),
         );
         assert!(details.expires_at > details.created_at);
     }
