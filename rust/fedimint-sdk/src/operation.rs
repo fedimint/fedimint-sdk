@@ -623,7 +623,7 @@ pub struct AnyOperation {
 impl AnyOperation {
     /// This operation's id.
     pub fn id(&self) -> OperationId {
-        unimplemented!()
+        OperationId::from_upstream(self.inner.operation.id)
     }
 
     /// What kind of operation this is.
@@ -642,7 +642,7 @@ impl AnyOperation {
     /// cannot read still says it is a lightning send, reported as unsupported
     /// by [`support`](AnyOperation::support).
     pub fn kind(&self) -> OperationKind {
-        unimplemented!()
+        self.inner.kind
     }
 
     /// How far this build can go with this operation, and why no further.
@@ -698,7 +698,7 @@ impl AnyOperation {
     /// Infallible, like [`kind`](AnyOperation::kind): the record was read
     /// when this handle was created.
     pub fn raw_kind(&self) -> RawOperationKind {
-        unimplemented!()
+        self.inner.raw.clone()
     }
 
     /// Recovers a typed handle if this is an out-of-band ecash send.
@@ -707,7 +707,12 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ecash_send(&self) -> Option<Operation<EcashSendState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::EcashSend(driver) => self.typed(OperationKind::EcashSend, driver),
+            // A tag whose driver observes another state type, which `typed`'s own kind check
+            // would refuse in any case.
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is an ecash redemption.
@@ -716,7 +721,10 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ecash_receive(&self) -> Option<Operation<EcashReceiveState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::EcashReceive(driver) => self.typed(OperationKind::EcashReceive, driver),
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is an outgoing lightning payment.
@@ -725,7 +733,10 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ln_send(&self) -> Option<Operation<LnSendState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::LnSend(driver) => self.typed(OperationKind::LnSend, driver),
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is an incoming lightning payment.
@@ -734,7 +745,10 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ln_receive(&self) -> Option<Operation<LnReceiveState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::LnReceive(driver) => self.typed(OperationKind::LnReceive, driver),
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is an on-chain withdrawal.
@@ -743,7 +757,10 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_onchain_send(&self) -> Option<Operation<OnchainSendState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::OnchainSend(driver) => self.typed(OperationKind::OnchainSend, driver),
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is an on-chain deposit.
@@ -752,7 +769,12 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_onchain_receive(&self) -> Option<Operation<OnchainReceiveState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::OnchainReceive(driver) => {
+                self.typed(OperationKind::OnchainReceive, driver)
+            }
+            _ => None,
+        }
     }
 
     /// Recovers a typed handle if this is a seed recovery.
@@ -774,7 +796,53 @@ impl AnyOperation {
     /// recovery from the [`FederationId`](crate::FederationId) alone; the
     /// [recovery module](crate::Recovery) lays out all three routes.
     pub fn as_recovery(&self) -> Option<Operation<RecoveryState>> {
-        unimplemented!()
+        match driver_for(&self.inner.raw.kind)? {
+            ErasedDriver::Recovery(driver) => self.typed(OperationKind::Recovery, driver),
+            _ => None,
+        }
+    }
+
+    /// Builds a type-erased handle over a record that has already been read.
+    ///
+    /// The whole support decision is made here, once, so that the four questions the type
+    /// answers cost nothing afterwards.
+    pub(crate) fn from_record(operation: Arc<OperationInner>) -> AnyOperation {
+        let raw = RawOperationKind {
+            kind: operation.record.kind.clone(),
+            // An empty module is a record that names none, not a module called "".
+            module: (!operation.record.module.is_empty()).then(|| operation.record.module.clone()),
+            schema_version: Some(operation.record.schema_version),
+        };
+        let kind = kind_of_tag(&raw.kind);
+        let support = support_of(kind, &raw);
+        AnyOperation {
+            inner: Arc::new(AnyOperationInner {
+                operation,
+                kind,
+                raw,
+                support,
+            }),
+        }
+    }
+
+    /// The typed handle for one kind, when this record is of that kind and this build can
+    /// observe it.
+    ///
+    /// The caller has already found the driver, so the two conditions left are the ones about
+    /// the record. Together with "this build has a driver for the kind" they are deliberately
+    /// not distinguished: the accessors answer `None` for all three, and a caller who needs to
+    /// know which uses [`support`](AnyOperation::support) first.
+    fn typed<S>(&self, kind: OperationKind, driver: Arc<dyn Driver<S>>) -> Option<Operation<S>>
+    where
+        S: OperationState,
+    {
+        if self.inner.kind != kind {
+            return None;
+        }
+        if !matches!(self.inner.support, OperationSupport::Observable) {
+            return None;
+        }
+        Some(Operation::attach(self.inner.operation.clone(), driver))
     }
 }
 
@@ -1398,9 +1466,22 @@ impl OperationInner {
     }
 }
 
-/// Placeholder for the shared state behind a type-erased operation handle.
+/// The shared state behind a type-erased operation handle.
+///
+/// The record was read to produce the handle, so every question [`AnyOperation`] answers is
+/// answered from here without reading storage or touching the network, which is what lets all
+/// four of them be infallible and cheap.
 #[derive(Debug)]
-struct AnyOperationInner;
+struct AnyOperationInner {
+    /// Everything a typed handle would need, ready to be handed to one.
+    operation: Arc<OperationInner>,
+    /// This build's reading of the record's tag.
+    kind: OperationKind,
+    /// What the record literally says, for logs and bug reports.
+    raw: RawOperationKind,
+    /// How far this build can go with the record, decided once when the handle was made.
+    support: OperationSupport,
+}
 
 #[cfg(test)]
 mod tests {
@@ -1798,6 +1879,110 @@ mod tests {
     #[test]
     fn unknown_reads_no_state_schema_at_all() {
         assert_eq!(OperationKind::Unknown.readable_state_schema(), 0);
+    }
+
+    /// A type-erased handle over a record with the given tag, module and schema version.
+    ///
+    /// `AnyOperation::from_record` is a pure wrapper over a record that has already been read, so
+    /// it never writes storage; but the typed accessors it hands back reload from storage on
+    /// every call (`Operation::state`, for instance), so the record has to actually be persisted
+    /// here first, exactly the way `probe_record` does it for `probe_operation_with`.
+    async fn any_operation(kind: &str, module: &str, schema_version: u32) -> AnyOperation {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let id = UpstreamOperationId([5u8; 32]);
+        let record = OperationRecord {
+            schema_version,
+            kind: kind.to_owned(),
+            module: module.to_owned(),
+            created_at: 1_700_000_000_000,
+            details: "{}".to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+        let db = federation.db();
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&crate::db::OperationRecordKey(id), &record)
+            .await;
+        dbtx.commit_tx().await;
+        AnyOperation::from_record(Arc::new(OperationInner {
+            federation,
+            id,
+            record,
+        }))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_record_this_build_knows_becomes_a_typed_handle() {
+        let any = any_operation(kinds::ECASH_SEND, "mint", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::EcashSend);
+        assert_eq!(any.support(), OperationSupport::Observable);
+        assert_eq!(
+            any.supported_kind().expect("supported"),
+            OperationKind::EcashSend
+        );
+        assert_eq!(
+            any.id(),
+            crate::OperationId::from_upstream(UpstreamOperationId([5u8; 32]))
+        );
+        let typed = any
+            .as_ecash_send()
+            .expect("the kind matches and is supported");
+        assert_eq!(typed.id(), any.id());
+        assert_eq!(
+            typed.state().await.expect("state"),
+            EcashSendState::Redeemed
+        );
+        // And only that one: the accessors do not guess.
+        assert!(any.as_ecash_receive().is_none());
+        assert!(any.as_ln_send().is_none());
+        assert!(any.as_ln_receive().is_none());
+        assert!(any.as_onchain_send().is_none());
+        assert!(any.as_onchain_receive().is_none());
+        assert!(any.as_recovery().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tag_this_build_does_not_know_is_reported_rather_than_refused() {
+        let any = any_operation("something_else", "mint", 1).await;
+        assert_eq!(any.kind(), OperationKind::Unknown);
+        assert_eq!(any.support(), OperationSupport::UnknownKind);
+        assert!(any.supported_kind().is_err());
+        assert!(any.as_ecash_send().is_none());
+        // The record still says what it says, which is the whole point of keeping it readable.
+        assert_eq!(any.raw_kind().kind, "something_else");
+        assert_eq!(any.raw_kind().module.as_deref(), Some("mint"));
+        assert_eq!(any.raw_kind().schema_version, Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_state_schema_newer_than_this_build_reads_yields_no_handle() {
+        let any = any_operation(kinds::ECASH_SEND, "mint", READABLE_STATE_SCHEMA + 1).await;
+        // It still knows what it is; it just cannot act on it.
+        assert_eq!(any.kind(), OperationKind::EcashSend);
+        assert_eq!(any.support(), OperationSupport::StateSchemaTooNew);
+        assert!(any.as_ecash_send().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
+        let any = any_operation(kinds::LN_SEND, "lnv2", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::LnSend);
+        // `support` is about the record rather than about what this build can observe, so it
+        // still says observable; the accessor is where a kind no facade has written a driver for
+        // yet answers `None`, in exactly the way a kind mismatch does.
+        assert_eq!(any.support(), OperationSupport::Observable);
+        assert!(any.as_ln_send().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_record_with_no_module_marker_reports_none_rather_than_an_empty_name() {
+        let any = any_operation(kinds::RECOVERY, "", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::Recovery);
+        assert_eq!(any.raw_kind().module, None);
     }
 
     #[test]
