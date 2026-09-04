@@ -78,6 +78,12 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 /// copying a location's contents elsewhere and opening both is the same mistake as restoring
 /// one wallet's backup onto two devices, and the SDK cannot detect it.
 ///
+/// In the same process, dropping or shutting down an [`Sdk`](crate::Sdk) is not by itself enough
+/// to make its location reopenable: the underlying store stays open until every
+/// [`Federation`](crate::Federation) handle over it has also been dropped, so a
+/// [`SdkBuilder::build`](crate::SdkBuilder::build) against that location started before that
+/// point is left waiting on it rather than failing outright.
+///
 /// # Durability
 ///
 /// Everything a caller can observe is durably committed before it becomes observable, so an

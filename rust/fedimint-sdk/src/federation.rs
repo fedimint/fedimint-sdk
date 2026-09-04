@@ -133,7 +133,9 @@ impl Federation {
     ///
     /// # Errors
     ///
-    /// [`Storage`](crate::ErrorCode::Storage),
+    /// [`Internal`](crate::ErrorCode::Internal) for a client with no usable balance source
+    /// (API-version negotiation left every module out, most often), which is not the caller's
+    /// doing and not a storage fault, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self) -> Result<Amount> {
         // Reading a balance is not fund-touching: a recovery-locked federation's number is
@@ -637,16 +639,6 @@ impl core::fmt::Debug for BalanceUpdatesInner {
     }
 }
 
-/// Where one balance subscription has got to.
-struct BalanceCursor {
-    /// The upstream stream, once the first `next()` has established there is a client to open it
-    /// on. Upstream's own stream hangs forever when a client has no primary module, so it is only
-    /// opened after a balance read has proved there is one.
-    stream: Option<fedimint_core::util::BoxStream<'static, fedimint_core::Amount>>,
-    /// The last value handed out, so a repeat is not delivered as a change.
-    last: Option<Amount>,
-}
-
 /// Reads a lock without propagating poisoning.
 ///
 /// A panic in one thread must not turn every later status read into a panic of its own: these
@@ -660,6 +652,16 @@ pub(crate) fn read_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockRead
 pub(crate) fn write_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Where one balance subscription has got to.
+struct BalanceCursor {
+    /// The upstream stream, once the first `next()` has established there is a client to open it
+    /// on. Upstream's own stream hangs forever when a client has no primary module, so it is only
+    /// opened after a balance read has proved there is one.
+    stream: Option<fedimint_core::util::BoxStream<'static, fedimint_core::Amount>>,
+    /// The last value handed out, so a repeat is not delivered as a change.
+    last: Option<Amount>,
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]

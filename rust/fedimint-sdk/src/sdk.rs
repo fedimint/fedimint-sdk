@@ -980,6 +980,10 @@ impl Sdk {
     /// terminate" callback if there is one, and await it if you are allowed
     /// to. Do not build anything on being able to.
     ///
+    /// Skipping it is safe for correctness, but leaves one thing to mind in the same process: the
+    /// underlying store stays open until every [`Sdk`] and [`Federation`] handle over it, this
+    /// call included, has actually been dropped. A [`SdkBuilder::build`] against the same
+    /// location started before that point is left waiting on it.
     ///
     /// # What survives an abrupt kill
     ///
@@ -1365,7 +1369,10 @@ pub enum FederationStatus {
         /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable)
         /// or [`Timeout`](crate::ErrorCode::Timeout) when no guardian
         /// answered in time, and [`Storage`](crate::ErrorCode::Storage)
-        /// when the federation's local state could not be read.
+        /// when the federation's local state could not be read. A reopen
+        /// that fails for any other reason currently surfaces as
+        /// [`Storage`](crate::ErrorCode::Storage) too, for lack of a more
+        /// specific signal from the reopened client.
         ///
         /// [`message`](crate::Diagnostic::message) is human-readable
         /// detail, for humans only: logs, diagnostics, an expandable
@@ -1712,9 +1719,11 @@ impl SdkInner {
             .await
             .map_err(|err| {
                 // `ClientBuilder::open` still returns `anyhow::Result` at the pinned revision, so
-                // there is nothing to match on and the failure is mapped by intent: local state
-                // that will not load is a storage fault, and everything else is the federation
-                // refusing or not answering. Only the message crosses the boundary.
+                // there is nothing to match on: every failure here maps to `Storage`, even one
+                // that is not really a storage fault (the federation refusing the reopened
+                // client, say). `FederationStatus::Quarantined`'s doc comment calls this out as
+                // the reason a reopen failure currently surfaces as `Storage` regardless of
+                // cause. Only the message crosses the boundary.
                 crate::Error::new(crate::ErrorCode::Storage, format!("could not open: {err}"))
             })?;
         Ok(Arc::new(handle))

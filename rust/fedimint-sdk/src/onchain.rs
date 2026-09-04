@@ -845,8 +845,9 @@ pub struct OnchainReceiveFeeBreakdown {
 
 /// The federation this facade operates on.
 ///
-/// Held rather than a mint-module handle, because a facade outlives the client behind it: a call
-/// on a closed federation has to report `FederationClosed` rather than find nothing to talk to.
+/// Held rather than a wallet-module handle, because a facade outlives the client behind it: a
+/// call on a closed federation has to report `FederationClosed` rather than find nothing to talk
+/// to.
 #[derive(Debug)]
 struct OnchainInner {
     federation: Arc<crate::federation::FederationInner>,
