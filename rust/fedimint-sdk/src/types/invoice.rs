@@ -102,6 +102,11 @@ impl Bolt11Invoice {
         // Network` (lightning-invoice-0.33.3/src/lib.rs:465-476), which
         // collapses `Simnet` into `Regtest` and would report a network the
         // invoice never named.
+        //
+        // `BitcoinTestnet` is BOLT11's `tb` prefix, which testnet3 and testnet4 both use,
+        // so this single answer of `Network::Testnet` cannot distinguish them. The
+        // lightning facade must expand it into `{Testnet, Testnet4}` when it fills
+        // `ErrorDetails::NetworkMismatch::compatible`, rather than reporting testnet3 alone.
         match self.invoice.currency() {
             Currency::Bitcoin => Some(Network::Bitcoin),
             Currency::BitcoinTestnet => Some(Network::Testnet),

@@ -42,6 +42,9 @@ impl Notes {
     /// redeemable (they could already have been spent or reclaimed), only
     /// a receive call does that.
     pub fn value(&self) -> Amount {
+        // `total_amount()` and the `notes()` it calls both `.expect()` a `Notes` part.
+        // Infallible for any value this type can hold: the decoder behind `FromStr`
+        // refuses notes lacking one (modules/fedimint-mint-client/src/lib.rs:392-447).
         // Already millisatoshis upstream
         // (modules/fedimint-mint-client/src/lib.rs:509-514).
         Amount::from_msats(self.notes.total_amount().msats)

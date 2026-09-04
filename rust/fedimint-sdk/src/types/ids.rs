@@ -1,10 +1,11 @@
 //! Opaque, string-shaped identifiers.
 //!
-//! Every id in this module wraps its upstream representation and round-trips through
-//! `Display`/`FromStr`; `Cursor` alone still wraps an opaque string until the activity
-//! facade lands. The parse validates, which is what lets a foreign-language binding
-//! carry these values as plain strings with no per-language parsing or validation logic
-//! of its own: the Rust side is the only place that knows the format.
+//! Every id here is opaque and round-trips through [`Display`](core::fmt::Display) and
+//! [`FromStr`](core::str::FromStr) with a validating parse, which is what lets an
+//! application persist one and find the same operation or federation again. The same
+//! validating parse is also what lets a foreign-language binding carry these values as
+//! plain strings with no per-language parsing or validation logic of its own: the Rust
+//! side is the only place that knows the format.
 
 use fedimint_core::bitcoin;
 use fedimint_core::config;
@@ -247,6 +248,9 @@ impl core::str::FromStr for Txid {
 /// the other ids in this module, purely so it can be stored and reloaded
 /// (e.g. to resume paging after an app restart) without a bespoke
 /// serialization path.
+// Unlike the other ids in this module, this one still wraps an opaque string rather than
+// an upstream type, since there is no activity facade yet to define what a cursor
+// actually addresses. Replace the field with whatever that facade needs once it lands.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cursor {
     token: String,

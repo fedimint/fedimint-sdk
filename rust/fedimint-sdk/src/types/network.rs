@@ -48,6 +48,8 @@ impl Network {
     /// compatible with?" can be answered by asking each candidate in turn,
     /// which is the only way `bitcoin` offers: a validated address keeps no
     /// `Network` of its own.
+    // Unlike `to_bitcoin` below, an exhaustive match the compiler enforces, nothing
+    // catches a new variant left out of this list: keep the two in sync by hand.
     pub(crate) const ALL: [Network; 5] = [
         Network::Bitcoin,
         Network::Testnet,
