@@ -46,6 +46,9 @@ fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev =
 bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
 zeroize = "1"
 futures = "0.3.32"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.149"
+tracing = "0.1.44"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
