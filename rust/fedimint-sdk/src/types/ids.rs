@@ -350,6 +350,21 @@ mod tests {
             padded.parse::<FederationId>().expect("trimmed").to_string(),
             FEDERATION_ID
         );
+
+        let padded = format!("  {ZEROS}\n");
+        assert_eq!(
+            padded.parse::<OperationId>().expect("trimmed").to_string(),
+            ZEROS
+        );
+
+        let padded = format!("  {GATEWAY_ID}\n");
+        assert_eq!(
+            padded.parse::<GatewayId>().expect("trimmed").to_string(),
+            GATEWAY_ID
+        );
+
+        let padded = format!("  {ZEROS}\n");
+        assert_eq!(padded.parse::<Txid>().expect("trimmed").to_string(), ZEROS);
     }
 
     #[test]
@@ -399,8 +414,10 @@ mod tests {
         // Upstream's `Debug` prints an abbreviated `aabbccdd_11223344` form
         // that its own `FromStr` does not accept; the SDK must print the full
         // 64 characters or a copied id would not come back.
-        let printed = ZEROS.parse::<OperationId>().expect("valid").to_string();
+        let id = ZEROS.parse::<OperationId>().expect("valid");
+        let printed = id.to_string();
         assert_eq!(printed.len(), 64);
         assert!(!printed.contains('_'));
+        assert_eq!(printed.parse::<OperationId>().expect("re-parses"), id);
     }
 }

@@ -245,6 +245,31 @@ mod tests {
     }
 
     #[test]
+    fn description_is_empty_for_a_hash_description() {
+        // No known fixed vector uses a hash description, so this one is built with
+        // `InvoiceBuilder` the same way `MAINNET_AMOUNTLESS` above was.
+        use fedimint_core::bitcoin::hashes::{Hash, sha256};
+        use fedimint_core::secp256k1::{Secp256k1, SecretKey};
+        use lightning_invoice::{InvoiceBuilder, PaymentSecret};
+
+        let secp = Secp256k1::new();
+        let private_key = SecretKey::from_slice(&[0x11; 32]).expect("a valid secret key");
+        let raw = InvoiceBuilder::new(Currency::Regtest)
+            .amount_milli_satoshis(1_000)
+            .payment_hash(sha256::Hash::hash(&[0x22; 32]))
+            .payment_secret(PaymentSecret([0x33; 32]))
+            .description_hash(sha256::Hash::hash(b"an out-of-band description"))
+            .duration_since_epoch(core::time::Duration::from_secs(1_700_000_000))
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| secp.sign_ecdsa_recoverable(hash, &private_key))
+            .expect("a valid invoice")
+            .to_string();
+
+        let invoice = raw.parse::<Bolt11Invoice>().expect("a valid invoice");
+        assert_eq!(invoice.description(), "");
+    }
+
+    #[test]
     fn expiry_is_reported_in_epoch_milliseconds() {
         // The vector was created at 1_496_314_658 s with a 3_600 s expiry, so
         // it expired long ago and stays a stable fixture forever.

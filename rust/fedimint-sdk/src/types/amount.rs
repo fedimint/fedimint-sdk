@@ -391,7 +391,17 @@ mod tests {
 
     #[test]
     fn sats_rejects_anything_but_its_display_form() {
-        for rejected in ["25000", "25000 msat", "25000sat", "0.5 sat", "sat", ""] {
+        for rejected in [
+            "25000",
+            "25000 msat",
+            "25000sat",
+            "0.5 sat",
+            "sat",
+            "",
+            "+5 sat",
+            "-5 sat",
+            "18446744073709551616 sat",
+        ] {
             let error = rejected
                 .parse::<Sats>()
                 .expect_err("only the display form parses");

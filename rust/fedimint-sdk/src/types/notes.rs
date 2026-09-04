@@ -214,11 +214,9 @@ mod tests {
                 .expect_err("a malformed token is rejected");
             assert_eq!(error.code, crate::ErrorCode::InvalidInput);
             // The value is the money: a rejected token must not reach a log
-            // through the error message.
-            assert!(
-                !error.message.contains(rejected) || rejected.is_empty(),
-                "the rejected token must not appear in the message"
-            );
+            // through the error message: the message is fixed, not built from
+            // the rejected string.
+            assert_eq!(error.message, "invalid ecash notes");
         }
     }
 }

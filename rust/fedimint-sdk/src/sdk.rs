@@ -1140,6 +1140,18 @@ mod tests {
         let rendered = format!("{builder:?}");
         assert!(rendered.contains("mnemonic"));
         assert!(rendered.contains("None"));
+
+        // The canonical all-zero-entropy BIP-39 phrase, the same fixture
+        // `types::mnemonic`'s own tests use.
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+                              abandon abandon abandon about";
+        let mnemonic = PHRASE.parse::<Mnemonic>().expect("a valid phrase");
+        let rendered = format!("{:?}", Sdk::builder().mnemonic(mnemonic));
+        assert!(!rendered.contains("abandon"));
+        assert_eq!(
+            rendered,
+            "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }"
+        );
     }
 
     #[test]

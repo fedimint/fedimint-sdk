@@ -239,11 +239,9 @@ mod tests {
                 .expect_err("a malformed invite code is rejected");
             assert_eq!(error.code, crate::ErrorCode::InvalidInput);
             // A code can embed an api secret, so a rejected one must not reach
-            // a log through the error message.
-            assert!(
-                !error.message.contains(rejected) || rejected.is_empty(),
-                "the rejected code must not appear in the message"
-            );
+            // a log through the error message: the message is fixed, not built
+            // from the rejected string.
+            assert_eq!(error.message, "invalid invite code");
         }
     }
 }
