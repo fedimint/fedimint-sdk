@@ -97,6 +97,14 @@ impl OperationId {
     pub(crate) fn from_upstream(id: fedimint_core::core::OperationId) -> Self {
         Self { id }
     }
+
+    /// The upstream id this wraps.
+    ///
+    /// Crate-internal: the upstream type is not part of this crate's API, and this is how the
+    /// storage and client layers reach the value a public [`OperationId`] stands for.
+    pub(crate) const fn upstream(&self) -> fedimint_core::core::OperationId {
+        self.id
+    }
 }
 
 impl core::fmt::Display for OperationId {

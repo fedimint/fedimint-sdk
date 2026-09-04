@@ -8,7 +8,7 @@ use fedimint_core::db::Database;
 use fedimint_core::module::AmountUnit;
 use futures::StreamExt;
 
-use crate::db::FederationRecord;
+use crate::db::{FederationRecord, StoredStatus};
 use crate::sdk::SdkInner;
 use crate::{
     ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
@@ -572,6 +572,88 @@ impl FederationInner {
     pub(crate) fn closed(&self) -> tokio::sync::watch::Receiver<bool> {
         self.closed.subscribe()
     }
+
+    /// `Ok` while this federation is still usable, and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is not.
+    ///
+    /// Both halves of "usable" are asked. The stored row says whether the storage still means
+    /// this federation to be opened at all; the live status says whether it is running now, and
+    /// a quarantined federation is exactly the case where the two disagree, because quarantine
+    /// leaves the row untouched. Neither half reads the client handle, so the answer is the same
+    /// after a close, a quarantine and a shutdown, and does not depend on whether some other
+    /// task is holding the client lock.
+    pub(crate) fn ensure_open(&self) -> crate::Result<()> {
+        match read_lock(&self.record).status {
+            StoredStatus::Open => {}
+            // `Joining` is an interrupted join: the next build wipes that namespace and redoes
+            // the join from the invite, so nothing in it may be used in the meantime.
+            StoredStatus::Joining | StoredStatus::Closed | StoredStatus::Forgetting => {
+                return Err(crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this federation is closed",
+                ));
+            }
+        }
+        if !self.is_open() {
+            return Err(crate::Error::new(
+                crate::ErrorCode::FederationClosed,
+                "this federation is closed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A federation handle with no client behind it, for the operation engine's own tests.
+    ///
+    /// The engine is exercised against a scripted driver rather than a live federation, so what
+    /// it needs from here is a namespace to read and write and an answer to
+    /// [`ensure_open`](FederationInner::ensure_open). Anything that reaches for the client gets
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), which is the correct answer for
+    /// a federation with no client.
+    #[cfg(test)]
+    pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
+        use fedimint_core::PeerId;
+        use fedimint_core::invite_code::InviteCode;
+        use fedimint_core::util::SafeUrl;
+
+        use crate::db::{StoredCapabilities, StoredNetwork};
+
+        let (stored, status) = if open {
+            (StoredStatus::Open, FederationStatus::Running)
+        } else {
+            (StoredStatus::Closed, FederationStatus::Closed)
+        };
+        let id = config::FederationId::dummy();
+        let federation = FederationInner::new(
+            id,
+            Weak::new(),
+            db,
+            FederationRecord {
+                invite: InviteCode::new(
+                    SafeUrl::parse("wss://guardian.example:5000").expect("a valid url"),
+                    PeerId::from(0),
+                    id,
+                    None,
+                ),
+                network: StoredNetwork::Regtest,
+                status: stored,
+                capabilities: StoredCapabilities {
+                    ecash: true,
+                    lightning: true,
+                    onchain: true,
+                },
+                generation: Some(1),
+                name: None,
+            },
+            status.clone(),
+            None,
+        );
+        // `new` derives the closed watch from whether a client was handed over, and a detached
+        // federation never has one. Setting the status again puts the watch back in step with
+        // it, which is what a parked `OperationUpdates::next` is waiting on.
+        federation.set_status(status);
+        Arc::new(federation)
+    }
 }
 
 /// Shuts a client down, waiting for its workers.
@@ -675,7 +757,10 @@ mod tests {
     use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::util::SafeUrl;
 
-    use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
+    use crate::db::{
+        FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus, federation_namespace,
+        in_memory_root,
+    };
     use crate::{ErrorCode, FederationStatus};
 
     use super::*;
@@ -794,5 +879,67 @@ mod tests {
             .await
             .expect_err("a recovery-locked federation refuses fund-touching work");
         assert_eq!(err.code, ErrorCode::Recovering);
+    }
+
+    #[test]
+    fn a_detached_federation_answers_from_its_record_and_its_namespace() {
+        let root = in_memory_root();
+        let db = federation_namespace(&root, [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        // The namespace is the one the client would have been handed, so the SDK's records and
+        // the client's operation log share a keyspace.
+        assert!(federation.db().is_global());
+        assert!(federation.ensure_open().is_ok());
+
+        let closed = FederationInner::detached(db, false);
+        let err = closed
+            .ensure_open()
+            .expect_err("a closed federation refuses every fallible call");
+        assert_eq!(err.code, crate::ErrorCode::FederationClosed);
+    }
+
+    #[test]
+    fn a_federation_that_is_not_running_refuses_every_fallible_call() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+
+        // A stored row that is not `Open` is refused whatever the live status says. `Joining` is
+        // the one that is easy to read as open and is not: it is an interrupted join whose
+        // namespace the next build wipes and redoes from the invite.
+        for stored in [
+            StoredStatus::Joining,
+            StoredStatus::Closed,
+            StoredStatus::Forgetting,
+        ] {
+            let federation = FederationInner::detached(db.clone(), true);
+            let mut record = federation.record();
+            record.status = stored;
+            federation.set_record(record);
+            assert_eq!(
+                federation
+                    .ensure_open()
+                    .expect_err("only an open row is open")
+                    .code,
+                crate::ErrorCode::FederationClosed,
+                "{stored:?}"
+            );
+        }
+
+        // And an `Open` row is still refused once the running federation is not. Quarantine is
+        // the case that matters: the storage is intact, so the row never changes, and the
+        // contract says every subsequent fallible call on a quarantined federation fails.
+        let federation = FederationInner::detached(db, true);
+        federation.set_status(FederationStatus::Quarantined {
+            diagnostic: crate::Diagnostic::new(
+                crate::ErrorCode::FederationUnreachable,
+                "no guardian answered",
+            ),
+        });
+        assert_eq!(
+            federation
+                .ensure_open()
+                .expect_err("a quarantined federation is not usable")
+                .code,
+            crate::ErrorCode::FederationClosed
+        );
     }
 }
