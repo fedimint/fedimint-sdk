@@ -20,10 +20,17 @@ on:
     paths:
       - 'rust/fedimint-sdk/**'
       - '.github/workflows/rust-sdk-ci.yaml'
+      # The crate pins the same fedimint revision the flake does, so a flake
+      # bump has to re-run this workflow: pins-agree below is what catches a
+      # bump that moved one of the two and not the other.
+      - 'flake.nix'
+      - 'flake.lock'
   pull_request:
     paths:
       - 'rust/fedimint-sdk/**'
       - '.github/workflows/rust-sdk-ci.yaml'
+      - 'flake.nix'
+      - 'flake.lock'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -32,10 +39,81 @@ concurrency:
 permissions: {}
 
 jobs:
+  pins-agree:
+    name: 'Check the fedimint pins agree'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Compare the crate pin with the flake input pins'
+        # The SDK compiles against fedimint and the flake runs devimint from
+        # fedimint. If the repository or the revision drifts apart between the
+        # two, the client under test and the federation it is tested against
+        # stop matching, which surfaces as a runtime mystery rather than a
+        # build failure. The lock is compared too, because CI builds with
+        # --locked and a lock left behind would silently build the old code.
+        run: |
+          set -euo pipefail
+
+          manifest=rust/fedimint-sdk/Cargo.toml
+          lock=rust/fedimint-sdk/Cargo.lock
+          fail() { echo "::error::$*"; exit 1; }
+
+          # "<owner>/<repo> <rev>" for one flake input, read from that input's own
+          # block, so a `?rev=` pin on another input cannot be taken for this one.
+          flake_pin() {
+            sed -n "/^[[:space:]]*$1[[:space:]]*=[[:space:]]*{/,/^[[:space:]]*};/p" flake.nix \
+              | grep -oE 'github:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\?rev=[0-9a-f]{40}' \
+              | sed -E 's|github:(.*)\?rev=([0-9a-f]{40})|\1 \2|' | sort -u
+          }
+
+          manifest_pin=$(grep -oE \
+            'git = "https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", rev = "[0-9a-f]{40}"' \
+            "$manifest" \
+            | sed -E 's|git = "https://github\.com/(.*)", rev = "(.*)"|\1 \2|' | sort -u || true)
+          lock_pin=$(grep -oE \
+            'git\+https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\?rev=[0-9a-f]{40}' "$lock" \
+            | sed -E 's|git\+https://github\.com/(.*)\?rev=(.*)|\1 \2|' | sort -u || true)
+          devimint_pin=$(flake_pin fedimint || true)
+          wasm_pin=$(flake_pin fedimint-wasm || true)
+
+          [ -n "$manifest_pin" ] || fail "no github git dependency in $manifest"
+          [ "$(printf '%s\n' "$manifest_pin" | wc -l)" -eq 1 ] \
+            || fail "$manifest has more than one github git source: $(echo $manifest_pin)"
+          [ -n "$devimint_pin" ] \
+            || fail "flake.nix input 'fedimint' has no github:<owner>/<repo>?rev=<sha> url"
+          [ -n "$wasm_pin" ] \
+            || fail "flake.nix input 'fedimint-wasm' has no github:<owner>/<repo>?rev=<sha> url"
+          [ "$devimint_pin" = "$wasm_pin" ] \
+            || fail "flake.nix inputs disagree: fedimint $devimint_pin, fedimint-wasm $wasm_pin"
+          [ -n "$lock_pin" ] || fail "$lock records no github git source; run cargo check"
+          [ "$(printf '%s\n' "$lock_pin" | wc -l)" -eq 1 ] \
+            || fail "$lock records more than one github git source: $(echo $lock_pin)"
+
+          manifest_repo=${manifest_pin% *}; manifest_rev=${manifest_pin##* }
+          flake_repo=${devimint_pin% *};    flake_rev=${devimint_pin##* }
+          lock_repo=${lock_pin% *};         lock_rev=${lock_pin##* }
+
+          [ "$manifest_repo" = "$flake_repo" ] \
+            || fail "repo mismatch: $manifest uses $manifest_repo, flake.nix uses $flake_repo"
+          [ "$manifest_rev" = "$flake_rev" ] \
+            || fail "rev mismatch: $manifest is at $manifest_rev, flake.nix is at $flake_rev"
+          [ "$lock_repo" = "$manifest_repo" ] \
+            || fail "repo mismatch: $lock uses $lock_repo, $manifest uses $manifest_repo"
+          [ "$lock_rev" = "$manifest_rev" ] \
+            || fail "rev mismatch: $lock is at $lock_rev, $manifest is at $manifest_rev"
+
+          echo "fedimint pins agree: $manifest_repo at $manifest_rev"
+
   test:
     name: 'Run tests'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: rust/fedimint-sdk
@@ -45,6 +123,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: 'Install native build dependencies'
+        # fedimint-connectors builds aws-lc-sys and fedimint-rocksdb builds
+        # librocksdb-sys; both run bindgen, which needs libclang.so, and
+        # aws-lc-sys wants cmake. A stock ubuntu-24.04 runner has neither
+        # libclang.so nor libclang-dev, and without them the build dies with
+        # "Unable to find libclang".
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
 
       - name: 'Set up Rust'
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -60,7 +146,7 @@ jobs:
   check:
     name: 'Run clippy, fmt, docs and wasm'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: rust/fedimint-sdk
@@ -69,6 +155,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: 'Install native build dependencies'
+        # fedimint-connectors builds aws-lc-sys and fedimint-rocksdb builds
+        # librocksdb-sys; both run bindgen, which needs libclang.so, and
+        # aws-lc-sys wants cmake. A stock ubuntu-24.04 runner has neither
+        # libclang.so nor libclang-dev, and without them the build dies with
+        # "Unable to find libclang".
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
