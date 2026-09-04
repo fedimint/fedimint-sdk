@@ -21,8 +21,9 @@ on:
       - 'rust/fedimint-sdk/**'
       - '.github/workflows/rust-sdk-ci.yaml'
       # The crate pins the same fedimint revision the flake does, so a flake
-      # bump has to re-run this workflow: pins-agree below is what catches a
-      # bump that moved one of the two and not the other.
+      # bump has to re-run this workflow: pins-agree below checks flake.nix
+      # and flake.lock against the crate's pin, and catches a bump that
+      # moved one of the three and not the others.
       - 'flake.nix'
       - 'flake.lock'
   pull_request:
@@ -55,8 +56,9 @@ jobs:
         # fedimint. If the repository or the revision drifts apart between the
         # two, the client under test and the federation it is tested against
         # stop matching, which surfaces as a runtime mystery rather than a
-        # build failure. The lock is compared too, because CI builds with
-        # --locked and a lock left behind would silently build the old code.
+        # build failure. Cargo.lock and flake.lock are compared too, because
+        # CI builds with --locked and a lock left behind would silently
+        # build the old code.
         run: |
           set -euo pipefail
 
@@ -66,10 +68,27 @@ jobs:
 
           # "<owner>/<repo> <rev>" for one flake input, read from that input's own
           # block, so a `?rev=` pin on another input cannot be taken for this one.
+          # The scoping relies on the block's multi-line `name = { ... };` shape,
+          # asserted below: a block reformatted onto one line makes the sed range
+          # below run past this input's own end address into the next block.
           flake_pin() {
-            sed -n "/^[[:space:]]*$1[[:space:]]*=[[:space:]]*{/,/^[[:space:]]*};/p" flake.nix \
+            local block
+            block=$(sed -n "/^[[:space:]]*$1[[:space:]]*=[[:space:]]*{/,/^[[:space:]]*};/p" \
+              flake.nix)
+            printf '%s\n' "$block" | head -n1 \
+              | grep -qE "^[[:space:]]*$1[[:space:]]*=[[:space:]]*\{[[:space:]]*\$" \
+              && printf '%s\n' "$block" | tail -n1 | grep -qE '^[[:space:]]*};[[:space:]]*$' \
+              || return 1
+            printf '%s\n' "$block" \
               | grep -oE 'github:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\?rev=[0-9a-f]{40}' \
               | sed -E 's|github:(.*)\?rev=([0-9a-f]{40})|\1 \2|' | sort -u
+          }
+
+          # "<owner>/<repo> <rev>" for one flake.lock node's locked reference.
+          flake_lock_pin() {
+            jq -r --arg name "$1" \
+              '.nodes[$name].locked | select(.owner and .repo and .rev)
+               | "\(.owner)/\(.repo) \(.rev)"' flake.lock
           }
 
           manifest_pin=$(grep -oE \
@@ -79,8 +98,13 @@ jobs:
           lock_pin=$(grep -oE \
             'git\+https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\?rev=[0-9a-f]{40}' "$lock" \
             | sed -E 's|git\+https://github\.com/(.*)\?rev=(.*)|\1 \2|' | sort -u || true)
-          devimint_pin=$(flake_pin fedimint || true)
-          wasm_pin=$(flake_pin fedimint-wasm || true)
+          devimint_pin=$(flake_pin fedimint) \
+            || fail "flake.nix input 'fedimint' is not in the expected \`name = { ... };\` shape"
+          wasm_pin=$(flake_pin fedimint-wasm) \
+            || fail "flake.nix input 'fedimint-wasm' is not in the expected" \
+                    "\`name = { ... };\` shape"
+          lock_fedimint_pin=$(flake_lock_pin fedimint || true)
+          lock_wasm_pin=$(flake_lock_pin fedimint-wasm || true)
 
           [ -n "$manifest_pin" ] || fail "no github git dependency in $manifest"
           [ "$(printf '%s\n' "$manifest_pin" | wc -l)" -eq 1 ] \
@@ -94,10 +118,19 @@ jobs:
           [ -n "$lock_pin" ] || fail "$lock records no github git source; run cargo check"
           [ "$(printf '%s\n' "$lock_pin" | wc -l)" -eq 1 ] \
             || fail "$lock records more than one github git source: $(echo $lock_pin)"
+          [ -n "$lock_fedimint_pin" ] \
+            || fail "flake.lock node 'fedimint' has no owner/repo/rev in its locked object"
+          [ -n "$lock_wasm_pin" ] \
+            || fail "flake.lock node 'fedimint-wasm' has no owner/repo/rev in its locked object"
+          [ "$lock_fedimint_pin" = "$lock_wasm_pin" ] \
+            || fail "flake.lock nodes disagree: fedimint $lock_fedimint_pin," \
+                    "fedimint-wasm $lock_wasm_pin"
 
           manifest_repo=${manifest_pin% *}; manifest_rev=${manifest_pin##* }
           flake_repo=${devimint_pin% *};    flake_rev=${devimint_pin##* }
           lock_repo=${lock_pin% *};         lock_rev=${lock_pin##* }
+          flake_lock_repo=${lock_fedimint_pin% *}
+          flake_lock_rev=${lock_fedimint_pin##* }
 
           [ "$manifest_repo" = "$flake_repo" ] \
             || fail "repo mismatch: $manifest uses $manifest_repo, flake.nix uses $flake_repo"
@@ -107,6 +140,12 @@ jobs:
             || fail "repo mismatch: $lock uses $lock_repo, $manifest uses $manifest_repo"
           [ "$lock_rev" = "$manifest_rev" ] \
             || fail "rev mismatch: $lock is at $lock_rev, $manifest is at $manifest_rev"
+          [ "$flake_lock_repo" = "$manifest_repo" ] \
+            || fail "repo mismatch: flake.lock 'fedimint' uses $flake_lock_repo," \
+                    "$manifest uses $manifest_repo"
+          [ "$flake_lock_rev" = "$manifest_rev" ] \
+            || fail "rev mismatch: flake.lock 'fedimint' is at $flake_lock_rev," \
+                    "$manifest is at $manifest_rev"
 
           echo "fedimint pins agree: $manifest_repo at $manifest_rev"
 
@@ -174,7 +213,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: 'Check clippy'
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: 'Check docs'
         run: cargo doc --no-deps --locked
