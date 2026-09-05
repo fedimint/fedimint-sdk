@@ -545,17 +545,17 @@
         "wild": "wild"
       },
       "locked": {
-        "lastModified": 1788371493,
-        "narHash": "sha256-cR/CqqPU/6GwnZl8MBlE6Jkq/0BHtX0xFFcICC9Ep8E=",
+        "lastModified": 1788560774,
+        "narHash": "sha256-dkZLVL9FKo+RXCMfB+VRIUX8CvCreVNJQVc25xL6X+c=",
         "owner": "fedimint",
         "repo": "fedimint",
-        "rev": "8d81ac3807580da42665bf645e8b8b7987176d06",
+        "rev": "84fd7e635d959c9855a81a55f247bdfacdad8826",
         "type": "github"
       },
       "original": {
         "owner": "fedimint",
         "repo": "fedimint",
-        "rev": "8d81ac3807580da42665bf645e8b8b7987176d06",
+        "rev": "84fd7e635d959c9855a81a55f247bdfacdad8826",
         "type": "github"
       }
     },
@@ -573,17 +573,17 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1788371493,
-        "narHash": "sha256-cR/CqqPU/6GwnZl8MBlE6Jkq/0BHtX0xFFcICC9Ep8E=",
+        "lastModified": 1788560774,
+        "narHash": "sha256-dkZLVL9FKo+RXCMfB+VRIUX8CvCreVNJQVc25xL6X+c=",
         "owner": "fedimint",
         "repo": "fedimint",
-        "rev": "8d81ac3807580da42665bf645e8b8b7987176d06",
+        "rev": "84fd7e635d959c9855a81a55f247bdfacdad8826",
         "type": "github"
       },
       "original": {
         "owner": "fedimint",
         "repo": "fedimint",
-        "rev": "8d81ac3807580da42665bf645e8b8b7987176d06",
+        "rev": "84fd7e635d959c9855a81a55f247bdfacdad8826",
         "type": "github"
       }
     },

@@ -22,23 +22,23 @@ publish = false   # flip when the name is reserved and the API settles
 # is crate-owned (see fedimint/fedimint#8821 for the upstream structured-error
 # work this stays decoupled from), which is also why `anyhow` is absent even
 # though every upstream call returns it.
-fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
-fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "8d81ac3807580da42665bf645e8b8b7987176d06" }
+fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
