@@ -328,11 +328,6 @@ impl Operation<EcashSendState> {
     /// it against. An unreachable federation or a slow guardian is not a
     /// failure of this call: the intent is already durable and the SDK
     /// pursues it in the background.
-    pub async fn request_cancel(&self) -> Result<()> {
-        self.inner().federation.ensure_open()?;
-        self.inner().persist_cancel_request().await
-    }
-
     // The boundary is deliberate: waiting on the network here would let this call return
     // `FederationUnreachable` or `Timeout` after the intent was already durable, leaving the
     // caller unable to tell whether a retry would duplicate a request already in flight.
@@ -345,6 +340,10 @@ impl Operation<EcashSendState> {
     // marker into the module's own isolated database
     // (modules/fedimint-mint-client/src/lib.rs:2556-2563), so it has no result to report and
     // the outcome only ever arrives as a state.
+    pub async fn request_cancel(&self) -> Result<()> {
+        self.inner().federation.ensure_open()?;
+        self.inner().persist_cancel_request().await
+    }
 }
 
 /// The lifecycle of an out-of-band ecash send.

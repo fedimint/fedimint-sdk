@@ -107,8 +107,11 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 /// A caller never needs to have seen an earlier state: whatever it takes to
 /// render or complete a reattached operation, [`Operation::details`] and the
 /// current state supply between them.
-// The record must be committed in the same storage transaction that creates the operation,
-// before the creating call returns.
+// The client's own operation log is authoritative for an operation's existence; this record is a
+// decoration over it, written immediately after the module call returns and before the creating
+// call hands back a handle. A crash in the gap between the two commits leaves a log entry with no
+// record, repaired by reconciliation the next time the federation is opened. See below for why
+// the two cannot be committed together.
 // - Fields fill in at most once and never move: set at creation, or set in the same write that
 //   records the transition establishing them. `None` becomes `Some` at most once and a value
 //   never changes to a different value or reverts.
@@ -208,20 +211,6 @@ impl<S: OperationState> fmt::Debug for Operation<S> {
 }
 
 impl<S: OperationState> Operation<S> {
-    /// Builds a typed handle over a loaded record and the driver for its kind.
-    pub(crate) fn attach(inner: Arc<OperationInner>, driver: Arc<dyn Driver<S>>) -> Operation<S> {
-        Operation { inner, driver }
-    }
-
-    /// The shared state behind this handle.
-    ///
-    /// For the facades: a method that lives on a concrete monomorphisation of [`Operation`]
-    /// (there is one, [`request_cancel`](Operation::<crate::EcashSendState>::request_cancel)) is
-    /// written in its own module and cannot reach a private field of this one.
-    pub(crate) fn inner(&self) -> &Arc<OperationInner> {
-        &self.inner
-    }
-
     /// This operation's id, stable for its whole lifetime including across
     /// restarts.
     ///
@@ -335,6 +324,20 @@ impl<S: OperationState> Operation<S> {
                 "this operation's subscription closed without a final state",
             )
         })
+    }
+
+    /// Builds a typed handle over a loaded record and the driver for its kind.
+    pub(crate) fn attach(inner: Arc<OperationInner>, driver: Arc<dyn Driver<S>>) -> Operation<S> {
+        Operation { inner, driver }
+    }
+
+    /// The shared state behind this handle.
+    ///
+    /// For the facades: a method that lives on a concrete monomorphisation of [`Operation`]
+    /// (there is one, [`request_cancel`](Operation::<crate::EcashSendState>::request_cancel)) is
+    /// written in its own module and cannot reach a private field of this one.
+    pub(crate) fn inner(&self) -> &Arc<OperationInner> {
+        &self.inner
     }
 }
 
@@ -1228,6 +1231,16 @@ where
     /// The stream may also end without a final state, which is not the operation finishing: the
     /// client's notifier ends a subscriber's stream when it falls behind, and the engine treats
     /// that as a signal to subscribe again.
+    // Two obligations on whoever writes a facade around a driver, not on the driver itself:
+    // - The stream really is expected to yield the current state first. The engine's own
+    //   `OperationUpdates::next` only falls back to `current` when the first stream a
+    //   subscription opens ends before handing out anything at all; every other empty stream is
+    //   treated as the lag this doc comment describes, not as a second chance to ask directly.
+    // - `FederationInner::create_operation` has to be called while the `ClientGuard` from
+    //   `FederationInner::client` is still held, with a driver whose state type `S` is the one
+    //   the kind tag it is registered under in `driver_for` actually uses; the engine trusts that
+    //   pairing rather than checking it; see `Operation::details`'s downcast for what happens
+    //   when a kind's own facade gets it wrong.
     fn subscribe<'a>(
         &'a self,
         federation: &'a FederationInner,
@@ -1272,7 +1285,7 @@ pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
     /// What the SDK would have written for this entry, or `None` if this backfiller does not
     /// recognise it.
     ///
-    /// `module_kind` is [`OperationLogEntry::operation_module_kind`], and `meta` is the entry's
+    /// `module_kind` is `OperationLogEntry::operation_module_kind`, and `meta` is the entry's
     /// own JSON, read with `try_meta` so that a shape this build does not know is a `None` here
     /// rather than a panic.
     fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled>;
