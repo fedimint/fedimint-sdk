@@ -329,16 +329,22 @@ impl Operation<EcashSendState> {
     /// failure of this call: the intent is already durable and the SDK
     /// pursues it in the background.
     pub async fn request_cancel(&self) -> Result<()> {
-        // Implementation notes (delete once implemented):
-        // - The boundary is deliberate: waiting on the network here would let this call
-        //   return `FederationUnreachable` or `Timeout` after the intent was already
-        //   durable, leaving the caller unable to tell whether a retry would duplicate a
-        //   request already in flight.
-        // - This is the only cancellation in the crate, because it is the only place
-        //   where cancelling is a real protocol action rather than an attempt to un-send
-        //   money that has already moved.
-        unimplemented!()
+        self.inner().federation.ensure_open()?;
+        self.inner().persist_cancel_request().await
     }
+
+    // The boundary is deliberate: waiting on the network here would let this call return
+    // `FederationUnreachable` or `Timeout` after the intent was already durable, leaving the
+    // caller unable to tell whether a retry would duplicate a request already in flight.
+    // This is the only cancellation in the crate, because it is the only place where
+    // cancelling is a real protocol action rather than an attempt to un-send money that has
+    // already moved.
+    //
+    // Only the intent is recorded here. Telling the mint is the ecash driver's job, and it
+    // could not be done here in any case: `try_cancel_spend_notes` returns `()` and writes a
+    // marker into the module's own isolated database
+    // (modules/fedimint-mint-client/src/lib.rs:2556-2563), so it has no result to report and
+    // the outcome only ever arrives as a state.
 }
 
 /// The lifecycle of an out-of-band ecash send.
