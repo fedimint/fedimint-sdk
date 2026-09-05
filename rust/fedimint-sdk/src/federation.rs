@@ -664,10 +664,13 @@ impl FederationInner {
             cancel_requested_at: None,
             final_state: None,
         };
-        // `overwrite_placeholder: false`: an id the client itself just minted should never
-        // already have a record, so any that turns up here won a race against this call rather
-        // than being a placeholder to upgrade, and it is kept exactly as it is.
-        let record = self.write_record(id, record, false).await?;
+        // `overwrite_placeholder: true`: reconciliation can race this very call, reading the
+        // client's own log entry for the id this call just minted before this call's own write
+        // lands, and writing a placeholder for it. That placeholder is only ever a guess, and the
+        // record built here from the caller's actual intent always outranks it, so it replaces
+        // one it finds. Anything else already won a race against this call outright — a real
+        // record cannot be a placeholder — and is kept exactly as it is.
+        let record = self.write_record(id, record, true).await?;
         Ok(Operation::attach(
             Arc::new(OperationInner {
                 federation: self.clone(),
@@ -887,13 +890,15 @@ impl FederationInner {
     /// the write itself.
     ///
     /// `overwrite_placeholder` says whether an existing record that is itself
-    /// [`is_unclaimed_placeholder`] may still be replaced:
-    /// [`create_operation`](Self::create_operation) passes `false`, because a record already at
-    /// an id the client itself just minted only ever
-    /// means another write won a race, never that there is a placeholder to upgrade; the backfill
-    /// paths pass `true`, because upgrading exactly that placeholder is what reconciliation is
-    /// for. Either way, a record that is not the placeholder — one this build can already place,
-    /// or one a newer build wrote under a tag this build does not recognise — is always kept.
+    /// [`is_unclaimed_placeholder`] may still be replaced: both
+    /// [`create_operation`](Self::create_operation) and the backfill paths pass `true`, because a
+    /// placeholder is only ever a guess reconciliation made from the client's own log entry, and
+    /// the record either call builds from more than that — the caller's actual intent, or the
+    /// module's backfiller recognising it — always outranks it. A record that is not the
+    /// placeholder — one this build can already place, or one a newer build wrote under a tag
+    /// this build does not recognise — is always kept regardless. A placeholder rebuilt to the
+    /// same value it already had is a third case: eligible to be replaced, but with nothing to
+    /// gain from it, so no write happens.
     ///
     /// Returns whatever ends up authoritative for this id, so a caller never hands out a handle
     /// or a lookup result for a record that lost a race it did not know it was in.
@@ -911,6 +916,14 @@ impl FederationInner {
                     let key = crate::db::OperationRecordKey(id);
                     if let Some(existing) = dbtx.get_value(&key).await {
                         if !(overwrite_placeholder && is_unclaimed_placeholder(&existing)) {
+                            return Ok::<_, core::convert::Infallible>(existing);
+                        }
+                        // The rebuilt placeholder says nothing the stored one did not already
+                        // say: writing it again would touch storage for no observable
+                        // difference. This is what keeps reconciliation's steady-state pass over
+                        // a module no backfiller has learned to place a pure read, rather than a
+                        // rewrite of the same two rows on every federation open.
+                        if existing == record {
                             return Ok::<_, core::convert::Infallible>(existing);
                         }
                         // Being replaced: its index entry is only still correct if the new
@@ -1026,6 +1039,15 @@ pub(crate) async fn shutdown_client(client: ClientHandleArc) -> Result<()> {
 // rest of its history, and the per-id backfill in FederationInner::operation repairs whatever
 // this pass did not.
 pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
+    // Every call site reaches this once `set_status` has already run, including the branch
+    // `Sdk::restore` takes when opening the client itself failed: that federation is
+    // `Quarantined`, not open, and has no client installed to back a scan of its operation log
+    // with. Nothing about quarantine implies the log or the records changed, so there is nothing
+    // here for this pass to repair, and the per-id backfill in `FederationInner::operation`
+    // still covers a federation that is later reopened successfully.
+    if !federation.is_open() {
+        return;
+    }
     if let Err(err) = federation.reconcile_operations().await {
         tracing::warn!(
             target: "fedimint_sdk",
@@ -1326,6 +1348,63 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn reconciliation_of_a_still_unclaimed_module_writes_nothing_the_second_time() {
+        use futures::StreamExt;
+
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([9u8; 32]);
+        // No backfiller in this build claims `unclaimed_module`, so the placeholder the first
+        // pass writes is already the best this build can ever do for it: a second pass rebuilds
+        // the exact same value rather than something new to write.
+        write_log_entry(
+            &db,
+            id,
+            "unclaimed_module",
+            serde_json::json!({"kept": true}),
+        )
+        .await;
+        federation
+            .reconcile_operations()
+            .await
+            .expect("first reconcile");
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        let record = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("record");
+        let indexed: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&crate::db::OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        drop(dbtx);
+
+        federation
+            .reconcile_operations()
+            .await
+            .expect("second reconcile");
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        let after = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("record");
+        let indexed_after: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&crate::db::OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        // Byte-for-byte the same as after the first pass, index included: the second pass found
+        // nothing worth writing back.
+        assert_eq!(after, record);
+        assert_eq!(indexed_after, indexed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn reconciliation_leaves_a_record_the_sdk_wrote_alone() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);
         let federation = FederationInner::detached(db.clone(), true);
@@ -1584,13 +1663,14 @@ mod tests {
         let federation = FederationInner::detached(db.clone(), true);
         let id = UpstreamOperationId([5u8; 32]);
 
-        // Something is already recorded at this id — an id the client itself mints fresh for
-        // every real call, so this can only mean another write already won a race against the
-        // one below, and it must be left exactly as it is.
+        // Something real is already recorded at this id — not the placeholder shape, so it is
+        // not a guess reconciliation could have raced this call to write. An id the client
+        // itself mints fresh for every real call, so this can only mean another write already
+        // won a race against the one below, and it must be left exactly as it is.
         let existing = crate::db::OperationRecord {
             schema_version: crate::operation::READABLE_STATE_SCHEMA,
-            kind: "probe_module".to_owned(),
-            module: "probe_module".to_owned(),
+            kind: kinds::ECASH_SEND.to_owned(),
+            module: "mint".to_owned(),
             created_at: 1,
             details: "{}".to_owned(),
             phase: None,
@@ -1618,10 +1698,73 @@ mod tests {
             .get_value(&OperationRecordKey(id))
             .await
             .expect("record");
-        // The existing record won, not the one this call tried to write — even though it is
-        // itself the placeholder shape a backfill would have been allowed to replace.
-        assert_eq!(record.kind, "probe_module");
+        // The existing record won, not the one this call tried to write.
         assert_eq!(record.details, "{}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_operation_overwrites_an_unclaimed_placeholder() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([5u8; 32]);
+
+        // Exactly the shape reconciliation could have raced this call to write: the module kind
+        // copied verbatim as the tag, guessed from the client's own log entry alone, with the
+        // index entry a real write through `write_record` would also have left.
+        let placeholder = crate::db::OperationRecord {
+            schema_version: crate::operation::READABLE_STATE_SCHEMA,
+            kind: "mint".to_owned(),
+            module: "mint".to_owned(),
+            created_at: 1,
+            details: "{}".to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &placeholder)
+            .await;
+        dbtx.insert_entry(
+            &crate::db::OperationIndexKey {
+                created_at: placeholder.created_at,
+                id,
+            },
+            &(),
+        )
+        .await;
+        dbtx.commit_tx().await;
+
+        let operation = federation
+            .create_operation(
+                id,
+                kinds::ECASH_SEND,
+                "mint",
+                &serde_json::json!({"real": true}),
+                Arc::new(crate::operation::ProbeEcashSendDriver)
+                    as Arc<dyn crate::operation::Driver<crate::EcashSendState>>,
+            )
+            .await
+            .expect("create");
+
+        // The handle already carries what was actually written, not the placeholder it replaced.
+        assert_eq!(operation.inner().record.kind, kinds::ECASH_SEND);
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        let record = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("record");
+        assert_eq!(record.kind, kinds::ECASH_SEND);
+        assert_ne!(record.created_at, placeholder.created_at);
+
+        // The placeholder's index entry is gone; only the fresh one is left.
+        let indexed: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&crate::db::OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        assert_eq!(indexed, vec![(record.created_at, id)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

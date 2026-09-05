@@ -296,6 +296,7 @@ impl<S: OperationState> Operation<S> {
             stream: None,
             last: None,
             resubscribed: false,
+            current_fallback_used: false,
             finished: false,
             handoff: None,
             closed: self.inner.federation.closed(),
@@ -401,6 +402,8 @@ pub struct OperationUpdates<S: OperationState> {
     last: Option<S>,
     /// Whether the stream has already been re-established once since the last hand-off.
     resubscribed: bool,
+    /// Whether the direct-read fallback below has already been tried once.
+    current_fallback_used: bool,
     /// Whether a final state has been handed out, after which there is nothing left to say.
     finished: bool,
     /// A final state that has been reached but not yet durably persisted and returned.
@@ -466,8 +469,9 @@ impl<S: OperationState> OperationUpdates<S> {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<Option<S>> {
-        // The cursor is `self.last`, `self.resubscribed`, `self.finished` and `self.handoff`,
-        // and every one of them lives on the subscriber rather than inside this future. For a
+        // The cursor is `self.last`, `self.resubscribed`, `self.current_fallback_used`,
+        // `self.finished` and `self.handoff`, and every one of them lives on the subscriber
+        // rather than inside this future. For a
         // non-final state that is enough on its own: it is taken from the stream and returned in
         // the same poll, with no `await` in between, so dropping this future either way leaves
         // nothing half-done. A final state has one `await` on the way out, the persist below,
@@ -489,9 +493,14 @@ impl<S: OperationState> OperationUpdates<S> {
             }
             self.inner.federation.ensure_open()?;
             if self.stream.is_none() {
+                // Reloaded rather than the cached `self.inner.record`: a resubscribe can follow a
+                // `phase` write the first subscription's driver made after this handle was
+                // created, and a driver that folds its starting point from `phase` needs that
+                // write to be visible or it resumes from the wrong place.
+                let record = self.inner.reload().await?;
                 let stream = self
                     .driver
-                    .subscribe(&self.inner.federation, self.inner.id, &self.inner.record)
+                    .subscribe(&self.inner.federation, self.inner.id, &record)
                     .await?;
                 self.stream = Some(stream);
             }
@@ -563,6 +572,29 @@ impl<S: OperationState> OperationUpdates<S> {
                     if self.last.as_ref().is_some_and(OperationState::is_final) {
                         self.finished = true;
                         return Ok(None);
+                    }
+                    // This subscription has not handed out anything yet, so an empty stream here
+                    // is not necessarily lag: a driver's stream is contractually supposed to
+                    // yield the current state first, but a driver whose current state is already
+                    // final can have nothing left to stream for an operation that settled before
+                    // this subscription started. A direct read settles which one it was, once,
+                    // before the lag-recovery path below has a chance to declare the subscription
+                    // cut off over what may just be a driver with nothing to add to a state it
+                    // already reported through `current`.
+                    if self.last.is_none() && !self.current_fallback_used {
+                        self.current_fallback_used = true;
+                        self.stream = None;
+                        let record = self.inner.reload().await?;
+                        let state = self
+                            .driver
+                            .current(&self.inner.federation, self.inner.id, &record)
+                            .await?;
+                        if state.is_final() {
+                            self.handoff = Some(state);
+                            continue;
+                        }
+                        self.last = Some(state.clone());
+                        return Ok(Some(state));
                     }
                     // A stream that ended without a final state did not finish, it was cut off:
                     // the client's notifier ends a subscriber's stream when it falls more than
@@ -676,8 +708,17 @@ impl AnyOperation {
     /// Infallible and cheap: it reads no storage, touches no network, and
     /// does not read the operation's state, so it is not a promise that
     /// reading the state will succeed.
+    // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
+    // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
+    // T7, T8, T9 and T12. Until then, `support_of` still answers `Observable` for the six kinds
+    // whose arm is an unconditional `None` (every kind but `ECASH_SEND`, which has its own test-
+    // only probe arm and note): the record's kind and schema version are all `support_of` looks
+    // at, and neither says whether a driver has been written yet. So the matching `as_*` accessor
+    // on those six returns `None` regardless. This is not a bug in the accessor, which is honest
+    // about what it can do, but a temporary gap between what `support` promises and what a build
+    // this incomplete can deliver; it closes as each task above lands its arm.
     pub fn support(&self) -> OperationSupport {
-        support_of(self.kind(), &self.raw_kind())
+        self.inner.support
     }
 
     /// This operation's kind if this build can observe its typed state, and
@@ -2423,6 +2464,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_first_stream_falls_back_to_current_before_giving_up() {
+        // A driver's stream is supposed to yield the current state first, but this subscriber has
+        // no way to tell "the driver's stream is broken" apart from "the operation was already
+        // final and the driver had nothing left to stream" without asking `current` directly.
+        // Only the latter should happen in practice, and it must not surface as the `Internal`
+        // error `a_stream_that_ends_short_twice_running_is_an_error` covers above.
+        let (driver, operation) = probe_operation(vec![vec![]]).await;
+        driver.set_current(ProbeState::Done);
+        let mut updates = operation.updates();
+        assert_eq!(updates.next().await.expect("next"), Some(ProbeState::Done));
+        assert_eq!(updates.next().await.expect("next"), None);
+        // Settled by the direct read, with no second subscription needed.
+        assert_eq!(driver.subscriptions(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_state_reached_while_no_future_was_pending_is_still_delivered() {
         use futures::FutureExt;
 
@@ -2480,9 +2537,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn await_final_returns_at_once_for_an_operation_that_already_settled() {
+        use futures::FutureExt;
+
         let (_driver, operation) = probe_operation(vec![vec![Ok(ProbeState::Done)]]).await;
         assert_eq!(
-            operation.await_final().await.expect("final"),
+            operation
+                .await_final()
+                .now_or_never()
+                .expect("the final state is available at once")
+                .expect("final"),
             ProbeState::Done
         );
     }
