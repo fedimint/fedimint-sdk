@@ -1623,4 +1623,93 @@ mod tests {
         assert_eq!(record.kind, "probe_module");
         assert_eq!(record.details, "{}");
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operation_is_found_again_through_a_fresh_handle_over_the_same_store() {
+        let root = in_memory_root();
+        let db = federation_namespace(&root, [1u8; 32]);
+        let id = UpstreamOperationId([5u8; 32]);
+
+        let created = {
+            let federation = FederationInner::detached(db.clone(), true);
+            let operation = federation
+                .create_operation(
+                    id,
+                    kinds::ECASH_SEND,
+                    "mint",
+                    &serde_json::json!({"notes": "…"}),
+                    Arc::new(crate::operation::ProbeEcashSendDriver)
+                        as Arc<dyn crate::operation::Driver<crate::EcashSendState>>,
+                )
+                .await
+                .expect("create");
+            operation.inner().record.clone()
+            // Every handle from that run is dropped here, as it would be by a shutdown.
+        };
+
+        // A new run over the same store, through a fresh federation handle.
+        let reopened = FederationInner::detached(db, true);
+        let found = reopened
+            .operation(id)
+            .await
+            .expect("lookup")
+            .expect("the operation is still there");
+        assert_eq!(found.kind(), crate::OperationKind::EcashSend);
+        assert_eq!(found.id(), crate::OperationId::from_upstream(id));
+        // The whole record, unchanged: the id is all it takes to pick an operation back up.
+        let typed = found.as_ecash_send().expect("a typed handle");
+        assert_eq!(typed.inner().record, created);
+        assert_eq!(
+            typed.state().await.expect("state"),
+            crate::EcashSendState::Redeemed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operation_survives_a_real_close_and_reopen_of_the_store() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let id = UpstreamOperationId([5u8; 32]);
+
+        let created = {
+            let root = crate::db::open_native_root(dir.path()).await.expect("open");
+            let federation =
+                FederationInner::detached(federation_namespace(&root, [1u8; 32]), true);
+            let operation = federation
+                .create_operation(
+                    id,
+                    kinds::ONCHAIN_RECEIVE,
+                    "wallet",
+                    &serde_json::json!({"address": "…"}),
+                    Arc::new(crate::operation::ProbeEcashSendDriver)
+                        as Arc<dyn crate::operation::Driver<crate::EcashSendState>>,
+                )
+                .await
+                .expect("create");
+            operation.inner().record.clone()
+            // The database handle is dropped here, which is what releases the store.
+        };
+
+        let root = crate::db::open_native_root(dir.path())
+            .await
+            .expect("reopen");
+        let federation = FederationInner::detached(federation_namespace(&root, [1u8; 32]), true);
+        let found = federation
+            .operation(id)
+            .await
+            .expect("lookup")
+            .expect("the operation is still there after a real restart");
+        assert_eq!(found.kind(), crate::OperationKind::OnchainReceive);
+        assert_eq!(found.raw_kind().module.as_deref(), Some("wallet"));
+        assert!(
+            found.as_onchain_receive().is_none(),
+            "this build has no on-chain driver yet, so there is no typed handle"
+        );
+        // The record itself is byte-for-byte what was written before the restart.
+        let db = federation.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        assert_eq!(
+            dbtx.get_value(&OperationRecordKey(id)).await.as_ref(),
+            Some(&created)
+        );
+    }
 }

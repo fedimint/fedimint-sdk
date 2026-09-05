@@ -585,6 +585,31 @@ pub(crate) fn storage_error(cause: impl core::fmt::Display) -> crate::Error {
     )
 }
 
+/// Opens the native backend at `dir`, the way `SdkBuilder::build` opens a
+/// [`Storage::at`](crate::Storage::at) location.
+///
+/// For the tests that have to close a store and open it again: an in-memory database cannot
+/// show that a record survives the process that wrote it, and building a whole `Sdk` to get at
+/// one would need a federation to join.
+//
+// If T5 grows a `pub(crate)` opener of its own, delete this and call that instead: two ways of
+// opening the same store is one more than there should be.
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) async fn open_native_root(
+    dir: &std::path::Path,
+) -> crate::Result<fedimint_core::db::Database> {
+    let path = dir.join("db");
+    let raw =
+        tokio::task::spawn_blocking(move || fedimint_rocksdb::RocksDb::build(path).open_blocking())
+            .await
+            .map_err(storage_error)?
+            .map_err(storage_error)?;
+    Ok(fedimint_core::db::Database::new(
+        raw,
+        fedimint_core::module::registry::ModuleDecoderRegistry::default(),
+    ))
+}
+
 /// A fresh, empty root database held entirely in memory.
 ///
 /// The same value [`Storage::in_memory`](crate::Storage::in_memory) names, built directly so a
