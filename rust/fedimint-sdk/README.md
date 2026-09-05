@@ -10,7 +10,10 @@ Kotlin, JS/wasm) is meant to generate from.
 This crate currently contains the **public API skeleton only**:
 
 - Every effectful or fallible method body is `unimplemented!()`.
-- No `fedimint-*` dependencies yet — the skeleton has zero dependencies.
+- The `fedimint-*` client crates are declared but not used yet.
+- The crate tracks fedimint `master` at one pinned revision, the same one
+  the repo's `flake.nix` pins for devimint and the wasm client, so the SDK
+  and the federation its tests run against always come from one commit.
 - The FFI (UniFFI) and wasm layers are not wired up to this crate yet.
 
 The design is tracked in

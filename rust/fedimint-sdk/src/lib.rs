@@ -21,7 +21,8 @@
 //!
 //! This crate is currently an **API skeleton**. The types, the signatures,
 //! and the contract documented throughout are real; the bodies behind them
-//! are `unimplemented!()`, and the crate has no dependencies at all.
+//! are `unimplemented!()`. The `fedimint-*` client crates it is built on
+//! are already declared, tracking fedimint `master` at one pinned revision.
 //! Implementation lands module by module behind this surface. The example
 //! below is compiled by the test suite, and must never be run.
 //!
