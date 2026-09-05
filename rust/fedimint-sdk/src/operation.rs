@@ -213,6 +213,15 @@ impl<S: OperationState> Operation<S> {
         Operation { inner, driver }
     }
 
+    /// The shared state behind this handle.
+    ///
+    /// For the facades: a method that lives on a concrete monomorphisation of [`Operation`]
+    /// (there is one, [`request_cancel`](Operation::<crate::EcashSendState>::request_cancel)) is
+    /// written in its own module and cannot reach a private field of this one.
+    pub(crate) fn inner(&self) -> &Arc<OperationInner> {
+        &self.inner
+    }
+
     /// This operation's id, stable for its whole lifetime including across
     /// restarts.
     ///
@@ -1474,6 +1483,91 @@ impl OperationInner {
         .await
         .map_err(crate::db::storage_error)
     }
+
+    /// Records that a cancellation was asked for, once.
+    ///
+    /// The whole of what `Ok` means on
+    /// [`request_cancel`](Operation::<crate::EcashSendState>::request_cancel): the intent is in
+    /// local storage and will survive a restart or a period offline. Nothing here reaches the
+    /// federation.
+    ///
+    /// A second request is not a second intent, and a request made after the outcome was already
+    /// recorded does nothing, so both are `Ok` and neither writes.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage), and nothing else: an unreachable federation or a
+    /// slow guardian is not a failure of recording an intent.
+    pub(crate) async fn persist_cancel_request(&self) -> Result<()> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let db = self.federation.db();
+        let id = self.id;
+        // Hoisted out of the closure, which may run more than once
+        // (`fedimint-core/src/db/mod.rs:534-536`).
+        let requested_at = crate::db::now_millis();
+        db.autocommit(
+            |dbtx, _| {
+                Box::pin(async move {
+                    let key = crate::db::OperationRecordKey(id);
+                    let Some(mut record) = dbtx.get_value(&key).await else {
+                        return Ok(());
+                    };
+                    // Finality is read off the record rather than by asking the driver, so that
+                    // this call cannot fail in any way its documented error set does not allow.
+                    // An operation that has finished but whose outcome nobody has observed yet
+                    // still records the intent, which is harmless: the reclaim it schedules is a
+                    // no-op once the notes are gone.
+                    if record.cancel_requested_at.is_some() || record.final_state.is_some() {
+                        return Ok(());
+                    }
+                    record.cancel_requested_at = Some(requested_at);
+                    dbtx.insert_entry(&key, &record).await;
+                    Ok::<(), core::convert::Infallible>(())
+                })
+            },
+            Some(100),
+        )
+        .await
+        .map_err(crate::db::storage_error)
+    }
+
+    /// Records how far this operation has got, for the mappings that need to know after a
+    /// restart.
+    ///
+    /// Two upstream events carry the same name for opposite outcomes depending on whether
+    /// funding completed, and once the process has restarted the persisted phase is the only
+    /// thing that tells them apart. It only ever moves forward, because a subscription replays
+    /// the current state on every re-subscribe and must not walk it back.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage).
+    pub(crate) async fn record_phase(&self, phase: u32) -> Result<()> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        let db = self.federation.db();
+        let id = self.id;
+        db.autocommit(
+            |dbtx, _| {
+                Box::pin(async move {
+                    let key = crate::db::OperationRecordKey(id);
+                    let Some(mut record) = dbtx.get_value(&key).await else {
+                        return Ok(());
+                    };
+                    if record.phase.is_some_and(|reached| reached >= phase) {
+                        return Ok(());
+                    }
+                    record.phase = Some(phase);
+                    dbtx.insert_entry(&key, &record).await;
+                    Ok::<(), core::convert::Infallible>(())
+                })
+            },
+            Some(100),
+        )
+        .await
+        .map_err(crate::db::storage_error)
+    }
 }
 
 /// The shared state behind a type-erased operation handle.
@@ -2466,5 +2560,101 @@ mod tests {
         // And the subscription is closed for good, exactly as if the persist had gone through
         // on the first attempt.
         assert_eq!(updates.next().await.expect("next"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancellation_intent_is_written_once_and_survives_a_second_request() {
+        let (_driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(
+            operation
+                .inner
+                .reload()
+                .await
+                .expect("record")
+                .cancel_requested_at,
+            None
+        );
+
+        operation
+            .inner
+            .persist_cancel_request()
+            .await
+            .expect("request");
+        let first = operation
+            .inner
+            .reload()
+            .await
+            .expect("record")
+            .cancel_requested_at
+            .expect("the intent was recorded");
+
+        operation
+            .inner
+            .persist_cancel_request()
+            .await
+            .expect("second request");
+        assert_eq!(
+            operation
+                .inner
+                .reload()
+                .await
+                .expect("record")
+                .cancel_requested_at,
+            Some(first),
+            "a second request is not a second intent"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancellation_asked_for_after_the_end_changes_nothing() {
+        let (driver, operation) = probe_operation(vec![]).await;
+        driver.set_current(ProbeState::Done);
+        operation
+            .state()
+            .await
+            .expect("state records the final state");
+
+        operation
+            .inner
+            .persist_cancel_request()
+            .await
+            .expect("request");
+        assert_eq!(
+            operation
+                .inner
+                .reload()
+                .await
+                .expect("record")
+                .cancel_requested_at,
+            None,
+            "there is nothing left to cancel once the outcome is recorded"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phase_only_ever_moves_forward() {
+        let (_driver, operation) = probe_operation(vec![]).await;
+        assert_eq!(operation.inner.reload().await.expect("record").phase, None);
+
+        operation.inner.record_phase(2).await.expect("phase");
+        assert_eq!(
+            operation.inner.reload().await.expect("record").phase,
+            Some(2)
+        );
+
+        // A stream that replays an earlier transition must not walk the phase back: after a
+        // restart the phase is the only thing that tells two identically named upstream events
+        // apart.
+        operation.inner.record_phase(1).await.expect("phase");
+        assert_eq!(
+            operation.inner.reload().await.expect("record").phase,
+            Some(2)
+        );
+
+        operation.inner.record_phase(3).await.expect("phase");
+        assert_eq!(
+            operation.inner.reload().await.expect("record").phase,
+            Some(3)
+        );
     }
 }
