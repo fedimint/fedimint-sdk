@@ -1,20 +1,223 @@
 name: Pull Request
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
-    paths-ignore:
-      - 'js/react-native/react-native/**'
-      - 'js/react-native/react-native-bindings/**'
-      - 'rust/fedimint-client-uniffi/**'
-      - 'nix/**'
+    # `labeled` lets the ci-ios label start the otherwise gated iOS build.
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+  # Keep the React Native main-branch build as a safety net after merging a PR.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # Label events only need to consider the gated iOS lane. Give each one its
+  # own group so ordinary label churn cannot cancel a full verification run.
+  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.run_id || github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      web: ${{ steps.filter.outputs.web }}
+      react-native: ${{ steps.filter.outputs.react-native }}
+      docs: ${{ steps.filter.outputs.docs }}
+      cli: ${{ steps.filter.outputs.cli }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The pull-request comparison needs the merge base as well as both
+          # endpoint commits. Keeping the complete history avoids an API call
+          # and lets Git calculate that range locally.
+          fetch-depth: 0
+      - name: Detect changed domains
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          core=false
+          web=false
+          react_native=false
+          docs=false
+          cli=false
+
+          enable_all() {
+            core=true
+            web=true
+            react_native=true
+            docs=true
+            cli=true
+          }
+
+          emit_outputs() {
+            {
+              echo "core=$core"
+              echo "web=$web"
+              echo "react-native=$react_native"
+              echo "docs=$docs"
+              echo "cli=$cli"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # A manually dispatched run is explicitly an all-domain run. Do the
+          # same if an event does not provide a reliable revision range: it is
+          # better to run unnecessary checks than to skip a required one.
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            enable_all
+            emit_outputs
+            exit 0
+          fi
+
+          changed_files="$RUNNER_TEMP/changed-files"
+          case "$EVENT_NAME" in
+            pull_request)
+              base_sha="$PR_BASE_SHA"
+              head_sha="$PR_HEAD_SHA"
+              diff_args=("$base_sha...$head_sha")
+              ;;
+            push)
+              # GitHub uses an all-zero before SHA only when it cannot provide
+              # a previous commit, such as the first push of a branch.
+              if [[ -z "$PUSH_BEFORE_SHA" || "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+                enable_all
+                emit_outputs
+                exit 0
+              fi
+              diff_args=("$PUSH_BEFORE_SHA" "$PUSH_AFTER_SHA")
+              ;;
+            *)
+              enable_all
+              emit_outputs
+              exit 0
+              ;;
+          esac
+
+          # Do not let Git collapse a rename into its destination path. Treating
+          # it as a deletion plus an addition keeps both affected domains covered.
+          if ! git diff --no-renames --name-only -z "${diff_args[@]}" > "$changed_files"; then
+            echo "Could not determine changed paths; running every domain." >&2
+            enable_all
+            emit_outputs
+            exit 0
+          fi
+
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              # Workspace-wide dependency and TypeScript configuration affects
+              # every JS domain.
+              js/package.json|js/pnpm-lock.yaml|js/pnpm-workspace.yaml|js/.npmrc|js/tsconfig.base.json)
+                enable_all
+                ;;
+              # CI implementation changes must exercise all affected jobs.
+              .github/workflows/*|.github/actions/*)
+                enable_all
+                ;;
+              js/shared/core/*|js/shared/types/*|packages/core/*|packages/types/*)
+                core=true
+                web=true
+                react_native=true
+                docs=true
+                ;;
+              js/web/react/*|packages/react/*)
+                core=true
+                ;;
+              js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
+                web=true
+                ;;
+              js/vitest.config.ts|js/vitest.workspace.ts)
+                web=true
+                cli=true
+                ;;
+              js/web/transport-web/*|packages/transport-web/*)
+                web=true
+                docs=true
+                ;;
+              js/react-native/react-native/*|js/react-native/react-native-bindings/*|packages/react-native/*|packages/react-native-bindings/*|rust/fedimint-client-uniffi/*|fedimint-sdk-ffi|fedimint-sdk-ffi/*|nix/*|Justfile)
+                react_native=true
+                ;;
+              flake.nix|flake.lock)
+                web=true
+                react_native=true
+                ;;
+              js/docs/*|docs/*)
+                docs=true
+                ;;
+              js/tools/create-fedimint-app/*|packages/create-fedimint-app/*)
+                cli=true
+                ;;
+            esac
+          done < "$changed_files"
+
+          emit_outputs
+
   verify:
     name: Verify
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' }}
     uses: ./.github/workflows/verify.yml
     secrets: inherit
+    with:
+      run_core: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.core == 'true' || needs.detect-changes.outputs.web == 'true' || needs.detect-changes.outputs.cli == 'true' }}
+      run_web: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.web == 'true' }}
+      run_docs: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.docs == 'true' }}
+      run_cli: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.cli == 'true' }}
+
+  test-react-native:
+    name: Test RN Transport
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-deps
+      - name: Run transport unit tests
+        run: pnpm --dir js test:reactnative
+      - name: Type-check transport against the stubbed bindings
+        # The package is excluded from the root typecheck because its real
+        # bindings types are ubrn-generated; this config maps them to the test
+        # stub so the type-level contract still gets checked.
+        run: pnpm --dir js --filter @fedimint/react-native typecheck:test
+
+  build-android:
+    name: Build Android
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-android
+
+  build-ios:
+    name: Build iOS
+    needs: detect-changes
+    # macOS runners are the scarce and expensive lane, so PRs only build iOS
+    # when explicitly asked to via the `ci-ios` label. Pushes to main and manual
+    # runs retain the existing always-build behavior.
+    if: ${{ (github.event.action != 'labeled' || github.event.label.name == 'ci-ios') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')) && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-ios
+        with:
+          device-only: 'true'
