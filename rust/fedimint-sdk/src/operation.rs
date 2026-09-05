@@ -474,14 +474,17 @@ impl<S: OperationState> OperationUpdates<S> {
     pub async fn next(&mut self) -> Result<Option<S>> {
         // The cursor is `self.last`, `self.resubscribed`, `self.current_fallback_used`,
         // `self.finished` and `self.handoff`, and every one of them lives on the subscriber
-        // rather than inside this future. For a
-        // non-final state that is enough on its own: it is taken from the stream and returned in
-        // the same poll, with no `await` in between, so dropping this future either way leaves
-        // nothing half-done. A final state has one `await` on the way out, the persist below,
-        // and `self.handoff` is what makes that stretch safe too: it is set before the persist
-        // and only cleared once the persist has actually succeeded, so `last`/`finished` never
-        // move ahead of a write that might not have happened, and a dropped or failed persist is
-        // retried by the next call instead of losing the state it was about to hand out.
+        // rather than inside this future. For a non-final state that is enough on its own: it is
+        // taken from the stream and returned in the same poll, with no `await` in between, so
+        // dropping this future either way leaves nothing half-done. The direct-read fallback
+        // below is the same shape: `current_fallback_used` only flips once `current` has actually
+        // returned, so dropping this future during either of its `await`s leaves the one attempt
+        // available for a later call instead of spending it on one that never got an answer. A
+        // final state has one `await` on the way out, the persist below, and `self.handoff` is
+        // what makes that stretch safe too: it is set before the persist and only cleared once
+        // the persist has actually succeeded, so `last`/`finished` never move ahead of a write
+        // that might not have happened, and a dropped or failed persist is retried by the next
+        // call instead of losing the state it was about to hand out.
         loop {
             if let Some(state) = self.handoff.clone() {
                 let encoded = self.driver.encode_state(&state)?;
@@ -585,13 +588,17 @@ impl<S: OperationState> OperationUpdates<S> {
                     // cut off over what may just be a driver with nothing to add to a state it
                     // already reported through `current`.
                     if self.last.is_none() && !self.current_fallback_used {
-                        self.current_fallback_used = true;
                         self.stream = None;
                         let record = self.inner.reload().await?;
                         let state = self
                             .driver
                             .current(&self.inner.federation, self.inner.id, &record)
                             .await?;
+                        // Only set once `current` has actually returned: dropping this future
+                        // during either `await` above must not burn the one fallback attempt on
+                        // a call that never got an answer, so the next call is what turns it over
+                        // instead.
+                        self.current_fallback_used = true;
                         if state.is_final() {
                             self.handoff = Some(state);
                             continue;
@@ -713,13 +720,13 @@ impl AnyOperation {
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
     // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7, T8, T9 and T12. Until then, `support_of` still answers `Observable` for the six kinds
-    // whose arm is an unconditional `None` (every kind but `ECASH_SEND`, which has its own test-
-    // only probe arm and note): the record's kind and schema version are all `support_of` looks
-    // at, and neither says whether a driver has been written yet. So the matching `as_*` accessor
-    // on those six returns `None` regardless. This is not a bug in the accessor, which is honest
-    // about what it can do, but a temporary gap between what `support` promises and what a build
-    // this incomplete can deliver; it closes as each task above lands its arm.
+    // T7, T8, T9 and T12. Until then, `support_of` still answers `Observable` for every kind whose
+    // arm is `None`: the record's kind and schema version are all it looks at, and neither says
+    // whether a driver has been written yet. That is six kinds in a test build, where `ECASH_SEND`
+    // has its own probe arm and note below, and seven in any other build, where that arm is `None`
+    // too. This is not a bug in the accessor, which is honest about what it can do, but a
+    // temporary gap between what `support` promises and what a build this incomplete can deliver;
+    // it closes as each task above lands its arm.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
