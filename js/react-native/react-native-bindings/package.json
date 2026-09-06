@@ -1,6 +1,6 @@
 {
   "name": "@fedimint/react-native-bindings",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fedimint Client SDK for React-Native",
   "source": "./src/index.tsx",
   "main": "./lib/commonjs/index.js",
@@ -149,5 +149,9 @@
   },
   "dependencies": {
     "uniffi-bindgen-react-native": "0.29.3-1"
+  },
+  "checksums": {
+    "android": "3c9698da022893ba80a878807428997d9061d40ab5e65ea3efdc91e4ab6d510b",
+    "ios": "139e5a739060cd70398e02c590c395b6b860ced459313282a262691638f7c8cb"
   }
 }
