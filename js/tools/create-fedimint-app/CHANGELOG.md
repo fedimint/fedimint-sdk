@@ -1,5 +1,11 @@
 # create-fedimint-app
 
+## 0.0.4
+
+### Patch Changes
+
+- 516e51b: Upgrade TypeScript to 6.0.3 and fix resulting deprecations
+
 ## 0.0.3
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # @fedimint/core-web
 
+## 0.2.0
+
+### Patch Changes
+
+- Updated dependencies [b43a924]
+- Updated dependencies [299e79b]
+- Updated dependencies [516e51b]
+- Updated dependencies [516e51b]
+- Updated dependencies [bdba63f]
+- Updated dependencies [48288a9]
+- Updated dependencies [69fdcb1]
+- Updated dependencies [c65cc13]
+- Updated dependencies [cf43f91]
+- Updated dependencies [82a1863]
+- Updated dependencies [7002c28]
+- Updated dependencies [1744c92]
+  - @fedimint/core@0.2.0
+
 ## 0.1.3
 
 ### Patch Changes
