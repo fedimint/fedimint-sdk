@@ -1128,6 +1128,10 @@ mod tests {
     use super::*;
     use crate::ErrorCode;
 
+    /// The upstream dummy federation id: 32 bytes of `0x2a`, printed as hex.
+    const TEST_FEDERATION_ID: &str =
+        "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
+
     #[test]
     fn builder_debug_redacts_the_mnemonic() {
         // The builder must be printable without the phrase escaping into a
@@ -1136,6 +1140,18 @@ mod tests {
         let rendered = format!("{builder:?}");
         assert!(rendered.contains("mnemonic"));
         assert!(rendered.contains("None"));
+
+        // The canonical all-zero-entropy BIP-39 phrase, the same fixture
+        // `types::mnemonic`'s own tests use.
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+                              abandon abandon abandon about";
+        let mnemonic = PHRASE.parse::<Mnemonic>().expect("a valid phrase");
+        let rendered = format!("{:?}", Sdk::builder().mnemonic(mnemonic));
+        assert!(!rendered.contains("abandon"));
+        assert_eq!(
+            rendered,
+            "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }"
+        );
     }
 
     #[test]
@@ -1197,7 +1213,7 @@ mod tests {
         // reconnect for, and from the `Forgotten` notification that drops
         // the row.
         let info = FederationInfo {
-            id: FederationId::from_raw("fed-id".to_owned()),
+            id: TEST_FEDERATION_ID.parse().expect("a valid federation id"),
             name: Some("Test Federation".to_owned()),
             network: Network::Regtest,
             status: FederationStatus::Forgetting,
@@ -1212,7 +1228,7 @@ mod tests {
         // The listing record must be constructible for a federation that
         // has no handle at all, that is the case it exists for.
         let info = FederationInfo {
-            id: FederationId::from_raw("fed-id".to_owned()),
+            id: TEST_FEDERATION_ID.parse().expect("a valid federation id"),
             name: Some("Test Federation".to_owned()),
             network: Network::Regtest,
             status: FederationStatus::Closed,

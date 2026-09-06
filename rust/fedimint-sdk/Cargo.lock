@@ -480,6 +480,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -2276,6 +2277,7 @@ dependencies = [
 name = "fedimint-sdk"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "bip39",
  "fedimint-bip39",
  "fedimint-client",
  "fedimint-client-module",
@@ -2292,6 +2294,7 @@ dependencies = [
  "fedimint-rocksdb",
  "fedimint-wallet-client",
  "fedimint-walletv2-client",
+ "zeroize",
 ]
 
 [[package]]

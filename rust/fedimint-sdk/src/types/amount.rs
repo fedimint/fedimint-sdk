@@ -1,5 +1,7 @@
 //! Millisatoshi and whole-satoshi amount types.
 
+use crate::{Error, ErrorCode};
+
 /// A millisatoshi amount.
 ///
 /// This is the unit used for federation balances, ecash notes, and
@@ -91,6 +93,43 @@ impl core::fmt::Display for Amount {
     }
 }
 
+impl core::str::FromStr for Amount {
+    type Err = crate::Error;
+
+    /// Parses exactly what [`Display`](core::fmt::Display) writes: a
+    /// millisatoshi count, one space, and the literal unit `msat`, for example
+    /// `"1500 msat"`. Whitespace around the whole value is ignored.
+    ///
+    /// Any other spelling is rejected with
+    /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput), including a
+    /// bare number, a different unit, a decimal point, a sign, and a count too
+    /// large for a 64-bit integer. A bare number is deliberately not accepted:
+    /// it would silently reinterpret a satoshi figure as millisatoshis.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some(digits) = s.trim().strip_suffix(" msat") else {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: expected a millisatoshi count followed by \" msat\"",
+            ));
+        };
+        // `u64::from_str` would also accept a leading `+`, which `Display`
+        // never writes, so the digits are checked rather than delegated to.
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: expected a millisatoshi count followed by \" msat\"",
+            ));
+        }
+        let msats = digits.parse::<u64>().map_err(|_| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: the millisatoshi count does not fit in 64 bits",
+            )
+        })?;
+        Ok(Self(msats))
+    }
+}
+
 /// A whole-satoshi amount, used for on-chain (peg-in/peg-out) operations.
 ///
 /// Bitcoin's on-chain protocol has no sub-satoshi unit, so on-chain-facing
@@ -163,6 +202,40 @@ impl core::fmt::Display for Sats {
     /// e.g. `"25000 sat"`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{} sat", self.0)
+    }
+}
+
+impl core::str::FromStr for Sats {
+    type Err = crate::Error;
+
+    /// Parses exactly what [`Display`](core::fmt::Display) writes: a satoshi
+    /// count, one space, and the literal unit `sat`, for example
+    /// `"25000 sat"`. Whitespace around the whole value is ignored.
+    ///
+    /// Any other spelling is rejected with
+    /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput), including a
+    /// bare number, a different unit, a decimal point, a sign, and a count too
+    /// large for a 64-bit integer.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some(digits) = s.trim().strip_suffix(" sat") else {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: expected a satoshi count followed by \" sat\"",
+            ));
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: expected a satoshi count followed by \" sat\"",
+            ));
+        }
+        let sats = digits.parse::<u64>().map_err(|_| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                "invalid amount: the satoshi count does not fit in 64 bits",
+            )
+        })?;
+        Ok(Self(sats))
     }
 }
 
@@ -260,5 +333,79 @@ mod tests {
     #[test]
     fn sats_display_format() {
         assert_eq!(Sats::from_sats(25_000).to_string(), "25000 sat");
+    }
+
+    #[test]
+    fn amount_parses_its_own_display_form() {
+        assert_eq!(
+            "1500 msat".parse::<Amount>().expect("the display form"),
+            Amount::from_msats(1_500)
+        );
+        // Round-tripping the documented form is the whole contract.
+        let amount = Amount::from_msats(1_234_567);
+        assert_eq!(
+            amount.to_string().parse::<Amount>().expect("round trip"),
+            amount
+        );
+        // Surrounding whitespace is ignored, because a value pasted out of a
+        // log or a text field routinely carries some.
+        assert_eq!(
+            "  0 msat\n".parse::<Amount>().expect("trimmed"),
+            Amount::from_msats(0)
+        );
+    }
+
+    #[test]
+    fn amount_rejects_anything_but_its_display_form() {
+        // A bare number is the dangerous one: it looks like it should work and
+        // there is no unit to disagree about, so accepting it would invite a
+        // caller to hand over satoshis and get millisatoshis.
+        for rejected in [
+            "1500",
+            "1500 sat",
+            "1500msat",
+            "1500  msat",
+            "1.5 msat",
+            "+1500 msat",
+            "-1 msat",
+            " msat",
+            "",
+            "18446744073709551616 msat",
+        ] {
+            let error = rejected
+                .parse::<Amount>()
+                .expect_err("only the display form parses");
+            assert_eq!(error.code, crate::ErrorCode::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn sats_parses_its_own_display_form() {
+        assert_eq!(
+            "25000 sat".parse::<Sats>().expect("the display form"),
+            Sats::from_sats(25_000)
+        );
+        let sats = Sats::from_sats(21_000_000);
+        assert_eq!(sats.to_string().parse::<Sats>().expect("round trip"), sats);
+    }
+
+    #[test]
+    fn sats_rejects_anything_but_its_display_form() {
+        for rejected in [
+            "25000",
+            "25000 msat",
+            "25000sat",
+            "0.5 sat",
+            "sat",
+            "",
+            "+5 sat",
+            "-5 sat",
+            "18446744073709551616 sat",
+        ] {
+            let error = rejected
+                .parse::<Sats>()
+                .expect_err("only the display form parses");
+            assert_eq!(error.code, crate::ErrorCode::InvalidInput);
+        }
     }
 }

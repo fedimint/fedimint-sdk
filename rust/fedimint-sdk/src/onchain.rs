@@ -854,13 +854,18 @@ mod tests {
     /// The all-zero txid, which is not a real one; these tests never look at
     /// its value, only carry it through a payload.
     fn a_txid() -> Txid {
-        Txid::from_raw(
-            "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-        )
+        "0000000000000000000000000000000000000000000000000000000000000000"
+            .parse()
+            .expect("a well-formed transaction id")
     }
 
+    /// A real regtest address, taken from `bitcoin`'s own test suite: the
+    /// parse validates a checksum, so a plausible-looking string no longer
+    /// works here.
     fn an_address() -> Address {
-        Address::from_raw("bcrt1qexampleexampleexampleexampleexampleex".to_owned())
+        "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl"
+            .parse()
+            .expect("a valid regtest address")
     }
 
     /// Generic over the pattern rather than over one kind, exactly as

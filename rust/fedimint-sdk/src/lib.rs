@@ -397,7 +397,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
-// Skeleton-phase allowances: remove both when implementation starts. Parameters
+// Skeleton-phase allowances: remove both once the last facade is implemented. Parameters
 // are deliberately named (they are rustdoc-visible API contract) but unused, and
 // the private placeholder `inner` fields are never constructed or read while
 // every body is unimplemented!(). CI builds this crate through

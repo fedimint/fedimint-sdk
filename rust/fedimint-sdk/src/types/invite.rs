@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use fedimint_core::invite_code;
+
 use super::{FederationId, Network};
+use crate::{Error, ErrorCode};
 
 /// An invite code for a federation.
 ///
@@ -31,7 +34,7 @@ use super::{FederationId, Network};
 /// logged.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct InviteCode {
-    code: String,
+    code: invite_code::InviteCode,
 }
 
 impl InviteCode {
@@ -52,18 +55,21 @@ impl InviteCode {
     /// Not a credential: a federation id is public, unlike the `api_secret`
     /// the code as a whole may embed.
     pub fn federation_id(&self) -> FederationId {
-        let _ = &self.code;
-        unimplemented!()
+        // Infallible for any code this type can hold: the decoder behind
+        // `FromStr` refuses a code without a federation id part
+        // (fedimint-core/src/invite_code.rs:22-25, :178), and
+        // `from_upstream` is only ever handed a code that came through it.
+        FederationId::from_upstream(self.code.federation_id())
     }
 
-    /// Wraps an already-validated invite code string.
+    /// Wraps an already-parsed invite code.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not
     /// part of the public API. Validation belongs in
     /// [`FromStr`](core::str::FromStr), which is the only way a caller
     /// outside this crate can build one.
-    pub(crate) fn from_raw(raw: String) -> Self {
-        Self { code: raw }
+    pub(crate) fn from_upstream(code: invite_code::InviteCode) -> Self {
+        Self { code }
     }
 }
 
@@ -81,8 +87,10 @@ impl core::fmt::Display for InviteCode {
     /// the deliberate way to get the value out; see the type-level
     /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let _ = &self.code;
-        unimplemented!()
+        // Always bech32m with the `fed1` human-readable part, whichever of the
+        // two accepted encodings the value was parsed from
+        // (fedimint-core/src/invite_code.rs:268-274).
+        core::fmt::Display::fmt(&self.code, f)
     }
 }
 
@@ -92,8 +100,18 @@ impl core::str::FromStr for InviteCode {
     /// Parses an invite code from its canonical string form. Returns
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
-        unimplemented!()
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Upstream accepts bech32m and a `fedimint`-prefixed base32 form
+        // (invite_code.rs:220-243) and reports `InviteCodeParseError`
+        // (invite_code.rs:245-265). That error is dropped rather than
+        // reported: a code can embed an api_secret, so anything derived from
+        // the rejected string could carry a credential into a log, and every
+        // variant of it is the same `InvalidInput` to a caller anyway.
+        let code = s
+            .trim()
+            .parse::<invite_code::InviteCode>()
+            .map_err(|_| Error::new(ErrorCode::InvalidInput, "invalid invite code"))?;
+        Ok(Self { code })
     }
 }
 
@@ -147,13 +165,19 @@ pub struct FederationPreview {
 mod tests {
     use super::*;
 
-    /// A stand-in for a real invite code, including the credential an invite
-    /// for a private federation can embed.
-    const CODE: &str = "fed11-invite-code-with-api-secret-0123456789";
+    /// A real invite code, built once from fixed inputs: the guardian URL
+    /// `wss://foo.bar`, peer 0, and the upstream dummy federation id. The
+    /// parse now checks a bech32m checksum, so a placeholder string no longer
+    /// works here.
+    const CODE: &str = "fed11qgqpqrnhwden5te0vehk7tnzv9ez7qqpyq4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z5wa8phk";
+    /// The federation id that code invites to: the upstream dummy id, 32 bytes
+    /// of `0x2a`.
+    const CODE_FEDERATION_ID: &str =
+        "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
 
     #[test]
     fn debug_prints_the_marker_and_nothing_else() {
-        let invite = InviteCode::from_raw(CODE.to_owned());
+        let invite = CODE.parse::<InviteCode>().expect("a valid invite code");
         let rendered = format!("{invite:?}");
         // Not merely "does not contain the code": the whole rendering is the
         // type name and the redaction marker, so there is nowhere for a
@@ -167,9 +191,57 @@ mod tests {
         // The transitive case is the dangerous one: an `InviteCode` inside a
         // struct that derives `Debug` must not print the code just because
         // the outer value was logged.
-        let nested = Some(InviteCode::from_raw(CODE.to_owned()));
+        let nested = Some(CODE.parse::<InviteCode>().expect("a valid invite code"));
         let rendered = format!("{nested:?}");
         assert_eq!(rendered, "Some(InviteCode(<redacted>))");
         assert!(!rendered.contains(CODE));
+    }
+
+    #[test]
+    fn an_invite_code_round_trips_through_display_and_from_str() {
+        let invite = CODE.parse::<InviteCode>().expect("a valid invite code");
+        assert_eq!(invite.to_string(), CODE);
+        let padded = format!("  {CODE}\n");
+        assert_eq!(padded.parse::<InviteCode>().expect("trimmed"), invite);
+        // Bech32m is case-insensitive, and a QR code encoder emits uppercase
+        // to stay in alphanumeric mode.
+        assert_eq!(
+            CODE.to_uppercase()
+                .parse::<InviteCode>()
+                .expect("uppercase bech32m is valid"),
+            invite
+        );
+    }
+
+    #[test]
+    fn federation_id_is_readable_without_a_network_round_trip() {
+        let invite = CODE.parse::<InviteCode>().expect("a valid invite code");
+        assert_eq!(invite.federation_id().to_string(), CODE_FEDERATION_ID);
+        // The same value `FederationPreview::id` reports after a preview, so
+        // the two spellings have to agree exactly.
+        assert_eq!(
+            invite.federation_id(),
+            CODE_FEDERATION_ID
+                .parse::<FederationId>()
+                .expect("a valid federation id")
+        );
+    }
+
+    #[test]
+    fn a_malformed_invite_code_is_invalid_input_and_is_not_echoed() {
+        for rejected in [
+            "",
+            "fed11-invite-code-with-api-secret-0123456789",
+            "not an invite code",
+        ] {
+            let error = rejected
+                .parse::<InviteCode>()
+                .expect_err("a malformed invite code is rejected");
+            assert_eq!(error.code, crate::ErrorCode::InvalidInput);
+            // A code can embed an api secret, so a rejected one must not reach
+            // a log through the error message: the message is fixed, not built
+            // from the rejected string.
+            assert_eq!(error.message, "invalid invite code");
+        }
     }
 }
