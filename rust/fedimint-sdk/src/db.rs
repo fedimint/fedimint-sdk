@@ -442,6 +442,197 @@ fn backend_error(err: fedimint_core::db::DatabaseError) -> Error {
     )
 }
 
+/// The prefixes the SDK owns inside one federation's namespace.
+///
+/// A federation's namespace is the very database `fedimint-client` was handed, so these bytes
+/// share a keyspace with the client's own records and must not collide with them.
+//
+// `fedimint-client/src/db.rs:75-90` reserves `0xb0` (`UserData`, "new users are
+// encouraged to use this single prefix only") and `0xb1..=0xcf` ("allocated for historical and
+// future external use") for embedders, and `fedimint-client/src/db.rs:105-122`
+// (`verify_client_db_integrity_dbtx`) asserts that everything below `0xb0` is a prefix the
+// client itself declares, so the boundary is enforced rather than conventional.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FederationDbPrefix {
+    /// The per-operation SDK record, keyed by operation id.
+    OperationRecord = 0xb0,
+    /// The chronological index over those records, for paging activity newest first.
+    OperationIndex = 0xb1,
+}
+
+/// The key of one operation's SDK record.
+///
+/// Keyed on the upstream [`OperationId`](fedimint_core::core::OperationId) rather than the SDK's
+/// own newtype, because the id is the client's and the SDK's record is a decoration over the
+/// client's operation log entry with the same key.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct OperationRecordKey(pub(crate) fedimint_core::core::OperationId);
+
+/// Every operation record in one federation.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct OperationRecordKeyPrefix;
+
+/// What the SDK knows about one operation that the client's own log does not record.
+///
+/// The client's operation log is authoritative for an operation's existence and its module; this
+/// record adds the SDK's reading of it: which of the SDK's kinds it is, when it was created, the
+/// details record the creating call promised to persist, and the two facts that have to survive a
+/// restart because no state carries them (the phase a phase-keyed mapping reads, and whether a
+/// cancellation was asked for).
+#[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
+pub(crate) struct OperationRecord {
+    /// The state schema version this record was written at, reported as
+    /// `RawOperationKind::schema_version` and compared against what this build reads.
+    pub(crate) schema_version: u32,
+    /// The SDK's own kind tag, from `crate::operation::kinds`.
+    pub(crate) kind: String,
+    /// The upstream module kind that owns the operation, verbatim (`"mint"`, `"lnv2"`, …).
+    pub(crate) module: String,
+    /// Milliseconds since the Unix epoch, taken when the record was written.
+    ///
+    /// The client's log keeps its own creation time in the chronological index key rather than in
+    /// the entry, and reading it costs a scan, so the SDK keeps its own copy.
+    pub(crate) created_at: u64,
+    /// The kind's details record as JSON, written once when the operation is created and updated
+    /// only to fill in a documented fill-in-later field.
+    pub(crate) details: String,
+    /// How far the operation had got when a mapping last needed to know.
+    ///
+    /// Only ever increases. Two upstream events carry the same name for opposite outcomes
+    /// depending on whether funding completed, and after a restart this is the only way to tell
+    /// them apart.
+    pub(crate) phase: Option<u32>,
+    /// When a cancellation was first asked for, in milliseconds since the epoch.
+    ///
+    /// Written once and never rewritten: a second request is not a second intent.
+    pub(crate) cancel_requested_at: Option<u64>,
+    /// The final state as the driver encoded it, once one was observed.
+    ///
+    /// Lets a history row report a finished operation as finished without decoding it, and is
+    /// what makes finality a recorded fact rather than something derived at read time.
+    pub(crate) final_state: Option<String>,
+}
+
+/// One entry of the chronological index: the operation ids of a federation, oldest first.
+///
+/// Ordered by `created_at` before `id`, so a descending scan is newest-first and ties break
+/// deterministically.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct OperationIndexKey {
+    /// Milliseconds since the Unix epoch, the same value as
+    /// [`OperationRecord::created_at`].
+    pub(crate) created_at: u64,
+    /// The operation this entry points at.
+    pub(crate) id: fedimint_core::core::OperationId,
+}
+
+/// The whole chronological index of one federation.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct OperationIndexKeyPrefix;
+
+impl_db_record!(
+    key = OperationRecordKey,
+    value = OperationRecord,
+    db_prefix = FederationDbPrefix::OperationRecord,
+);
+impl_db_lookup!(
+    key = OperationRecordKey,
+    query_prefix = OperationRecordKeyPrefix
+);
+
+impl_db_record!(
+    key = OperationIndexKey,
+    value = (),
+    db_prefix = FederationDbPrefix::OperationIndex,
+);
+impl_db_lookup!(
+    key = OperationIndexKey,
+    query_prefix = OperationIndexKeyPrefix
+);
+
+/// The SDK's clock, in milliseconds since the Unix epoch.
+///
+/// Saturates rather than panicking on a clock far in the future, because a wrong timestamp is a
+/// cosmetic defect in a history row and a panic is not.
+//
+// `fedimint_core::time` rather than `std::time::SystemTime::now`, which has no implementation on
+// wasm: `fedimint-core/src/time.rs:4-14` reads `js_sys::Date` there instead.
+pub(crate) fn now_millis() -> u64 {
+    u64::try_from(fedimint_core::time::duration_since_epoch().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Milliseconds since the Unix epoch for a time the client recorded.
+///
+/// A time before the epoch is reported as zero rather than as an error: it can only come from a
+/// machine whose clock was wrong when the entry was written, and a history row out of order is a
+/// better outcome than a lookup that fails.
+pub(crate) fn millis_of(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+/// Maps a database failure onto the crate's transient storage code.
+///
+/// [`ErrorCode::Storage`](crate::ErrorCode::Storage) is documented as a backend fault, which is
+/// what every failure reaching here is: a store whose *contents* are wrong is reported as
+/// `StorageOrphaned`, `SeedMismatch` or `StorageInUse` by the code that reads them.
+pub(crate) fn storage_error(cause: impl core::fmt::Display) -> crate::Error {
+    crate::Error::new(
+        crate::ErrorCode::Storage,
+        format!("could not read or write local storage: {cause}"),
+    )
+}
+
+/// Opens the native backend at `dir`, the way `SdkBuilder::build` opens a
+/// [`Storage::at`](crate::Storage::at) location.
+///
+/// For the tests that have to close a store and open it again: an in-memory database cannot
+/// show that a record survives the process that wrote it, and building a whole `Sdk` to get at
+/// one would need a federation to join.
+//
+// If T5 grows a `pub(crate)` opener of its own, delete this and call that instead: two ways of
+// opening the same store is one more than there should be.
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) async fn open_native_root(
+    dir: &std::path::Path,
+) -> crate::Result<fedimint_core::db::Database> {
+    let path = dir.join("db");
+    let raw =
+        tokio::task::spawn_blocking(move || fedimint_rocksdb::RocksDb::build(path).open_blocking())
+            .await
+            .map_err(storage_error)?
+            .map_err(storage_error)?;
+    Ok(fedimint_core::db::Database::new(
+        raw,
+        fedimint_core::module::registry::ModuleDecoderRegistry::default(),
+    ))
+}
+
+/// A fresh, empty root database held entirely in memory.
+///
+/// The same value [`Storage::in_memory`](crate::Storage::in_memory) names, built directly so a
+/// unit test does not have to run the whole builder to get one.
+#[cfg(test)]
+pub(crate) fn in_memory_root() -> fedimint_core::db::Database {
+    fedimint_core::db::Database::new(
+        fedimint_core::db::mem_impl::MemDatabase::new(),
+        fedimint_core::module::registry::ModuleDecoderRegistry::default(),
+    )
+}
+
+/// One federation's namespace inside a root database, as the builder hands it to the client.
+#[cfg(test)]
+pub(crate) fn federation_namespace(
+    root: &fedimint_core::db::Database,
+    id: [u8; 32],
+) -> fedimint_core::db::Database {
+    let mut prefix = vec![FEDERATION_NAMESPACE_TAG];
+    prefix.extend_from_slice(&id);
+    root.with_prefix(prefix)
+}
+
 #[cfg(test)]
 mod tests {
     use fedimint_core::PeerId;
@@ -449,14 +640,13 @@ mod tests {
     use fedimint_core::bitcoin::hashes::Hash;
     use fedimint_core::config::FederationId;
     use fedimint_core::db::Database;
-    use fedimint_core::db::mem_impl::MemDatabase;
     use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::util::SafeUrl;
 
     use super::*;
 
     fn db() -> Database {
-        Database::new(MemDatabase::new(), ModuleDecoderRegistry::default())
+        in_memory_root()
     }
 
     fn invite(id: FederationId) -> fedimint_core::invite_code::InviteCode {
@@ -660,5 +850,124 @@ mod tests {
             read_federation(&db, &id).await.expect("read"),
             Some(record(id))
         );
+    }
+}
+
+#[cfg(test)]
+mod operation_record_tests {
+    use fedimint_core::core::OperationId;
+    use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+    use futures::StreamExt;
+
+    use super::*;
+
+    fn a_record(created_at: u64) -> OperationRecord {
+        OperationRecord {
+            schema_version: 1,
+            kind: "ecash_send".to_owned(),
+            module: "mint".to_owned(),
+            created_at,
+            details: r#"{"artifact":"the notes"}"#.to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_record_round_trips_through_the_database() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let id = OperationId([7u8; 32]);
+        let record = a_record(1_700_000_000_000);
+
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.commit_tx().await;
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        assert_eq!(
+            dbtx.get_value(&OperationRecordKey(id)).await.as_ref(),
+            Some(&record)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn every_optional_field_round_trips_once_it_is_filled_in() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let id = OperationId([8u8; 32]);
+        let filled = OperationRecord {
+            phase: Some(2),
+            cancel_requested_at: Some(1_700_000_000_001),
+            final_state: Some(r#""Done""#.to_owned()),
+            ..a_record(1_700_000_000_000)
+        };
+
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &filled).await;
+        dbtx.commit_tx().await;
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        assert_eq!(
+            dbtx.get_value(&OperationRecordKey(id)).await.as_ref(),
+            Some(&filled)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_index_reads_back_newest_first() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let older = (1_700_000_000_000u64, OperationId([1u8; 32]));
+        let newer = (1_700_000_000_001u64, OperationId([2u8; 32]));
+
+        let mut dbtx = db.begin_transaction().await;
+        for (created_at, id) in [older, newer] {
+            dbtx.insert_entry(&OperationIndexKey { created_at, id }, &())
+                .await;
+        }
+        dbtx.commit_tx().await;
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        let seen: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        // A `u64` encodes as a `BigSize` varint whose byte order matches its numeric order
+        // (`fedimint-core/src/encoding/mod.rs:444`), so the byte order the database sorts
+        // on is the numeric order T11's pagination needs.
+        assert_eq!(seen, vec![newer, older]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_federations_do_not_see_each_others_records() {
+        let root = in_memory_root();
+        let one = federation_namespace(&root, [1u8; 32]);
+        let other = federation_namespace(&root, [2u8; 32]);
+        let id = OperationId([7u8; 32]);
+
+        let mut dbtx = one.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &a_record(1))
+            .await;
+        dbtx.commit_tx().await;
+
+        let mut dbtx = other.begin_transaction_nc().await;
+        assert_eq!(dbtx.get_value(&OperationRecordKey(id)).await, None);
+    }
+
+    #[test]
+    fn the_prefixes_sit_in_the_range_upstream_reserves_for_embedders() {
+        // `fedimint-client/src/db.rs:75-90`: `UserData = 0xb0` and
+        // `ExternalReservedStart = 0xb1 ..= ExternalReservedEnd = 0xcf`.
+        assert_eq!(FederationDbPrefix::OperationRecord as u8, 0xb0);
+        assert_eq!(FederationDbPrefix::OperationIndex as u8, 0xb1);
+    }
+
+    #[test]
+    fn the_clock_reports_milliseconds_since_the_epoch() {
+        // Sanity, not a wall-clock assertion: anything after 2020 and before 2100.
+        let now = now_millis();
+        assert!(now > 1_577_836_800_000);
+        assert!(now < 4_102_444_800_000);
     }
 }
