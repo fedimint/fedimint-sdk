@@ -168,6 +168,13 @@ impl Meta {
     pub async fn consensus_metadata(&self) -> Result<Option<ConsensusMetadata>> {
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::meta`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Meta {
+        Meta {
+            inner: Arc::new(MetaInner { federation }),
+        }
+    }
 }
 
 /// A revision of a federation's consensus metadata.
@@ -199,6 +206,11 @@ pub struct ConsensusMetadata {
     pub value: Vec<u8>,
 }
 
-/// Placeholder for the metadata sources this facade reads.
+/// The federation this facade reads metadata from.
+///
+/// Unconditional, unlike the three capability facades: every federation has configuration
+/// metadata even when it runs no meta module.
 #[derive(Debug)]
-struct MetaInner;
+struct MetaInner {
+    federation: Arc<crate::federation::FederationInner>,
+}

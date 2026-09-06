@@ -108,6 +108,11 @@ impl Mnemonic {
     pub(crate) fn from_upstream(mnemonic: fedimint_bip39::Mnemonic) -> Self {
         Self { phrase: mnemonic }
     }
+
+    // Crate-internal view of the upstream value; never part of the public API.
+    pub(crate) fn inner(&self) -> &fedimint_bip39::Mnemonic {
+        &self.phrase
+    }
 }
 
 impl core::str::FromStr for Mnemonic {

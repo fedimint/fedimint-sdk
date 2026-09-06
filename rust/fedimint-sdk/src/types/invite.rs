@@ -71,6 +71,11 @@ impl InviteCode {
     pub(crate) fn from_upstream(code: invite_code::InviteCode) -> Self {
         Self { code }
     }
+
+    // Crate-internal view of the upstream value; never part of the public API.
+    pub(crate) fn inner(&self) -> &invite_code::InviteCode {
+        &self.code
+    }
 }
 
 impl core::fmt::Debug for InviteCode {

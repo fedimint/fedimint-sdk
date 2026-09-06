@@ -227,6 +227,13 @@ impl Onchain {
         //   operation.
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::onchain`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Onchain {
+        Onchain {
+            inner: Arc::new(OnchainInner { federation }),
+        }
+    }
 }
 
 /// A frozen, executable plan for one on-chain withdrawal.
@@ -836,9 +843,15 @@ pub struct OnchainReceiveFeeBreakdown {
     pub dust: Amount,
 }
 
-/// Placeholder for the wallet-module state this facade operates on.
+/// The federation this facade operates on.
+///
+/// Held rather than a wallet-module handle, because a facade outlives the client behind it: a
+/// call on a closed federation has to report `FederationClosed` rather than find nothing to talk
+/// to.
 #[derive(Debug)]
-struct OnchainInner;
+struct OnchainInner {
+    federation: Arc<crate::federation::FederationInner>,
+}
 
 /// Placeholder for a quote's frozen plan: destination, amount, the fee and
 /// its components, and the configuration context they were computed

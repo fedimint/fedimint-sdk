@@ -159,6 +159,13 @@ impl Lightning {
         //   the terminal v1 event alone does not say whether a payment was ever confirmed.
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::lightning`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Lightning {
+        Lightning {
+            inner: Arc::new(LightningInner { federation }),
+        }
+    }
 }
 
 /// A frozen, executable plan for one lightning payment.
@@ -597,9 +604,15 @@ impl crate::operation::DetailedOperationState for LnReceiveState {
     type Details = LnReceiveDetails;
 }
 
-/// Placeholder for the lightning-module state this facade operates on.
+/// The federation this facade operates on.
+///
+/// Held rather than a lightning-module handle, because a facade outlives the client behind it: a
+/// call on a closed federation has to report `FederationClosed` rather than find nothing to talk
+/// to.
 #[derive(Debug)]
-struct LightningInner;
+struct LightningInner {
+    federation: Arc<crate::federation::FederationInner>,
+}
 
 /// Placeholder for a quote's frozen plan: invoice, the amount it names,
 /// verified gateway, the aggregate fee and its components, the bound note

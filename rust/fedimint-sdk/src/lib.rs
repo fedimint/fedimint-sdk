@@ -408,11 +408,13 @@
 #![allow(dead_code)]
 
 mod activity;
+mod db;
 mod ecash;
 mod error;
 mod federation;
 mod lightning;
 mod meta;
+mod modules;
 mod onchain;
 mod operation;
 mod recovery;

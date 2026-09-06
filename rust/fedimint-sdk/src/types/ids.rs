@@ -37,6 +37,11 @@ impl FederationId {
     pub(crate) fn from_upstream(id: config::FederationId) -> Self {
         Self { id }
     }
+
+    // Crate-internal view of the upstream value; never part of the public API.
+    pub(crate) fn inner(&self) -> config::FederationId {
+        self.id
+    }
 }
 
 impl core::fmt::Display for FederationId {

@@ -178,6 +178,13 @@ impl Ecash {
         //   in the same storage transaction that creates the operation.
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::ecash`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Ecash {
+        Ecash {
+            inner: Arc::new(EcashInner { federation }),
+        }
+    }
 }
 
 /// A frozen, executable plan for one out-of-band ecash send.
@@ -590,9 +597,14 @@ impl crate::operation::DetailedOperationState for EcashReceiveState {
     type Details = EcashReceiveDetails;
 }
 
-/// Placeholder for the mint-module state this facade operates on.
+/// The federation this facade operates on.
+///
+/// Held rather than a mint-module handle, because a facade outlives the client behind it: a call
+/// on a closed federation has to report `FederationClosed` rather than find nothing to talk to.
 #[derive(Debug)]
-struct EcashInner;
+struct EcashInner {
+    federation: Arc<crate::federation::FederationInner>,
+}
 
 /// Placeholder for a quote's frozen plan: the requested amount, the notes
 /// selected to satisfy it and the denominations they will be issued in, the
