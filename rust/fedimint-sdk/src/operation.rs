@@ -131,8 +131,8 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 // which is what the crate's durability contract actually promises (see the durability section on
 // `Sdk`), and a crash in the window between the two commits is repaired by
 // `FederationInner::reconcile_operations`, which rebuilds a record from the log entry the module
-// did commit. See fedimint#TBD (filed with this pull request) for the upstream change that would
-// close the window; the note is deleted once it lands.
+// did commit. See fedimint/fedimint#9117 for the upstream change that would close the window;
+// the note is deleted once it lands.
 pub trait OperationDetails:
     sealed::Sealed + Clone + core::fmt::Debug + Send + Sync + 'static
 {
