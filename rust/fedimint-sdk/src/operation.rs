@@ -288,7 +288,6 @@ impl<S: OperationState> Operation<S> {
             current_fallback_used: false,
             finished: false,
             handoff: None,
-            setup: None,
             closed: self.inner.federation.closed(),
         }
     }
@@ -418,15 +417,6 @@ pub struct OperationUpdates<S: OperationState> {
     /// is `Some` loses nothing, because the next call retries the persist from here instead of
     /// re-reading the stream, and `last`/`finished` do not move until it succeeds.
     handoff: Option<S>,
-    /// A subscription that is being established, kept across a dropped `next`.
-    ///
-    /// Establishing a subscription is the driver's business and can park part-way through, after
-    /// it has registered upstream and before it has its first snapshot. Keeping the whole
-    /// establishment here rather than inside one `next` call means dropping that call resumes
-    /// the same setup later instead of registering again and missing what happened in between.
-    /// Cleared once the establishment has produced a stream or an error, or once the federation
-    /// has stopped.
-    setup: Option<BoxFuture<'static, Result<BoxStream<'static, Result<S>>>>>,
     /// Fires when the federation stops running, for any reason.
     ///
     /// Raced against the stream on every `next`, because a stream whose federation has gone will
@@ -476,10 +466,13 @@ impl<S: OperationState> OperationUpdates<S> {
     /// the subscriber itself is the different event that ends the
     /// subscription; either way the operation itself keeps running.
     ///
-    /// That holds from the very first call: a subscription still being
-    /// established when its `next()` is dropped is kept and resumed by the
-    /// following call, so whatever the driver had already registered
-    /// upstream is not thrown away and re-created later.
+    /// That holds from the very first call. A subscription registers with the
+    /// operation's upstream notifier the first time its stream is polled,
+    /// which is inside the first `next()` that gets that far, and the stream
+    /// is the subscriber's from then on. A `next()` dropped before that point
+    /// has not registered anything, so there is nothing it could have missed;
+    /// one dropped after it keeps the stream, and everything the stream has
+    /// buffered, for the following call.
     ///
     /// # Errors
     ///
@@ -489,8 +482,7 @@ impl<S: OperationState> OperationUpdates<S> {
     pub async fn next(&mut self) -> Result<Option<S>> {
         // The cursor is `self.last`, `self.resubscribed`, `self.current_fallback_used`,
         // `self.finished` and `self.handoff`, and every one of them lives on the subscriber
-        // rather than inside this future, as does `self.setup`, the subscription being
-        // established. For a non-final state that is enough on its own: it is
+        // rather than inside this future. For a non-final state that is enough on its own: it is
         // taken from the stream and returned in the same poll, with no `await` in between, so
         // dropping this future either way leaves nothing half-done. The direct-read fallback
         // below is the same shape: `current_fallback_used` only flips once `current` has actually
@@ -520,31 +512,26 @@ impl<S: OperationState> OperationUpdates<S> {
                 // created, and a driver that folds its starting point from `phase` needs that
                 // write to be visible or it resumes from the wrong place.
                 //
-                // The whole establishment is one future owned by the subscriber (`self.setup`),
-                // not by this call: the driver's `subscribe` borrows, so an outer future that
-                // owns clones of the handle and the driver is what makes it storable. Dropping
-                // this call mid-way leaves that future where it is, and the next call polls it
-                // on from there.
+                // The establishment lives in this call, and only the stream it produces is kept
+                // on the subscriber. Keeping the establishment itself across a dropped call was
+                // tried and taken out again: a driver holds the client guard while it reads the
+                // operation log, and an idle subscriber that kept that guard in an unpolled
+                // future would hold the federation's close off for ever, since the close takes
+                // the client's write lock before it can signal anything. Nothing is lost by not
+                // keeping it, because a driver registers upstream only when its stream is first
+                // polled, which is the obligation recorded on `Driver::subscribe`.
                 let OperationUpdates {
                     inner,
                     driver,
                     closed,
-                    setup,
                     ..
                 } = self;
-                let setup = setup.get_or_insert_with(|| {
-                    let inner = inner.clone();
-                    let driver = driver.clone();
-                    Box::pin(async move {
-                        let record = inner.reload().await?;
-                        driver.subscribe(&inner.federation, inner.id, &record).await
-                    })
-                });
-                let established = until_closed(closed, setup).await;
-                // Finished one way or another: a stream to keep, a driver error to report, or a
-                // federation that stopped. None of them leaves anything worth resuming.
-                self.setup = None;
-                self.stream = Some(established?);
+                let stream = until_closed(closed, async {
+                    let record = inner.reload().await?;
+                    driver.subscribe(&inner.federation, inner.id, &record).await
+                })
+                .await?;
+                self.stream = Some(stream);
             }
             // The `ensure_open` above only catches a federation that had already stopped when
             // this call started. Racing every wait in this loop against the federation's
@@ -1294,6 +1281,17 @@ where
     /// The stream may also end without a final state, which is not the operation finishing: the
     /// client's notifier ends a subscriber's stream when it falls behind, and the engine treats
     /// that as a signal to subscribe again.
+    // One obligation on the driver itself: everything this awaits before returning must be a
+    // bounded read, and the stream it returns must register with the upstream notifier when it
+    // is first polled, not before. That is the shape of upstream's `subscribe_*` methods, which
+    // await only the operation-log read and hand back a lazily built stream through
+    // `ClientContext::outcome_or_updates` (fedimint-client-module/src/module/mod.rs:741; mint's
+    // `subscribe_spend_notes` at modules/fedimint-mint-client/src/lib.rs:2567 is typical). The
+    // engine keeps the returned stream across a dropped `next`, not the call that produced it,
+    // and a driver that registered upstream and then parked in here, holding the client guard,
+    // would in an idle subscriber hold the federation's close off for ever: `quiesce` takes the
+    // client's write lock before it can signal closure.
+    //
     // Two obligations on whoever writes a facade around a driver, not on the driver itself:
     // - The stream really is expected to yield the current state first. The engine's own
     //   `OperationUpdates::next` only falls back to `current` when the first stream a
@@ -2712,41 +2710,15 @@ mod tests {
         assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 
-    /// A driver whose one subscription registers its receiver and then waits at a gate before
-    /// handing the stream out, for the timing the channel driver cannot express: a `next`
-    /// dropped while the driver is between registering upstream and returning its stream.
-    struct PausedSetupDriver {
-        stream: std::sync::Mutex<Option<BoxStream<'static, Result<ProbeState>>>>,
-        /// Opened by the test once it has fed the receiver.
+    /// A driver that holds the client read guard while parked inside `subscribe`, the way a
+    /// real driver does across its operation-log read, for the one timing that matters to the
+    /// federation's close: a `next` dropped while the driver is parked there.
+    struct GuardHoldingDriver {
+        /// Never opened: the driver stays parked for the whole test.
         gate: tokio::sync::Notify,
-        /// How many times `subscribe` has taken the receiver.
-        registrations: std::sync::Mutex<usize>,
     }
 
-    impl PausedSetupDriver {
-        /// A driver and the sender that feeds its one subscription.
-        fn new() -> (
-            Arc<PausedSetupDriver>,
-            futures::channel::mpsc::UnboundedSender<Result<ProbeState>>,
-        ) {
-            let (sender, receiver) = futures::channel::mpsc::unbounded();
-            let driver = PausedSetupDriver {
-                stream: std::sync::Mutex::new(Some(Box::pin(receiver) as BoxStream<'static, _>)),
-                gate: tokio::sync::Notify::new(),
-                registrations: std::sync::Mutex::new(0),
-            };
-            (Arc::new(driver), sender)
-        }
-
-        fn registrations(&self) -> usize {
-            *self
-                .registrations
-                .lock()
-                .expect("test mutex is never poisoned")
-        }
-    }
-
-    impl Driver<ProbeState> for PausedSetupDriver {
+    impl Driver<ProbeState> for GuardHoldingDriver {
         fn current<'a>(
             &'a self,
             _federation: &'a FederationInner,
@@ -2758,24 +2730,14 @@ mod tests {
 
         fn subscribe<'a>(
             &'a self,
-            _federation: &'a FederationInner,
+            federation: &'a FederationInner,
             _id: UpstreamOperationId,
             _record: &'a OperationRecord,
         ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
             Box::pin(async move {
-                // Registering upstream: from here on the receiver buffers every transition.
-                let stream = self
-                    .stream
-                    .lock()
-                    .expect("test mutex is never poisoned")
-                    .take();
-                *self
-                    .registrations
-                    .lock()
-                    .expect("test mutex is never poisoned") += 1;
-                // The initial snapshot a real driver would wait for here.
+                let _guard = federation.hold_client().await;
                 self.gate.notified().await;
-                Ok(stream.unwrap_or_else(|| Box::pin(futures::stream::empty())))
+                Ok(Box::pin(futures::stream::empty()) as BoxStream<'static, _>)
             })
         }
 
@@ -2788,61 +2750,41 @@ mod tests {
         }
 
         fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
-            Err(Error::new(
-                ErrorCode::Internal,
-                "the paused-setup probe has no details",
-            ))
+            Err(Error::new(ErrorCode::Internal, "no details"))
         }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_subscription_dropped_mid_setup_is_resumed_rather_than_restarted() {
+    async fn a_dropped_next_whose_driver_held_the_client_guard_does_not_block_the_close() {
         use core::future::Future;
         use core::task::{Context, Poll};
 
-        let (driver, sender) = PausedSetupDriver::new();
-        let operation = probe_operation_with(driver.clone() as Arc<dyn Driver<ProbeState>>).await;
+        let driver = Arc::new(GuardHoldingDriver {
+            gate: tokio::sync::Notify::new(),
+        });
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let federation = operation.inner.federation.clone();
         let mut updates = operation.updates();
-        // Drive one `next` until the driver has registered its receiver and parked at the gate,
-        // then drop it, the way a `select!` that lost its race would.
+        // Drive one `next` until the driver is parked holding the guard, then drop it, the way
+        // a `select!` that lost its race would, and leave the subscriber idle.
         {
             let mut next = Box::pin(updates.next());
             let mut cx = Context::from_waker(futures::task::noop_waker_ref());
             for _ in 0..100 {
-                if driver.registrations() == 1 {
-                    break;
-                }
                 assert!(matches!(next.as_mut().poll(&mut cx), Poll::Pending));
                 tokio::task::yield_now().await;
             }
-            assert_eq!(driver.registrations(), 1, "setup never registered upstream");
-            assert!(matches!(next.as_mut().poll(&mut cx), Poll::Pending));
         }
-        // Transitions that happen while no call is pending and the setup is still parked. With
-        // the setup thrown away on the drop, the next call would register again, find the
-        // receiver gone, and never see these.
-        sender
-            .unbounded_send(Ok(ProbeState::Running))
-            .expect("the receiver is registered");
-        sender
-            .unbounded_send(Ok(ProbeState::Done))
-            .expect("the receiver is registered");
-        driver.gate.notify_one();
-        // The following call resumes the same setup: no second registration, and everything
-        // the registered receiver buffered arrives in order. Bounded, because the failure mode
-        // of a setup thrown away on the drop is a second registration that finds the receiver
-        // gone and parks at the gate for ever.
-        let resumed = tokio::time::timeout(core::time::Duration::from_secs(10), async {
-            let mut seen = Vec::new();
-            while let Some(state) = updates.next().await.expect("next") {
-                seen.push(state);
-            }
-            seen
-        })
-        .await
-        .expect("the resumed setup hands its stream out");
-        assert_eq!(resumed, vec![ProbeState::Running, ProbeState::Done]);
-        assert_eq!(driver.registrations(), 1);
+        // The close takes the client's write lock before it signals anything, so a guard kept
+        // alive by the idle subscriber would hold it off for ever. Keeping the establishment
+        // on the subscriber across the drop is exactly what did that.
+        let quiesced =
+            tokio::time::timeout(core::time::Duration::from_secs(5), federation.quiesce()).await;
+        assert!(
+            quiesced.is_ok(),
+            "the close hung behind an idle subscriber's client guard"
+        );
+        drop(updates);
     }
 
     /// A driver whose `current` never resolves and whose `subscribe` either never resolves or

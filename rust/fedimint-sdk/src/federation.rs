@@ -583,6 +583,15 @@ impl FederationInner {
         shutdown_client(client).await
     }
 
+    /// The raw read side of the client lock, for tests that need to hold it the way a facade
+    /// call does without a live client behind it.
+    #[cfg(test)]
+    pub(crate) async fn hold_client(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, Option<ClientHandleArc>> {
+        self.client.read().await
+    }
+
     /// A receiver that fires when this federation stops running.
     pub(crate) fn closed(&self) -> tokio::sync::watch::Receiver<bool> {
         self.closed.subscribe()
