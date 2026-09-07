@@ -480,7 +480,7 @@ pub(crate) struct OperationRecordKeyPrefix;
 /// details record the creating call promised to persist, and the two facts that have to survive a
 /// restart because no state carries them (the phase a phase-keyed mapping reads, and whether a
 /// cancellation was asked for).
-#[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
+#[derive(Clone, PartialEq, Eq, Encodable, Decodable)]
 pub(crate) struct OperationRecord {
     /// The state schema version this record was written at, reported as
     /// `RawOperationKind::schema_version` and compared against what this build reads.
@@ -512,6 +512,29 @@ pub(crate) struct OperationRecord {
     /// Lets a history row report a finished operation as finished without decoding it, and is
     /// what makes finality a recorded fact rather than something derived at read time.
     pub(crate) final_state: Option<String>,
+}
+
+impl core::fmt::Debug for OperationRecord {
+    /// Hand-written so that the two opaque payloads never reach a log: a details record can
+    /// carry bearer artifacts (the notes an ecash send handed over) and a final state can too,
+    /// and both are stored as JSON that bypasses the redacting `Debug` the typed values have.
+    /// This record sits inside every operation handle's `Debug`, so redacting here covers all
+    /// of them.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OperationRecord")
+            .field("schema_version", &self.schema_version)
+            .field("kind", &self.kind)
+            .field("module", &self.module)
+            .field("created_at", &self.created_at)
+            .field("details", &"<redacted>")
+            .field("phase", &self.phase)
+            .field("cancel_requested_at", &self.cancel_requested_at)
+            .field(
+                "final_state",
+                &self.final_state.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// One entry of the chronological index: the operation ids of a federation, oldest first.
@@ -801,6 +824,32 @@ mod tests {
         let rendered = format!("{:?}", record(FederationId::dummy()));
         assert!(rendered.contains("invite: \"<redacted>\""), "{rendered}");
         assert!(!rendered.contains("guardian.example"), "{rendered}");
+    }
+
+    #[test]
+    fn an_operation_record_never_prints_its_payloads() {
+        // `details` and `final_state` are opaque JSON that can carry bearer notes, and
+        // this record is reachable from the `Debug` of every operation handle.
+        let record = OperationRecord {
+            schema_version: 1,
+            kind: "ecash_send".to_owned(),
+            module: "mint".to_owned(),
+            created_at: 1_700_000_000_000,
+            details: "{\"notes\":\"SENTINEL_NOTES\"}".to_owned(),
+            phase: Some(2),
+            cancel_requested_at: None,
+            final_state: Some("{\"refund\":\"SENTINEL_FINAL\"}".to_owned()),
+        };
+        let rendered = format!("{record:?}");
+        assert!(rendered.contains("details: \"<redacted>\""), "{rendered}");
+        assert!(
+            rendered.contains("final_state: Some(\"<redacted>\")"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("SENTINEL"), "{rendered}");
+        // The fields that are safe to print still are, so a log line stays useful.
+        assert!(rendered.contains("kind: \"ecash_send\""), "{rendered}");
+        assert!(rendered.contains("phase: Some(2)"), "{rendered}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

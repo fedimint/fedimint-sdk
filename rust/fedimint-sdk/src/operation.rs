@@ -466,6 +466,15 @@ impl<S: OperationState> OperationUpdates<S> {
     /// the subscriber itself is the different event that ends the
     /// subscription; either way the operation itself keeps running.
     ///
+    /// The subscription is established by the first call, the one that
+    /// returns the current state. Dropping that call before it resolves only
+    /// delays the start: the following call establishes the subscription
+    /// then and begins from the state the operation is in at that point,
+    /// exactly as if it had been the first call. The same holds for a call
+    /// dropped while the subscription is being re-established after the
+    /// upstream stream fell behind, which resumes from the current state in
+    /// any case (see [`Operation::updates`]).
+    ///
     /// # Errors
     ///
     /// [`Storage`](crate::ErrorCode::Storage),
@@ -503,19 +512,28 @@ impl<S: OperationState> OperationUpdates<S> {
                 // `phase` write the first subscription's driver made after this handle was
                 // created, and a driver that folds its starting point from `phase` needs that
                 // write to be visible or it resumes from the wrong place.
-                let record = self.inner.reload().await?;
-                let stream = self
-                    .driver
-                    .subscribe(&self.inner.federation, self.inner.id, &record)
-                    .await?;
+                let OperationUpdates {
+                    inner,
+                    driver,
+                    closed,
+                    ..
+                } = self;
+                let stream = until_closed(closed, async {
+                    let record = inner.reload().await?;
+                    driver.subscribe(&inner.federation, inner.id, &record).await
+                })
+                .await?;
                 self.stream = Some(stream);
             }
-            // The check above only catches a federation that had already stopped when this call
-            // started. Racing the stream against the federation's `closed` watch is what catches
-            // one that stops while this call is parked: after that the stream will never yield
-            // again, and the contract is that every outstanding `next` resolves promptly rather
-            // than waiting for a transition that is not coming.
-            let mut watch_fired = false;
+            // The `ensure_open` above only catches a federation that had already stopped when
+            // this call started. Racing every wait in this loop against the federation's
+            // `closed` watch, through `until_closed`, is what catches one that stops while this
+            // call is parked: after that neither the stream nor a driver call will ever resolve,
+            // and the contract is that every outstanding `next` resolves promptly rather than
+            // waiting for something that is not coming. The one wait left out on purpose is the
+            // final-state persist at the top of the loop: it is a write to the SDK's own storage,
+            // which a closing federation does not take away, and abandoning it would only turn a
+            // state the caller is owed into a retry.
             let item = {
                 let OperationUpdates { stream, closed, .. } = self;
                 let Some(stream) = stream.as_mut() else {
@@ -527,28 +545,8 @@ impl<S: OperationState> OperationUpdates<S> {
                         "this operation's subscription went missing",
                     ));
                 };
-                tokio::select! {
-                    item = futures::StreamExt::next(stream) => item,
-                    _ = closed.changed() => {
-                        watch_fired = true;
-                        None
-                    }
-                }
+                until_closed(closed, async { Ok(futures::StreamExt::next(stream).await) }).await?
             };
-            if watch_fired {
-                // `changed` also resolves once the sender is gone, which cannot happen while
-                // this subscriber holds the federation through an `Arc`; reading that as a stop
-                // is both the safe answer and what keeps this loop from spinning. The value
-                // itself is read back rather than assumed, because a federation that comes back
-                // to life flips the watch the other way and this subscriber simply carries on.
-                if self.closed.has_changed().is_err() || *self.closed.borrow_and_update() {
-                    return Err(Error::new(
-                        ErrorCode::FederationClosed,
-                        "this federation stopped running",
-                    ));
-                }
-                continue;
-            }
             match item {
                 Some(Ok(state)) => {
                     // Taken from the stream and either returned or handed to `self.handoff` in
@@ -589,11 +587,17 @@ impl<S: OperationState> OperationUpdates<S> {
                     // already reported through `current`.
                     if self.last.is_none() && !self.current_fallback_used {
                         self.stream = None;
-                        let record = self.inner.reload().await?;
-                        let state = self
-                            .driver
-                            .current(&self.inner.federation, self.inner.id, &record)
-                            .await?;
+                        let OperationUpdates {
+                            inner,
+                            driver,
+                            closed,
+                            ..
+                        } = self;
+                        let state = until_closed(closed, async {
+                            let record = inner.reload().await?;
+                            driver.current(&inner.federation, inner.id, &record).await
+                        })
+                        .await?;
                         // Only set once `current` has actually returned: dropping this future
                         // during either `await` above must not burn the one fallback attempt on
                         // a call that never got an answer, so the next call is what turns it over
@@ -624,6 +628,37 @@ impl<S: OperationState> OperationUpdates<S> {
                     }
                     self.resubscribed = true;
                     self.stream = None;
+                }
+            }
+        }
+    }
+}
+
+/// Awaits `future`, unless the federation stops running first.
+///
+/// `closed` is the federation's `closed` watch. A federation that stops while `future` is
+/// pending makes this resolve with `FederationClosed` instead, dropping `future`. A watch that
+/// flips and reads back as running again (a federation reopened in the meantime) is not a stop,
+/// and the wait carries on.
+async fn until_closed<T>(
+    closed: &mut tokio::sync::watch::Receiver<bool>,
+    future: impl core::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let mut future = core::pin::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = closed.changed() => {
+                // `changed` also resolves once the sender is gone, which cannot happen while a
+                // subscriber holds the federation through an `Arc`; reading that as a stop is
+                // both the safe answer and what keeps this loop from spinning. The value itself
+                // is read back rather than assumed, because a federation that comes back to
+                // life flips the watch the other way.
+                if closed.has_changed().is_err() || *closed.borrow_and_update() {
+                    return Err(Error::new(
+                        ErrorCode::FederationClosed,
+                        "this federation stopped running",
+                    ));
                 }
             }
         }
@@ -2052,6 +2087,43 @@ mod tests {
     /// it never writes storage; but the typed accessors it hands back reload from storage on
     /// every call (`Operation::state`, for instance), so the record has to actually be persisted
     /// here first.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operation_handle_never_prints_the_details_record() {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        // A details record can carry bearer notes, and `AnyOperation`'s `Debug` reaches the
+        // stored record through the handle it wraps.
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let id = UpstreamOperationId([5u8; 32]);
+        let record = OperationRecord {
+            schema_version: 1,
+            kind: kinds::ECASH_SEND.to_owned(),
+            module: "mint".to_owned(),
+            created_at: 1_700_000_000_000,
+            details: "{\"notes\":\"SENTINEL_NOTES\"}".to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: Some("{\"refund\":\"SENTINEL_FINAL\"}".to_owned()),
+        };
+        let db = federation.db();
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&crate::db::OperationRecordKey(id), &record)
+            .await;
+        dbtx.commit_tx().await;
+        let any = AnyOperation::from_record(Arc::new(OperationInner {
+            federation,
+            id,
+            record,
+        }));
+        let rendered = format!("{any:?}");
+        assert!(!rendered.contains("SENTINEL"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        let typed = any.as_ecash_send().expect("this build reads ecash sends");
+        let rendered = format!("{typed:?} {:?}", typed.updates());
+        assert!(!rendered.contains("SENTINEL"), "{rendered}");
+    }
+
     async fn any_operation(kind: &str, module: &str, schema_version: u32) -> AnyOperation {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 
@@ -2611,6 +2683,89 @@ mod tests {
         // The `next` below parks on a stream nothing will ever feed. Closing the federation is
         // what has to release it: with only the check at the top of the loop this waits for
         // ever, and the shutdown that is waiting for the subscriber waits with it.
+        let (released, ()) = tokio::join!(updates.next(), async {
+            tokio::task::yield_now().await;
+            federation.set_status(crate::FederationStatus::Closed);
+        });
+        let err = released.expect_err("the subscriber is released");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    /// A driver whose `current` never resolves and whose `subscribe` either never resolves or
+    /// hands out an empty stream, for the shutdown timing the other drivers cannot express: a
+    /// federation that stops while a subscriber is still setting up.
+    struct PendingDriver {
+        /// Whether `subscribe` hangs. When it does not, the empty stream it hands out sends the
+        /// engine to `current` instead, which always hangs.
+        subscribe_hangs: bool,
+    }
+
+    impl Driver<ProbeState> for PendingDriver {
+        fn current<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<ProbeState>> {
+            Box::pin(futures::future::pending())
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
+            if self.subscribe_hangs {
+                return Box::pin(futures::future::pending());
+            }
+            Box::pin(async { Ok(Box::pin(futures::stream::empty()) as BoxStream<'static, _>) })
+        }
+
+        fn same_state(&self, previous: &ProbeState, next: &ProbeState) -> bool {
+            previous == next
+        }
+
+        fn encode_state(&self, state: &ProbeState) -> Result<String> {
+            Ok(format!("{state:?}"))
+        }
+
+        fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+            Err(Error::new(
+                ErrorCode::Internal,
+                "the pending probe has no details",
+            ))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subscriber_parked_in_subscribe_is_released_when_the_federation_stops() {
+        let driver = Arc::new(PendingDriver {
+            subscribe_hangs: true,
+        });
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        let federation = operation.inner.federation.clone();
+        // The `next` below parks inside the driver's `subscribe`, before any stream exists to
+        // race. Closing the federation has to release it from there too.
+        let (released, ()) = tokio::join!(updates.next(), async {
+            tokio::task::yield_now().await;
+            federation.set_status(crate::FederationStatus::Closed);
+        });
+        let err = released.expect_err("the subscriber is released");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subscriber_parked_in_the_direct_read_is_released_when_the_federation_stops() {
+        let driver = Arc::new(PendingDriver {
+            subscribe_hangs: false,
+        });
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        let federation = operation.inner.federation.clone();
+        // The first stream is empty, so the `next` below parks inside the driver's `current`,
+        // the direct-read fallback that settles whether the operation had already finished.
         let (released, ()) = tokio::join!(updates.next(), async {
             tokio::task::yield_now().await;
             federation.set_status(crate::FederationStatus::Closed);
