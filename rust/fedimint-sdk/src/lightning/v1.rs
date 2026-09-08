@@ -213,12 +213,21 @@ struct ReclaimContext {
     federation_id: fedimint_core::config::FederationId,
     db: Database,
     id: OperationId,
-    details_json: String,
+}
+
+/// How starting a retry ended: a stream to follow, or the module's word that no retry is
+/// possible.
+enum ReclaimStart {
+    Started(BoxStream<'static, UpstreamReceiveState>),
+    Impossible(String),
 }
 
 impl ReclaimContext {
-    /// Starts the retry upstream, records which operation it runs under, and returns its stream.
-    async fn start(&self) -> Result<BoxStream<'static, UpstreamReceiveState>> {
+    /// Starts the retry upstream, records which operation it runs under, and returns its
+    /// stream — or the module's word that no further claim is possible.
+    async fn start(&self) -> Result<ReclaimStart> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
         let closed = || {
             Error::new(
                 ErrorCode::FederationClosed,
@@ -231,24 +240,76 @@ impl ReclaimContext {
             .ok_or_else(closed)?;
         let client = federation.client(false).await?;
         let module = module_of(&client)?;
-        let reclaim_id = module.reclaim_ln_receive(self.id).await.map_err(|err| {
-            Error::new(
-                ErrorCode::Internal,
-                format!("the rejected claim could not be retried: {err}"),
-            )
-        })?;
+
+        // Re-read the record rather than trust details carried from where this context was
+        // built: two subscribers can observe the same `Canceled { ClaimRejected }` and both
+        // reach here. Reading again right before deciding lets whichever loses that race see the
+        // winner's `reclaim_operation_id` and follow it instead of starting a second retry.
+        let mut dbtx = self.db.begin_transaction_nc().await;
+        let record = dbtx
+            .get_value(&crate::db::OperationRecordKey(self.id))
+            .await
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("no record for operation {}", self.id.fmt_full()),
+                )
+            })?;
+        let mut details = wire::decode_receive_wire(&record.details)?;
+        if let Some(reclaim) = details.reclaim_operation_id.as_deref() {
+            let reclaim_id = reclaim
+                .parse::<crate::OperationId>()
+                .map_err(|err| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!("a stored operation id does not parse: {err}"),
+                    )
+                })?
+                .upstream();
+            return Ok(ReclaimStart::Started(
+                module
+                    .subscribe_ln_receive(reclaim_id)
+                    .await
+                    .map_err(subscribe_error)?
+                    .into_stream(),
+            ));
+        }
+
+        let reclaim_id = match module.reclaim_ln_receive(self.id).await {
+            Ok(id) => id,
+            Err(err) => {
+                return classify_reclaim_refusal(&err.to_string()).map(ReclaimStart::Impossible);
+            }
+        };
         // Persisted before it is followed: after a restart the record is the only thing that
         // says which upstream operation to follow.
-        let mut details = wire::decode_receive_wire(&self.details_json)?;
         details.reclaim_operation_id =
             Some(crate::OperationId::from_upstream(reclaim_id).to_string());
         write_details_in(&self.db, self.id, wire::encode_receive_wire(&details)?).await?;
-        Ok(module
-            .subscribe_ln_receive(reclaim_id)
-            .await
-            .map_err(subscribe_error)?
-            .into_stream())
+        Ok(ReclaimStart::Started(
+            module
+                .subscribe_ln_receive(reclaim_id)
+                .await
+                .map_err(subscribe_error)?
+                .into_stream(),
+        ))
     }
+}
+
+// Upstream refuses `reclaim_ln_receive` two ways. "Cannot reclaim an active lightning receive"
+// (fedimint-ln-client/src/lib.rs, in `reclaim_ln_receive`) is the race between its notifier
+// reporting `Canceled { ClaimRejected }` and the state machine itself going inactive: retrying
+// later succeeds, so this is an observation failure, not a definitive answer. Any other refusal
+// (not a reclaimable receive, the receiving key unrecoverable from history) is definitive: no
+// further claim is possible.
+fn classify_reclaim_refusal(text: &str) -> Result<String> {
+    if text.contains("active") {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            format!("the rejected claim cannot be retried yet: {text}"),
+        ));
+    }
+    Ok(text.to_owned())
 }
 
 /// Which upstream operation a receive subscription is following.
@@ -280,12 +341,20 @@ async fn step(mut follow: Follow) -> Option<(Result<LnReceiveState>, Follow)> {
             // `ClaimRejected` is not final here: the claim is retried under the same SDK
             // operation, and only a retry that cannot be started is the end.
             ReceiveStep::Reclaim => match follow.context.start().await {
-                Ok(upstream) => {
+                Ok(ReclaimStart::Started(upstream)) => {
                     follow.upstream = upstream;
                     follow.following = Following::Reclaim;
                     LnReceiveState::Funded
                 }
-                Err(_) => LnReceiveState::Failed,
+                // The module says no further claim is possible: that is the one ending the
+                // contract reserves `Failed` for.
+                Ok(ReclaimStart::Impossible(_)) => LnReceiveState::Failed,
+                // Anything else is an observation failure, not an outcome: the next subscription
+                // replays the rejection and tries again.
+                Err(err) => {
+                    follow.done = true;
+                    return Some((Err(err), follow));
+                }
             },
         },
     };
@@ -349,7 +418,6 @@ pub(super) async fn subscribe_receive(
             federation_id: federation.id,
             db: federation.db(),
             id,
-            details_json: details_json.to_owned(),
         },
     };
     Ok(Box::pin(stream::unfold(follow, step)))
@@ -606,5 +674,19 @@ mod tests {
                 LnReceiveState::Failed
             );
         }
+    }
+
+    #[test]
+    fn the_notifiers_active_receive_race_is_retryable() {
+        let err = classify_reclaim_refusal("Cannot reclaim an active lightning receive")
+            .expect_err("the race is retryable, not definitive");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn any_other_refusal_is_definitive() {
+        let text = classify_reclaim_refusal("Operation is not a reclaimable lightning receive")
+            .expect("a refusal that is not the race is definitive");
+        assert_eq!(text, "Operation is not a reclaimable lightning receive");
     }
 }
