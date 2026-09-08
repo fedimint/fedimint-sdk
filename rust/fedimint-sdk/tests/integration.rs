@@ -65,10 +65,17 @@ fn invite_from_client_dir() -> Option<String> {
 }
 
 /// The faucet's `GET /connect-string`, for a setup that exposes only that.
-///
-/// A four-line HTTP/1.0 request rather than a client crate: this is the one network call the test
-/// harness makes, and it is not worth a dependency in the lockfile the crate ships.
 fn invite_from_faucet() -> Option<String> {
+    faucet("GET", "/connect-string", "")
+}
+
+/// One request to devimint's faucet, which is also this suite's counterparty on the lightning
+/// network: `POST /pay` pays an invoice from a node outside the federation, `POST /invoice`
+/// issues one.
+///
+/// A hand-written HTTP/1.0 exchange rather than a client crate: these are the only network calls
+/// the harness makes, and they are not worth a dependency in the lockfile the crate ships.
+fn faucet(method: &str, path: &str, body: &str) -> Option<String> {
     use std::net::ToSocketAddrs;
     use std::time::Duration;
 
@@ -81,18 +88,28 @@ fn invite_from_faucet() -> Option<String> {
         .find_map(|addr| {
             std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).ok()
         })?;
+    // Paying an invoice waits for the payment to settle, which can take a while on a fresh
+    // channel.
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_secs(120)))
         .ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
         .ok()?;
-    stream
-        .write_all(b"GET /connect-string HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .ok()?;
+    let request = format!(
+        "{method} {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\
+         Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).ok()?;
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
-    let (_headers, body) = response.split_once("\r\n\r\n")?;
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    let status = headers.lines().next()?;
+    assert!(
+        status.contains(" 200 "),
+        "faucet {method} {path} answered {status}: {body}"
+    );
     Some(body.to_owned())
 }
 
@@ -326,4 +343,354 @@ async fn mixed_generation_federation_is_rejected() {
     );
 
     sdk.shutdown().await.expect("the instance shuts down");
+}
+
+/// Builds an instance on a fresh directory and joins devimint's federation.
+///
+/// The directory is returned so it outlives the instance; a caller that reopens the same storage
+/// keeps it and builds again over `path`.
+async fn joined(devimint: &Devimint) -> (tempfile::TempDir, String, Sdk, fedimint_sdk::Federation) {
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+    let storage = tempfile::tempdir().expect("a temporary directory");
+    let path = storage.path().to_str().expect("a utf-8 path").to_owned();
+    let sdk = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+    let federation = sdk.join(&invite).await.expect("the federation joins");
+    (storage, path, sdk, federation)
+}
+
+/// Funds the wallet by having the faucet pay an invoice this SDK issued, and returns what landed.
+async fn fund(lightning: &fedimint_sdk::Lightning, msats: u64) -> fedimint_sdk::Amount {
+    let receive = lightning
+        .receive(fedimint_sdk::Amount::from_msats(msats), "funding")
+        .await
+        .expect("an invoice is issued");
+    let paid = faucet("POST", "/pay", &receive.invoice.to_string());
+    assert!(paid.is_some(), "the faucet pays the invoice");
+    let state = receive
+        .operation
+        .await_final()
+        .await
+        .expect("the receive settles");
+    assert_eq!(state, fedimint_sdk::LnReceiveState::Claimed);
+    receive
+        .operation
+        .details()
+        .await
+        .expect("details")
+        .net_credit
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
+    use fedimint_sdk::{Amount, LnReceiveState, OperationKind};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+
+    let receive = lightning
+        .receive(Amount::from_msats(100_000), "coffee")
+        .await
+        .expect("an invoice is issued");
+    let id = receive.operation.id();
+    let details = receive.operation.details().await.expect("details");
+    assert_eq!(details.invoice, receive.invoice);
+    assert_eq!(details.description, "coffee");
+    assert_eq!(details.requested_amount, Amount::from_msats(100_000));
+    assert_eq!(details.invoice_amount, Amount::from_msats(100_000));
+    assert_eq!(
+        details.net_credit.checked_add(details.fee),
+        Some(details.invoice_amount)
+    );
+    assert!(details.gateway_id.is_some(), "a gateway took the invoice");
+    assert!(details.expires_at > details.created_at);
+    assert_eq!(receive.invoice.amount(), Some(Amount::from_msats(100_000)));
+    assert_eq!(receive.invoice.description(), "coffee");
+
+    let mut updates = receive.operation.updates();
+    let first = updates.next().await.expect("a state").expect("a state");
+    assert!(
+        matches!(
+            first,
+            LnReceiveState::Created | LnReceiveState::WaitingForPayment
+        ),
+        "{first:?}"
+    );
+
+    assert!(faucet("POST", "/pay", &receive.invoice.to_string()).is_some());
+    let last = receive.operation.await_final().await.expect("settles");
+    assert_eq!(last, LnReceiveState::Claimed);
+    assert_eq!(
+        federation.balance().await.expect("balance"),
+        details.net_credit
+    );
+    // A subscription opened before the payment ends cleanly after it.
+    let mut seen = vec![first];
+    while let Some(state) = updates.next().await.expect("a state") {
+        seen.push(state);
+    }
+    assert_eq!(seen.last(), Some(&LnReceiveState::Claimed));
+
+    // Reattaching by id, same process.
+    let any = federation
+        .operation(&id)
+        .await
+        .expect("lookup")
+        .expect("recorded");
+    assert_eq!(any.kind(), OperationKind::LnReceive);
+    let typed = any.as_ln_receive().expect("a typed handle");
+    assert_eq!(typed.details().await.expect("details"), details);
+    assert_eq!(typed.state().await.expect("state"), LnReceiveState::Claimed);
+
+    // And after a restart.
+    let federation_id = federation.id();
+    sdk.shutdown().await.expect("shuts down");
+    drop(lightning);
+    drop(federation);
+    drop(receive);
+    drop(sdk);
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("reopens");
+    let federation = reopened.federation(&federation_id).expect("still there");
+    let any = federation
+        .operation(&id)
+        .await
+        .expect("lookup")
+        .expect("still recorded");
+    let typed = any.as_ln_receive().expect("a typed handle");
+    assert_eq!(typed.details().await.expect("details"), details);
+    assert_eq!(typed.state().await.expect("state"), LnReceiveState::Claimed);
+    assert_eq!(
+        federation.balance().await.expect("balance"),
+        details.net_credit
+    );
+    reopened.shutdown().await.expect("shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lightning_send_pays_an_invoice_from_outside_the_federation() {
+    use fedimint_sdk::{Amount, LightningRoute, LnSendState, OperationKind};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let funded = fund(&lightning, 200_000).await;
+
+    let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "50000")
+        .expect("the faucet issues an invoice")
+        .trim()
+        .parse()
+        .expect("a bolt11 invoice");
+    let quote = lightning.quote(&invoice).await.expect("a quote");
+    assert_eq!(quote.invoice_amount(), Amount::from_msats(50_000));
+    assert_eq!(
+        quote.invoice_amount().checked_add(quote.fee()),
+        Some(quote.total())
+    );
+    let breakdown = quote.fee_breakdown();
+    let summed = [
+        breakdown.gateway,
+        breakdown.lightning_module,
+        breakdown.primary_module,
+        breakdown.dust,
+    ]
+    .into_iter()
+    .try_fold(Amount::from_msats(0), Amount::checked_add);
+    assert_eq!(summed, Some(quote.fee()));
+    assert!(
+        matches!(quote.route(), LightningRoute::Gateway { .. }),
+        "an outside payee goes through a gateway"
+    );
+    assert!(quote.expires_at() > fedimint_sdk::Timestamp::from_epoch_millis(0));
+    let total = quote.total();
+    let fee = quote.fee();
+    let route = quote.route();
+
+    let operation = lightning.send(quote).await.expect("the payment starts");
+    let id = operation.id();
+    let details = operation.details().await.expect("details");
+    assert_eq!(details.invoice, invoice);
+    assert_eq!(details.invoice_amount, Amount::from_msats(50_000));
+    assert_eq!(details.fee, fee);
+    assert_eq!(details.total, total);
+    assert_eq!(details.route, route);
+
+    let last = operation.await_final().await.expect("settles");
+    match last {
+        LnSendState::Success {
+            preimage,
+            fee: reported_fee,
+            route: reported_route,
+        } => {
+            assert_eq!(reported_fee, fee);
+            assert_eq!(reported_route, route);
+            assert_eq!(preimage.to_string().len(), 64);
+        }
+        other => panic!("expected Success, got {other:?}"),
+    }
+    assert_eq!(
+        federation.balance().await.expect("balance"),
+        funded.checked_sub(total).expect("the total was debited")
+    );
+
+    let any = federation
+        .operation(&id)
+        .await
+        .expect("lookup")
+        .expect("recorded");
+    assert_eq!(any.kind(), OperationKind::LnSend);
+    let typed = any.as_ln_send().expect("a typed handle");
+    assert_eq!(typed.details().await.expect("details"), details);
+    assert!(matches!(
+        typed.state().await.expect("state"),
+        LnSendState::Success { .. }
+    ));
+    sdk.shutdown().await.expect("shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lightning_quote_refuses_what_cannot_be_paid() {
+    use fedimint_sdk::{Amount, Network};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+
+    // A mainnet invoice with no amount: the amount is refused first.
+    let amountless: fedimint_sdk::Bolt11Invoice = "lnbc1pj48ugqdq0dehjqctdda6kuaqpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qsp5xvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxves9qrsgqcqzyswm4efuu52zkzgrcc35fra9fmvj7s9ppxmej85s83hjkh7crcy9vqlradwalsmq40knf3552panjvlhjlrfazmvs86krxuaygut8v30sq0y0422".parse().expect("valid");
+    assert_eq!(
+        lightning
+            .quote(&amountless)
+            .await
+            .expect_err("refused")
+            .code,
+        ErrorCode::AmountlessInvoice
+    );
+
+    // A mainnet invoice with an amount: the network is refused, with details.
+    let mainnet: fedimint_sdk::Bolt11Invoice = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu".parse().expect("valid");
+    let err = lightning.quote(&mainnet).await.expect_err("refused");
+    assert_eq!(err.code, ErrorCode::NetworkMismatch);
+    match err.detail() {
+        Some(ErrorDetails::NetworkMismatch {
+            expected,
+            compatible,
+            observed_prefix,
+        }) => {
+            assert_eq!(*expected, Network::Regtest);
+            assert_eq!(compatible, &vec![Network::Bitcoin]);
+            assert_eq!(observed_prefix, "bc");
+        }
+        other => panic!("expected NetworkMismatch details, got {other:?}"),
+    }
+
+    // A fresh regtest invoice on an empty wallet: everything upstream succeeds and the balance
+    // is what refuses it, naming both numbers.
+    let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "50000")
+        .expect("the faucet issues an invoice")
+        .trim()
+        .parse()
+        .expect("a bolt11 invoice");
+    let err = lightning
+        .quote(&invoice)
+        .await
+        .expect_err("nothing to pay with");
+    assert_eq!(err.code, ErrorCode::InsufficientBalance);
+    match err.detail() {
+        Some(ErrorDetails::InsufficientBalance {
+            required,
+            available,
+        }) => {
+            assert!(*required >= Amount::from_msats(50_000));
+            assert_eq!(*available, Amount::from_msats(0));
+        }
+        other => panic!("expected InsufficientBalance details, got {other:?}"),
+    }
+
+    // A zero-amount receive and an over-long description are refused before any gateway is
+    // asked.
+    assert_eq!(
+        lightning
+            .receive(Amount::from_msats(0), "nothing")
+            .await
+            .expect_err("refused")
+            .code,
+        ErrorCode::InvalidInput
+    );
+    assert_eq!(
+        lightning
+            .receive(Amount::from_msats(1_000), &"x".repeat(640))
+            .await
+            .expect_err("refused")
+            .code,
+        ErrorCode::InvalidInput
+    );
+    sdk.shutdown().await.expect("shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lightning_send_refuses_a_quote_used_twice() {
+    use fedimint_sdk::LnSendState;
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    fund(&lightning, 200_000).await;
+
+    let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "10000")
+        .expect("the faucet issues an invoice")
+        .trim()
+        .parse()
+        .expect("a bolt11 invoice");
+    let first = lightning.quote(&invoice).await.expect("a quote");
+    let second = lightning.quote(&invoice).await.expect("a second quote");
+    let operation = lightning.send(first).await.expect("the payment starts");
+    assert!(matches!(
+        operation.await_final().await.expect("settles"),
+        LnSendState::Success { .. }
+    ));
+    // The invoice is paid; a second quote for it is refused as already executed.
+    let err = lightning.send(second).await.expect_err("already paid");
+    assert_eq!(err.code, ErrorCode::QuoteExpired);
+    match err.detail() {
+        Some(ErrorDetails::QuoteExpired {
+            already_executed, ..
+        }) => assert!(already_executed),
+        other => panic!("expected QuoteExpired details, got {other:?}"),
+    }
+    sdk.shutdown().await.expect("shuts down");
 }

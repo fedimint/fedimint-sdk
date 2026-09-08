@@ -397,28 +397,6 @@ pub struct LnReceive {
 /// whether returned or never debited; [`Failed`](Self::Failed) means the
 /// payment did not resolve into either. A payment has no cancellation:
 /// once sent it runs to one of those endings.
-// Implementation notes (delete once implemented):
-//
-// This unifies three upstream machines: v1 `LnPayState` (gateway-routed), v1
-// `InternalPayState` (selected by `PayType::Internal`) and lnv2 `SendOperationState`.
-//
-// - Funding-in-progress states map to `Created`/`Funded`; every preimage-obtained state to
-//   `Success`; everything that ends with the funds spendable again to `Refunded`; a refund
-//   that itself failed, or an unresolved error, to `Failed`.
-// - v1 `LnPayState::Canceled`: called off before the gateway took it, nothing debited,
-//   so `Refunded`.
-// - `InternalPayState::FundingFailed`, and lnv2 `Failure` straight after `Funding`: the
-//   federation rejected the funding transaction, nothing debited, so `Refunded`. lnv2 uses
-//   the same `Failure` variant for a failed refund, so key on whether `Funded` was reached
-//   and persist that phase.
-// - lnv2 `Failure` after `Refunding`: neither paid nor back, so `Failed`.
-// - lnv2 `Refunding` is in progress, not final: map to `Funded`, then `Refunded` when it
-//   lands.
-// - Normalise the preimage: v1 reports hex, lnv2 raw bytes.
-// - The v1 progress stream carries neither the fee nor the gateway id. Both come from the
-//   executed quote and are persisted in `LnSendDetails`; `Success` is filled from there.
-//
-// The variant set is provisional until reconciled against the lightning client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LnSendState {
@@ -525,34 +503,6 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// [`Canceled`](Self::Canceled), the receive was called off before anything
 /// was funded; and [`Failed`](Self::Failed), a payment got past "nobody paid"
 /// and still produced no credit. Only the last warrants alarming a user.
-// Implementation notes (delete once implemented):
-//
-// v1 `LnReceiveState` is `Created`, `WaitingForPayment { invoice, timeout }`,
-// `Canceled { reason }`, `Funded`, `AwaitingFunds`, `Claimed`. `AwaitingFunds` folds into
-// `Funded`. The cancellation reason is a typed `LightningReceiveError`; nothing is parsed.
-//
-// | upstream v1                   | phase reached      | here                          |
-// | ----------------------------- | ------------------ | ----------------------------- |
-// | `Canceled { Timeout }`        | any                | `Expired`                     |
-// | `Canceled { ClaimRejected }`  | any                | `Funded`, then reclaim        |
-// | `Canceled { InvalidPreimage }`| any                | `Failed`                      |
-// | `Canceled { Rejected }`       | before `Funded`    | `Canceled`                    |
-// | `Canceled { Rejected }`       | at or after `Funded` | `Failed`                    |
-//
-// - `ClaimRejected` and `InvalidPreimage` presuppose a funded contract and arrive before
-//   upstream's own `Funded` (which is only emitted once the claim is accepted), so the phase
-//   must not be consulted for them. `InvalidPreimage` unwinds the payment: `Failed`.
-//   `ClaimRejected` is not final: move to `Funded` and drive the client's reclaim
-//   (`reclaim_ln_receive`) under the same operation id until `Claimed`, or `Failed` once no
-//   further claim is possible.
-// - `Rejected` is emitted both for the invoice-registration transaction being refused and
-//   for the claim's primary outputs failing after a confirmed payment. Persist whether the
-//   receive ever reached `Funded`; after a restart that is the only way to tell them apart.
-// - lnv2 `ReceiveOperationState` has explicit pending/claiming/claimed/expired states that
-//   map directly. Its `Failure` after an accepted claim is `Failed`; a rejected but still
-//   claimable claim stays `Funded` and reclaims, as for v1.
-//
-// The variant set is provisional until reconciled against the lightning client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LnReceiveState {
