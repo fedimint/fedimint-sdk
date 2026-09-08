@@ -643,12 +643,15 @@ pub(super) async fn send(
             }
             internal(format!("the payment could not be started: {text}"))
         })?;
-    // The module's own answer is authoritative for what actually happened, so the record reflects
-    // what was debited, not what was quoted. The two normally agree, because the check above
-    // reads the same decision the module is about to make; they can still disagree once more,
-    // since the gateway cache the module reads from is shared and can move again between that
-    // check and this call. When a payment quoted through a gateway settles internally after all,
-    // no gateway fee was ever charged, so it is backed out of the quoted fee and total.
+    // The module's answer after funding is authoritative for the route; a payment quoted
+    // through a gateway that settled internally paid no gateway fee. The gateway component is
+    // the only part of the fee this code knows for certain was not charged, so it is what is
+    // backed out. The lightning module's fee is a flat consensus figure and carries over
+    // exactly; the primary module's and dust components are the quote's figures for a contract
+    // larger by the gateway fee, kept as a best-effort estimate because upstream gives no way to
+    // read the assembled fee back after funding. The recorded total is therefore an upper bound
+    // on the debit in this residual case, which is reached only if the gateway cache moves
+    // between the route re-check above and the module's own decision.
     let (id, route, fee, total) = match payment.payment_type {
         PayType::Internal(id) if quoted_internal => (
             id,
