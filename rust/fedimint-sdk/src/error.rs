@@ -2587,7 +2587,7 @@ mod tests {
             already_executed: true,
         };
         let bytes_expired: &[u8] = &[
-            0x00, 0x00, 0x01, 0x8B, 0xCA, 0x5E, 0xA3, 0x00, // 1_700_000_000_000 u64 be
+            0x00, 0x00, 0x01, 0x8B, 0xCF, 0xE5, 0x68, 0x00, // 1_700_000_000_000 u64 be
             0x01, // already_executed: true
         ];
         assert_eq!(expected_expired.encode_payload(), bytes_expired);
