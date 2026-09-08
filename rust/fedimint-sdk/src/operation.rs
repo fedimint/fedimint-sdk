@@ -1346,10 +1346,16 @@ pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
     /// What the SDK would have written for this entry, or `None` if this backfiller does not
     /// recognise it.
     ///
-    /// `module_kind` is `OperationLogEntry::operation_module_kind`, and `meta` is the entry's
-    /// own JSON, read with `try_meta` so that a shape this build does not know is a `None` here
-    /// rather than a panic.
-    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled>;
+    /// `module_kind` is `OperationLogEntry::operation_module_kind`, `meta` is the entry's own
+    /// JSON, read with `try_meta` so that a shape this build does not know is a `None` here
+    /// rather than a panic, and `created_at` is the client's own creation time in milliseconds,
+    /// for the details records that carry one.
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        created_at: u64,
+    ) -> Option<Backfilled>;
 }
 
 /// What a [`Backfiller`] recovered from a log entry.
@@ -1508,7 +1514,12 @@ pub(crate) struct ProbeBackfiller;
 
 #[cfg(test)]
 impl Backfiller for ProbeBackfiller {
-    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled> {
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        _created_at: u64,
+    ) -> Option<Backfilled> {
         (module_kind == "probe_module").then(|| Backfilled {
             kind: kinds::ECASH_SEND,
             details: meta.to_string(),
@@ -1659,30 +1670,80 @@ impl OperationInner {
     ///
     /// [`Storage`](crate::ErrorCode::Storage).
     pub(crate) async fn record_phase(&self, phase: u32) -> Result<()> {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-
-        let db = self.federation.db();
-        let id = self.id;
-        db.autocommit(
-            |dbtx, _| {
-                Box::pin(async move {
-                    let key = crate::db::OperationRecordKey(id);
-                    let Some(mut record) = dbtx.get_value(&key).await else {
-                        return Ok(());
-                    };
-                    if record.phase.is_some_and(|reached| reached >= phase) {
-                        return Ok(());
-                    }
-                    record.phase = Some(phase);
-                    dbtx.insert_entry(&key, &record).await;
-                    Ok::<(), core::convert::Infallible>(())
-                })
-            },
-            Some(100),
-        )
-        .await
-        .map_err(crate::db::storage_error)
+        record_phase_in(&self.federation.db(), self.id, phase).await
     }
+}
+
+/// [`OperationInner::record_phase`] for a caller that holds a database handle rather than an
+/// operation handle: a driver's stream, which outlives the borrow it was created from.
+///
+/// # Errors
+///
+/// [`Storage`](crate::ErrorCode::Storage).
+pub(crate) async fn record_phase_in(
+    db: &fedimint_core::db::Database,
+    id: UpstreamOperationId,
+    phase: u32,
+) -> Result<()> {
+    use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+    db.autocommit(
+        |dbtx, _| {
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(());
+                };
+                if record.phase.is_some_and(|reached| reached >= phase) {
+                    return Ok(());
+                }
+                record.phase = Some(phase);
+                dbtx.insert_entry(&key, &record).await;
+                Ok::<(), core::convert::Infallible>(())
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
+}
+
+/// Replaces the details JSON of one record, for a documented fill-in-later field.
+///
+/// The one legitimate use is a field that goes from absent to present once
+/// ([`OperationDetails`]'s placement rule); the caller passes the whole record re-encoded, and
+/// a record that has gone is not an error, exactly as in [`record_phase_in`].
+///
+/// # Errors
+///
+/// [`Storage`](crate::ErrorCode::Storage).
+pub(crate) async fn write_details_in(
+    db: &fedimint_core::db::Database,
+    id: UpstreamOperationId,
+    details: String,
+) -> Result<()> {
+    use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+    db.autocommit(
+        |dbtx, _| {
+            let details = details.clone();
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(());
+                };
+                if record.details == details {
+                    return Ok(());
+                }
+                record.details = details;
+                dbtx.insert_entry(&key, &record).await;
+                Ok::<(), core::convert::Infallible>(())
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
 }
 
 /// The shared state behind a type-erased operation handle.
@@ -2387,12 +2448,12 @@ mod tests {
         assert_eq!(backfillers.len(), 1);
         assert!(
             backfillers[0]
-                .backfill("probe_module", &serde_json::Value::Null)
+                .backfill("probe_module", &serde_json::Value::Null, 0)
                 .is_some()
         );
         assert!(
             backfillers[0]
-                .backfill("mint", &serde_json::Value::Null)
+                .backfill("mint", &serde_json::Value::Null, 0)
                 .is_none()
         );
     }
@@ -2990,5 +3051,35 @@ mod tests {
             operation.inner.reload().await.expect("record").phase,
             Some(3)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn details_can_be_rewritten_once_a_later_fact_is_known() {
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([9u8; 32]);
+        let operation = federation
+            .create_operation(
+                id,
+                kinds::ECASH_SEND,
+                "mint",
+                &serde_json::json!({"settled_at": null}),
+                Arc::new(ProbeEcashSendDriver) as Arc<dyn Driver<EcashSendState>>,
+            )
+            .await
+            .expect("create");
+
+        write_details_in(&db, id, r#"{"settled_at":7}"#.to_owned())
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            operation.inner().reload().await.expect("reload").details,
+            r#"{"settled_at":7}"#
+        );
+
+        // A record that has gone is not a failure to write.
+        write_details_in(&db, UpstreamOperationId([10u8; 32]), "{}".to_owned())
+            .await
+            .expect("no record is fine");
     }
 }

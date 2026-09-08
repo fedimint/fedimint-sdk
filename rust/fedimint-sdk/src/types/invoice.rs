@@ -90,6 +90,11 @@ impl Bolt11Invoice {
         Self { invoice }
     }
 
+    /// The wrapped invoice, for the lightning facade's route-hint and payee checks.
+    pub(crate) fn inner(&self) -> &lightning_invoice::Bolt11Invoice {
+        &self.invoice
+    }
+
     /// The network this invoice's BOLT11 currency names, or `None` for a
     /// currency this crate's [`Network`] cannot represent.
     ///

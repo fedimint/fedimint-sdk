@@ -833,7 +833,7 @@ impl FederationInner {
         let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
         let claimed = crate::operation::backfillers()
             .into_iter()
-            .find_map(|backfiller| backfiller.backfill(&module, &meta));
+            .find_map(|backfiller| backfiller.backfill(&module, &meta, created_at));
         let record = match claimed {
             Some(claimed) => crate::db::OperationRecord {
                 schema_version: crate::operation::READABLE_STATE_SCHEMA,
