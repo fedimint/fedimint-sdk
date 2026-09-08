@@ -77,7 +77,9 @@ impl Lightning {
     /// recovery is incomplete,
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout), and
+    /// [`Timeout`](crate::ErrorCode::Timeout),
+    /// [`Internal`](crate::ErrorCode::Internal) for a failure this crate
+    /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, invoice: &Bolt11Invoice) -> Result<LnQuote> {
         // Implementation notes (delete once implemented):
@@ -122,7 +124,9 @@ impl Lightning {
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage), and
+    /// [`Storage`](crate::ErrorCode::Storage),
+    /// [`Internal`](crate::ErrorCode::Internal) for a failure this crate
+    /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: LnQuote) -> Result<Operation<LnSendState>> {
         // Implementation notes (delete once implemented):
@@ -164,7 +168,9 @@ impl Lightning {
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage), and
+    /// [`Storage`](crate::ErrorCode::Storage),
+    /// [`Internal`](crate::ErrorCode::Internal) for a failure this crate
+    /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self, amount: Amount, description: &str) -> Result<LnReceive> {
         // Implementation notes (delete once implemented):

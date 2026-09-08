@@ -514,10 +514,21 @@ async fn terms_for(
         from_upstream(gateway.fees.to_amount(&to_upstream(amount)))
     });
     let contract_amount = add(amount, gateway_fee)?;
+    // A dry run of the primary module's balancing fails with `InsufficientBalanceError` when the
+    // notes on hand cannot cover the contract; that is reported as the balance problem it is,
+    // rather than as an opaque internal failure.
     let quote = module
         .send_fee_quote(to_upstream(contract_amount))
         .await
-        .map_err(|err| internal(format!("could not quote the funding fee: {err}")))?;
+        .map_err(|err| {
+            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
+                Some(short) => insufficient(
+                    from_upstream(short.requested_amount),
+                    from_upstream(short.total_amount),
+                ),
+                None => internal(format!("could not quote the funding fee: {err}")),
+            }
+        })?;
     let lightning_module = from_upstream(module.cfg.fee_consensus.contract_output);
     let route = match &gateway {
         None => LightningRoute::Internal,
@@ -538,10 +549,23 @@ async fn terms_for(
 /// Executes a v1 quote: re-reads every bound input, refuses on drift, funds, records.
 pub(super) async fn send(
     federation: &Arc<FederationInner>,
+    client: &Client,
     module: &ClientModuleInstance<'_, LightningClientModule>,
     quote: &LnQuoteInner,
     gateway: Option<Box<LightningGateway>>,
 ) -> Result<Operation<LnSendState>> {
+    // `pay_bolt11_invoice` decides internal-vs-gateway for itself, from the invoice and the
+    // gateway cache as they stand when it is called (`fedimint-ln-client/src/lib.rs:1405-1418`).
+    // That cache is shared and can move between the quote and this call, so the same decision is
+    // read again here, before anything is funded: a route that moved is `QuoteChanged`, not a
+    // fee mismatch discovered only after the payment went out.
+    let quoted_internal = matches!(quote.plan.route, LightningRoute::Internal);
+    if is_internal(client, module, &quote.invoice).await? != quoted_internal {
+        return Err(Error::new(
+            ErrorCode::QuoteChanged,
+            "the payment's route changed since the quote was issued; quote again",
+        ));
+    }
     // The gateway may have withdrawn or changed its fees since the quote; the cache is what the
     // module pays through, so it is what is checked.
     let gateway = match gateway {
@@ -594,9 +618,15 @@ pub(super) async fn send(
                     | PayBolt11InvoiceError::FundedContractAlreadyExists { .. } => {
                         quote_expired(quote.expires_at, true)
                     }
-                    PayBolt11InvoiceError::NoLnGatewayAvailable => {
-                        gateway_unavailable("the module found no gateway for this route")
-                    }
+                    // A `None` gateway is only ever passed for a quote whose route was checked
+                    // internal just above; this fires only when the shared cache moved again
+                    // between that check and this call, so the module's own re-derivation no
+                    // longer agrees the payment is internal. The same drift the check above
+                    // guards against, caught one call later instead of missed.
+                    PayBolt11InvoiceError::NoLnGatewayAvailable => Error::new(
+                        ErrorCode::QuoteChanged,
+                        "the payment's route changed since the quote was issued; quote again",
+                    ),
                 };
             }
             if let Some(short) =
@@ -611,20 +641,42 @@ pub(super) async fn send(
             if text.contains("Invoice has expired") {
                 return quote_expired(quote.expires_at, false);
             }
-            if text.contains("Insufficient balance") {
-                return Error::new(ErrorCode::InsufficientBalance, text);
-            }
             internal(format!("the payment could not be started: {text}"))
         })?;
-    let (id, route) = match payment.payment_type {
-        PayType::Internal(id) => (id, LightningRoute::Internal),
-        PayType::Lightning(id) => (id, quote.plan.route.clone()),
+    // The module's own answer is authoritative for what actually happened, so the record reflects
+    // what was debited, not what was quoted. The two normally agree, because the check above
+    // reads the same decision the module is about to make; they can still disagree once more,
+    // since the gateway cache the module reads from is shared and can move again between that
+    // check and this call. When a payment quoted through a gateway settles internally after all,
+    // no gateway fee was ever charged, so it is backed out of the quoted fee and total.
+    let (id, route, fee, total) = match payment.payment_type {
+        PayType::Internal(id) if quoted_internal => (
+            id,
+            LightningRoute::Internal,
+            quote.plan.fee,
+            quote.plan.total,
+        ),
+        PayType::Internal(id) => {
+            let fee = quote
+                .plan
+                .fee
+                .checked_sub(quote.plan.breakdown.gateway)
+                .ok_or_else(|| internal("the quoted fee is smaller than the quoted gateway fee"))?;
+            let total = add(quote.invoice_amount, fee)?;
+            (id, LightningRoute::Internal, fee, total)
+        }
+        PayType::Lightning(id) => (
+            id,
+            quote.plan.route.clone(),
+            quote.plan.fee,
+            quote.plan.total,
+        ),
     };
     let details = crate::LnSendDetails {
         invoice: quote.invoice.clone(),
         invoice_amount: quote.invoice_amount,
-        fee: quote.plan.fee,
-        total: quote.plan.total,
+        fee,
+        total,
         route,
         created_at: now(),
     };
@@ -662,10 +714,21 @@ pub(super) async fn receive(
         .map_err(gateway_unavailable)?;
     // v1 takes no gateway fee on the way in: the gateway funds the contract for the invoice's
     // amount and the only deduction is the federation's fee for claiming it.
+    // Same as in `terms_for`: a dry run of the primary module's balancing fails with
+    // `InsufficientBalanceError` when the notes on hand cannot cover the contract, which is
+    // reported as the balance problem it is.
     let quote = module
         .receive_fee_quote(to_upstream(amount))
         .await
-        .map_err(|err| internal(format!("could not quote the claim fee: {err}")))?;
+        .map_err(|err| {
+            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
+                Some(short) => insufficient(
+                    from_upstream(short.requested_amount),
+                    from_upstream(short.total_amount),
+                ),
+                None => internal(format!("could not quote the claim fee: {err}")),
+            }
+        })?;
     let fee = from_upstream(quote.total().get_bitcoin());
     let net_credit = amount.checked_sub(fee).ok_or_else(|| {
         Error::new(
