@@ -24,9 +24,9 @@ use super::{
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in};
 use crate::{
-    Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
-    LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Operation, Preimage, Result,
-    Timestamp,
+    Amount, Bolt11Invoice, Error, ErrorCode, ErrorDetails, GatewayId, LightningRoute, LnReceive,
+    LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Network, Operation, Preimage,
+    Result, Timestamp,
 };
 
 // lnv2 `SendOperationState` onto `LnSendState`. `Failure` means two things: the funding
@@ -311,7 +311,7 @@ pub(super) async fn send(
             serde_json::Value::Null,
         )
         .await
-        .map_err(|err| send_error(err, quote))?;
+        .map_err(|err| send_error(err, quote, federation.record().network.into()))?;
     let details = crate::LnSendDetails {
         invoice: quote.invoice.clone(),
         invoice_amount: quote.invoice_amount,
@@ -340,7 +340,7 @@ fn select_error(err: SelectGatewayError) -> Error {
     }
 }
 
-fn send_error(err: SendPaymentError, quote: &LnQuoteInner) -> Error {
+fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) -> Error {
     match err {
         SendPaymentError::InvoiceMissingAmount => Error::new(
             ErrorCode::AmountlessInvoice,
@@ -360,10 +360,21 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner) -> Error {
         SendPaymentError::FailedToFundPayment(cause) => {
             internal(format!("the payment could not be funded: {cause}"))
         }
-        // Unreachable: `preflight` already refused a foreign-network invoice with full details.
-        SendPaymentError::WrongCurrency { .. } => Error::new(
+        // Reachable on a testnet4 federation: lnv2 compares the invoice's currency to the
+        // configured network strictly (`self.cfg.network != invoice.currency().into()`,
+        // fedimint-lnv2-client/src/lib.rs:560-565), but BOLT11 spells testnet3 and testnet4
+        // the same way (`tb`), so a `tb` invoice this SDK's own `check_network` accepts is
+        // still refused by the module. This is an upstream limitation of lnv2 (v1 compares by
+        // currency class instead); the SDK reports it with the same detail `check_network`
+        // would have produced rather than trying to work around it.
+        SendPaymentError::WrongCurrency { .. } => Error::with_details(
             ErrorCode::NetworkMismatch,
-            "the invoice is for another network",
+            "the lnv2 module refused the invoice's network",
+            ErrorDetails::NetworkMismatch {
+                expected,
+                compatible: super::compatible_networks(quote.invoice.network()),
+                observed_prefix: quote.invoice.observed_prefix(),
+            },
         ),
     }
 }
@@ -647,5 +658,54 @@ mod tests {
     fn a_contract_below_the_invoice_amount_is_not_claimed() {
         assert!(backfill(&outgoing_meta(1), 0).is_none());
         assert!(backfill(&serde_json::Value::Null, 0).is_none());
+    }
+
+    fn a_quote() -> LnQuoteInner {
+        LnQuoteInner {
+            federation_id: fedimint_core::config::FederationId::dummy(),
+            invoice: REGTEST_INVOICE.parse().expect("a valid regtest invoice"),
+            invoice_amount: Amount::from_msats(100_000),
+            plan: Plan {
+                breakdown: crate::LnFeeBreakdown {
+                    gateway: Amount::from_msats(0),
+                    lightning_module: Amount::from_msats(0),
+                    primary_module: Amount::from_msats(0),
+                    dust: Amount::from_msats(0),
+                },
+                fee: Amount::from_msats(0),
+                total: Amount::from_msats(100_000),
+                route: route(),
+                terms: Terms::V1 { gateway: None },
+            },
+            expires_at: Timestamp::from_epoch_millis(0),
+        }
+    }
+
+    #[test]
+    fn a_wrong_currency_refusal_on_testnet4_carries_the_regtest_invoices_networks() {
+        use fedimint_ln_common::lightning_invoice::Currency;
+
+        let quote = a_quote();
+        let err = send_error(
+            SendPaymentError::WrongCurrency {
+                invoice_currency: Currency::BitcoinTestnet,
+                federation_currency: Currency::BitcoinTestnet,
+            },
+            &quote,
+            Network::Testnet4,
+        );
+        assert_eq!(err.code, ErrorCode::NetworkMismatch);
+        match err.detail() {
+            Some(ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            }) => {
+                assert_eq!(*expected, Network::Testnet4);
+                assert_eq!(compatible, &vec![Network::Regtest]);
+                assert_eq!(observed_prefix, "bcrt");
+            }
+            other => panic!("expected NetworkMismatch details, got {other:?}"),
+        }
     }
 }

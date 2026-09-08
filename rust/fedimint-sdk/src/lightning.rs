@@ -117,6 +117,9 @@ impl Lightning {
     ///
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired),
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged),
+    /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on an lnv2
+    /// federation running testnet4, whose module cannot pay a `tb` invoice
+    /// at all,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance),
     /// [`GatewayUnavailable`](crate::ErrorCode::GatewayUnavailable),
     /// [`Recovering`](crate::ErrorCode::Recovering) while the federation's
@@ -732,7 +735,7 @@ fn preflight(invoice: &Bolt11Invoice, network: Network) -> Result<Amount> {
 
 /// Every network a BOLT11 currency class could stand for: `tb` is both public testnets, and a
 /// class this crate cannot name (simnet) is the empty set, which still proves a mismatch.
-fn compatible_networks(from_invoice: Option<Network>) -> Vec<Network> {
+pub(super) fn compatible_networks(from_invoice: Option<Network>) -> Vec<Network> {
     match from_invoice {
         Some(Network::Testnet) => vec![Network::Testnet, Network::Testnet4],
         Some(network) => vec![network],
