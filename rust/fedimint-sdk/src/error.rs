@@ -526,6 +526,27 @@ impl RawErrorDetails {
             payload: payload.into(),
         }
     }
+
+    /// Attempts to decode this raw envelope's payload into a typed [`ErrorDetails`].
+    ///
+    /// Returns `Some(detail)` if the `kind` is recognised and the payload decoded
+    /// with exact consumption; returns `None` otherwise.
+    pub fn decode(&self) -> Option<ErrorDetails> {
+        ErrorDetails::decode_payload(&self.kind, &self.payload)
+    }
+
+    /// Converts this raw envelope into a [`DetailEnvelope`], projecting it
+    /// into [`DetailEnvelope::Interpreted`] if decoding succeeds, or preserving it
+    /// as [`DetailEnvelope::Opaque`] if it does not.
+    pub fn to_envelope(self) -> DetailEnvelope {
+        match self.decode() {
+            Some(detail) => DetailEnvelope::Interpreted {
+                detail,
+                producer_version: self.version,
+            },
+            None => DetailEnvelope::Opaque { raw: self },
+        }
+    }
 }
 
 /// An error's structured detail, in whichever of its two states this side
@@ -576,6 +597,28 @@ pub enum DetailEnvelope {
 }
 
 impl DetailEnvelope {
+    /// Projects a [`RawErrorDetails`] into a [`DetailEnvelope`].
+    ///
+    /// Equivalent to [`raw.to_envelope()`](RawErrorDetails::to_envelope).
+    pub fn from_raw(raw: RawErrorDetails) -> DetailEnvelope {
+        raw.to_envelope()
+    }
+
+    /// Converts this envelope into its boundary wire form, [`RawErrorDetails`].
+    ///
+    /// For [`DetailEnvelope::Interpreted`], this re-encodes the typed detail with the
+    /// declared `producer_version`. For [`DetailEnvelope::Opaque`], the original
+    /// raw envelope is returned.
+    pub fn to_raw(&self) -> RawErrorDetails {
+        match self {
+            DetailEnvelope::Interpreted {
+                detail,
+                producer_version,
+            } => detail.to_raw(*producer_version),
+            DetailEnvelope::Opaque { raw } => raw.clone(),
+        }
+    }
+
     /// The stable kind identifier of this detail, projected or not.
     ///
     /// For [`Interpreted`](DetailEnvelope::Interpreted) that is
@@ -865,6 +908,279 @@ impl ErrorDetails {
             | ErrorDetails::StorageInUse { .. }
             | ErrorDetails::SeedMismatch { .. }
             | ErrorDetails::StorageOrphaned { .. } => 1,
+        }
+    }
+
+    /// Encodes this detail's fields into a binary payload per the documented contract.
+    pub fn encode_payload(&self) -> Vec<u8> {
+        let mut w = PayloadWriter::new();
+        match self {
+            ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            } => {
+                w.write_u64(required.msats());
+                w.write_u64(available.msats());
+            }
+            ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            } => {
+                w.write_str(expected.as_str());
+                w.write_u32(compatible.len() as u32);
+                for net in compatible {
+                    w.write_str(net.as_str());
+                }
+                w.write_str(observed_prefix);
+            }
+            ErrorDetails::MixedModuleGenerations { modules } => {
+                w.write_u32(modules.len() as u32);
+                for m in modules {
+                    w.write_str(&m.kind);
+                    w.write_u32(m.generation);
+                }
+            }
+            ErrorDetails::QuoteExpired {
+                expires_at,
+                already_executed,
+            } => {
+                w.write_u64(expires_at.epoch_millis());
+                w.write_bool(*already_executed);
+            }
+            ErrorDetails::QuoteTermsChanged {
+                quoted_total,
+                current_total,
+            } => {
+                w.write_u64(quoted_total.msats());
+                w.write_u64(current_total.msats());
+            }
+            ErrorDetails::BalanceNotEmpty { remaining } => {
+                w.write_u64(remaining.msats());
+            }
+            ErrorDetails::StorageInUse { location } => {
+                w.write_str(location);
+            }
+            ErrorDetails::SeedMismatch { location } => {
+                w.write_str(location);
+            }
+            ErrorDetails::StorageOrphaned {
+                location,
+                seed_present,
+            } => {
+                w.write_str(location);
+                w.write_bool(*seed_present);
+            }
+        }
+        w.finish()
+    }
+
+    /// Packages this detail as a [`RawErrorDetails`] with the given declared version.
+    pub fn to_raw(&self, version: u32) -> RawErrorDetails {
+        RawErrorDetails::new(version, self.kind(), self.encode_payload())
+    }
+
+    /// Packages this detail as a [`RawErrorDetails`] using [`RawErrorDetails::CURRENT_VERSION`].
+    pub fn to_raw_current(&self) -> RawErrorDetails {
+        self.to_raw(RawErrorDetails::CURRENT_VERSION)
+    }
+
+    /// Decodes a binary payload for a known `kind` into a typed [`ErrorDetails`].
+    ///
+    /// Requires exact, checked consumption: returns `Some(detail)` if `kind` is recognised
+    /// and `payload` matches the frozen layout with no trailing bytes. Returns `None` if
+    /// `kind` is unknown, or if `payload` is truncated, has invalid UTF-8, non-boolean bytes,
+    /// or trailing bytes.
+    pub fn decode_payload(kind: &str, payload: &[u8]) -> Option<ErrorDetails> {
+        let mut r = PayloadReader::new(payload);
+        let detail = match kind {
+            "InsufficientBalance" => {
+                let required = Amount::from_msats(r.read_u64()?);
+                let available = Amount::from_msats(r.read_u64()?);
+                ErrorDetails::InsufficientBalance {
+                    required,
+                    available,
+                }
+            }
+            "NetworkMismatch" => {
+                let expected_str = r.read_str()?;
+                let expected = Network::from_name(expected_str)?;
+                let count = r.read_u32()? as usize;
+                // Not `Vec::with_capacity(count)`: `count` is untrusted wire
+                // input at this point, and reserving it up front would let a
+                // few-byte payload claiming billions of elements demand a
+                // huge allocation before a single element is validated to
+                // exist. Growing naturally is bounded by how many elements
+                // the payload can actually supply.
+                let mut compatible = Vec::new();
+                for _ in 0..count {
+                    let net_str = r.read_str()?;
+                    if let Some(net) = Network::from_name(net_str) {
+                        // `compatible` is documented as free of duplicates;
+                        // enforce that against untrusted input rather than
+                        // trusting the producer to have upheld it.
+                        if !compatible.contains(&net) {
+                            compatible.push(net);
+                        }
+                    }
+                }
+                let observed_prefix = r.read_str()?.to_string();
+                ErrorDetails::NetworkMismatch {
+                    expected,
+                    compatible,
+                    observed_prefix,
+                }
+            }
+            "MixedModuleGenerations" => {
+                let count = r.read_u32()? as usize;
+                // See the comment on `NetworkMismatch` above: `count` is
+                // untrusted, so it must not size an allocation up front.
+                let mut modules = Vec::new();
+                for _ in 0..count {
+                    let kind = r.read_str()?.to_string();
+                    let generation = r.read_u32()?;
+                    modules.push(ModuleGeneration::new(kind, generation));
+                }
+                // Documented as always having at least two entries, a
+                // conflict needs at least two participants. A payload that
+                // doesn't meet that isn't a valid instance of this kind.
+                if modules.len() < 2 {
+                    return None;
+                }
+                ErrorDetails::MixedModuleGenerations { modules }
+            }
+            "QuoteExpired" => {
+                let expires_at = Timestamp::from_epoch_millis(r.read_u64()?);
+                let already_executed = r.read_bool()?;
+                ErrorDetails::QuoteExpired {
+                    expires_at,
+                    already_executed,
+                }
+            }
+            "QuoteTermsChanged" => {
+                let quoted_total = Amount::from_msats(r.read_u64()?);
+                let current_total = Amount::from_msats(r.read_u64()?);
+                ErrorDetails::QuoteTermsChanged {
+                    quoted_total,
+                    current_total,
+                }
+            }
+            "BalanceNotEmpty" => {
+                let remaining = Amount::from_msats(r.read_u64()?);
+                ErrorDetails::BalanceNotEmpty { remaining }
+            }
+            "StorageInUse" => {
+                let location = r.read_str()?.to_string();
+                ErrorDetails::StorageInUse { location }
+            }
+            "SeedMismatch" => {
+                let location = r.read_str()?.to_string();
+                ErrorDetails::SeedMismatch { location }
+            }
+            "StorageOrphaned" => {
+                let location = r.read_str()?.to_string();
+                let seed_present = r.read_bool()?;
+                ErrorDetails::StorageOrphaned {
+                    location,
+                    seed_present,
+                }
+            }
+            _ => return None,
+        };
+        r.finish()?;
+        Some(detail)
+    }
+}
+
+/// Zero-dependency payload writer implementing the length-delimited wire contract.
+struct PayloadWriter {
+    buf: Vec<u8>,
+}
+
+impl PayloadWriter {
+    fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    fn write_u32(&mut self, val: u32) {
+        self.buf.extend_from_slice(&val.to_be_bytes());
+    }
+
+    fn write_u64(&mut self, val: u64) {
+        self.buf.extend_from_slice(&val.to_be_bytes());
+    }
+
+    fn write_bool(&mut self, val: bool) {
+        self.buf.push(if val { 1 } else { 0 });
+    }
+
+    fn write_str(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        self.write_u32(bytes.len() as u32);
+        self.buf.extend_from_slice(bytes);
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+/// Zero-dependency payload reader implementing exact, checked wire consumption.
+struct PayloadReader<'a> {
+    slice: &'a [u8],
+}
+
+impl<'a> PayloadReader<'a> {
+    fn new(slice: &'a [u8]) -> Self {
+        Self { slice }
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        if self.slice.len() < 4 {
+            return None;
+        }
+        let (val_bytes, rest) = self.slice.split_at(4);
+        self.slice = rest;
+        Some(u32::from_be_bytes(val_bytes.try_into().ok()?))
+    }
+
+    fn read_u64(&mut self) -> Option<u64> {
+        if self.slice.len() < 8 {
+            return None;
+        }
+        let (val_bytes, rest) = self.slice.split_at(8);
+        self.slice = rest;
+        Some(u64::from_be_bytes(val_bytes.try_into().ok()?))
+    }
+
+    fn read_bool(&mut self) -> Option<bool> {
+        if self.slice.is_empty() {
+            return None;
+        }
+        let b = self.slice[0];
+        self.slice = &self.slice[1..];
+        match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn read_str(&mut self) -> Option<&'a str> {
+        let len = self.read_u32()? as usize;
+        if self.slice.len() < len {
+            return None;
+        }
+        let (str_bytes, rest) = self.slice.split_at(len);
+        self.slice = rest;
+        core::str::from_utf8(str_bytes).ok()
+    }
+
+    fn finish(self) -> Option<()> {
+        if self.slice.is_empty() {
+            Some(())
+        } else {
+            None
         }
     }
 }
@@ -1772,24 +2088,7 @@ mod tests {
     /// keeps the raw envelope as `Opaque` instead. Nothing here can panic
     /// on boundary input, per the crate's no-panic rule.
     fn project(raw: &RawErrorDetails) -> Option<ErrorDetails> {
-        match raw.kind.as_str() {
-            // `InsufficientBalance` is exactly two big-endian u64
-            // millisatoshi fields, required then available: 16 bytes, no
-            // more and no fewer, checked before anything is read.
-            "InsufficientBalance" => {
-                if raw.payload.len() != 16 {
-                    return None;
-                }
-                let required = u64::from_be_bytes(raw.payload[..8].try_into().ok()?);
-                let available = u64::from_be_bytes(raw.payload[8..16].try_into().ok()?);
-                Some(ErrorDetails::InsufficientBalance {
-                    required: Amount::from_msats(required),
-                    available: Amount::from_msats(available),
-                })
-            }
-            // An unknown kind never looks inside the payload at all.
-            _ => None,
-        }
+        raw.decode()
     }
 
     /// Builds the error a boundary would hand on: the typed case when the
@@ -1797,16 +2096,11 @@ mod tests {
     /// through, never this build's), and the raw envelope kept opaque when
     /// it did not.
     fn project_or_keep_raw(raw: RawErrorDetails) -> Error {
-        match project(&raw) {
-            Some(detail) => Error::with_projected_details(
-                ErrorCode::InsufficientBalance,
-                "balance is short",
-                detail,
-                raw.version,
-            ),
-            None => {
-                Error::with_raw_details(ErrorCode::InsufficientBalance, "balance is short", raw)
-            }
+        let envelope = raw.to_envelope();
+        Error {
+            code: ErrorCode::InsufficientBalance,
+            message: "balance is short".into(),
+            details: Some(envelope),
         }
     }
 
@@ -1966,6 +2260,251 @@ mod tests {
         assert_eq!(shortfall(&unknown), None);
         assert_eq!(
             shortfall(&Error::new(ErrorCode::InsufficientBalance, "short")),
+            None
+        );
+    }
+
+    fn sample_cases() -> Vec<ErrorDetails> {
+        vec![
+            ErrorDetails::InsufficientBalance {
+                required: Amount::from_msats(1_500),
+                available: Amount::from_msats(1_200),
+            },
+            ErrorDetails::NetworkMismatch {
+                expected: Network::Bitcoin,
+                compatible: vec![Network::Testnet4, Network::Signet],
+                observed_prefix: "tb".into(),
+            },
+            ErrorDetails::MixedModuleGenerations {
+                modules: vec![
+                    ModuleGeneration::new("mint", 1),
+                    ModuleGeneration::new("lnv2", 2),
+                ],
+            },
+            ErrorDetails::QuoteExpired {
+                expires_at: Timestamp::from_epoch_millis(1_700_000_000_000),
+                already_executed: true,
+            },
+            ErrorDetails::QuoteExpired {
+                expires_at: Timestamp::from_epoch_millis(1_700_000_000_123),
+                already_executed: false,
+            },
+            ErrorDetails::QuoteTermsChanged {
+                quoted_total: Amount::from_msats(5_000),
+                current_total: Amount::from_msats(5_500),
+            },
+            ErrorDetails::BalanceNotEmpty {
+                remaining: Amount::from_msats(42_000),
+            },
+            ErrorDetails::StorageInUse {
+                location: "/var/data/fedimint-db".into(),
+            },
+            ErrorDetails::SeedMismatch {
+                location: "/var/data/fedimint-db".into(),
+            },
+            ErrorDetails::StorageOrphaned {
+                location: "browser-origin-namespace".into(),
+                seed_present: true,
+            },
+            ErrorDetails::StorageOrphaned {
+                location: "browser-origin-namespace".into(),
+                seed_present: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn all_nine_error_details_variants_round_trip_cleanly() {
+        for original in sample_cases() {
+            let raw = original.to_raw(5);
+            assert_eq!(raw.version, 5);
+            assert_eq!(raw.kind, original.kind());
+
+            let decoded = raw.decode().expect("decodes cleanly");
+            assert_eq!(decoded, original);
+
+            let envelope = DetailEnvelope::from_raw(raw.clone());
+            assert!(envelope.is_interpreted());
+            assert_eq!(envelope.version(), 5);
+            assert_eq!(envelope.typed(), Some(&original));
+
+            let back_to_raw = envelope.to_raw();
+            assert_eq!(back_to_raw, raw);
+        }
+    }
+
+    #[test]
+    fn every_variant_rejects_truncated_payload_and_stays_opaque() {
+        for original in sample_cases() {
+            let payload = original.encode_payload();
+            // Truncate by 1 byte
+            if !payload.is_empty() {
+                let truncated = &payload[..payload.len() - 1];
+                assert_eq!(
+                    ErrorDetails::decode_payload(original.kind(), truncated),
+                    None,
+                    "truncated payload for {} must not decode",
+                    original.kind()
+                );
+
+                let raw = RawErrorDetails::new(1, original.kind(), truncated);
+                let env = raw.to_envelope();
+                assert!(!env.is_interpreted());
+                assert!(matches!(env, DetailEnvelope::Opaque { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn every_variant_rejects_trailing_bytes_and_stays_opaque() {
+        for original in sample_cases() {
+            let mut payload = original.encode_payload();
+            payload.push(0xFF); // append trailing byte
+            assert_eq!(
+                ErrorDetails::decode_payload(original.kind(), &payload),
+                None,
+                "trailing bytes for {} must not decode",
+                original.kind()
+            );
+
+            let raw = RawErrorDetails::new(1, original.kind(), payload);
+            let env = raw.to_envelope();
+            assert!(!env.is_interpreted());
+            assert!(matches!(env, DetailEnvelope::Opaque { .. }));
+        }
+    }
+
+    #[test]
+    fn invalid_boolean_values_are_uninterpretable() {
+        // QuoteExpired with already_executed = 2 or 255
+        let mut w = PayloadWriter::new();
+        w.write_u64(1_700_000_000_000);
+        let mut payload = w.finish();
+        payload.push(2);
+        assert_eq!(ErrorDetails::decode_payload("QuoteExpired", &payload), None);
+
+        // StorageOrphaned with seed_present = 255
+        let mut w = PayloadWriter::new();
+        w.write_str("test-loc");
+        let mut payload = w.finish();
+        payload.push(255);
+        assert_eq!(
+            ErrorDetails::decode_payload("StorageOrphaned", &payload),
+            None
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_strings_are_uninterpretable() {
+        // StorageInUse with invalid UTF-8
+        let mut w = PayloadWriter::new();
+        w.write_u32(2); // length 2
+        let mut payload = w.finish();
+        payload.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
+        assert_eq!(ErrorDetails::decode_payload("StorageInUse", &payload), None);
+    }
+
+    #[test]
+    fn network_mismatch_filters_unknown_compatible_networks_and_rejects_unknown_expected() {
+        // Unknown expected network -> uninterpretable
+        let mut w = PayloadWriter::new();
+        w.write_str("Dogecoin"); // unknown expected
+        w.write_u32(0);
+        w.write_str("bc");
+        assert_eq!(
+            ErrorDetails::decode_payload("NetworkMismatch", &w.finish()),
+            None
+        );
+
+        // Known expected, but compatible list contains an unnameable network ("Simnet")
+        let mut w = PayloadWriter::new();
+        w.write_str("Bitcoin");
+        w.write_u32(2);
+        w.write_str("Testnet4");
+        w.write_str("Simnet"); // unrepresentable in this SDK's enum
+        w.write_str("bc");
+        let decoded = ErrorDetails::decode_payload("NetworkMismatch", &w.finish())
+            .expect("decodes while safely omitting unnameable compatible network");
+
+        match decoded {
+            ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            } => {
+                assert_eq!(expected, Network::Bitcoin);
+                assert_eq!(compatible, vec![Network::Testnet4]);
+                assert_eq!(observed_prefix, "bc");
+            }
+            other => panic!("expected NetworkMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_mismatch_deduplicates_compatible_networks() {
+        // The field is documented as free of duplicates; the decoder must
+        // enforce that against untrusted input rather than trust the
+        // producer to have upheld it.
+        let mut w = PayloadWriter::new();
+        w.write_str("Bitcoin");
+        w.write_u32(3);
+        w.write_str("Testnet4");
+        w.write_str("Testnet4"); // repeated
+        w.write_str("Signet");
+        w.write_str("bc");
+        let decoded = ErrorDetails::decode_payload("NetworkMismatch", &w.finish())
+            .expect("decodes while deduplicating compatible networks");
+
+        match decoded {
+            ErrorDetails::NetworkMismatch { compatible, .. } => {
+                assert_eq!(compatible, vec![Network::Testnet4, Network::Signet]);
+            }
+            other => panic!("expected NetworkMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mixed_module_generations_rejects_fewer_than_two_modules() {
+        // Documented as always having at least two entries: a conflict needs
+        // at least two participants, so a payload claiming zero or one is not
+        // a valid instance of this kind, however cleanly it decodes.
+        let mut w = PayloadWriter::new();
+        w.write_u32(0);
+        assert_eq!(
+            ErrorDetails::decode_payload("MixedModuleGenerations", &w.finish()),
+            None
+        );
+
+        let mut w = PayloadWriter::new();
+        w.write_u32(1);
+        w.write_str("mint");
+        w.write_u32(1);
+        assert_eq!(
+            ErrorDetails::decode_payload("MixedModuleGenerations", &w.finish()),
+            None
+        );
+    }
+
+    #[test]
+    fn an_oversized_list_count_fails_fast_instead_of_over_allocating() {
+        // A `count` field is untrusted wire input and must never size an
+        // allocation before the elements it claims are validated to exist:
+        // otherwise a few-byte payload could demand gigabytes of capacity
+        // before a single element is read. With a count this large and no
+        // element bytes behind it, decoding must return `None` immediately
+        // rather than attempt to allocate or loop meaningfully.
+        let mut w = PayloadWriter::new();
+        w.write_str("Bitcoin");
+        w.write_u32(u32::MAX);
+        assert_eq!(
+            ErrorDetails::decode_payload("NetworkMismatch", &w.finish()),
+            None
+        );
+
+        let mut w = PayloadWriter::new();
+        w.write_u32(u32::MAX);
+        assert_eq!(
+            ErrorDetails::decode_payload("MixedModuleGenerations", &w.finish()),
             None
         );
     }

@@ -58,6 +58,29 @@ impl Network {
         Network::Regtest,
     ];
 
+    /// Returns the stable variant name of this network (e.g. `"Bitcoin"`, `"Testnet4"`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Network::Bitcoin => "Bitcoin",
+            Network::Testnet => "Testnet",
+            Network::Testnet4 => "Testnet4",
+            Network::Signet => "Signet",
+            Network::Regtest => "Regtest",
+        }
+    }
+
+    /// Parses a network from its stable variant name.
+    pub fn from_name(name: &str) -> Option<Network> {
+        match name {
+            "Bitcoin" => Some(Network::Bitcoin),
+            "Testnet" => Some(Network::Testnet),
+            "Testnet4" => Some(Network::Testnet4),
+            "Signet" => Some(Network::Signet),
+            "Regtest" => Some(Network::Regtest),
+            _ => None,
+        }
+    }
+
     /// This network as the `bitcoin` crate spells it.
     ///
     /// Crate-internal: no conversion between this enum and an upstream type is
