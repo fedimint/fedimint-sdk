@@ -2508,4 +2508,164 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn fixed_byte_fixtures_match_frozen_wire_format() {
+        // Golden vector fixtures for all 9 variants:
+        // Round-trip tests verify that encoder and decoder agree with each other;
+        // these fixed byte fixtures verify that neither has drifted from the
+        // frozen wire format specification.
+
+        // 1. InsufficientBalance:
+        // required: u64 (be msats, 1000) + available: u64 (be msats, 500)
+        let expected_insufficient = ErrorDetails::InsufficientBalance {
+            required: Amount::from_msats(1000),
+            available: Amount::from_msats(500),
+        };
+        let bytes_insufficient: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8, // 1000 u64 be
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // 500 u64 be
+        ];
+        assert_eq!(expected_insufficient.encode_payload(), bytes_insufficient);
+        assert_eq!(
+            ErrorDetails::decode_payload("InsufficientBalance", bytes_insufficient),
+            Some(expected_insufficient)
+        );
+
+        // 2. NetworkMismatch:
+        // expected: str ("Bitcoin") + compatible: list<str> (["Testnet4"]) + observed_prefix: str ("tb1")
+        let expected_network = ErrorDetails::NetworkMismatch {
+            expected: Network::Bitcoin,
+            compatible: vec![Network::Testnet4],
+            observed_prefix: "tb1".to_string(),
+        };
+        let bytes_network: &[u8] = &[
+            0x00, 0x00, 0x00, 0x07, b'B', b'i', b't', b'c', b'o', b'i',
+            b'n', // expected: "Bitcoin"
+            0x00, 0x00, 0x00, 0x01, // compatible count: 1
+            0x00, 0x00, 0x00, 0x08, b'T', b'e', b's', b't', b'n', b'e', b't',
+            b'4', // item: "Testnet4"
+            0x00, 0x00, 0x00, 0x03, b't', b'b', b'1', // observed_prefix: "tb1"
+        ];
+        assert_eq!(expected_network.encode_payload(), bytes_network);
+        assert_eq!(
+            ErrorDetails::decode_payload("NetworkMismatch", bytes_network),
+            Some(expected_network)
+        );
+
+        // 3. MixedModuleGenerations:
+        // modules: list<record { kind: str, generation: u32 }>
+        let expected_modules = ErrorDetails::MixedModuleGenerations {
+            modules: vec![
+                ModuleGeneration {
+                    kind: "mint".to_string(),
+                    generation: 1,
+                },
+                ModuleGeneration {
+                    kind: "ln".to_string(),
+                    generation: 2,
+                },
+            ],
+        };
+        let bytes_modules: &[u8] = &[
+            0x00, 0x00, 0x00, 0x02, // list count: 2
+            0x00, 0x00, 0x00, 0x04, b'm', b'i', b'n', b't', // kind: "mint"
+            0x00, 0x00, 0x00, 0x01, // generation: 1
+            0x00, 0x00, 0x00, 0x02, b'l', b'n', // kind: "ln"
+            0x00, 0x00, 0x00, 0x02, // generation: 2
+        ];
+        assert_eq!(expected_modules.encode_payload(), bytes_modules);
+        assert_eq!(
+            ErrorDetails::decode_payload("MixedModuleGenerations", bytes_modules),
+            Some(expected_modules)
+        );
+
+        // 4. QuoteExpired:
+        // expires_at: u64 (be epoch ms, 1_700_000_000_000) + already_executed: bool (1 byte: 1)
+        let expected_expired = ErrorDetails::QuoteExpired {
+            expires_at: Timestamp::from_epoch_millis(1_700_000_000_000),
+            already_executed: true,
+        };
+        let bytes_expired: &[u8] = &[
+            0x00, 0x00, 0x01, 0x8B, 0xCA, 0x5E, 0xA3, 0x00, // 1_700_000_000_000 u64 be
+            0x01, // already_executed: true
+        ];
+        assert_eq!(expected_expired.encode_payload(), bytes_expired);
+        assert_eq!(
+            ErrorDetails::decode_payload("QuoteExpired", bytes_expired),
+            Some(expected_expired)
+        );
+
+        // 5. QuoteTermsChanged:
+        // quoted_total: u64 (be msats, 100_000) + current_total: u64 (be msats, 120_000)
+        let expected_terms = ErrorDetails::QuoteTermsChanged {
+            quoted_total: Amount::from_msats(100_000),
+            current_total: Amount::from_msats(120_000),
+        };
+        let bytes_terms: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x86, 0xA0, // 100_000 u64 be
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xD4, 0xC0, // 120_000 u64 be
+        ];
+        assert_eq!(expected_terms.encode_payload(), bytes_terms);
+        assert_eq!(
+            ErrorDetails::decode_payload("QuoteTermsChanged", bytes_terms),
+            Some(expected_terms)
+        );
+
+        // 6. BalanceNotEmpty:
+        // remaining: u64 (be msats, 50_000)
+        let expected_balance = ErrorDetails::BalanceNotEmpty {
+            remaining: Amount::from_msats(50_000),
+        };
+        let bytes_balance: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC3, 0x50, // 50_000 u64 be
+        ];
+        assert_eq!(expected_balance.encode_payload(), bytes_balance);
+        assert_eq!(
+            ErrorDetails::decode_payload("BalanceNotEmpty", bytes_balance),
+            Some(expected_balance)
+        );
+
+        // 7. StorageInUse:
+        // location: str ("/tmp/db")
+        let expected_in_use = ErrorDetails::StorageInUse {
+            location: "/tmp/db".to_string(),
+        };
+        let bytes_in_use: &[u8] = &[
+            0x00, 0x00, 0x00, 0x07, b'/', b't', b'm', b'p', b'/', b'd', b'b',
+        ];
+        assert_eq!(expected_in_use.encode_payload(), bytes_in_use);
+        assert_eq!(
+            ErrorDetails::decode_payload("StorageInUse", bytes_in_use),
+            Some(expected_in_use)
+        );
+
+        // 8. SeedMismatch:
+        // location: str ("memory")
+        let expected_seed = ErrorDetails::SeedMismatch {
+            location: "memory".to_string(),
+        };
+        let bytes_seed: &[u8] = &[0x00, 0x00, 0x00, 0x06, b'm', b'e', b'm', b'o', b'r', b'y'];
+        assert_eq!(expected_seed.encode_payload(), bytes_seed);
+        assert_eq!(
+            ErrorDetails::decode_payload("SeedMismatch", bytes_seed),
+            Some(expected_seed)
+        );
+
+        // 9. StorageOrphaned:
+        // location: str ("/data") + seed_present: bool (1 byte: 0)
+        let expected_orphaned = ErrorDetails::StorageOrphaned {
+            location: "/data".to_string(),
+            seed_present: false,
+        };
+        let bytes_orphaned: &[u8] = &[
+            0x00, 0x00, 0x00, 0x05, b'/', b'd', b'a', b't', b'a', // location: "/data"
+            0x00, // seed_present: false
+        ];
+        assert_eq!(expected_orphaned.encode_payload(), bytes_orphaned);
+        assert_eq!(
+            ErrorDetails::decode_payload("StorageOrphaned", bytes_orphaned),
+            Some(expected_orphaned)
+        );
+    }
 }
