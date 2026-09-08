@@ -632,31 +632,31 @@ struct LightningInner {
 /// A quote's frozen plan: the invoice, the amount it names, the fee and its parts, the route, and
 /// the upstream terms the fee was computed from, so that `send` can tell whether they moved.
 #[derive(Debug)]
-struct LnQuoteInner {
+pub(super) struct LnQuoteInner {
     /// The federation the quote was made against. A quote is refused on any other.
-    federation_id: config::FederationId,
-    invoice: Bolt11Invoice,
-    invoice_amount: Amount,
-    plan: Plan,
-    expires_at: Timestamp,
+    pub(super) federation_id: config::FederationId,
+    pub(super) invoice: Bolt11Invoice,
+    pub(super) invoice_amount: Amount,
+    pub(super) plan: Plan,
+    pub(super) expires_at: Timestamp,
 }
 
 /// What a payment will cost and how it will go, for either module generation.
 #[derive(Debug)]
-struct Plan {
-    breakdown: LnFeeBreakdown,
+pub(super) struct Plan {
+    pub(super) breakdown: LnFeeBreakdown,
     /// The sum of `breakdown`.
-    fee: Amount,
+    pub(super) fee: Amount,
     /// The invoice amount plus `fee`.
-    total: Amount,
-    route: LightningRoute,
-    terms: Terms,
+    pub(super) total: Amount,
+    pub(super) route: LightningRoute,
+    pub(super) terms: Terms,
 }
 
 /// The upstream inputs a plan was computed from. `send` recomputes the plan from the same
 /// inputs read again and refuses on any difference in the total.
 #[derive(Debug)]
-enum Terms {
+pub(super) enum Terms {
     /// v1: the gateway the payment goes out through, or `None` for an internal payment.
     ///
     /// Boxed: `LightningGateway` is large enough on its own to make this the dominant variant,
@@ -678,7 +678,7 @@ const QUOTE_VALIDITY_MILLIS: u64 = 60_000;
 
 /// The expiry every invoice this facade issues carries. lnv2 refuses anything over one day
 /// (`MAX_INVOICE_EXPIRY_SECS` in fedimint-lnv2-common's gateway_api.rs).
-const INVOICE_EXPIRY_SECS: u32 = 3_600;
+pub(super) const INVOICE_EXPIRY_SECS: u32 = 3_600;
 
 /// The longest description a BOLT11 invoice can carry, in bytes: 1023 five-bit groups
 /// (lightning-invoice-0.33.3/src/lib.rs:1687-1697, `Description::new`).
@@ -789,7 +789,7 @@ fn ensure_executable(
 /// includes that explicit fee (`fedimint-client/src/client.rs:865-935`): the primary module's
 /// share is what is left of the quote's input and output fees once the lightning module's
 /// explicit fee is taken back out.
-fn plan_of(
+pub(super) fn plan_of(
     gateway: Amount,
     lightning_module: Amount,
     quote: &FeeQuote,
@@ -825,20 +825,20 @@ fn plan_of(
     })
 }
 
-fn to_upstream(amount: Amount) -> fedimint_core::Amount {
+pub(super) fn to_upstream(amount: Amount) -> fedimint_core::Amount {
     fedimint_core::Amount::from_msats(amount.msats())
 }
 
-fn from_upstream(amount: fedimint_core::Amount) -> Amount {
+pub(super) fn from_upstream(amount: fedimint_core::Amount) -> Amount {
     Amount::from_msats(amount.msats)
 }
 
-fn add(left: Amount, right: Amount) -> Result<Amount> {
+pub(super) fn add(left: Amount, right: Amount) -> Result<Amount> {
     left.checked_add(right)
         .ok_or_else(|| Error::new(ErrorCode::Internal, "an amount overflowed"))
 }
 
-fn quote_changed(quoted_total: Amount, current_total: Amount) -> Error {
+pub(super) fn quote_changed(quoted_total: Amount, current_total: Amount) -> Error {
     Error::with_details(
         ErrorCode::QuoteChanged,
         format!(
@@ -853,7 +853,7 @@ fn quote_changed(quoted_total: Amount, current_total: Amount) -> Error {
     )
 }
 
-fn quote_expired(expires_at: Timestamp, already_executed: bool) -> Error {
+pub(super) fn quote_expired(expires_at: Timestamp, already_executed: bool) -> Error {
     let message = if already_executed {
         "this invoice has already been paid or is being paid"
     } else {
@@ -869,7 +869,7 @@ fn quote_expired(expires_at: Timestamp, already_executed: bool) -> Error {
     )
 }
 
-fn insufficient(required: Amount, available: Amount) -> Error {
+pub(super) fn insufficient(required: Amount, available: Amount) -> Error {
     Error::with_details(
         ErrorCode::InsufficientBalance,
         format!(
@@ -884,21 +884,21 @@ fn insufficient(required: Amount, available: Amount) -> Error {
     )
 }
 
-fn gateway_unavailable(cause: impl core::fmt::Display) -> Error {
+pub(super) fn gateway_unavailable(cause: impl core::fmt::Display) -> Error {
     Error::new(
         ErrorCode::GatewayUnavailable,
         format!("no usable lightning gateway: {cause}"),
     )
 }
 
-fn unreachable(cause: impl core::fmt::Display) -> Error {
+pub(super) fn unreachable(cause: impl core::fmt::Display) -> Error {
     Error::new(
         ErrorCode::FederationUnreachable,
         format!("the federation did not answer: {cause}"),
     )
 }
 
-fn internal(cause: impl core::fmt::Display) -> Error {
+pub(super) fn internal(cause: impl core::fmt::Display) -> Error {
     Error::new(ErrorCode::Internal, cause.to_string())
 }
 
@@ -919,7 +919,7 @@ async fn balance_of(client: &Client) -> Result<Amount> {
         .map_err(|err| internal(format!("this federation cannot report a balance: {err}")))
 }
 
-fn now() -> Timestamp {
+pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
 }
 

@@ -1,26 +1,38 @@
 //! The v1 lightning module (`ln`): mappings, subscriptions, and the facade operations.
 
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::Database;
+use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::BoxStream;
 use fedimint_ln_client::LnReceiveState as UpstreamReceiveState;
+use fedimint_ln_client::db::PaymentResultKey;
 use fedimint_ln_client::receive::LightningReceiveError;
-use fedimint_ln_client::{InternalPayState, LightningClientModule, LnPayState};
+use fedimint_ln_client::{
+    InternalPayState, LightningClientModule, LightningOperationMeta, LightningOperationMetaVariant,
+    LnPayState, OutgoingLightningPayment, PayBolt11InvoiceError, PayType,
+};
+use fedimint_ln_common::LightningGateway;
+use fedimint_ln_common::config::FeeToAmount;
+use fedimint_ln_common::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use futures::{StreamExt, stream};
 
-use super::driver::until_final;
-use super::subscribe_error;
+use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
+use super::{
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, from_upstream, gateway_unavailable,
+    insufficient, internal, now, plan_of, quote_changed, quote_expired, subscribe_error,
+    to_upstream, unreachable,
+};
 use crate::federation::FederationInner;
-use crate::operation::{record_phase_in, write_details_in};
+use crate::operation::{Backfilled, Driver, kinds, record_phase_in, write_details_in};
 use crate::sdk::SdkInner;
 use crate::{
-    Amount, Error, ErrorCode, LightningRoute, LnReceiveState, LnSendDetails, LnSendState,
-    OperationState, Preimage, Result,
+    Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
+    LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Operation, OperationState,
+    Preimage, Result, Timestamp,
 };
 
 // Upstream `LnPayState` onto `LnSendState`. The fee and the route come from the executed quote:
@@ -226,8 +238,6 @@ impl ReclaimContext {
     /// Starts the retry upstream, records which operation it runs under, and returns its
     /// stream — or the module's word that no further claim is possible.
     async fn start(&self) -> Result<ReclaimStart> {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-
         let closed = || {
             Error::new(
                 ErrorCode::FederationClosed,
@@ -433,12 +443,330 @@ pub(super) async fn subscribe_receive(
     Ok(Box::pin(stream::unfold(follow, step)))
 }
 
-/// Rebuilds a record from the module's log entry; filled in with the facade operations.
-pub(super) fn backfill(
-    _meta: &serde_json::Value,
-    _created_at: u64,
-) -> Option<crate::operation::Backfilled> {
-    None
+/// Plans a v1 payment: refreshes the gateway list, decides the route the module will take, picks
+/// the cheapest online gateway when one is needed, and prices the funding transaction.
+pub(super) async fn plan(
+    client: &Client,
+    module: &LightningClientModule,
+    invoice: &Bolt11Invoice,
+    amount: Amount,
+) -> Result<Plan> {
+    module
+        .update_gateway_cache()
+        .await
+        .map_err(|err| unreachable(format!("could not refresh the gateway list: {err}")))?;
+    let gateway = if is_internal(client, module, invoice).await? {
+        None
+    } else {
+        Some(Box::new(
+            module
+                .select_available_gateway(None, Some(invoice.inner().clone()))
+                .await
+                .map_err(gateway_unavailable)?,
+        ))
+    };
+    terms_for(module, invoice, amount, gateway).await
+}
+
+/// Whether the module will settle this invoice inside the federation: the same two tests
+/// `pay_bolt11_invoice` runs (`fedimint-ln-client/src/lib.rs:1409-1418`), so the quote's route is
+/// the route the payment takes. Both look at the last hop of the invoice's first route hint.
+async fn is_internal(
+    client: &Client,
+    module: &LightningClientModule,
+    invoice: &Bolt11Invoice,
+) -> Result<bool> {
+    let last_hop = invoice.inner().route_hints().first().and_then(|hint| {
+        hint.0
+            .last()
+            .map(|hop| (hop.src_node_id, hop.short_channel_id))
+    });
+    let Some(last_hop) = last_hop else {
+        return Ok(false);
+    };
+    let markers = client
+        .get_internal_payment_markers()
+        .map_err(|err| internal(format!("no internal payment markers: {err}")))?;
+    if last_hop == markers {
+        return Ok(true);
+    }
+    Ok(module
+        .list_gateways()
+        .await
+        .into_iter()
+        .any(|gateway| last_hop == (gateway.info.node_pub_key, gateway.info.federation_index)))
+}
+
+/// Prices a payment through `gateway` (or internally for `None`): the gateway's charge from its
+/// fee schedule, the module's own output fee, and the shared quote for funding the contract.
+///
+/// The gateway is boxed as `Terms::V1` holds it: a `LightningGateway` is a few hundred bytes and
+/// clippy's `large_enum_variant` refuses it inline.
+async fn terms_for(
+    module: &LightningClientModule,
+    invoice: &Bolt11Invoice,
+    amount: Amount,
+    gateway: Option<Box<LightningGateway>>,
+) -> Result<Plan> {
+    // The contract is funded for the invoice amount plus the gateway's fee
+    // (`fedimint-ln-client/src/lib.rs:866-867`); an internal payment funds exactly the amount.
+    let gateway_fee = gateway.as_ref().map_or(Amount::from_msats(0), |gateway| {
+        from_upstream(gateway.fees.to_amount(&to_upstream(amount)))
+    });
+    let contract_amount = add(amount, gateway_fee)?;
+    let quote = module
+        .send_fee_quote(to_upstream(contract_amount))
+        .await
+        .map_err(|err| internal(format!("could not quote the funding fee: {err}")))?;
+    let lightning_module = from_upstream(module.cfg.fee_consensus.contract_output);
+    let route = match &gateway {
+        None => LightningRoute::Internal,
+        Some(gateway) => LightningRoute::Gateway {
+            gateway_id: GatewayId::from_upstream(gateway.gateway_id),
+        },
+    };
+    plan_of(
+        gateway_fee,
+        lightning_module,
+        &quote,
+        amount,
+        route,
+        Terms::V1 { gateway },
+    )
+}
+
+/// Executes a v1 quote: re-reads every bound input, refuses on drift, funds, records.
+pub(super) async fn send(
+    federation: &Arc<FederationInner>,
+    module: &ClientModuleInstance<'_, LightningClientModule>,
+    quote: &LnQuoteInner,
+    gateway: Option<Box<LightningGateway>>,
+) -> Result<Operation<LnSendState>> {
+    // The gateway may have withdrawn or changed its fees since the quote; the cache is what the
+    // module pays through, so it is what is checked.
+    let gateway = match gateway {
+        None => None,
+        Some(quoted) => {
+            let Some(current) = module.select_gateway(&quoted.gateway_id).await else {
+                return Err(Error::new(
+                    ErrorCode::QuoteChanged,
+                    "the quoted gateway is no longer registered with this federation",
+                ));
+            };
+            Some(Box::new(current))
+        }
+    };
+    let fresh = terms_for(
+        module,
+        &quote.invoice,
+        quote.invoice_amount,
+        gateway.clone(),
+    )
+    .await?;
+    if fresh.total != quote.plan.total {
+        return Err(quote_changed(quote.plan.total, fresh.total));
+    }
+    // A completed earlier payment of this invoice would be answered as if it were new
+    // (`fedimint-ln-client/src/lib.rs:1356-1358`); the module's own idempotency record says so
+    // before anything is funded.
+    let payment_hash = *quote.invoice.inner().payment_hash();
+    let already_paid = module
+        .db
+        .begin_transaction_nc()
+        .await
+        .get_value(&PaymentResultKey { payment_hash })
+        .await
+        .is_some_and(|result| result.completed_payment.is_some());
+    if already_paid {
+        return Err(quote_expired(quote.expires_at, true));
+    }
+    let payment: OutgoingLightningPayment = module
+        .pay_bolt11_invoice(
+            gateway.map(|gateway| *gateway),
+            quote.invoice.inner().clone(),
+            serde_json::Value::Null,
+        )
+        .await
+        .map_err(|err| {
+            if let Some(known) = err.downcast_ref::<PayBolt11InvoiceError>() {
+                return match known {
+                    PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress { .. }
+                    | PayBolt11InvoiceError::FundedContractAlreadyExists { .. } => {
+                        quote_expired(quote.expires_at, true)
+                    }
+                    PayBolt11InvoiceError::NoLnGatewayAvailable => {
+                        gateway_unavailable("the module found no gateway for this route")
+                    }
+                };
+            }
+            if let Some(short) =
+                err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>()
+            {
+                return insufficient(
+                    from_upstream(short.requested_amount),
+                    from_upstream(short.total_amount),
+                );
+            }
+            let text = err.to_string();
+            if text.contains("Invoice has expired") {
+                return quote_expired(quote.expires_at, false);
+            }
+            if text.contains("Insufficient balance") {
+                return Error::new(ErrorCode::InsufficientBalance, text);
+            }
+            internal(format!("the payment could not be started: {text}"))
+        })?;
+    let (id, route) = match payment.payment_type {
+        PayType::Internal(id) => (id, LightningRoute::Internal),
+        PayType::Lightning(id) => (id, quote.plan.route.clone()),
+    };
+    let details = crate::LnSendDetails {
+        invoice: quote.invoice.clone(),
+        invoice_amount: quote.invoice_amount,
+        fee: quote.plan.fee,
+        total: quote.plan.total,
+        route,
+        created_at: now(),
+    };
+    federation
+        .create_operation(
+            id,
+            kinds::LN_SEND,
+            "ln",
+            &wire::LnSendDetailsWire::from(&details),
+            Arc::new(LnSendDriver) as Arc<dyn Driver<LnSendState>>,
+        )
+        .await
+}
+
+/// Issues a v1 invoice through the cheapest online gateway and records it.
+pub(super) async fn receive(
+    federation: &Arc<FederationInner>,
+    module: &LightningClientModule,
+    amount: Amount,
+    description: &str,
+) -> Result<LnReceive> {
+    let bolt11_description = Description::new(description.to_owned()).map_err(|err| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("the description cannot be carried by an invoice: {err}"),
+        )
+    })?;
+    module
+        .update_gateway_cache()
+        .await
+        .map_err(|err| unreachable(format!("could not refresh the gateway list: {err}")))?;
+    let gateway = module
+        .select_available_gateway(None, None)
+        .await
+        .map_err(gateway_unavailable)?;
+    // v1 takes no gateway fee on the way in: the gateway funds the contract for the invoice's
+    // amount and the only deduction is the federation's fee for claiming it.
+    let quote = module
+        .receive_fee_quote(to_upstream(amount))
+        .await
+        .map_err(|err| internal(format!("could not quote the claim fee: {err}")))?;
+    let fee = from_upstream(quote.total().get_bitcoin());
+    let net_credit = amount.checked_sub(fee).ok_or_else(|| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            "the amount does not cover the receive-side fee",
+        )
+    })?;
+    let (id, invoice, _preimage) = module
+        .create_bolt11_invoice(
+            to_upstream(amount),
+            Bolt11InvoiceDescription::Direct(bolt11_description),
+            Some(u64::from(INVOICE_EXPIRY_SECS)),
+            serde_json::Value::Null,
+            Some(gateway.clone()),
+        )
+        .await
+        .map_err(|err| unreachable(format!("the invoice could not be registered: {err}")))?;
+    let invoice = Bolt11Invoice::from_upstream(invoice);
+    let details = LnReceiveDetails {
+        invoice: invoice.clone(),
+        description: description.to_owned(),
+        requested_amount: amount,
+        invoice_amount: amount,
+        fee,
+        net_credit,
+        gateway_id: Some(GatewayId::from_upstream(gateway.gateway_id)),
+        expires_at: invoice.expires_at(),
+        created_at: now(),
+    };
+    let operation = federation
+        .create_operation(
+            id,
+            kinds::LN_RECEIVE,
+            "ln",
+            &wire::LnReceiveDetailsWire::from(&details),
+            Arc::new(LnReceiveDriver) as Arc<dyn Driver<LnReceiveState>>,
+        )
+        .await?;
+    Ok(LnReceive { invoice, operation })
+}
+
+/// Rebuilds a record from a v1 log entry. Best effort by nature: the entry carries the gateway's
+/// fee but not the federation's, so a rebuilt send's total is a floor and a rebuilt receive
+/// reports no fee at all.
+pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Backfilled> {
+    let meta: LightningOperationMeta = serde_json::from_value(meta.clone()).ok()?;
+    let created_at = Timestamp::from_epoch_millis(created_at);
+    match meta.variant {
+        LightningOperationMetaVariant::Pay(pay) => {
+            let invoice = Bolt11Invoice::from_upstream(pay.invoice);
+            let invoice_amount = invoice.amount()?;
+            let fee = from_upstream(pay.fee);
+            let route = if pay.is_internal_payment {
+                LightningRoute::Internal
+            } else {
+                LightningRoute::Gateway {
+                    gateway_id: GatewayId::from_upstream(pay.gateway_id?),
+                }
+            };
+            let details = crate::LnSendDetails {
+                invoice,
+                invoice_amount,
+                fee,
+                total: invoice_amount.checked_add(fee)?,
+                route,
+                created_at,
+            };
+            Some(Backfilled {
+                kind: kinds::LN_SEND,
+                details: serde_json::to_string(&wire::LnSendDetailsWire::from(&details)).ok()?,
+                phase: None,
+            })
+        }
+        LightningOperationMetaVariant::Receive {
+            invoice,
+            gateway_id,
+            ..
+        } => {
+            let invoice = Bolt11Invoice::from_upstream(invoice);
+            let amount = invoice.amount()?;
+            let details = LnReceiveDetails {
+                description: invoice.description(),
+                requested_amount: amount,
+                invoice_amount: amount,
+                fee: Amount::from_msats(0),
+                net_credit: amount,
+                gateway_id: gateway_id.map(GatewayId::from_upstream),
+                expires_at: invoice.expires_at(),
+                created_at,
+                invoice,
+            };
+            Some(Backfilled {
+                kind: kinds::LN_RECEIVE,
+                details: serde_json::to_string(&wire::LnReceiveDetailsWire::from(&details)).ok()?,
+                phase: None,
+            })
+        }
+        // A retried claim runs under the original receive's record; the deprecated claim path
+        // and recurring payments are not operations this SDK creates.
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -448,15 +776,16 @@ mod tests {
     use super::*;
     use crate::Amount;
 
+    const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
+    const REGTEST_INVOICE: &str = "lnbcrt1u1pj48ugqdq2vdhkven9v5pp5g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zqsp5242424242424242424242424242424242424242424242424242s9qrsgqcqzys2reg4wsryjt5w8z33ugydecgfmgyvtttwa7e0yzlm803z203j9hqspa4lr6m09cd808xkw9uh4sxc8wf3w6k0gaf5zrqm7zhcxug0vqqpdkpja";
+
     fn fee() -> Amount {
         Amount::from_msats(1_050)
     }
 
     fn gateway_route() -> LightningRoute {
         LightningRoute::Gateway {
-            gateway_id: "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166"
-                .parse()
-                .expect("a gateway id"),
+            gateway_id: GATEWAY_ID.parse().expect("a gateway id"),
         }
     }
 
@@ -706,5 +1035,65 @@ mod tests {
         let text = classify_reclaim_refusal("Operation is not a reclaimable lightning receive")
             .expect("a refusal that is not the race is definitive");
         assert_eq!(text, "Operation is not a reclaimable lightning receive");
+    }
+
+    #[test]
+    fn a_pay_log_entry_backfills_a_send_record() {
+        let meta = serde_json::json!({
+            "variant": {
+                "pay": {
+                    "out_point": { "txid": "00".repeat(32), "out_idx": 0 },
+                    "invoice": REGTEST_INVOICE,
+                    "fee": 1000,
+                    "change": [],
+                    "is_internal_payment": false,
+                    "contract_id": "11".repeat(32),
+                    "gateway_id": GATEWAY_ID,
+                }
+            },
+            "extra_meta": null,
+        });
+        let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
+        assert_eq!(claimed.kind, crate::operation::kinds::LN_SEND);
+        assert_eq!(claimed.phase, None);
+        let details = wire::decode_send_details(&claimed.details).expect("decodes");
+        assert_eq!(details.invoice_amount, Amount::from_msats(100_000));
+        assert_eq!(details.fee, Amount::from_msats(1_000));
+        assert_eq!(details.total, Amount::from_msats(101_000));
+        assert_eq!(details.route, gateway_route());
+        assert_eq!(details.created_at.epoch_millis(), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn a_receive_log_entry_backfills_a_receive_record() {
+        let meta = serde_json::json!({
+            "variant": {
+                "receive": {
+                    "out_point": { "txid": "00".repeat(32), "out_idx": 0 },
+                    "invoice": REGTEST_INVOICE,
+                    "gateway_id": GATEWAY_ID,
+                }
+            },
+            "extra_meta": null,
+        });
+        let claimed = backfill(&meta, 7).expect("claimed");
+        assert_eq!(claimed.kind, crate::operation::kinds::LN_RECEIVE);
+        let details = wire::decode_receive_details(&claimed.details).expect("decodes");
+        assert_eq!(details.invoice_amount, Amount::from_msats(100_000));
+        assert_eq!(details.requested_amount, Amount::from_msats(100_000));
+        // The fee is not in the log entry; a rebuilt record reports none.
+        assert_eq!(details.fee, Amount::from_msats(0));
+        assert_eq!(details.net_credit, Amount::from_msats(100_000));
+        assert_eq!(details.gateway_id, Some(GATEWAY_ID.parse().expect("id")));
+    }
+
+    #[test]
+    fn other_v1_log_entries_are_not_claimed() {
+        let meta = serde_json::json!({
+            "variant": { "claim": { "out_points": [] } },
+            "extra_meta": null,
+        });
+        assert!(backfill(&meta, 0).is_none());
+        assert!(backfill(&serde_json::Value::Null, 0).is_none());
     }
 }
