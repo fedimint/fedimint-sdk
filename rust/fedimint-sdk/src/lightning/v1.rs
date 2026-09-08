@@ -238,13 +238,22 @@ impl ReclaimContext {
         let federation = sdk
             .federation_inner(&self.federation_id)
             .ok_or_else(closed)?;
+
+        // Two subscribers can both observe the same `Canceled { ClaimRejected }` and both reach
+        // here. The SDK is the only process that opens this federation's storage (the `fd-lock`
+        // in `src/storage.rs`), so holding this per-federation lock across the record re-read,
+        // the upstream call and the write below is enough, in-process, to make "one retry per
+        // rejected claim" exact rather than a race one side merely tends to lose. Taken before
+        // `federation.client(false)` so a close waiting on the client's write lock is not held
+        // off by a retry that has not started yet.
+        let _serialised = federation.lock_reclaim_starts().await;
+
         let client = federation.client(false).await?;
         let module = module_of(&client)?;
 
         // Re-read the record rather than trust details carried from where this context was
-        // built: two subscribers can observe the same `Canceled { ClaimRejected }` and both
-        // reach here. Reading again right before deciding lets whichever loses that race see the
-        // winner's `reclaim_operation_id` and follow it instead of starting a second retry.
+        // built: with the lock held, whichever subscriber runs second now sees the first's
+        // `reclaim_operation_id` and follows it instead of starting a second retry.
         let mut dbtx = self.db.begin_transaction_nc().await;
         let record = dbtx
             .get_value(&crate::db::OperationRecordKey(self.id))
@@ -257,21 +266,8 @@ impl ReclaimContext {
             })?;
         let mut details = wire::decode_receive_wire(&record.details)?;
         if let Some(reclaim) = details.reclaim_operation_id.as_deref() {
-            let reclaim_id = reclaim
-                .parse::<crate::OperationId>()
-                .map_err(|err| {
-                    Error::new(
-                        ErrorCode::Internal,
-                        format!("a stored operation id does not parse: {err}"),
-                    )
-                })?
-                .upstream();
             return Ok(ReclaimStart::Started(
-                module
-                    .subscribe_ln_receive(reclaim_id)
-                    .await
-                    .map_err(subscribe_error)?
-                    .into_stream(),
+                follow_reclaim(&module, reclaim).await?,
             ));
         }
 
@@ -294,6 +290,27 @@ impl ReclaimContext {
                 .into_stream(),
         ))
     }
+}
+
+/// Follows a retry that was already started, from the id the record stores for it.
+async fn follow_reclaim(
+    module: &LightningClientModule,
+    reclaim: &str,
+) -> Result<BoxStream<'static, UpstreamReceiveState>> {
+    let reclaim_id = reclaim
+        .parse::<crate::OperationId>()
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("a stored operation id does not parse: {err}"),
+            )
+        })?
+        .upstream();
+    Ok(module
+        .subscribe_ln_receive(reclaim_id)
+        .await
+        .map_err(subscribe_error)?
+        .into_stream())
 }
 
 // Upstream refuses `reclaim_ln_receive` two ways. "Cannot reclaim an active lightning receive"
@@ -347,8 +364,17 @@ async fn step(mut follow: Follow) -> Option<(Result<LnReceiveState>, Follow)> {
                     LnReceiveState::Funded
                 }
                 // The module says no further claim is possible: that is the one ending the
-                // contract reserves `Failed` for.
-                Ok(ReclaimStart::Impossible(_)) => LnReceiveState::Failed,
+                // contract reserves `Failed` for. The reason is logged here, its only reader,
+                // since `LnReceiveState::Failed` does not carry it.
+                Ok(ReclaimStart::Impossible(reason)) => {
+                    tracing::warn!(
+                        target: "fedimint_sdk",
+                        operation = %follow.context.id.fmt_full(),
+                        reason = %reason,
+                        "a rejected lightning claim cannot be retried",
+                    );
+                    LnReceiveState::Failed
+                }
                 // Anything else is an observation failure, not an outcome: the next subscription
                 // replays the rejection and tries again.
                 Err(err) => {
@@ -382,23 +408,7 @@ pub(super) async fn subscribe_receive(
     let client = federation.client(false).await?;
     let module = module_of(&client)?;
     let (upstream, following) = match details.reclaim_operation_id.as_deref() {
-        Some(reclaim) => {
-            let reclaim_id = reclaim
-                .parse::<crate::OperationId>()
-                .map_err(|err| {
-                    Error::new(
-                        ErrorCode::Internal,
-                        format!("a stored operation id does not parse: {err}"),
-                    )
-                })?
-                .upstream();
-            let upstream = module
-                .subscribe_ln_receive(reclaim_id)
-                .await
-                .map_err(subscribe_error)?
-                .into_stream();
-            (upstream, Following::Reclaim)
-        }
+        Some(reclaim) => (follow_reclaim(&module, reclaim).await?, Following::Reclaim),
         None => {
             let upstream = module
                 .subscribe_ln_receive(id)
