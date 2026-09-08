@@ -387,6 +387,76 @@ async fn fund(lightning: &fedimint_sdk::Lightning, msats: u64) -> fedimint_sdk::
         .net_credit
 }
 
+/// On the lnv2 shape, leaves the LND gateway as the guardian's only lnv2 gateway, once per test
+/// process.
+///
+/// The lnv2 client picks a gateway at random from the guardians' list on purpose, and devimint's
+/// `wasm-test-setup` funds only the LND gateway's ecash, so a receive through either LDK gateway
+/// cannot be funded and a send through the faucet's own LDK gateway to the faucet's invoice is a
+/// self-payment. Removing the two LDK entries through the same admin call devimint used to add
+/// them makes the SDK's choice the funded gateway, and leaves the faucet's LDK node as the
+/// counterparty, as on the v1 shape.
+fn pin_lnv2_gateway_to_lnd(devimint: &Devimint) {
+    if devimint.shape != "v2" {
+        return;
+    }
+    static PINNED: std::sync::Once = std::sync::Once::new();
+    PINNED.call_once(|| {
+        // The wrapper always sets these when it runs a federation for these tests; a run
+        // outside it (a plain `cargo test`) never reaches this function, because every
+        // caller checks `FM_SDK_SHAPE` through `Devimint::detect` first.
+        let mint_client = std::env::var("FM_MINT_CLIENT")
+            .unwrap_or_else(|err| panic!("FM_MINT_CLIENT is not set ({err}); run under devimint"));
+        let lnd_port = std::env::var("FM_PORT_GW_LND")
+            .unwrap_or_else(|err| panic!("FM_PORT_GW_LND is not set ({err}); run under devimint"));
+        let mut words = mint_client.split_whitespace();
+        let program = words
+            .next()
+            .expect("FM_MINT_CLIENT names at least a program");
+        let base_args: Vec<&str> = words.collect();
+
+        // `--our-id 0`: the harness always runs a single guardian (`FM_FED_SIZE=1`).
+        // `pass` is the admin password devimint sets everywhere
+        // (`fedimint_testing_core::config::API_AUTH`).
+        let run_admin = |admin_args: &[&str]| -> std::process::Output {
+            std::process::Command::new(program)
+                .args(&base_args)
+                .args(["--our-id", "0", "--password", "pass"])
+                .args(admin_args)
+                .output()
+                .unwrap_or_else(|err| panic!("could not run `{program}`: {err}"))
+        };
+        let expect_success = |output: &std::process::Output, what: &str| {
+            assert!(
+                output.status.success(),
+                "{what} failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        };
+
+        let listed = run_admin(&["module", "lnv2", "gateways", "list"]);
+        expect_success(&listed, "listing the guardian's lnv2 gateways");
+        let stdout = String::from_utf8_lossy(&listed.stdout).into_owned();
+        // `serde_json` is not a dev-dependency of this crate, and the list is a JSON array of
+        // plain URL strings, so it is cheaper to pick the quoted tokens out by hand than to add
+        // one for this alone.
+        let lnd_needle = format!(":{lnd_port}/");
+        let urls: Vec<&str> = stdout
+            .split('"')
+            .filter(|token| token.starts_with("http"))
+            .collect();
+        assert!(
+            urls.iter().any(|url| url.contains(&lnd_needle)),
+            "the LND gateway is not among the guardian's lnv2 gateways: {stdout}"
+        );
+        for url in urls.into_iter().filter(|url| !url.contains(&lnd_needle)) {
+            let removed = run_admin(&["module", "lnv2", "gateways", "remove", url]);
+            expect_success(&removed, &format!("removing the lnv2 gateway {url}"));
+        }
+    });
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
     use fedimint_sdk::{Amount, LnReceiveState, OperationKind};
@@ -396,6 +466,7 @@ async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
         eprintln!("skipping: the mixed shape is covered by its own test");
         return;
     }
+    pin_lnv2_gateway_to_lnd(&devimint);
     let (_storage, path, sdk, federation) = joined(&devimint).await;
     let lightning = federation
         .lightning()
@@ -498,6 +569,7 @@ async fn lightning_send_pays_an_invoice_from_outside_the_federation() {
         eprintln!("skipping: the mixed shape is covered by its own test");
         return;
     }
+    pin_lnv2_gateway_to_lnd(&devimint);
     let (_storage, _path, sdk, federation) = joined(&devimint).await;
     let lightning = federation
         .lightning()
@@ -601,6 +673,7 @@ async fn lightning_quote_refuses_what_cannot_be_paid() {
         eprintln!("skipping: the mixed shape is covered by its own test");
         return;
     }
+    pin_lnv2_gateway_to_lnd(&devimint);
     let (_storage, _path, sdk, federation) = joined(&devimint).await;
     let lightning = federation
         .lightning()
@@ -687,6 +760,7 @@ async fn lightning_send_refuses_a_quote_used_twice() {
         eprintln!("skipping: the mixed shape is covered by its own test");
         return;
     }
+    pin_lnv2_gateway_to_lnd(&devimint);
     let (_storage, _path, sdk, federation) = joined(&devimint).await;
     let lightning = federation
         .lightning()

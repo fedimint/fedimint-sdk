@@ -23,9 +23,9 @@ use futures::{StreamExt, stream};
 use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, from_upstream, gateway_unavailable,
-    insufficient, internal, now, plan_of, quote_changed, quote_expired, subscribe_error,
-    to_upstream, unreachable,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, fee_quote_failure, from_upstream,
+    gateway_unavailable, insufficient, internal, now, plan_of, quote_changed, quote_expired,
+    subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in, write_details_in};
@@ -466,7 +466,7 @@ pub(super) async fn plan(
                 .map_err(gateway_unavailable)?,
         ))
     };
-    terms_for(module, invoice, amount, gateway).await
+    terms_for(client, module, invoice, amount, gateway).await
 }
 
 /// Whether the module will settle this invoice inside the federation: the same two tests
@@ -504,6 +504,7 @@ async fn is_internal(
 /// The gateway is boxed as `Terms::V1` holds it: a `LightningGateway` is a few hundred bytes and
 /// clippy's `large_enum_variant` refuses it inline.
 async fn terms_for(
+    client: &Client,
     module: &LightningClientModule,
     invoice: &Bolt11Invoice,
     amount: Amount,
@@ -515,21 +516,24 @@ async fn terms_for(
         from_upstream(gateway.fees.to_amount(&to_upstream(amount)))
     });
     let contract_amount = add(amount, gateway_fee)?;
-    // A dry run of the primary module's balancing fails with `InsufficientBalanceError` when the
-    // notes on hand cannot cover the contract; that is reported as the balance problem it is,
-    // rather than as an opaque internal failure.
-    let quote = module
-        .send_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
-                Some(short) => insufficient(
-                    from_upstream(short.requested_amount),
-                    from_upstream(short.total_amount),
-                ),
-                None => internal(format!("could not quote the funding fee: {err}")),
-            }
-        })?;
+    // A dry run of the primary module's balancing fails when the notes on hand cannot cover
+    // the contract; that is reported as the balance problem it is, rather than as an opaque
+    // internal failure, on either mint generation this module can run against.
+    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            return Err(fee_quote_failure(
+                client,
+                short,
+                &text,
+                contract_amount,
+                "could not quote the funding fee",
+            )
+            .await);
+        }
+    };
     let lightning_module = from_upstream(module.cfg.fee_consensus.contract_output);
     let route = match &gateway {
         None => LightningRoute::Internal,
@@ -607,6 +611,7 @@ pub(super) async fn send(
         }
     };
     let fresh = terms_for(
+        client,
         module,
         &quote.invoice,
         quote.invoice_amount,
@@ -722,6 +727,7 @@ fn v1_payment_operation_id(payment_hash: &sha256::Hash, index: u16) -> Operation
 /// Issues a v1 invoice through the cheapest online gateway and records it.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
+    client: &Client,
     module: &LightningClientModule,
     amount: Amount,
     description: &str,
@@ -742,21 +748,24 @@ pub(super) async fn receive(
         .map_err(gateway_unavailable)?;
     // v1 takes no gateway fee on the way in: the gateway funds the contract for the invoice's
     // amount and the only deduction is the federation's fee for claiming it.
-    // Same as in `terms_for`: a dry run of the primary module's balancing fails with
-    // `InsufficientBalanceError` when the notes on hand cannot cover the contract, which is
-    // reported as the balance problem it is.
-    let quote = module
-        .receive_fee_quote(to_upstream(amount))
-        .await
-        .map_err(|err| {
-            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
-                Some(short) => insufficient(
-                    from_upstream(short.requested_amount),
-                    from_upstream(short.total_amount),
-                ),
-                None => internal(format!("could not quote the claim fee: {err}")),
-            }
-        })?;
+    // Same as in `terms_for`: a dry run of the primary module's balancing fails when the notes
+    // on hand cannot cover the contract, which is reported as the balance problem it is, on
+    // either mint generation.
+    let quote = match module.receive_fee_quote(to_upstream(amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            return Err(fee_quote_failure(
+                client,
+                short,
+                &text,
+                amount,
+                "could not quote the claim fee",
+            )
+            .await);
+        }
+    };
     let fee = from_upstream(quote.total().get_bitcoin());
     let net_credit = amount.checked_sub(fee).ok_or_else(|| {
         Error::new(

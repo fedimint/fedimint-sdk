@@ -88,11 +88,19 @@ impl Lightning {
         // a recovering federation alike.
         let invoice_amount = preflight(invoice, federation.record().network.into())?;
         let client = federation.client(true).await?;
+        let available = balance_of(&client).await?;
+        // The plan's fee dry-run needs the notes on hand to cover the whole contract (the
+        // amount plus fees) and fails inside the primary module rather than reporting a
+        // shortfall when they do not, so a balance that cannot even cover the invoice's own
+        // amount is refused here first, against that amount: no fee has been quoted yet, which
+        // is what `ErrorDetails::InsufficientBalance::required` documents.
+        if available < invoice_amount {
+            return Err(insufficient(invoice_amount, available));
+        }
         let plan = match module(&client)? {
             LnModule::V1(module) => v1::plan(&client, &module, invoice, invoice_amount).await?,
             LnModule::V2(module) => v2::plan(&client, &module, invoice, invoice_amount).await?,
         };
-        let available = balance_of(&client).await?;
         if available < plan.total {
             return Err(insufficient(plan.total, available));
         }
@@ -238,8 +246,12 @@ impl Lightning {
         let federation = &self.inner.federation;
         let client = federation.client(true).await?;
         match module(&client)? {
-            LnModule::V1(module) => v1::receive(federation, &module, amount, description).await,
-            LnModule::V2(module) => v2::receive(federation, &module, amount, description).await,
+            LnModule::V1(module) => {
+                v1::receive(federation, &client, &module, amount, description).await
+            }
+            LnModule::V2(module) => {
+                v2::receive(federation, &client, &module, amount, description).await
+            }
         }
     }
 
@@ -841,6 +853,68 @@ pub(super) fn plan_of(
         route,
         terms,
     })
+}
+
+/// What a fee-quote dry run's failure means, before either mint's answer is turned into an
+/// [`Error`].
+///
+/// The dry run balances the funding transaction against the real notes and fails inside the
+/// primary module when they cannot cover it. The v1 mint (`fedimint-mint-client`) reports that
+/// with the typed [`fedimint_mint_client::InsufficientBalanceError`], which already carries the
+/// amounts that were short; the v2 mint (`fedimint-mintv2-client`) reports the same condition as
+/// a plain-text `anyhow` context, `"Insufficient funds"`
+/// (`fedimint-mintv2-client/src/lib.rs:503`), with no amounts of its own.
+#[derive(Debug)]
+enum FeeQuoteFailure {
+    /// The v1 mint's typed error, carrying its own requested and total amounts.
+    Typed { requested: Amount, total: Amount },
+    /// The v2 mint's plain-text refusal, which names no amounts.
+    Text,
+}
+
+/// Recognizes either mint's insufficient-balance refusal from a fee-quote failure, or reports
+/// neither is a match. Pure so the mapping can be checked without a live `Client`.
+fn classify_fee_quote_failure(
+    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
+    text: &str,
+) -> Option<FeeQuoteFailure> {
+    if let Some(short) = short {
+        return Some(FeeQuoteFailure::Typed {
+            requested: from_upstream(short.requested_amount),
+            total: from_upstream(short.total_amount),
+        });
+    }
+    if text.contains("Insufficient funds") {
+        return Some(FeeQuoteFailure::Text);
+    }
+    None
+}
+
+/// Turns a fee-quote dry run's failure into the [`Error`] it represents, for the four call sites
+/// (v1's and v2's `terms_for` and `receive`) that run one.
+///
+/// `required` is the amount the failed quote was for, used to report the shortfall when the
+/// mint's answer carries no amounts of its own. `context` names the quote for the fallback
+/// message, when `short` is absent and `text` does not match either mint's wording for "the
+/// notes on hand are short".
+pub(super) async fn fee_quote_failure(
+    client: &Client,
+    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
+    text: &str,
+    required: Amount,
+    context: &str,
+) -> Error {
+    match classify_fee_quote_failure(short, text) {
+        Some(FeeQuoteFailure::Typed { requested, total }) => insufficient(requested, total),
+        Some(FeeQuoteFailure::Text) => {
+            // The v2 mint's text names no amounts, so the balance is read again here. A
+            // failed read must not mask the real refusal that was already found, so it
+            // falls back to zero rather than turning this into an unrelated error.
+            let available = balance_of(client).await.unwrap_or(Amount::from_msats(0));
+            insufficient(required, available)
+        }
+        None => internal(format!("{context}: {text}")),
+    }
 }
 
 pub(super) fn to_upstream(amount: Amount) -> fedimint_core::Amount {
@@ -1451,6 +1525,30 @@ mod tests {
             unreachable("down").code,
             crate::ErrorCode::FederationUnreachable
         );
+    }
+
+    #[test]
+    fn fee_quote_failure_is_classified_before_either_mint_is_asked() {
+        // The v1 mint's typed error wins even when the accompanying text also happens to
+        // mention the v2 mint's wording; the typed case is unambiguous and checked first.
+        let typed = fedimint_mint_client::InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(10),
+            total_amount: fedimint_core::Amount::from_msats(3),
+        };
+        match classify_fee_quote_failure(Some(&typed), "Insufficient funds") {
+            Some(FeeQuoteFailure::Typed { requested, total }) => {
+                assert_eq!(requested, Amount::from_msats(10));
+                assert_eq!(total, Amount::from_msats(3));
+            }
+            other => panic!("expected the typed case, got {other:?}"),
+        }
+        // The v2 mint's plain-text refusal, with no typed error at all.
+        assert!(matches!(
+            classify_fee_quote_failure(None, "Insufficient funds"),
+            Some(FeeQuoteFailure::Text)
+        ));
+        // Neither mint's wording: not this crate's problem to interpret.
+        assert!(classify_fee_quote_failure(None, "the federation timed out").is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -17,8 +17,8 @@ use futures::StreamExt;
 use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, from_upstream, gateway_unavailable,
-    insufficient, internal, now, plan_of, quote_changed, quote_expired, subscribe_error,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, fee_quote_failure, from_upstream,
+    gateway_unavailable, internal, now, plan_of, quote_changed, quote_expired, subscribe_error,
     to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
@@ -219,20 +219,24 @@ async fn terms_for(
     let gateway_fee = contract_amount.checked_sub(amount).ok_or_else(|| {
         internal("the gateway's fee schedule produced a contract below the amount")
     })?;
-    // The dry run balances the transaction against the real notes, so it fails with the mint's
-    // own insufficient-balance error when they cannot cover the contract.
-    let quote = module
-        .send_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
-                Some(short) => insufficient(
-                    from_upstream(short.requested_amount),
-                    from_upstream(short.total_amount),
-                ),
-                None => internal(format!("could not quote the funding fee: {err}")),
-            }
-        })?;
+    // The dry run balances the transaction against the real notes, so it fails when they
+    // cannot cover the contract; the mint reports that as either a typed error (mint v1) or a
+    // plain-text one (mint v2, `fee_quote_failure`'s doc comment says where).
+    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            return Err(fee_quote_failure(
+                client,
+                short,
+                &text,
+                contract_amount,
+                "could not quote the funding fee",
+            )
+            .await);
+        }
+    };
     let lightning_module = from_upstream(
         fee_consensus(client)
             .await?
@@ -394,6 +398,7 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
 /// the federation's receive-side fees taken out of what will land.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
+    client: &Client,
     module: &LightningClientModule,
     amount: Amount,
     description: &str,
@@ -405,18 +410,21 @@ pub(super) async fn receive(
     let gateway_fee = amount.checked_sub(contract_amount).ok_or_else(|| {
         internal("the gateway's fee schedule produced a contract above the amount")
     })?;
-    let quote = module
-        .receive_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            match err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>() {
-                Some(short) => insufficient(
-                    from_upstream(short.requested_amount),
-                    from_upstream(short.total_amount),
-                ),
-                None => internal(format!("could not quote the claim fee: {err}")),
-            }
-        })?;
+    let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            return Err(fee_quote_failure(
+                client,
+                short,
+                &text,
+                contract_amount,
+                "could not quote the claim fee",
+            )
+            .await);
+        }
+    };
     let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
     let net_credit = amount.checked_sub(fee).ok_or_else(|| {
         Error::new(
