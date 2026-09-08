@@ -1,17 +1,26 @@
 //! The v1 lightning module (`ln`): mappings, subscriptions, and the facade operations.
 
+use std::sync::Weak;
+
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::core::OperationId;
+use fedimint_core::db::Database;
 use fedimint_core::util::BoxStream;
+use fedimint_ln_client::LnReceiveState as UpstreamReceiveState;
+use fedimint_ln_client::receive::LightningReceiveError;
 use fedimint_ln_client::{InternalPayState, LightningClientModule, LnPayState};
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 
 use super::driver::until_final;
 use super::subscribe_error;
+use super::wire::{self, PHASE_FUNDED};
 use crate::federation::FederationInner;
+use crate::operation::{record_phase_in, write_details_in};
+use crate::sdk::SdkInner;
 use crate::{
-    Amount, Error, ErrorCode, LightningRoute, LnSendDetails, LnSendState, Preimage, Result,
+    Amount, Error, ErrorCode, LightningRoute, LnReceiveState, LnSendDetails, LnSendState,
+    OperationState, Preimage, Result,
 };
 
 // Upstream `LnPayState` onto `LnSendState`. The fee and the route come from the executed quote:
@@ -135,6 +144,215 @@ pub(super) async fn subscribe_send(
         }
     };
     Ok(until_final(stream))
+}
+
+/// What the original receive's next upstream state means: a state to hand out, or the signal to
+/// retry the claim.
+pub(super) enum ReceiveStep {
+    State(LnReceiveState),
+    Reclaim,
+}
+
+// Upstream v1 `LnReceiveState` onto `LnReceiveState`, keyed on whether the receive was ever seen
+// funded. `Rejected` means two things: the invoice-registration transaction refused (before any
+// funding, so `Canceled`), or the claim's primary outputs failing after a confirmed payment (at
+// or after funding, so `Failed`). `ClaimRejected` and `InvalidPreimage` presuppose a funded
+// contract and are not phase-keyed.
+//
+// | upstream                       | phase reached        | here                   |
+// | ------------------------------ | -------------------- | ---------------------- |
+// | `Created`                      | any                  | `Created`              |
+// | `WaitingForPayment`            | any                  | `WaitingForPayment`    |
+// | `Funded`, `AwaitingFunds`      | any                  | `Funded`               |
+// | `Claimed`                      | any                  | `Claimed`              |
+// | `Canceled { Timeout }`         | any                  | `Expired`              |
+// | `Canceled { ClaimRejected }`   | any                  | `Funded`, then reclaim |
+// | `Canceled { InvalidPreimage }` | any                  | `Failed`               |
+// | `Canceled { Rejected }`        | before `Funded`      | `Canceled`             |
+// | `Canceled { Rejected }`        | at or after `Funded` | `Failed`               |
+pub(super) fn map_receive(state: &UpstreamReceiveState, funded_before: bool) -> ReceiveStep {
+    ReceiveStep::State(match state {
+        UpstreamReceiveState::Created => LnReceiveState::Created,
+        UpstreamReceiveState::WaitingForPayment { .. } => LnReceiveState::WaitingForPayment,
+        UpstreamReceiveState::Funded | UpstreamReceiveState::AwaitingFunds => {
+            LnReceiveState::Funded
+        }
+        UpstreamReceiveState::Claimed => LnReceiveState::Claimed,
+        UpstreamReceiveState::Canceled { reason } => match reason {
+            LightningReceiveError::Timeout => LnReceiveState::Expired,
+            LightningReceiveError::ClaimRejected => return ReceiveStep::Reclaim,
+            LightningReceiveError::InvalidPreimage => LnReceiveState::Failed,
+            LightningReceiveError::Rejected if funded_before => LnReceiveState::Failed,
+            LightningReceiveError::Rejected => LnReceiveState::Canceled {
+                reason: reason.to_string(),
+            },
+        },
+    })
+}
+
+// A retried claim runs as its own upstream operation, started in the confirmed-invoice state:
+// the money is in the contract, so everything short of the end is `Funded`, and any cancellation
+// of the retry is the end of the road.
+pub(super) fn map_reclaim(state: &UpstreamReceiveState) -> LnReceiveState {
+    match state {
+        UpstreamReceiveState::Claimed => LnReceiveState::Claimed,
+        UpstreamReceiveState::Canceled { .. } => LnReceiveState::Failed,
+        UpstreamReceiveState::Created
+        | UpstreamReceiveState::WaitingForPayment { .. }
+        | UpstreamReceiveState::Funded
+        | UpstreamReceiveState::AwaitingFunds => LnReceiveState::Funded,
+    }
+}
+
+/// What a receive subscription needs to retry a rejected claim from inside its own stream.
+///
+/// A stream outlives the borrow it was made from, so it cannot hold a client guard; it holds the
+/// instance and the federation id instead and takes a guard again when the retry happens.
+struct ReclaimContext {
+    sdk: Weak<SdkInner>,
+    federation_id: fedimint_core::config::FederationId,
+    db: Database,
+    id: OperationId,
+    details_json: String,
+}
+
+impl ReclaimContext {
+    /// Starts the retry upstream, records which operation it runs under, and returns its stream.
+    async fn start(&self) -> Result<BoxStream<'static, UpstreamReceiveState>> {
+        let closed = || {
+            Error::new(
+                ErrorCode::FederationClosed,
+                "this federation stopped running",
+            )
+        };
+        let sdk = self.sdk.upgrade().ok_or_else(closed)?;
+        let federation = sdk
+            .federation_inner(&self.federation_id)
+            .ok_or_else(closed)?;
+        let client = federation.client(false).await?;
+        let module = module_of(&client)?;
+        let reclaim_id = module.reclaim_ln_receive(self.id).await.map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("the rejected claim could not be retried: {err}"),
+            )
+        })?;
+        // Persisted before it is followed: after a restart the record is the only thing that
+        // says which upstream operation to follow.
+        let mut details = wire::decode_receive_wire(&self.details_json)?;
+        details.reclaim_operation_id =
+            Some(crate::OperationId::from_upstream(reclaim_id).to_string());
+        write_details_in(&self.db, self.id, wire::encode_receive_wire(&details)?).await?;
+        Ok(module
+            .subscribe_ln_receive(reclaim_id)
+            .await
+            .map_err(subscribe_error)?
+            .into_stream())
+    }
+}
+
+/// Which upstream operation a receive subscription is following.
+enum Following {
+    Original,
+    Reclaim,
+}
+
+/// The per-subscription cursor of a v1 receive.
+struct Follow {
+    upstream: BoxStream<'static, UpstreamReceiveState>,
+    following: Following,
+    phase: u32,
+    done: bool,
+    context: ReclaimContext,
+}
+
+/// One step of the receive stream: the next mapped state, having persisted the phase it proves
+/// and switched to the retried claim if one was needed.
+async fn step(mut follow: Follow) -> Option<(Result<LnReceiveState>, Follow)> {
+    if follow.done {
+        return None;
+    }
+    let state = follow.upstream.next().await?;
+    let mapped = match follow.following {
+        Following::Reclaim => map_reclaim(&state),
+        Following::Original => match map_receive(&state, follow.phase >= PHASE_FUNDED) {
+            ReceiveStep::State(state) => state,
+            // `ClaimRejected` is not final here: the claim is retried under the same SDK
+            // operation, and only a retry that cannot be started is the end.
+            ReceiveStep::Reclaim => match follow.context.start().await {
+                Ok(upstream) => {
+                    follow.upstream = upstream;
+                    follow.following = Following::Reclaim;
+                    LnReceiveState::Funded
+                }
+                Err(_) => LnReceiveState::Failed,
+            },
+        },
+    };
+    if matches!(mapped, LnReceiveState::Funded) && follow.phase < PHASE_FUNDED {
+        follow.phase = PHASE_FUNDED;
+        if let Err(err) = record_phase_in(&follow.context.db, follow.context.id, PHASE_FUNDED).await
+        {
+            follow.done = true;
+            return Some((Err(err), follow));
+        }
+    }
+    follow.done = mapped.is_final();
+    Some((Ok(mapped), follow))
+}
+
+/// A fresh stream over a v1 receive, following the retried claim instead of the original when
+/// the record says one was started.
+pub(super) async fn subscribe_receive(
+    federation: &FederationInner,
+    id: OperationId,
+    phase: u32,
+    details_json: &str,
+) -> Result<BoxStream<'static, Result<LnReceiveState>>> {
+    let details = wire::decode_receive_wire(details_json)?;
+    let client = federation.client(false).await?;
+    let module = module_of(&client)?;
+    let (upstream, following) = match details.reclaim_operation_id.as_deref() {
+        Some(reclaim) => {
+            let reclaim_id = reclaim
+                .parse::<crate::OperationId>()
+                .map_err(|err| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!("a stored operation id does not parse: {err}"),
+                    )
+                })?
+                .upstream();
+            let upstream = module
+                .subscribe_ln_receive(reclaim_id)
+                .await
+                .map_err(subscribe_error)?
+                .into_stream();
+            (upstream, Following::Reclaim)
+        }
+        None => {
+            let upstream = module
+                .subscribe_ln_receive(id)
+                .await
+                .map_err(subscribe_error)?
+                .into_stream();
+            (upstream, Following::Original)
+        }
+    };
+    let follow = Follow {
+        upstream,
+        following,
+        phase,
+        done: false,
+        context: ReclaimContext {
+            sdk: federation.sdk.clone(),
+            federation_id: federation.id,
+            db: federation.db(),
+            id,
+            details_json: details_json.to_owned(),
+        },
+    };
+    Ok(Box::pin(stream::unfold(follow, step)))
 }
 
 #[cfg(test)]
@@ -277,6 +495,115 @@ mod tests {
                 map_internal_pay(&upstream, fee(), &LightningRoute::Internal),
                 expected,
                 "{upstream:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn receive_states_fold_onto_the_receive_lifecycle() {
+        use fedimint_ln_client::receive::LightningReceiveError;
+
+        let waiting = UpstreamReceiveState::WaitingForPayment {
+            invoice: String::new(),
+            timeout: core::time::Duration::from_secs(1),
+        };
+        let cases = [
+            (
+                UpstreamReceiveState::Created,
+                false,
+                LnReceiveState::Created,
+            ),
+            (waiting, false, LnReceiveState::WaitingForPayment),
+            (UpstreamReceiveState::Funded, false, LnReceiveState::Funded),
+            (
+                UpstreamReceiveState::AwaitingFunds,
+                true,
+                LnReceiveState::Funded,
+            ),
+            (UpstreamReceiveState::Claimed, true, LnReceiveState::Claimed),
+            (
+                UpstreamReceiveState::Canceled {
+                    reason: LightningReceiveError::Timeout,
+                },
+                true,
+                LnReceiveState::Expired,
+            ),
+            (
+                UpstreamReceiveState::Canceled {
+                    reason: LightningReceiveError::InvalidPreimage,
+                },
+                false,
+                LnReceiveState::Failed,
+            ),
+            (
+                UpstreamReceiveState::Canceled {
+                    reason: LightningReceiveError::Rejected,
+                },
+                false,
+                LnReceiveState::Canceled {
+                    reason: LightningReceiveError::Rejected.to_string(),
+                },
+            ),
+            (
+                UpstreamReceiveState::Canceled {
+                    reason: LightningReceiveError::Rejected,
+                },
+                true,
+                LnReceiveState::Failed,
+            ),
+        ];
+        for (upstream, funded_before, expected) in cases {
+            match map_receive(&upstream, funded_before) {
+                ReceiveStep::State(state) => assert_eq!(state, expected, "{upstream:?}"),
+                ReceiveStep::Reclaim => panic!("{upstream:?} must not ask for a reclaim"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_rejected_claim_asks_for_a_retry_whatever_the_phase() {
+        use fedimint_ln_client::receive::LightningReceiveError;
+
+        for funded_before in [false, true] {
+            let step = map_receive(
+                &UpstreamReceiveState::Canceled {
+                    reason: LightningReceiveError::ClaimRejected,
+                },
+                funded_before,
+            );
+            assert!(matches!(step, ReceiveStep::Reclaim));
+        }
+    }
+
+    #[test]
+    fn a_retried_claim_is_funded_until_it_is_claimed_or_fails() {
+        use fedimint_ln_client::receive::LightningReceiveError;
+
+        assert_eq!(
+            map_reclaim(&UpstreamReceiveState::Created),
+            LnReceiveState::Funded
+        );
+        assert_eq!(
+            map_reclaim(&UpstreamReceiveState::Funded),
+            LnReceiveState::Funded
+        );
+        assert_eq!(
+            map_reclaim(&UpstreamReceiveState::AwaitingFunds),
+            LnReceiveState::Funded
+        );
+        assert_eq!(
+            map_reclaim(&UpstreamReceiveState::Claimed),
+            LnReceiveState::Claimed
+        );
+        for reason in [
+            LightningReceiveError::Rejected,
+            LightningReceiveError::Timeout,
+            LightningReceiveError::ClaimRejected,
+            LightningReceiveError::InvalidPreimage,
+        ] {
+            assert_eq!(
+                map_reclaim(&UpstreamReceiveState::Canceled { reason }),
+                LnReceiveState::Failed
             );
         }
     }
