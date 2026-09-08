@@ -6,6 +6,8 @@ use crate::{
     Amount, Bolt11Invoice, GatewayId, Operation, OperationState, Preimage, Result, Timestamp,
 };
 
+mod wire;
+
 /// The lightning facade for one federation.
 ///
 /// Obtained from [`Federation::lightning`](crate::Federation::lightning),
