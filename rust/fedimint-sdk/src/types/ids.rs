@@ -164,11 +164,6 @@ impl GatewayId {
     pub(crate) fn from_upstream(id: PublicKey) -> Self {
         Self { id }
     }
-
-    /// The wrapped key, for looking a gateway up again by id.
-    pub(crate) fn inner(&self) -> PublicKey {
-        self.id
-    }
 }
 
 impl core::fmt::Display for GatewayId {

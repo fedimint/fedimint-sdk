@@ -17,9 +17,9 @@ use futures::StreamExt;
 use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, fee_quote_failure, from_upstream,
-    gateway_unavailable, internal, now, plan_of, quote_changed, quote_expired, subscribe_error,
-    to_upstream, unreachable,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
+    from_upstream, gateway_unavailable, insufficient, internal, now, plan_of, quote_changed,
+    quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in};
@@ -295,6 +295,15 @@ pub(super) async fn send(
     if client.operation_exists(id).await {
         return Err(quote_expired(quote.expires_at, true));
     }
+    // Checked again here, after the already-executed check above and before the gateway is
+    // re-quoted below: the balance can drop between a quote and this call, and it must be asked
+    // whether the invoice was already paid before it is asked whether the balance still covers
+    // it, or a second quote for an already-paid invoice is misreported as a shortfall instead of
+    // the truth.
+    let available = balance_of(client).await?;
+    if available < quote.plan.total {
+        return Err(insufficient(quote.plan.total, available));
+    }
     let Some(routing) = module
         .routing_info(&gateway)
         .await
@@ -369,7 +378,12 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         | SendPaymentError::GatewayFeeExceedsLimit
         | SendPaymentError::GatewayExpirationExceedsLimit => gateway_unavailable(err),
         SendPaymentError::FailedToRequestBlockCount(cause) => unreachable(cause),
-        SendPaymentError::FailedToFundPayment(cause) if cause.contains("Insufficient balance") => {
+        // The wording differs by which mint funds the contract: the v1 mint says "Insufficient
+        // balance" (`fedimint-mint-client/src/lib.rs:2917`), the v2 mint says "Insufficient
+        // funds" (`fedimint-mintv2-client/src/lib.rs:503`).
+        SendPaymentError::FailedToFundPayment(cause)
+            if cause.contains("Insufficient balance") || cause.contains("Insufficient funds") =>
+        {
             Error::new(ErrorCode::InsufficientBalance, cause)
         }
         SendPaymentError::FailedToFundPayment(cause) => {

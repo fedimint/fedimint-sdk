@@ -166,10 +166,6 @@ impl Lightning {
         // The guard is held across the re-check, the funding and the record write, which is what
         // `create_operation` requires of its caller.
         let client = federation.client(true).await?;
-        let available = balance_of(&client).await?;
-        if available < quote.plan.total {
-            return Err(insufficient(quote.plan.total, available));
-        }
         match (module(&client)?, &quote.plan.terms) {
             (LnModule::V1(module), Terms::V1 { gateway }) => {
                 v1::send(federation, &client, &module, &quote, gateway.clone()).await
@@ -486,6 +482,10 @@ pub struct LnSendDetails {
     ///
     /// This is a term, not an outcome. On [`LnSendState::Success`] it is what
     /// was debited; on [`LnSendState::Refunded`] it is what was at stake.
+    /// The one exception is a payment quoted through a gateway that the
+    /// module settled inside the federation after all, where the gateway's
+    /// charge is known not to have applied and the rest of the fee is the
+    /// quote's estimate, so this is an upper bound.
     pub total: Amount,
     /// How the payment is routed, [`LnQuote::route`].
     pub route: LightningRoute,
@@ -618,7 +618,9 @@ pub struct LnReceiveDetails {
     ///
     /// This is the whole difference between what the payer pays and what
     /// lands; no other deduction appears later. It can be zero but usually is
-    /// not, since issuing the notes is itself a federation transaction.
+    /// not, since issuing the notes is itself a federation transaction. A
+    /// record rebuilt from the client's own log after a crash reports zero,
+    /// because the log does not keep the fee.
     pub fee: Amount,
     /// What lands in the spendable balance:
     /// [`invoice_amount`](LnReceiveDetails::invoice_amount) minus
@@ -1003,7 +1005,7 @@ pub(super) fn subscribe_error(cause: impl core::fmt::Display) -> Error {
 }
 
 /// The spendable balance, as `Federation::balance` reads it.
-async fn balance_of(client: &Client) -> Result<Amount> {
+pub(super) async fn balance_of(client: &Client) -> Result<Amount> {
     client
         .get_balance_for_btc()
         .await

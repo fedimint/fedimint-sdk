@@ -23,9 +23,9 @@ use futures::{StreamExt, stream};
 use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, fee_quote_failure, from_upstream,
-    gateway_unavailable, insufficient, internal, now, plan_of, quote_changed, quote_expired,
-    subscribe_error, to_upstream, unreachable,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
+    from_upstream, gateway_unavailable, insufficient, internal, now, plan_of, quote_changed,
+    quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in, write_details_in};
@@ -221,6 +221,10 @@ pub(super) fn map_reclaim(state: &UpstreamReceiveState) -> LnReceiveState {
 ///
 /// A stream outlives the borrow it was made from, so it cannot hold a client guard; it holds the
 /// instance and the federation id instead and takes a guard again when the retry happens.
+///
+/// `Clone` so a copy can be moved into the spawned task that runs `start`: the fields are a
+/// `Weak`, a `Copy` id, a `Clone` handle and another `Copy` id, none of which mind two owners.
+#[derive(Clone)]
 struct ReclaimContext {
     sdk: Weak<SdkInner>,
     federation_id: fedimint_core::config::FederationId,
@@ -238,7 +242,11 @@ enum ReclaimStart {
 impl ReclaimContext {
     /// Starts the retry upstream, records which operation it runs under, and returns its
     /// stream — or the module's word that no further claim is possible.
-    async fn start(&self) -> Result<ReclaimStart> {
+    ///
+    /// Takes `self` by value because `step` runs this as a spawned task (see its comment on
+    /// why), and a spawned future must own everything it touches rather than borrow from a
+    /// stream state that may be dropped before the task finishes.
+    async fn start(self) -> Result<ReclaimStart> {
         let closed = || {
             Error::new(
                 ErrorCode::FederationClosed,
@@ -368,31 +376,56 @@ async fn step(mut follow: Follow) -> Option<(Result<LnReceiveState>, Follow)> {
             ReceiveStep::State(state) => state,
             // `ClaimRejected` is not final here: the claim is retried under the same SDK
             // operation, and only a retry that cannot be started is the end.
-            ReceiveStep::Reclaim => match follow.context.start().await {
-                Ok(ReclaimStart::Started(upstream)) => {
-                    follow.upstream = upstream;
-                    follow.following = Following::Reclaim;
-                    LnReceiveState::Funded
+            //
+            // `start` registers the retry with the module and then persists its id; the
+            // registration upstream and the record of it must not be separated by a poll that
+            // `settle` cancels between the two, or the SDK's record never learns the retry's id
+            // and the next subscription repeats the sequence, starting another retry forever.
+            // Running it as a task the poller only waits for keeps the two together: a poller
+            // dropped mid-wait leaves the task to finish on its own, and the next subscription
+            // then finds the persisted id and follows it instead of registering yet another
+            // retry. The stream a completed task returns is dropped along with its result if
+            // nobody awaited it in time; that is fine, since the persisted id, not this stream,
+            // is what the next subscription follows.
+            ReceiveStep::Reclaim => {
+                let started = match fedimint_core::task::spawn(
+                    "ln receive: start a claim retry",
+                    follow.context.clone().start(),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) => Err(Error::new(
+                        ErrorCode::Internal,
+                        format!("the claim retry's startup task did not finish: {err}"),
+                    )),
+                };
+                match started {
+                    Ok(ReclaimStart::Started(upstream)) => {
+                        follow.upstream = upstream;
+                        follow.following = Following::Reclaim;
+                        LnReceiveState::Funded
+                    }
+                    // The module says no further claim is possible: that is the one ending the
+                    // contract reserves `Failed` for. The reason is logged here, its only
+                    // reader, since `LnReceiveState::Failed` does not carry it.
+                    Ok(ReclaimStart::Impossible(reason)) => {
+                        tracing::warn!(
+                            target: "fedimint_sdk",
+                            operation = %follow.context.id.fmt_full(),
+                            reason = %reason,
+                            "a rejected lightning claim cannot be retried",
+                        );
+                        LnReceiveState::Failed
+                    }
+                    // Anything else is an observation failure, not an outcome: the next
+                    // subscription replays the rejection and tries again.
+                    Err(err) => {
+                        follow.done = true;
+                        return Some((Err(err), follow));
+                    }
                 }
-                // The module says no further claim is possible: that is the one ending the
-                // contract reserves `Failed` for. The reason is logged here, its only reader,
-                // since `LnReceiveState::Failed` does not carry it.
-                Ok(ReclaimStart::Impossible(reason)) => {
-                    tracing::warn!(
-                        target: "fedimint_sdk",
-                        operation = %follow.context.id.fmt_full(),
-                        reason = %reason,
-                        "a rejected lightning claim cannot be retried",
-                    );
-                    LnReceiveState::Failed
-                }
-                // Anything else is an observation failure, not an outcome: the next subscription
-                // replays the rejection and tries again.
-                Err(err) => {
-                    follow.done = true;
-                    return Some((Err(err), follow));
-                }
-            },
+            }
         },
     };
     if matches!(mapped, LnReceiveState::Funded) && follow.phase < PHASE_FUNDED {
@@ -583,6 +616,15 @@ pub(super) async fn send(
         {
             return Err(quote_expired(quote.expires_at, true));
         }
+    }
+    // Checked again here, after the already-executed checks above and before the route and
+    // terms re-checks below: the balance can drop between a quote and this call, and it must be
+    // asked whether the invoice was already paid before it is asked whether the balance still
+    // covers it, or a second quote for an already-paid invoice is misreported as a shortfall
+    // instead of the truth.
+    let available = balance_of(client).await?;
+    if available < quote.plan.total {
+        return Err(insufficient(quote.plan.total, available));
     }
     // `pay_bolt11_invoice` decides internal-vs-gateway for itself, from the invoice and the
     // gateway cache as they stand when it is called (`fedimint-ln-client/src/lib.rs:1405-1418`).
