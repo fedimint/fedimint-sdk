@@ -178,6 +178,13 @@ impl Ecash {
         //   in the same storage transaction that creates the operation.
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::ecash`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Ecash {
+        Ecash {
+            inner: Arc::new(EcashInner { federation }),
+        }
+    }
 }
 
 /// A frozen, executable plan for one out-of-band ecash send.
@@ -321,16 +328,21 @@ impl Operation<EcashSendState> {
     /// it against. An unreachable federation or a slow guardian is not a
     /// failure of this call: the intent is already durable and the SDK
     /// pursues it in the background.
+    // The boundary is deliberate: waiting on the network here would let this call return
+    // `FederationUnreachable` or `Timeout` after the intent was already durable, leaving the
+    // caller unable to tell whether a retry would duplicate a request already in flight.
+    // This is the only cancellation in the crate, because it is the only place where
+    // cancelling is a real protocol action rather than an attempt to un-send money that has
+    // already moved.
+    //
+    // Only the intent is recorded here. Telling the mint is the ecash driver's job, and it
+    // could not be done here in any case: `try_cancel_spend_notes` returns `()` and writes a
+    // marker into the module's own isolated database
+    // (modules/fedimint-mint-client/src/lib.rs:2556-2563), so it has no result to report and
+    // the outcome only ever arrives as a state.
     pub async fn request_cancel(&self) -> Result<()> {
-        // Implementation notes (delete once implemented):
-        // - The boundary is deliberate: waiting on the network here would let this call
-        //   return `FederationUnreachable` or `Timeout` after the intent was already
-        //   durable, leaving the caller unable to tell whether a retry would duplicate a
-        //   request already in flight.
-        // - This is the only cancellation in the crate, because it is the only place
-        //   where cancelling is a real protocol action rather than an attempt to un-send
-        //   money that has already moved.
-        unimplemented!()
+        self.inner().federation.ensure_open()?;
+        self.inner().persist_cancel_request().await
     }
 }
 
@@ -590,9 +602,14 @@ impl crate::operation::DetailedOperationState for EcashReceiveState {
     type Details = EcashReceiveDetails;
 }
 
-/// Placeholder for the mint-module state this facade operates on.
+/// The federation this facade operates on.
+///
+/// Held rather than a mint-module handle, because a facade outlives the client behind it: a call
+/// on a closed federation has to report `FederationClosed` rather than find nothing to talk to.
 #[derive(Debug)]
-struct EcashInner;
+struct EcashInner {
+    federation: Arc<crate::federation::FederationInner>,
+}
 
 /// Placeholder for a quote's frozen plan: the requested amount, the notes
 /// selected to satisfy it and the denominations they will be issued in, the
@@ -606,19 +623,20 @@ struct EcashQuoteInner;
 mod tests {
     use super::*;
 
-    /// A stand-in for a real bearer token. No part of this string may appear
-    /// in the `Debug` output of a record that carries it.
-    const TOKEN: &str = "notes-secret-bearer-value-0123456789";
+    /// A real out-of-band ecash token worth 1 satoshi. No part of this string
+    /// may appear in the `Debug` output of a record that carries it.
+    const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
 
-    /// A send whose request is rounded up: 1234 msat requested, satisfied by
-    /// 1536 msat of notes (three 512-msat denominations), with a fee on top.
+    /// A send whose request is rounded up: 750 msat requested, satisfied by 1000 msat of
+    /// notes (the fixture token's real value, since a mint issues fixed denominations),
+    /// with a fee on top.
     fn send_details() -> EcashSendDetails {
         EcashSendDetails {
-            notes: Notes::from_raw(TOKEN.to_owned()),
-            requested_amount: Amount::from_msats(1_234),
-            notes_value: Amount::from_msats(1_536),
-            fee: Amount::from_msats(64),
-            total_debited: Amount::from_msats(1_600),
+            notes: TOKEN.parse().expect("a valid ecash token"),
+            requested_amount: Amount::from_msats(750),
+            notes_value: Amount::from_msats(1_000),
+            fee: Amount::from_msats(50),
+            total_debited: Amount::from_msats(1_050),
             reclaim_at: Timestamp::from_epoch_millis(1_700_086_400_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
@@ -626,10 +644,10 @@ mod tests {
 
     fn receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
-            notes: Notes::from_raw(TOKEN.to_owned()),
-            notes_value: Amount::from_msats(1_536),
+            notes: TOKEN.parse().expect("a valid ecash token"),
+            notes_value: Amount::from_msats(1_000),
             fee: Amount::from_msats(36),
-            net_credit: Amount::from_msats(1_500),
+            net_credit: Amount::from_msats(964),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         }
     }
@@ -700,8 +718,8 @@ mod tests {
         assert!(rendered.contains("Notes(<redacted>)"), "{rendered}");
         // A details record exists to be rendered and logged, so everything
         // that is not the bearer token has to survive `Debug`.
-        assert!(rendered.contains("1536"), "{rendered}");
-        assert!(rendered.contains("1600"), "{rendered}");
+        assert!(rendered.contains("1000"), "{rendered}");
+        assert!(rendered.contains("1050"), "{rendered}");
     }
 
     #[test]
@@ -709,7 +727,7 @@ mod tests {
         let rendered = format!("{:?}", receive_details());
         assert!(!rendered.contains(TOKEN), "{rendered}");
         assert!(rendered.contains("Notes(<redacted>)"), "{rendered}");
-        assert!(rendered.contains("1500"), "{rendered}");
+        assert!(rendered.contains("964"), "{rendered}");
     }
 
     #[test]

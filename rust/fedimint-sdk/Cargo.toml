@@ -9,8 +9,76 @@ repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
 [dependencies]
-# Intentionally empty. The skeleton defines the full public API with
-# unimplemented!() bodies; fedimint-* et al. arrive with the implementation.
-# No foreign error-type crates may ever appear here — the public error surface
+# The SDK tracks fedimint `master`, not a published release. Every fedimint
+# crate below is a git dependency pinned to one revision, and that revision
+# must equal the one the repo's flake.nix pins for its `fedimint` and
+# `fedimint-wasm` inputs: the client under test and the federation the tests
+# run it against have to come from the same commit. Bump all three together;
+# the `pins-agree` job in .github/workflows/rust-sdk-ci.yaml fails the build
+# when they drift. Git dependencies also mean this crate cannot go to
+# crates.io, which is what `publish = false` above already says.
+#
+# No foreign error-type crate may ever appear here — the public error surface
 # is crate-owned (see fedimint/fedimint#8821 for the upstream structured-error
-# work this stays decoupled from).
+# work this stays decoupled from), which is also why `anyhow` is absent: the
+# upstream calls that still return it are mapped where they are made.
+fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+
+# `bip39` is named directly only to switch its `zeroize` feature on, which
+# `fedimint-bip39` does not: features are unioned, so this is the same single
+# copy of the crate `fedimint-bip39` uses, with one feature more. The version
+# requirement is fedimint's own, so the two cannot drift apart into two
+# `Mnemonic` types that look identical and are not. `zeroize` itself is for the
+# entropy buffer `Mnemonic::generate` draws into.
+bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
+zeroize = "1"
+futures = "0.3.32"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.149"
+tracing = "0.1.44"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
+# lock: this one is the SDK's single-opener claim, and it has to fail fast on
+# contention rather than block. See src/storage.rs.
+fd-lock = "4"
+fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "84fd7e635d959c9855a81a55f247bdfacdad8826" }
+js-sys = "0.3.83"
+# `macros` is not about tests here: `tokio::select!` lives behind it, and both
+# subscription types select a stream against a shutdown watch on every target.
+tokio = { version = "1.48.0", features = ["sync", "macros"] }
+# Pinned exactly, matching fedimint's own `[workspace.dependencies]`: it has to
+# agree with the `wasm-bindgen-cli` the nix build provides, and two versions of
+# it in one graph do not link.
+wasm-bindgen = "=0.2.106"
+wasm-bindgen-futures = "0.4.56"
+web-sys = { version = "0.3.83", features = [
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetFileOptions",
+    "FileSystemSyncAccessHandle",
+    "StorageManager",
+    "WorkerGlobalScope",
+    "WorkerNavigator",
+] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tempfile = "3.20.0"
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros"] }

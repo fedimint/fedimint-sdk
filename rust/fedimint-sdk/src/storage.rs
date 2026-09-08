@@ -1,5 +1,11 @@
 //! Where an SDK instance keeps the state it must not lose.
 
+use fedimint_core::db::Database;
+use fedimint_core::db::mem_impl::MemDatabase;
+use fedimint_core::module::registry::ModuleDecoderRegistry;
+
+use crate::{Error, ErrorCode, ErrorDetails, Result};
+
 /// The persistent home of one SDK instance.
 ///
 /// A `Storage` value names a place to persist everything an [`Sdk`](crate::Sdk) owns: the
@@ -72,6 +78,12 @@
 /// copying a location's contents elsewhere and opening both is the same mistake as restoring
 /// one wallet's backup onto two devices, and the SDK cannot detect it.
 ///
+/// In the same process, dropping or shutting down an [`Sdk`](crate::Sdk) is not by itself enough
+/// to make its location reopenable: the underlying store stays open until every
+/// [`Federation`](crate::Federation) handle over it has also been dropped, so a
+/// [`SdkBuilder::build`](crate::SdkBuilder::build) against that location started before that
+/// point is left waiting on it rather than failing outright.
+///
 /// # Durability
 ///
 /// Everything a caller can observe is durably committed before it becomes observable, so an
@@ -86,19 +98,6 @@
 /// The persisted seed is not encrypted at rest; it is stored the way the backend stores
 /// everything else. Protecting a copy the application has already exported is the
 /// application's own responsibility, see [`Mnemonic`](crate::Mnemonic).
-// Implementation notes (delete once implemented):
-// - Backend: an embedded key-value store on native targets, OPFS-backed on wasm. Nothing
-//   about the format is exposed.
-// - `build` order: check for an existing seed record, detect orphaned state (other records
-//   present, seed missing/corrupt) before writing anything, compare a supplied mnemonic
-//   against a found one, then reopen each stored federation and quarantine failures
-//   individually rather than failing the whole open.
-// - The single-opener lock is filesystem/OPFS-level, not advisory, and must be reclaimable
-//   from a process that died holding it (killed app, closed tab) without corrupting state.
-// - Future, additive extensions that would land behind this same type without a signature
-//   change: cross-process lock delegation (a second opener forwards reads/writes to the
-//   process holding the lock, for a notification-service extension or a shared worker), and
-//   encrypting the at-rest seed or handing its custody to a platform keychain or keystore.
 #[derive(Debug)]
 pub struct Storage {
     inner: StorageInner,
@@ -130,10 +129,26 @@ impl Storage {
     // docs, so the whole surface is readable without building the crate twice.
     #[cfg(any(not(target_family = "wasm"), doc))]
     pub fn at(path: &str) -> crate::Result<Storage> {
-        // Implementation notes (delete once implemented):
-        // - `&str` rather than `std::path::Path`: `Path` has no natural representation in
-        //   Swift, Kotlin or JavaScript, so every binding would need its own conversion.
-        unimplemented!()
+        if path.is_empty() {
+            return Err(crate::Error::new(
+                crate::ErrorCode::InvalidInput,
+                "the storage path is empty",
+            ));
+        }
+        // A path is a byte string to the operating system, but a NUL byte terminates it, so a
+        // string carrying one cannot be expressed as a path at all. Everything else is left to
+        // the file system, which reports its own refusals when `build` opens the location.
+        if path.contains('\0') {
+            return Err(crate::Error::new(
+                crate::ErrorCode::InvalidInput,
+                "the storage path contains a NUL byte",
+            ));
+        }
+        Ok(Storage {
+            inner: StorageInner::Directory {
+                location: path.to_owned(),
+            },
+        })
     }
 
     /// Names persistent browser storage in the origin-scoped namespace `name`. Wasm targets
@@ -186,11 +201,28 @@ impl Storage {
     /// open elsewhere, as [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse).
     #[cfg(any(target_family = "wasm", doc))]
     pub fn in_browser(name: &str) -> crate::Result<Storage> {
-        // Implementation notes (delete once implemented):
-        // - Backed by the origin-private file system (OPFS); the async availability and
-        //   permission checks belong in `SdkBuilder::build`, not here, since this constructor
-        //   is synchronous.
-        unimplemented!()
+        // The documented rule, with "short" pinned to 64 characters: the name becomes a file name
+        // in origin-private storage, and every engine's limit is far above that, so this is a
+        // bound the SDK can promise rather than one the browser might move.
+        const MAX_NAME: usize = 64;
+        let usable = !name.is_empty()
+            && name.len() <= MAX_NAME
+            && name != "."
+            && name != ".."
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !usable {
+            return Err(crate::Error::new(
+                crate::ErrorCode::InvalidInput,
+                "a storage name must be 1 to 64 characters of letters, digits, '-', '_' or '.'",
+            ));
+        }
+        Ok(Storage {
+            inner: StorageInner::Browser {
+                location: name.to_owned(),
+            },
+        })
     }
 
     /// Ephemeral storage held entirely in memory.
@@ -206,12 +238,318 @@ impl Storage {
     /// produces [`ErrorCode::SeedMismatch`](crate::ErrorCode::SeedMismatch) or the
     /// orphaned-storage refusal described on [`Storage`].
     pub fn in_memory() -> Storage {
-        unimplemented!()
+        // The store is created here rather than in `build`, which is what makes each value name a
+        // store of its own: the descriptor is not `Clone`, and `SdkBuilder::storage` consumes it,
+        // so exactly one instance can ever be built on it.
+        Storage {
+            inner: StorageInner::Memory {
+                db: Database::new(MemDatabase::new(), ModuleDecoderRegistry::default()),
+            },
+        }
     }
 }
 
-/// Placeholder for the target-selected backend handle. Replaced by the real backend when the
-/// implementation lands; kept private so the choice of backend never leaks into the public
-/// API.
+impl Storage {
+    /// The location string exactly as the caller gave it, for the error details that name it.
+    ///
+    /// An in-memory store has no location a person could act on, so it reports itself as one.
+    pub(crate) fn location(&self) -> String {
+        match &self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            StorageInner::Directory { location } => location.clone(),
+            #[cfg(target_family = "wasm")]
+            StorageInner::Browser { location } => location.clone(),
+            StorageInner::Memory { .. } => "<in memory>".to_owned(),
+        }
+    }
+
+    /// Opens the location, creating it if needed, and takes the single-opener lock.
+    ///
+    /// This is step 1 of `SdkBuilder::build`: everything environmental about a location is
+    /// reported here, and nothing has been written when it fails.
+    pub(crate) async fn open(self) -> Result<(Database, Option<StorageLock>)> {
+        match self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            StorageInner::Directory { location } => {
+                let (db, lock) = open_directory(location).await?;
+                Ok((db, Some(lock)))
+            }
+            #[cfg(target_family = "wasm")]
+            StorageInner::Browser { location } => {
+                let (db, lock) = open_browser(location).await?;
+                Ok((db, Some(lock)))
+            }
+            StorageInner::Memory { db } => Ok((db, None)),
+        }
+    }
+}
+
+/// The backend a [`Storage`] names, chosen at construction and opened by `build`.
 #[derive(Debug)]
-struct StorageInner;
+enum StorageInner {
+    /// A native directory the SDK owns outright.
+    #[cfg(not(target_family = "wasm"))]
+    Directory { location: String },
+    /// An origin-scoped namespace in the browser's origin-private file system.
+    #[cfg(target_family = "wasm")]
+    Browser { location: String },
+    /// An in-memory store, already created: see [`Storage::in_memory`].
+    Memory { db: Database },
+}
+
+/// Proof that this instance is the only opener of its location.
+///
+/// Dropping it releases the claim, which is what makes `Sdk::shutdown` and dropping the last
+/// handle both work, and what makes a lock left by a dead process reclaimable rather than fatal.
+pub(crate) struct StorageLock {
+    /// Native: the open `LOCK` file whose advisory lock this instance holds. The lock was taken
+    /// with `try_write` and its guard forgotten, so it lives exactly as long as this descriptor:
+    /// `flock` belongs to the open file description, so closing the file releases it, and so does
+    /// the kernel when the process dies.
+    #[cfg(not(target_family = "wasm"))]
+    _file: fd_lock::RwLock<std::fs::File>,
+    /// wasm: the exclusivity is the sync access handle inside the database itself, which the
+    /// browser grants to one context at a time, so there is nothing else to hold here.
+    #[cfg(target_family = "wasm")]
+    _marker: (),
+}
+
+impl core::fmt::Debug for StorageLock {
+    /// Prints the type name and nothing else: a lock has no state worth rendering and the file
+    /// handle behind it is not part of any contract.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("StorageLock")
+    }
+}
+
+/// Opens a native directory: create it, claim it, then open the embedded store inside it.
+///
+/// The lock is taken before the store, so a second opener is told `StorageInUse` instead of
+/// blocking forever inside the store's own file lock, which has no timeout and no error.
+#[cfg(not(target_family = "wasm"))]
+async fn open_directory(location: String) -> Result<(Database, StorageLock)> {
+    let directory = std::path::PathBuf::from(&location);
+    let lock_location = location.clone();
+    let lock_directory = directory.clone();
+    let lock = tokio::task::spawn_blocking(move || take_lock(&lock_directory, &lock_location))
+        .await
+        .map_err(|err| {
+            Error::new(ErrorCode::Storage, format!("could not open storage: {err}"))
+        })??;
+
+    let db_path = directory.join("db");
+    let raw = tokio::task::spawn_blocking(move || {
+        fedimint_rocksdb::RocksDb::build(db_path).open_blocking()
+    })
+    .await
+    .map_err(|err| Error::new(ErrorCode::Storage, format!("could not open storage: {err}")))?
+    .map_err(|err| {
+        Error::new(
+            ErrorCode::Storage,
+            format!("could not open the storage at {location}: {err}"),
+        )
+    })?;
+
+    Ok((Database::new(raw, ModuleDecoderRegistry::default()), lock))
+}
+
+/// Creates the directory and claims it, or reports why it cannot be claimed.
+#[cfg(not(target_family = "wasm"))]
+fn take_lock(directory: &std::path::Path, location: &str) -> Result<StorageLock> {
+    std::fs::create_dir_all(directory).map_err(|err| {
+        Error::new(
+            ErrorCode::Storage,
+            format!("could not create the storage directory {location}: {err}"),
+        )
+    })?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("LOCK"))
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Storage,
+                format!("could not open the storage at {location}: {err}"),
+            )
+        })?;
+
+    let mut file = fd_lock::RwLock::new(file);
+    match file.try_write() {
+        Ok(guard) => {
+            // Forgetting the guard keeps the advisory lock without keeping a borrow of the
+            // `RwLock` that would make this value self-referential. Nothing leaks: the guard owns
+            // only a reference, and the lock is released when the file below is closed.
+            core::mem::forget(guard);
+        }
+        Err(_) => {
+            return Err(Error::with_details(
+                ErrorCode::StorageInUse,
+                format!("the storage at {location} is already open"),
+                ErrorDetails::StorageInUse {
+                    location: location.to_owned(),
+                },
+            ));
+        }
+    }
+    Ok(StorageLock { _file: file })
+}
+
+/// Opens an origin-private store: find the origin's directory, claim the file, open redb on it.
+///
+/// Sync access handles are only obtainable inside a worker, and the browser grants one per file at
+/// a time, which is exactly the single-opener rule the documentation promises across tabs,
+/// iframes and workers.
+#[cfg(target_family = "wasm")]
+async fn open_browser(location: String) -> Result<(Database, StorageLock)> {
+    use wasm_bindgen::JsCast;
+
+    let denied = |detail: &str| {
+        Error::new(
+            ErrorCode::Storage,
+            format!("could not open the storage named {location}: {detail}"),
+        )
+    };
+
+    let scope: web_sys::WorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| denied("origin-private storage is only reachable from a worker"))?;
+    let directory: web_sys::FileSystemDirectoryHandle =
+        wasm_bindgen_futures::JsFuture::from(scope.navigator().storage().get_directory())
+            .await
+            .map_err(|_| denied("no usable origin-private file system"))?
+            .dyn_into()
+            .map_err(|_| denied("no usable origin-private file system"))?;
+
+    let options = web_sys::FileSystemGetFileOptions::new();
+    options.set_create(true);
+    let file: web_sys::FileSystemFileHandle = wasm_bindgen_futures::JsFuture::from(
+        directory.get_file_handle_with_options(&format!("{location}.fedimint-sdk"), &options),
+    )
+    .await
+    .map_err(|_| denied("storage access denied"))?
+    .dyn_into()
+    .map_err(|_| denied("storage access denied"))?;
+
+    let handle: web_sys::FileSystemSyncAccessHandle =
+        match wasm_bindgen_futures::JsFuture::from(file.create_sync_access_handle()).await {
+            Ok(handle) => handle
+                .dyn_into()
+                .map_err(|_| denied("storage access denied"))?,
+            Err(_) => {
+                // A sync access handle is exclusive per file per origin, so the one way this is
+                // refused is another tab, worker or iframe already holding it.
+                return Err(Error::with_details(
+                    ErrorCode::StorageInUse,
+                    format!("the storage named {location} is already open"),
+                    ErrorDetails::StorageInUse {
+                        location: location.clone(),
+                    },
+                ));
+            }
+        };
+
+    let raw = fedimint_cursed_redb::MemAndRedb::new(handle).map_err(|err| {
+        Error::new(
+            ErrorCode::Storage,
+            format!("could not open the storage named {location}: {err}"),
+        )
+    })?;
+    Ok((
+        Database::new(raw, ModuleDecoderRegistry::default()),
+        StorageLock { _marker: () },
+    ))
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use crate::{ErrorCode, ErrorDetails};
+
+    use super::*;
+
+    #[test]
+    fn a_path_is_only_validated_never_touched() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let inside = dir.path().join("not-created-yet");
+        let path = inside.to_str().expect("a utf-8 path").to_owned();
+
+        let storage = Storage::at(&path).expect("a valid path is accepted");
+        assert_eq!(storage.location(), path);
+        assert!(!inside.exists(), "the constructor must not create anything");
+    }
+
+    #[test]
+    fn an_unusable_path_is_rejected_without_touching_anything() {
+        for bad in ["", "with\0nul"] {
+            let err = Storage::at(bad).expect_err("an unusable path is refused");
+            assert_eq!(err.code, ErrorCode::InvalidInput);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_location_creates_it() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let inside = dir.path().join("wallet");
+        let path = inside.to_str().expect("a utf-8 path").to_owned();
+
+        let opened = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the location is created and locked");
+        assert!(inside.exists());
+        drop(opened);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_opener_is_refused_and_the_lock_returns_when_the_first_drops() {
+        // The whole point of the lock is that two writers can never share one
+        // wallet's state, and that a dead holder is not a permanent lockout. The
+        // second half is what makes `StorageInUse` mean "genuinely concurrent".
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+        let first = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the first opener wins");
+
+        let err = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect_err("the second opener is refused");
+        assert_eq!(err.code, ErrorCode::StorageInUse);
+        match err.detail() {
+            Some(ErrorDetails::StorageInUse { location }) => assert_eq!(location, &path),
+            other => panic!("expected the location, got {other:?}"),
+        }
+
+        drop(first);
+
+        let third = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the lock is reclaimed once the holder is gone");
+        drop(third);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_memory_stores_never_contend() {
+        // Each value names a store of its own, so two of them are two wallets and
+        // neither can report the other as concurrent use.
+        let first = Storage::in_memory()
+            .open()
+            .await
+            .expect("an in-memory store opens");
+        let second = Storage::in_memory()
+            .open()
+            .await
+            .expect("and so does a second");
+        assert!(first.1.is_none(), "an in-memory store takes no lock");
+        assert!(second.1.is_none());
+    }
+}

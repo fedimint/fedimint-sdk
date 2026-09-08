@@ -4,6 +4,27 @@ on:
     secrets:
       CACHIX_AUTH_TOKEN:
         required: false
+    inputs:
+      run_core:
+        description: 'Run core build, unit test, and typecheck jobs'
+        required: false
+        type: boolean
+        default: true
+      run_web:
+        description: 'Run web/WASM integration tests'
+        required: false
+        type: boolean
+        default: true
+      run_docs:
+        description: 'Run docs build'
+        required: false
+        type: boolean
+        default: true
+      run_cli:
+        description: 'Run create-fedimint-app CLI tests'
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
 
 jobs:
@@ -28,6 +49,7 @@ jobs:
 
   build:
     name: Build JS
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_core != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -43,6 +65,7 @@ jobs:
 
   unit:
     name: Unit Tests
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_core != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -58,6 +81,7 @@ jobs:
 
   types:
     name: Check Types
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_core != false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -75,6 +99,7 @@ jobs:
 
   test:
     name: Test
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_web != false }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
 
@@ -118,6 +143,7 @@ jobs:
 
   build-docs:
     name: Build Docs
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_docs != false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -132,3 +158,21 @@ jobs:
 
       - name: Build Docs
         run: pnpm --dir js docs:build
+
+  test-cli:
+    name: Test CLI
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_cli != false }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      - name: Build create-fedimint-app
+        run: pnpm --dir js --filter create-fedimint-app build
+
+      - name: Run CLI tests
+        run: pnpm --dir js test:create

@@ -34,3 +34,8 @@ test-coverage:
 
 test-ui:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:ui
+
+# Stand up a devimint federation of the given module shape (v1, v2 or mixed) and
+# run the fedimint-sdk integration tests against it.
+test-sdk shape="v1":
+    nix develop --accept-flake-config .#wasm-tests -c scripts/run-sdk-integration-tests.sh {{shape}}

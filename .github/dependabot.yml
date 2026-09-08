@@ -18,6 +18,12 @@ updates:
       npm:
         patterns:
           - '*'
+    ignore:
+      # A @changesets/cli major must land together with the matching
+      # changesets/action major (see the github-actions block below), so keep
+      # major bumps out of the automated group PR.
+      - dependency-name: '@changesets/cli'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
@@ -30,3 +36,9 @@ updates:
       github-actions:
         patterns:
           - '*'
+    ignore:
+      # A changesets/action major (v2 -> v3, ...) requires the matching
+      # @changesets/cli major and workflow input changes, so it must be done
+      # deliberately rather than through the automated group PR.
+      - dependency-name: 'changesets/action'
+        update-types: ['version-update:semver-major']

@@ -227,6 +227,13 @@ impl Onchain {
         //   operation.
         unimplemented!()
     }
+
+    /// Builds the facade for one federation. Handed out by `Federation::onchain`.
+    pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Onchain {
+        Onchain {
+            inner: Arc::new(OnchainInner { federation }),
+        }
+    }
 }
 
 /// A frozen, executable plan for one on-chain withdrawal.
@@ -836,9 +843,15 @@ pub struct OnchainReceiveFeeBreakdown {
     pub dust: Amount,
 }
 
-/// Placeholder for the wallet-module state this facade operates on.
+/// The federation this facade operates on.
+///
+/// Held rather than a wallet-module handle, because a facade outlives the client behind it: a
+/// call on a closed federation has to report `FederationClosed` rather than find nothing to talk
+/// to.
 #[derive(Debug)]
-struct OnchainInner;
+struct OnchainInner {
+    federation: Arc<crate::federation::FederationInner>,
+}
 
 /// Placeholder for a quote's frozen plan: destination, amount, the fee and
 /// its components, and the configuration context they were computed
@@ -854,13 +867,18 @@ mod tests {
     /// The all-zero txid, which is not a real one; these tests never look at
     /// its value, only carry it through a payload.
     fn a_txid() -> Txid {
-        Txid::from_raw(
-            "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
-        )
+        "0000000000000000000000000000000000000000000000000000000000000000"
+            .parse()
+            .expect("a well-formed transaction id")
     }
 
+    /// A real regtest address, taken from `bitcoin`'s own test suite: the
+    /// parse validates a checksum, so a plausible-looking string no longer
+    /// works here.
     fn an_address() -> Address {
-        Address::from_raw("bcrt1qexampleexampleexampleexampleexampleex".to_owned())
+        "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl"
+            .parse()
+            .expect("a valid regtest address")
     }
 
     /// Generic over the pattern rather than over one kind, exactly as

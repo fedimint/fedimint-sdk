@@ -399,7 +399,9 @@ mod tests {
         is_final: bool,
     ) -> ActivityItem {
         ActivityItem {
-            operation_id: OperationId::from_raw("op".to_owned()),
+            operation_id: "0000000000000000000000000000000000000000000000000000000000000000"
+                .parse()
+                .expect("a valid operation id"),
             kind,
             time: Timestamp::from_epoch_millis(1_700_000_000_000),
             amount,
