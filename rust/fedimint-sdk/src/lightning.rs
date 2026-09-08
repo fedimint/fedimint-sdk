@@ -145,9 +145,9 @@ impl Lightning {
     ///
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired),
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged),
-    /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on an lnv2
-    /// federation running testnet4, whose module cannot pay a `tb` invoice
-    /// at all,
+    /// [`NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on a
+    /// federation running testnet4, whose lightning module cannot pay a
+    /// `tb` invoice at all,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance),
     /// [`GatewayUnavailable`](crate::ErrorCode::GatewayUnavailable),
     /// [`Recovering`](crate::ErrorCode::Recovering) while the federation's
@@ -978,6 +978,29 @@ pub(super) fn insufficient(required: Amount, available: Amount) -> Error {
     )
 }
 
+// Neither lightning generation can name testnet4 as such, so a testnet4 federation's module
+// refuses a `tb` invoice as an unrelated failure rather than the network mismatch it is: lnv2
+// compares the configured network to the invoice's BOLT11 currency class strictly
+// (`self.cfg.network != invoice.currency().into()`,
+// `fedimint-lnv2-client/src/lib.rs:560-565`), and `Currency::BitcoinTestnet` converts only to
+// `bitcoin::Network::Testnet`; v1 converts the configured network through lightning-invoice's
+// `From<bitcoin::Network> for Currency` (`lightning-invoice-0.33.3/src/lib.rs:451-463`), which
+// has no `Testnet4` arm and falls to a `_` arm yielding `Currency::Regtest`, so its own check
+// (`fedimint-ln-client/src/lib.rs:834-839`) never matches a `tb` invoice either. Tracked
+// upstream as fedimint/fedimint#9100; both generations report this refusal with the same
+// detail `check_network` would have produced, rather than the SDK working around it.
+pub(super) fn network_refusal(quote: &LnQuoteInner, expected: Network) -> Error {
+    Error::with_details(
+        ErrorCode::NetworkMismatch,
+        "the lightning module refused the invoice's network",
+        ErrorDetails::NetworkMismatch {
+            expected,
+            compatible: compatible_networks(quote.invoice.network()),
+            observed_prefix: quote.invoice.observed_prefix(),
+        },
+    )
+}
+
 pub(super) fn gateway_unavailable(cause: impl core::fmt::Display) -> Error {
     Error::new(
         ErrorCode::GatewayUnavailable,
@@ -1450,6 +1473,25 @@ mod tests {
                 terms: Terms::V1 { gateway: None },
             },
             expires_at: Timestamp::from_epoch_millis(expires_at),
+        }
+    }
+
+    #[test]
+    fn network_refusal_carries_the_regtest_invoices_networks() {
+        let quote = a_quote(0);
+        let err = network_refusal(&quote, crate::Network::Testnet4);
+        assert_eq!(err.code, crate::ErrorCode::NetworkMismatch);
+        match err.detail() {
+            Some(crate::ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            }) => {
+                assert_eq!(*expected, crate::Network::Testnet4);
+                assert_eq!(compatible, &vec![crate::Network::Regtest]);
+                assert_eq!(observed_prefix, "bcrt");
+            }
+            other => panic!("expected NetworkMismatch details, got {other:?}"),
         }
     }
 

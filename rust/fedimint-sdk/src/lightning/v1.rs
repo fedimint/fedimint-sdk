@@ -24,16 +24,16 @@ use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
-    from_upstream, gateway_unavailable, insufficient, internal, now, plan_of, quote_changed,
-    quote_expired, subscribe_error, to_upstream, unreachable,
+    from_upstream, gateway_unavailable, insufficient, internal, network_refusal, now, plan_of,
+    quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in, write_details_in};
 use crate::sdk::SdkInner;
 use crate::{
     Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
-    LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Operation, OperationState,
-    Preimage, Result, Timestamp,
+    LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Network, Operation,
+    OperationState, Preimage, Result, Timestamp,
 };
 
 // Upstream `LnPayState` onto `LnSendState`. The fee and the route come from the executed quote:
@@ -663,6 +663,9 @@ pub(super) async fn send(
     if fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
     }
+    // Read once, ahead of the call below, for the `Invalid invoice currency` branch of its
+    // error mapping.
+    let expected: Network = federation.record().network.into();
     let payment: OutgoingLightningPayment = module
         .pay_bolt11_invoice(
             gateway.map(|gateway| *gateway),
@@ -699,6 +702,19 @@ pub(super) async fn send(
             let text = err.to_string();
             if text.contains("Invoice has expired") {
                 return quote_expired(quote.expires_at, false);
+            }
+            // v1 converts the configured network through lightning-invoice's
+            // `From<bitcoin::Network> for Currency`
+            // (lightning-invoice-0.33.3/src/lib.rs:451-463) and compares against it
+            // (`ensure!(federation_currency == invoice_currency, "Invalid invoice
+            // currency: ...")`, fedimint-ln-client/src/lib.rs:834-839). That conversion has no
+            // `Testnet4` arm and falls to a `_` arm yielding `Currency::Regtest`, so a testnet4
+            // federation refuses every `tb` invoice here, the same upstream limitation lnv2's
+            // `WrongCurrency` reports (tracked as fedimint/fedimint#9100). Reported as the
+            // network mismatch it is rather than left to fall through to the internal-failure
+            // branch below.
+            if text.contains("Invalid invoice currency") {
+                return network_refusal(quote, expected);
             }
             internal(format!("the payment could not be started: {text}"))
         })?;

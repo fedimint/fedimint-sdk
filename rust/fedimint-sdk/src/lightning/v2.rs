@@ -18,13 +18,13 @@ use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
-    from_upstream, gateway_unavailable, insufficient, internal, now, plan_of, quote_changed,
-    quote_expired, subscribe_error, to_upstream, unreachable,
+    from_upstream, gateway_unavailable, insufficient, internal, network_refusal, now, plan_of,
+    quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, kinds, record_phase_in};
 use crate::{
-    Amount, Bolt11Invoice, Error, ErrorCode, ErrorDetails, GatewayId, LightningRoute, LnReceive,
+    Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
     LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Network, Operation, Preimage,
     Result, Timestamp,
 };
@@ -393,18 +393,13 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         // configured network strictly (`self.cfg.network != invoice.currency().into()`,
         // fedimint-lnv2-client/src/lib.rs:560-565), but BOLT11 spells testnet3 and testnet4
         // the same way (`tb`), so a `tb` invoice this SDK's own `check_network` accepts is
-        // still refused by the module. This is an upstream limitation of lnv2 (v1 compares by
-        // currency class instead); the SDK reports it with the same detail `check_network`
-        // would have produced rather than trying to work around it.
-        SendPaymentError::WrongCurrency { .. } => Error::with_details(
-            ErrorCode::NetworkMismatch,
-            "the lnv2 module refused the invoice's network",
-            ErrorDetails::NetworkMismatch {
-                expected,
-                compatible: super::compatible_networks(quote.invoice.network()),
-                observed_prefix: quote.invoice.observed_prefix(),
-            },
-        ),
+        // still refused by the module. Both generations are affected, not lnv2 alone: v1
+        // converts the configured network through lightning-invoice's
+        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.33.3/src/lib.rs:451-463),
+        // which has no `Testnet4` arm either. Tracked upstream as fedimint/fedimint#9100; the
+        // SDK reports this with the same detail `check_network` would have produced, rather
+        // than trying to work around it.
+        SendPaymentError::WrongCurrency { .. } => network_refusal(quote, expected),
     }
 }
 
@@ -560,7 +555,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Amount;
+    use crate::{Amount, ErrorDetails};
 
     fn fee() -> Amount {
         Amount::from_msats(1_050)
