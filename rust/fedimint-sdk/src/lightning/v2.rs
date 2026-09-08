@@ -280,6 +280,17 @@ pub(super) async fn send(
     send_fee: PaymentFee,
     expiration_delta: u64,
 ) -> Result<Operation<LnSendState>> {
+    // The module derives this invoice's operation id independently of the gateway or fee
+    // schedule (`fedimint-lnv2-client/src/lib.rs:567-574`) and later refuses a duplicate
+    // attempt against it with `DuplicatePaymentAttempt`, which `send_error` below maps to the
+    // same `QuoteExpired` this reports. Checking first, before the gateway is asked to
+    // re-quote, keeps an already-paid or still-in-flight invoice from being reported as a
+    // quote whose terms moved: paying the first quote can change the fee a second quote for
+    // the same invoice would be re-priced at.
+    let id = OperationId::from_encodable(&(quote.invoice.inner().clone(), 0u64));
+    if client.operation_exists(id).await {
+        return Err(quote_expired(quote.expires_at, true));
+    }
     let Some(routing) = module
         .routing_info(&gateway)
         .await

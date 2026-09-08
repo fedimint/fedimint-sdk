@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
+use fedimint_core::bitcoin::hashes::{Hash, sha256};
 use fedimint_core::core::OperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::BoxStream;
@@ -554,6 +555,31 @@ pub(super) async fn send(
     quote: &LnQuoteInner,
     gateway: Option<Box<LightningGateway>>,
 ) -> Result<Operation<LnSendState>> {
+    // Whether the module has already completed a payment for this invoice, or is still running
+    // one, is decided before anything else. Paying a quote moves the note inventory, so a second
+    // quote for the same invoice re-prices to a different federation fee once the first is
+    // funded, and the terms re-check below would otherwise report that as a moved quote instead
+    // of the truth: the invoice is already paid. `pay_bolt11_invoice` itself runs these same two
+    // idempotency checks first, ahead of anything else it does
+    // (`fedimint-ln-client/src/lib.rs:1356-1368`).
+    let payment_hash = *quote.invoice.inner().payment_hash();
+    let record = module
+        .db
+        .begin_transaction_nc()
+        .await
+        .get_value(&PaymentResultKey { payment_hash })
+        .await;
+    if let Some(record) = record {
+        if record.completed_payment.is_some() {
+            return Err(quote_expired(quote.expires_at, true));
+        }
+        if client
+            .has_active_states(v1_payment_operation_id(&payment_hash, record.index))
+            .await
+        {
+            return Err(quote_expired(quote.expires_at, true));
+        }
+    }
     // `pay_bolt11_invoice` decides internal-vs-gateway for itself, from the invoice and the
     // gateway cache as they stand when it is called (`fedimint-ln-client/src/lib.rs:1405-1418`).
     // That cache is shared and can move between the quote and this call, so the same decision is
@@ -589,20 +615,6 @@ pub(super) async fn send(
     .await?;
     if fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
-    }
-    // A completed earlier payment of this invoice would be answered as if it were new
-    // (`fedimint-ln-client/src/lib.rs:1356-1358`); the module's own idempotency record says so
-    // before anything is funded.
-    let payment_hash = *quote.invoice.inner().payment_hash();
-    let already_paid = module
-        .db
-        .begin_transaction_nc()
-        .await
-        .get_value(&PaymentResultKey { payment_hash })
-        .await
-        .is_some_and(|result| result.completed_payment.is_some());
-    if already_paid {
-        return Err(quote_expired(quote.expires_at, true));
     }
     let payment: OutgoingLightningPayment = module
         .pay_bolt11_invoice(
@@ -692,6 +704,19 @@ pub(super) async fn send(
             Arc::new(LnSendDriver) as Arc<dyn Driver<LnSendState>>,
         )
         .await
+}
+
+// Reproduces `LightningClientModule::get_payment_operation_id`, upstream's private helper
+// (`fedimint-ln-client/src/lib.rs:798-806`) that derives the operation id of one payment
+// attempt from the invoice's payment hash and the attempt's index: a sha256 hash over the 32
+// payment-hash bytes followed by the 2-byte little-endian index. This id is a storage format
+// upstream, not an implementation detail: it is the operation id under which every v1 payment
+// attempt is, and always has been, recorded, so it is as stable as the log itself.
+fn v1_payment_operation_id(payment_hash: &sha256::Hash, index: u16) -> OperationId {
+    let mut bytes = [0u8; 34];
+    bytes[0..32].copy_from_slice(&payment_hash.to_byte_array());
+    bytes[32..34].copy_from_slice(&index.to_le_bytes());
+    OperationId(sha256::Hash::hash(&bytes).to_byte_array())
 }
 
 /// Issues a v1 invoice through the cheapest online gateway and records it.
@@ -853,6 +878,16 @@ mod tests {
         LightningRoute::Gateway {
             gateway_id: GATEWAY_ID.parse().expect("a gateway id"),
         }
+    }
+
+    #[test]
+    fn v1_payment_operation_id_hashes_the_payment_hash_and_the_little_endian_index() {
+        let payment_hash = sha256::Hash::from_byte_array([0xab; 32]);
+        let mut expected_bytes = [0u8; 34];
+        expected_bytes[0..32].copy_from_slice(&payment_hash.to_byte_array());
+        expected_bytes[32..34].copy_from_slice(&1u16.to_le_bytes());
+        let expected = OperationId(sha256::Hash::hash(&expected_bytes).to_byte_array());
+        assert_eq!(v1_payment_operation_id(&payment_hash, 1), expected);
     }
 
     #[test]
