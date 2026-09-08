@@ -4,7 +4,7 @@ use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::core::OperationId;
 use fedimint_core::util::BoxStream;
-use fedimint_lnv2_client::{LightningClientModule, SendOperationState};
+use fedimint_lnv2_client::{LightningClientModule, ReceiveOperationState, SendOperationState};
 use futures::StreamExt;
 
 use super::driver::until_final;
@@ -13,7 +13,8 @@ use super::wire::PHASE_FUNDED;
 use crate::federation::FederationInner;
 use crate::operation::record_phase_in;
 use crate::{
-    Amount, Error, ErrorCode, LightningRoute, LnSendDetails, LnSendState, Preimage, Result,
+    Amount, Error, ErrorCode, LightningRoute, LnReceiveState, LnSendDetails, LnSendState, Preimage,
+    Result,
 };
 
 // lnv2 `SendOperationState` onto `LnSendState`. `Failure` means two things: the funding
@@ -112,6 +113,60 @@ pub(super) async fn subscribe_send(
     Ok(until_final(stream))
 }
 
+// lnv2 `ReceiveOperationState` onto `LnReceiveState`. Direct: lnv2 names its stages.
+//
+// | upstream       | here                |
+// | -------------- | ------------------- |
+// | `Pending`      | `WaitingForPayment` |
+// | `Claiming`     | `Funded`            |
+// | `Claimed`      | `Claimed`           |
+// | `Expired`      | `Expired`           |
+// | `Failure`      | `Failed`            |
+// | `Uneconomical` | `Failed`            |
+pub(super) fn map_receive(state: &ReceiveOperationState) -> LnReceiveState {
+    match state {
+        ReceiveOperationState::Pending => LnReceiveState::WaitingForPayment,
+        ReceiveOperationState::Claiming => LnReceiveState::Funded,
+        ReceiveOperationState::Claimed => LnReceiveState::Claimed,
+        ReceiveOperationState::Expired => LnReceiveState::Expired,
+        ReceiveOperationState::Failure | ReceiveOperationState::Uneconomical => {
+            LnReceiveState::Failed
+        }
+    }
+}
+
+/// A fresh stream over an lnv2 receive. The funded phase is recorded for symmetry with v1, though
+/// no lnv2 receive mapping reads it.
+pub(super) async fn subscribe_receive(
+    federation: &FederationInner,
+    id: OperationId,
+    phase: u32,
+) -> Result<BoxStream<'static, Result<LnReceiveState>>> {
+    let client = federation.client(false).await?;
+    let module = module_of(&client)?;
+    let upstream = module
+        .subscribe_receive_operation_state_updates(id)
+        .await
+        .map_err(subscribe_error)?
+        .into_stream();
+    let db = federation.db();
+    let stream = upstream.scan((phase, db), move |(phase, db), state| {
+        let mapped = map_receive(&state);
+        let advance = matches!(mapped, LnReceiveState::Funded) && *phase < PHASE_FUNDED;
+        if advance {
+            *phase = PHASE_FUNDED;
+        }
+        let db = db.clone();
+        async move {
+            if advance && let Err(err) = record_phase_in(&db, id, PHASE_FUNDED).await {
+                return Some(Err(err));
+            }
+            Some(Ok(mapped))
+        }
+    });
+    Ok(until_final(stream))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +232,23 @@ mod tests {
         );
         assert_eq!(send_phase(&SendOperationState::Refunded), PHASE_FUNDED);
         assert_eq!(send_phase(&SendOperationState::Failure), 0);
+    }
+
+    #[test]
+    fn receive_states_fold_onto_the_receive_lifecycle() {
+        let cases = [
+            (
+                ReceiveOperationState::Pending,
+                LnReceiveState::WaitingForPayment,
+            ),
+            (ReceiveOperationState::Claiming, LnReceiveState::Funded),
+            (ReceiveOperationState::Claimed, LnReceiveState::Claimed),
+            (ReceiveOperationState::Expired, LnReceiveState::Expired),
+            (ReceiveOperationState::Failure, LnReceiveState::Failed),
+            (ReceiveOperationState::Uneconomical, LnReceiveState::Failed),
+        ];
+        for (upstream, expected) in cases {
+            assert_eq!(map_receive(&upstream), expected);
+        }
     }
 }
