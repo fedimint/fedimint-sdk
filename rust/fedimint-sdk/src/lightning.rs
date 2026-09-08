@@ -2,8 +2,16 @@
 
 use std::sync::Arc;
 
+use fedimint_client::Client;
+use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::transaction::FeeQuote;
+use fedimint_core::config;
+use fedimint_core::util::SafeUrl;
+use fedimint_lnv2_common::gateway_api::PaymentFee;
+
 use crate::{
-    Amount, Bolt11Invoice, GatewayId, Operation, OperationState, Preimage, Result, Timestamp,
+    Amount, Bolt11Invoice, Error, ErrorCode, ErrorDetails, GatewayId, Network, Operation,
+    OperationState, Preimage, Result, Timestamp,
 };
 
 mod wire;
@@ -184,7 +192,7 @@ pub struct LnQuote {
 impl LnQuote {
     /// The invoice's amount: what will reach the payee.
     pub fn invoice_amount(&self) -> Amount {
-        unimplemented!()
+        self.inner.invoice_amount
     }
 
     /// The aggregate fee this payment will cost, on top of
@@ -199,13 +207,13 @@ impl LnQuote {
     /// [`LnQuote::fee_breakdown`] itemises this same number. This accessor
     /// is authoritative and the breakdown sums to it exactly.
     pub fn fee(&self) -> Amount {
-        unimplemented!()
+        self.inner.plan.fee
     }
 
     /// The parts [`LnQuote::fee`] is made of, for an approval screen that
     /// itemises them.
     pub fn fee_breakdown(&self) -> LnFeeBreakdown {
-        unimplemented!()
+        self.inner.plan.breakdown.clone()
     }
 
     /// The whole debit this payment will make against the balance:
@@ -218,12 +226,12 @@ impl LnQuote {
     /// names this total and the one the payment would now cost. The same
     /// figure is what [`LnSendDetails::total`] records.
     pub fn total(&self) -> Amount {
-        unimplemented!()
+        self.inner.plan.total
     }
 
     /// How this payment will be routed.
     pub fn route(&self) -> LightningRoute {
-        unimplemented!()
+        self.inner.plan.route.clone()
     }
 
     /// When this quote stops being executable.
@@ -231,7 +239,7 @@ impl LnQuote {
     /// Past this point [`Lightning::send`] fails with
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired).
     pub fn expires_at(&self) -> Timestamp {
-        unimplemented!()
+        self.inner.expires_at
     }
 }
 
@@ -616,11 +624,299 @@ struct LightningInner {
     federation: Arc<crate::federation::FederationInner>,
 }
 
-/// Placeholder for a quote's frozen plan: invoice, the amount it names,
-/// verified gateway, the aggregate fee and its components, the bound note
-/// selection, and the configuration context they were computed against.
+/// A quote's frozen plan: the invoice, the amount it names, the fee and its parts, the route, and
+/// the upstream terms the fee was computed from, so that `send` can tell whether they moved.
 #[derive(Debug)]
-struct LnQuoteInner;
+struct LnQuoteInner {
+    /// The federation the quote was made against. A quote is refused on any other.
+    federation_id: config::FederationId,
+    invoice: Bolt11Invoice,
+    invoice_amount: Amount,
+    plan: Plan,
+    expires_at: Timestamp,
+}
+
+/// What a payment will cost and how it will go, for either module generation.
+#[derive(Debug)]
+struct Plan {
+    breakdown: LnFeeBreakdown,
+    /// The sum of `breakdown`.
+    fee: Amount,
+    /// The invoice amount plus `fee`.
+    total: Amount,
+    route: LightningRoute,
+    terms: Terms,
+}
+
+/// The upstream inputs a plan was computed from. `send` recomputes the plan from the same
+/// inputs read again and refuses on any difference in the total.
+#[derive(Debug)]
+enum Terms {
+    /// v1: the gateway the payment goes out through, or `None` for an internal payment.
+    ///
+    /// Boxed: `LightningGateway` is large enough on its own to make this the dominant variant,
+    /// which `clippy::large_enum_variant` flags across every `Terms` value, most of which carry
+    /// no gateway at all.
+    V1 {
+        gateway: Option<Box<fedimint_ln_common::LightningGateway>>,
+    },
+    /// lnv2: the gateway's API and the fee schedule it quoted for this invoice.
+    V2 {
+        gateway: SafeUrl,
+        send_fee: PaymentFee,
+        expiration_delta: u64,
+    },
+}
+
+/// How long a quote stays executable after it is issued, unless the invoice expires first.
+const QUOTE_VALIDITY_MILLIS: u64 = 60_000;
+
+/// The expiry every invoice this facade issues carries. lnv2 refuses anything over one day
+/// (`MAX_INVOICE_EXPIRY_SECS` in fedimint-lnv2-common's gateway_api.rs).
+const INVOICE_EXPIRY_SECS: u32 = 3_600;
+
+/// The longest description a BOLT11 invoice can carry, in bytes: 1023 five-bit groups
+/// (lightning-invoice-0.33.3/src/lib.rs:1687-1697, `Description::new`).
+const MAX_DESCRIPTION_BYTES: usize = 639;
+
+/// The lightning module the live client has, whichever generation it is.
+enum LnModule<'a> {
+    V1(ClientModuleInstance<'a, fedimint_ln_client::LightningClientModule>),
+    V2(ClientModuleInstance<'a, fedimint_lnv2_client::LightningClientModule>),
+}
+
+/// Picks the generation by asking the client, not the stored record: a facade obtained while a
+/// module was present and used after the configuration dropped it is the `NotSupported` case.
+fn module(client: &Client) -> Result<LnModule<'_>> {
+    if let Ok(module) = client.get_first_module::<fedimint_lnv2_client::LightningClientModule>() {
+        return Ok(LnModule::V2(module));
+    }
+    if let Ok(module) = client.get_first_module::<fedimint_ln_client::LightningClientModule>() {
+        return Ok(LnModule::V1(module));
+    }
+    Err(Error::new(
+        ErrorCode::NotSupported,
+        "this federation no longer has a lightning module",
+    ))
+}
+
+/// The checks every quote runs before anything touches the network, in the documented order:
+/// amountless first, then the network, then expiry.
+fn preflight(invoice: &Bolt11Invoice, network: Network) -> Result<Amount> {
+    let Some(amount) = invoice.amount() else {
+        return Err(Error::new(
+            ErrorCode::AmountlessInvoice,
+            "this invoice names no amount and cannot be paid through fedimint",
+        ));
+    };
+    check_network(invoice, network)?;
+    if invoice.is_expired() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "this invoice has already expired",
+        ));
+    }
+    Ok(amount)
+}
+
+/// Every network a BOLT11 currency class could stand for: `tb` is both public testnets, and a
+/// class this crate cannot name (simnet) is the empty set, which still proves a mismatch.
+fn compatible_networks(from_invoice: Option<Network>) -> Vec<Network> {
+    match from_invoice {
+        Some(Network::Testnet) => vec![Network::Testnet, Network::Testnet4],
+        Some(network) => vec![network],
+        None => Vec::new(),
+    }
+}
+
+fn check_network(invoice: &Bolt11Invoice, expected: Network) -> Result<()> {
+    let compatible = compatible_networks(invoice.network());
+    if compatible.contains(&expected) {
+        return Ok(());
+    }
+    let observed_prefix = invoice.observed_prefix();
+    Err(Error::with_details(
+        ErrorCode::NetworkMismatch,
+        format!(
+            "the invoice is for {observed_prefix} but the federation runs on {}",
+            expected.as_str()
+        ),
+        ErrorDetails::NetworkMismatch {
+            expected,
+            compatible,
+            observed_prefix,
+        },
+    ))
+}
+
+fn check_description(description: &str) -> Result<()> {
+    if description.len() > MAX_DESCRIPTION_BYTES {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the description exceeds the {MAX_DESCRIPTION_BYTES} bytes an invoice can carry"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a quote made for another federation or past its window.
+fn ensure_executable(
+    quote: &LnQuoteInner,
+    federation_id: config::FederationId,
+    now_millis: u64,
+) -> Result<()> {
+    if quote.federation_id != federation_id {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "this quote was issued by another federation",
+        ));
+    }
+    if now_millis > quote.expires_at.epoch_millis() {
+        return Err(quote_expired(quote.expires_at, false));
+    }
+    Ok(())
+}
+
+/// Assembles a plan from the gateway's charge, the lightning module's own fee on the explicit
+/// output (or input), and the shared fee quote, whose `output` (or `input`) total already
+/// includes that explicit fee (`fedimint-client/src/client.rs:865-935`): the primary module's
+/// share is what is left of the quote's input and output fees once the lightning module's
+/// explicit fee is taken back out.
+fn plan_of(
+    gateway: Amount,
+    lightning_module: Amount,
+    quote: &FeeQuote,
+    invoice_amount: Amount,
+    route: LightningRoute,
+    terms: Terms,
+) -> Result<Plan> {
+    let input = from_upstream(quote.input.get_bitcoin());
+    let output = from_upstream(quote.output.get_bitcoin());
+    let dust = from_upstream(quote.dust.get_bitcoin());
+    let primary_module = add(input, output)?
+        .checked_sub(lightning_module)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "the fee quote is smaller than the lightning module's own fee",
+            )
+        })?;
+    let breakdown = LnFeeBreakdown {
+        gateway,
+        lightning_module,
+        primary_module,
+        dust,
+    };
+    let fee = add(add(add(gateway, lightning_module)?, primary_module)?, dust)?;
+    let total = add(invoice_amount, fee)?;
+    Ok(Plan {
+        breakdown,
+        fee,
+        total,
+        route,
+        terms,
+    })
+}
+
+fn to_upstream(amount: Amount) -> fedimint_core::Amount {
+    fedimint_core::Amount::from_msats(amount.msats())
+}
+
+fn from_upstream(amount: fedimint_core::Amount) -> Amount {
+    Amount::from_msats(amount.msats)
+}
+
+fn add(left: Amount, right: Amount) -> Result<Amount> {
+    left.checked_add(right)
+        .ok_or_else(|| Error::new(ErrorCode::Internal, "an amount overflowed"))
+}
+
+fn quote_changed(quoted_total: Amount, current_total: Amount) -> Error {
+    Error::with_details(
+        ErrorCode::QuoteChanged,
+        format!(
+            "the payment would now debit {} msat instead of the quoted {} msat",
+            current_total.msats(),
+            quoted_total.msats()
+        ),
+        ErrorDetails::QuoteTermsChanged {
+            quoted_total,
+            current_total,
+        },
+    )
+}
+
+fn quote_expired(expires_at: Timestamp, already_executed: bool) -> Error {
+    let message = if already_executed {
+        "this invoice has already been paid or is being paid"
+    } else {
+        "this quote is no longer executable; quote again"
+    };
+    Error::with_details(
+        ErrorCode::QuoteExpired,
+        message,
+        ErrorDetails::QuoteExpired {
+            expires_at,
+            already_executed,
+        },
+    )
+}
+
+fn insufficient(required: Amount, available: Amount) -> Error {
+    Error::with_details(
+        ErrorCode::InsufficientBalance,
+        format!(
+            "the payment needs {} msat but only {} msat is spendable",
+            required.msats(),
+            available.msats()
+        ),
+        ErrorDetails::InsufficientBalance {
+            required,
+            available,
+        },
+    )
+}
+
+fn gateway_unavailable(cause: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::GatewayUnavailable,
+        format!("no usable lightning gateway: {cause}"),
+    )
+}
+
+fn unreachable(cause: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::FederationUnreachable,
+        format!("the federation did not answer: {cause}"),
+    )
+}
+
+fn internal(cause: impl core::fmt::Display) -> Error {
+    Error::new(ErrorCode::Internal, cause.to_string())
+}
+
+/// An upstream subscription that could not be opened, for either generation's driver.
+pub(super) fn subscribe_error(cause: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("could not follow this operation upstream: {cause}"),
+    )
+}
+
+/// The spendable balance, as `Federation::balance` reads it.
+async fn balance_of(client: &Client) -> Result<Amount> {
+    client
+        .get_balance_for_btc()
+        .await
+        .map(from_upstream)
+        .map_err(|err| internal(format!("this federation cannot report a balance: {err}")))
+}
+
+fn now() -> Timestamp {
+    Timestamp::from_epoch_millis(crate::db::now_millis())
+}
 
 #[cfg(test)]
 mod tests {
@@ -898,5 +1194,239 @@ mod tests {
     #[test]
     fn ln_receive_state_failed_is_final() {
         assert!(LnReceiveState::Failed.is_final());
+    }
+
+    /// The mainnet fixture from `types/invoice.rs`: 25 mBTC, expired in 2017.
+    // The brief's transcription of this and `MAINNET_AMOUNTLESS` below dropped a few characters
+    // each, breaking their bech32 checksum; both are corrected here to the byte-exact fixtures
+    // `types/invoice.rs` already parses and tests against (`MAINNET_25M` there).
+    const MAINNET_EXPIRED: &str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
+    /// An amountless mainnet invoice, from the same file.
+    const MAINNET_AMOUNTLESS: &str = "lnbc1pj48ugqdq0dehjqctdda6kuaqpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qsp5xvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxves9qrsgqcqzyswm4efuu52zkzgrcc35fra9fmvj7s9ppxmej85s83hjkh7crcy9vqlradwalsmq40knf3552panjvlhjlrfazmvs86krxuaygut8v30sq0y0422";
+
+    fn regtest(text: &str) -> Bolt11Invoice {
+        text.parse().expect("a valid invoice")
+    }
+
+    #[test]
+    fn preflight_refuses_an_amountless_invoice_first() {
+        let err = preflight(&regtest(MAINNET_AMOUNTLESS), crate::Network::Regtest)
+            .expect_err("amountless");
+        assert_eq!(err.code, crate::ErrorCode::AmountlessInvoice);
+    }
+
+    #[test]
+    fn preflight_reports_a_network_mismatch_with_details() {
+        let err = preflight(&regtest(SEND_INVOICE), crate::Network::Bitcoin).expect_err("bcrt");
+        assert_eq!(err.code, crate::ErrorCode::NetworkMismatch);
+        match err.detail() {
+            Some(crate::ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            }) => {
+                assert_eq!(*expected, crate::Network::Bitcoin);
+                assert_eq!(compatible, &vec![crate::Network::Regtest]);
+                assert_eq!(observed_prefix, "bcrt");
+            }
+            other => panic!("expected NetworkMismatch details, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tb_invoice_is_compatible_with_either_public_testnet() {
+        // No `tb` fixture exists, so the expansion is checked directly.
+        assert_eq!(
+            compatible_networks(Some(crate::Network::Testnet)),
+            vec![crate::Network::Testnet, crate::Network::Testnet4]
+        );
+        assert_eq!(compatible_networks(None), Vec::<crate::Network>::new());
+        assert_eq!(
+            compatible_networks(Some(crate::Network::Signet)),
+            vec![crate::Network::Signet]
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_an_expired_invoice_as_invalid_input() {
+        let err =
+            preflight(&regtest(MAINNET_EXPIRED), crate::Network::Bitcoin).expect_err("expired");
+        assert_eq!(err.code, crate::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn preflight_checks_expiry_last() {
+        // The regtest fixture expired in 2023, so on a matching network the expiry is the only
+        // refusal left, which is what proves the amount and network checks ran before it.
+        let err = preflight(&regtest(SEND_INVOICE), crate::Network::Regtest).expect_err("expired");
+        assert_eq!(err.code, crate::ErrorCode::InvalidInput);
+        assert_eq!(
+            regtest(SEND_INVOICE).amount(),
+            Some(Amount::from_msats(100_000))
+        );
+    }
+
+    #[test]
+    fn a_description_longer_than_bolt11_allows_is_invalid_input() {
+        assert!(check_description("coffee").is_ok());
+        assert!(check_description(&"x".repeat(639)).is_ok());
+        assert_eq!(
+            check_description(&"x".repeat(640))
+                .expect_err("too long")
+                .code,
+            crate::ErrorCode::InvalidInput
+        );
+        // Bytes, not characters: a three-byte character counts three times.
+        assert_eq!(
+            check_description(&"€".repeat(214))
+                .expect_err("too long")
+                .code,
+            crate::ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn the_fee_breakdown_is_built_from_the_shared_fee_quote() {
+        use fedimint_client_module::transaction::FeeQuote;
+        use fedimint_core::module::Amounts;
+
+        let quote = FeeQuote {
+            input: Amounts::new_bitcoin(fedimint_core::Amount::from_msats(10)),
+            output: Amounts::new_bitcoin(fedimint_core::Amount::from_msats(35)),
+            dust: Amounts::new_bitcoin(fedimint_core::Amount::from_msats(5)),
+        };
+        let plan = plan_of(
+            Amount::from_msats(1_000),
+            Amount::from_msats(25),
+            &quote,
+            Amount::from_msats(100_000),
+            LightningRoute::Internal,
+            Terms::V1 { gateway: None },
+        )
+        .expect("a plan");
+        assert_eq!(
+            plan.breakdown,
+            LnFeeBreakdown {
+                gateway: Amount::from_msats(1_000),
+                lightning_module: Amount::from_msats(25),
+                primary_module: Amount::from_msats(20),
+                dust: Amount::from_msats(5),
+            }
+        );
+        assert_eq!(plan.fee, Amount::from_msats(1_050));
+        assert_eq!(plan.total, Amount::from_msats(101_050));
+    }
+
+    #[test]
+    fn a_fee_quote_below_the_modules_own_fee_is_internal() {
+        use fedimint_client_module::transaction::FeeQuote;
+
+        let err = plan_of(
+            Amount::from_msats(0),
+            Amount::from_msats(25),
+            &FeeQuote::ZERO,
+            Amount::from_msats(1),
+            LightningRoute::Internal,
+            Terms::V1 { gateway: None },
+        )
+        .expect_err("inconsistent");
+        assert_eq!(err.code, crate::ErrorCode::Internal);
+    }
+
+    fn a_quote(expires_at: u64) -> LnQuoteInner {
+        LnQuoteInner {
+            federation_id: fedimint_core::config::FederationId::dummy(),
+            invoice: regtest(SEND_INVOICE),
+            invoice_amount: Amount::from_msats(100_000),
+            plan: Plan {
+                breakdown: LnFeeBreakdown {
+                    gateway: Amount::from_msats(0),
+                    lightning_module: Amount::from_msats(0),
+                    primary_module: Amount::from_msats(0),
+                    dust: Amount::from_msats(0),
+                },
+                fee: Amount::from_msats(0),
+                total: Amount::from_msats(100_000),
+                route: LightningRoute::Internal,
+                terms: Terms::V1 { gateway: None },
+            },
+            expires_at: Timestamp::from_epoch_millis(expires_at),
+        }
+    }
+
+    #[test]
+    fn a_quote_is_executable_until_it_expires_and_only_on_its_federation() {
+        let quote = a_quote(1_000);
+        let id = fedimint_core::config::FederationId::dummy();
+        assert!(ensure_executable(&quote, id, 999).is_ok());
+        assert!(ensure_executable(&quote, id, 1_000).is_ok());
+        let err = ensure_executable(&quote, id, 1_001).expect_err("expired");
+        assert_eq!(err.code, crate::ErrorCode::QuoteExpired);
+        match err.detail() {
+            Some(crate::ErrorDetails::QuoteExpired {
+                expires_at,
+                already_executed,
+            }) => {
+                assert_eq!(*expires_at, Timestamp::from_epoch_millis(1_000));
+                assert!(!already_executed);
+            }
+            other => panic!("expected QuoteExpired details, got {other:?}"),
+        }
+        let other = fedimint_core::config::FederationId(
+            fedimint_core::bitcoin::hashes::Hash::hash(b"another federation"),
+        );
+        assert_eq!(
+            ensure_executable(&quote, other, 0)
+                .expect_err("wrong federation")
+                .code,
+            crate::ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn quote_accessors_read_the_frozen_plan() {
+        let quote = LnQuote { inner: a_quote(5) };
+        assert_eq!(quote.invoice_amount(), Amount::from_msats(100_000));
+        assert_eq!(quote.fee(), Amount::from_msats(0));
+        assert_eq!(quote.total(), Amount::from_msats(100_000));
+        assert_eq!(quote.route(), LightningRoute::Internal);
+        assert_eq!(quote.expires_at(), Timestamp::from_epoch_millis(5));
+        assert_eq!(quote.fee_breakdown().gateway, Amount::from_msats(0));
+    }
+
+    #[test]
+    fn the_error_helpers_carry_their_details() {
+        match quote_changed(Amount::from_msats(10), Amount::from_msats(12)).detail() {
+            Some(crate::ErrorDetails::QuoteTermsChanged {
+                quoted_total,
+                current_total,
+            }) => {
+                assert_eq!(*quoted_total, Amount::from_msats(10));
+                assert_eq!(*current_total, Amount::from_msats(12));
+            }
+            other => panic!("expected QuoteTermsChanged, got {other:?}"),
+        }
+        match insufficient(Amount::from_msats(10), Amount::from_msats(3)).detail() {
+            Some(crate::ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, Amount::from_msats(10));
+                assert_eq!(*available, Amount::from_msats(3));
+            }
+            other => panic!("expected InsufficientBalance, got {other:?}"),
+        }
+        assert_eq!(
+            quote_expired(Timestamp::from_epoch_millis(1), true).code,
+            crate::ErrorCode::QuoteExpired
+        );
+        assert_eq!(
+            gateway_unavailable("offline").code,
+            crate::ErrorCode::GatewayUnavailable
+        );
+        assert_eq!(
+            unreachable("down").code,
+            crate::ErrorCode::FederationUnreachable
+        );
     }
 }
