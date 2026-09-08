@@ -19,6 +19,8 @@ mod v1;
 mod v2;
 mod wire;
 
+pub(crate) use driver::{LnBackfiller, LnReceiveDriver, LnSendDriver};
+
 /// The lightning facade for one federation.
 ///
 /// Obtained from [`Federation::lightning`](crate::Federation::lightning),
@@ -1430,6 +1432,76 @@ mod tests {
         assert_eq!(
             unreachable("down").code,
             crate::ErrorCode::FederationUnreachable
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recorded_send_reads_its_details_back_through_the_engine() {
+        use crate::db::{federation_namespace, in_memory_root};
+        use crate::federation::FederationInner;
+        use crate::operation::{Driver, kinds};
+
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let details = send_details();
+        let id = fedimint_core::core::OperationId([4u8; 32]);
+        let operation = federation
+            .create_operation(
+                id,
+                kinds::LN_SEND,
+                "ln",
+                &wire::LnSendDetailsWire::from(&details),
+                Arc::new(LnSendDriver) as Arc<dyn Driver<LnSendState>>,
+            )
+            .await
+            .expect("create");
+        assert_eq!(operation.details().await.expect("details"), details);
+
+        // The lookup path hands the same record to the same driver.
+        let any = federation
+            .operation(id)
+            .await
+            .expect("lookup")
+            .expect("recorded");
+        assert_eq!(any.kind(), crate::OperationKind::LnSend);
+        let typed = any.as_ln_send().expect("a typed handle");
+        assert_eq!(typed.details().await.expect("details"), details);
+        // No client behind a detached federation: observing the state is refused, not faked.
+        assert_eq!(
+            typed.state().await.expect_err("no client").code,
+            crate::ErrorCode::FederationClosed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recorded_final_state_is_read_without_a_client() {
+        use crate::db::{federation_namespace, in_memory_root};
+        use crate::federation::FederationInner;
+        use crate::operation::{Driver, kinds};
+
+        let db = federation_namespace(&in_memory_root(), [2u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let id = fedimint_core::core::OperationId([5u8; 32]);
+        let operation = federation
+            .create_operation(
+                id,
+                kinds::LN_RECEIVE,
+                "lnv2",
+                &wire::LnReceiveDetailsWire::from(&receive_details()),
+                Arc::new(LnReceiveDriver) as Arc<dyn Driver<LnReceiveState>>,
+            )
+            .await
+            .expect("create");
+        operation
+            .inner()
+            .record_final_state(
+                wire::encode_receive_state(&LnReceiveState::Claimed).expect("encode"),
+            )
+            .await
+            .expect("record");
+        assert_eq!(
+            operation.state().await.expect("state"),
+            LnReceiveState::Claimed
         );
     }
 }

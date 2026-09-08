@@ -1,12 +1,18 @@
 //! The two lightning drivers, the backfiller, and the stream helpers they share.
 
 use core::time::Duration;
+use std::any::Any;
 
+use fedimint_core::core::OperationId;
 use fedimint_core::task::MaybeSend;
-use fedimint_core::util::BoxStream;
+use fedimint_core::util::{BoxFuture, BoxStream};
 use futures::{Stream, StreamExt, future};
 
-use crate::{Error, ErrorCode, OperationState, Result};
+use super::{v1, v2, wire};
+use crate::db::OperationRecord;
+use crate::federation::FederationInner;
+use crate::operation::{Backfilled, Backfiller, Driver};
+use crate::{Error, ErrorCode, LnReceiveState, LnSendState, OperationState, Result};
 
 /// How long `current` waits for the next replayed state before calling the last one current.
 ///
@@ -60,4 +66,125 @@ where
             "this operation's subscription yielded no state",
         )
     })
+}
+
+/// Observes an outgoing lightning payment of either generation, chosen by the record's module.
+pub(crate) struct LnSendDriver;
+
+impl Driver<LnSendState> for LnSendDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: OperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<LnSendState>> {
+        Box::pin(async move {
+            if let Some(encoded) = &record.final_state {
+                return wire::decode_send_state(encoded);
+            }
+            settle(self.subscribe(federation, id, record).await?).await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: OperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<LnSendState>>>> {
+        Box::pin(async move {
+            let details = wire::decode_send_details(&record.details)?;
+            match record.module.as_str() {
+                "ln" => v1::subscribe_send(federation, id, &details).await,
+                "lnv2" => {
+                    v2::subscribe_send(federation, id, record.phase.unwrap_or(0), &details).await
+                }
+                other => Err(unknown_module(other)),
+            }
+        })
+    }
+
+    fn same_state(&self, previous: &LnSendState, next: &LnSendState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &LnSendState) -> Result<String> {
+        wire::encode_send_state(state)
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        Ok(Box::new(wire::decode_send_details(json)?))
+    }
+}
+
+/// Observes an incoming lightning payment of either generation.
+pub(crate) struct LnReceiveDriver;
+
+impl Driver<LnReceiveState> for LnReceiveDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: OperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<LnReceiveState>> {
+        Box::pin(async move {
+            if let Some(encoded) = &record.final_state {
+                return wire::decode_receive_state(encoded);
+            }
+            settle(self.subscribe(federation, id, record).await?).await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a FederationInner,
+        id: OperationId,
+        record: &'a OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<LnReceiveState>>>> {
+        Box::pin(async move {
+            let phase = record.phase.unwrap_or(0);
+            match record.module.as_str() {
+                "ln" => v1::subscribe_receive(federation, id, phase, &record.details).await,
+                "lnv2" => v2::subscribe_receive(federation, id, phase).await,
+                other => Err(unknown_module(other)),
+            }
+        })
+    }
+
+    fn same_state(&self, previous: &LnReceiveState, next: &LnReceiveState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &LnReceiveState) -> Result<String> {
+        wire::encode_receive_state(state)
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        Ok(Box::new(wire::decode_receive_details(json)?))
+    }
+}
+
+/// Rebuilds a lightning record from the module's own log entry, for either generation.
+pub(crate) struct LnBackfiller;
+
+impl Backfiller for LnBackfiller {
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        created_at: u64,
+    ) -> Option<Backfilled> {
+        match module_kind {
+            "ln" => v1::backfill(meta, created_at),
+            "lnv2" => v2::backfill(meta, created_at),
+            _ => None,
+        }
+    }
+}
+
+fn unknown_module(module: &str) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("a lightning record names a module this build cannot observe: {module:?}"),
+    )
 }

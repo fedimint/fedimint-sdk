@@ -167,6 +167,14 @@ pub(super) async fn subscribe_receive(
     Ok(until_final(stream))
 }
 
+/// Rebuilds a record from the module's log entry; filled in with the facade operations.
+pub(super) fn backfill(
+    _meta: &serde_json::Value,
+    _created_at: u64,
+) -> Option<crate::operation::Backfilled> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

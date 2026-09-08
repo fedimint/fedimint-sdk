@@ -763,13 +763,13 @@ impl AnyOperation {
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
     // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7, T8, T9 and T12. Until then, `support_of` still answers `Observable` for every kind whose
-    // arm is `None`: the record's kind and schema version are all it looks at, and neither says
-    // whether a driver has been written yet. That is six kinds in a test build, where `ECASH_SEND`
-    // has its own probe arm and note below, and seven in any other build, where that arm is `None`
-    // too. This is not a bug in the accessor, which is honest about what it can do, but a
-    // temporary gap between what `support` promises and what a build this incomplete can deliver;
-    // it closes as each task above lands its arm.
+    // T7, T9 and T12 (T8 filled in the two lightning arms). Until then, `support_of` still answers
+    // `Observable` for every kind whose arm is `None`: the record's kind and schema version are
+    // all it looks at, and neither says whether a driver has been written yet. That is four kinds
+    // in a test build, where `ECASH_SEND` has its own probe arm, and five in any other build,
+    // where that arm is `None` too. This is not a bug in the accessor, which is honest about what
+    // it can do, but a temporary gap between what `support` promises and what a build this
+    // incomplete can deliver; it closes as each task above lands its arm.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -1411,9 +1411,9 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
         // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash and lightning in T7-T8, on-chain in T9, recovery in T12. Until an arm is
-        // filled in this build cannot observe that kind, which is a real answer rather than a
-        // gap: the record is still found, still listed, and still says what it is.
+        // kind: ecash in T7, on-chain in T9, recovery in T12. Until an arm is filled in this
+        // build cannot observe that kind, which is a real answer rather than a gap: the record
+        // is still found, still listed, and still says what it is.
         //
         // The probe stands in for the ecash-send driver so that the type-erased accessors are
         // exercised end to end before any facade exists; T7 replaces the pair of arms below with
@@ -1423,8 +1423,12 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
         #[cfg(not(test))]
         kinds::ECASH_SEND => None,
         kinds::ECASH_RECEIVE => None,
-        kinds::LN_SEND => None,
-        kinds::LN_RECEIVE => None,
+        kinds::LN_SEND => Some(ErasedDriver::LnSend(Arc::new(
+            crate::lightning::LnSendDriver,
+        ))),
+        kinds::LN_RECEIVE => Some(ErasedDriver::LnReceive(Arc::new(
+            crate::lightning::LnReceiveDriver,
+        ))),
         kinds::ONCHAIN_SEND => None,
         kinds::ONCHAIN_RECEIVE => None,
         kinds::RECOVERY => None,
@@ -1440,17 +1444,15 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
-    // One entry per facade that owns a module kind, added by the task that writes the facade:
-    // ecash and lightning in T7-T8, on-chain in T9. The probe entry is the engine's own fixture
-    // and exists only in a test build.
+    // One entry per facade that owns a module kind: lightning here, ecash in T7, on-chain in T9.
+    // The probe entry is the engine's own fixture and exists only in a test build.
     #[cfg(test)]
-    {
-        vec![Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>]
-    }
+    return vec![
+        Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
+        Arc::new(crate::lightning::LnBackfiller),
+    ];
     #[cfg(not(test))]
-    {
-        Vec::new()
-    }
+    vec![Arc::new(crate::lightning::LnBackfiller)]
 }
 
 /// A driver for a real kind, so the type-erased accessors can be exercised end to end.
@@ -2286,13 +2288,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
-        let any = any_operation(kinds::LN_SEND, "lnv2", READABLE_STATE_SCHEMA).await;
-        assert_eq!(any.kind(), OperationKind::LnSend);
+        let any = any_operation(kinds::ONCHAIN_SEND, "walletv2", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::OnchainSend);
         // `support` is about the record rather than about what this build can observe, so it
         // still says observable; the accessor is where a kind no facade has written a driver for
         // yet answers `None`, in exactly the way a kind mismatch does.
         assert_eq!(any.support(), OperationSupport::Observable);
-        assert!(any.as_ln_send().is_none());
+        assert!(any.as_onchain_send().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2431,30 +2433,37 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // The one arm T6 fills in is the probe fixture standing in for the ecash-send driver
-        // T7 writes. Every other kind is a record this build can find, list and label but not
-        // observe, which the accessors report as `None` rather than as a failure.
+        // The probe fixture stands in for the ecash-send driver T7 writes; the two lightning
+        // arms are real. Every other kind is a record this build can find, list and label but
+        // not observe, which the accessors report as `None` rather than as a failure.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
         ));
-        assert!(driver_for(kinds::LN_SEND).is_none());
+        assert!(matches!(
+            driver_for(kinds::LN_SEND),
+            Some(ErasedDriver::LnSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::LN_RECEIVE),
+            Some(ErasedDriver::LnReceive(_))
+        ));
+        assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
         assert!(driver_for(kinds::RECOVERY).is_none());
         // A tag this build does not know is not a lookup failure either.
         assert!(driver_for("something_else").is_none());
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 1);
-        assert!(
-            backfillers[0]
-                .backfill("probe_module", &serde_json::Value::Null, 0)
+        assert_eq!(backfillers.len(), 2);
+        assert!(backfillers.iter().any(|b| {
+            b.backfill("probe_module", &serde_json::Value::Null, 0)
                 .is_some()
-        );
+        }));
         assert!(
-            backfillers[0]
-                .backfill("mint", &serde_json::Value::Null, 0)
-                .is_none()
+            backfillers
+                .iter()
+                .all(|b| b.backfill("mint", &serde_json::Value::Null, 0).is_none())
         );
     }
 
