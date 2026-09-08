@@ -16,6 +16,7 @@ use crate::{
 
 mod driver;
 mod v1;
+mod v2;
 mod wire;
 
 /// The lightning facade for one federation.
