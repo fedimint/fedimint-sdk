@@ -458,6 +458,12 @@ async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
     // And after a restart.
     let federation_id = federation.id();
     sdk.shutdown().await.expect("shuts down");
+    // Every handle goes before the second build, as in `stored_federation_survives_restart`: a
+    // subscriber and a reattached operation hold the federation's store open exactly as the
+    // federation handle does, and the embedded store's own lock waits for all of them.
+    drop(updates);
+    drop(typed);
+    drop(any);
     drop(lightning);
     drop(federation);
     drop(receive);
