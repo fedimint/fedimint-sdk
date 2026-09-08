@@ -82,15 +82,35 @@ impl Lightning {
     /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, invoice: &Bolt11Invoice) -> Result<LnQuote> {
-        // Implementation notes (delete once implemented):
-        // - Amountless invoices are rejected by both the v1 and the lnv2 payment paths and
-        //   upstream considers supporting them unsafe, so no amount parameter is offered.
-        // - The network check lives here so it runs before anything is committed and on both
-        //   module generations; lnv2's own `WrongCurrency` failure would only surface
-        //   mid-payment on one of them.
-        // - Bind the note selection into the quote: dust depends on which notes are spent, and
-        //   binding it is what makes `LnQuote::total` exact rather than a ceiling.
-        unimplemented!()
+        let federation = &self.inner.federation;
+        // The three generation-independent refusals run before the client is touched, so an
+        // amountless or foreign-network invoice fails the same way on both generations and on
+        // a recovering federation alike.
+        let invoice_amount = preflight(invoice, federation.record().network.into())?;
+        let client = federation.client(true).await?;
+        let plan = match module(&client)? {
+            LnModule::V1(module) => v1::plan(&client, &module, invoice, invoice_amount).await?,
+            LnModule::V2(module) => v2::plan(&client, &module, invoice, invoice_amount).await?,
+        };
+        let available = balance_of(&client).await?;
+        if available < plan.total {
+            return Err(insufficient(plan.total, available));
+        }
+        let issued = crate::db::now_millis();
+        let expires_at = Timestamp::from_epoch_millis(
+            issued
+                .saturating_add(QUOTE_VALIDITY_MILLIS)
+                .min(invoice.expires_at().epoch_millis()),
+        );
+        Ok(LnQuote {
+            inner: LnQuoteInner {
+                federation_id: federation.id,
+                invoice: invoice.clone(),
+                invoice_amount,
+                plan,
+                expires_at,
+            },
+        })
     }
 
     /// Executes a quoted payment.
@@ -132,14 +152,46 @@ impl Lightning {
     /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: LnQuote) -> Result<Operation<LnSendState>> {
-        // Implementation notes (delete once implemented):
-        // - Re-check every bound input of the quote (gateway, its fee, federation config,
-        //   note selection) before funding; any drift is `QuoteChanged`, never a different
-        //   debit.
-        // - Write `LnSendDetails` in the same storage transaction that creates the operation.
-        //   The v1 progress stream reports neither the fee nor the gateway id, so the record
-        //   is the only source for them on a refunded or failed payment.
-        unimplemented!()
+        let federation = &self.inner.federation;
+        let quote = quote.inner;
+        ensure_executable(&quote, federation.id, crate::db::now_millis())?;
+        // The guard is held across the re-check, the funding and the record write, which is what
+        // `create_operation` requires of its caller.
+        let client = federation.client(true).await?;
+        let available = balance_of(&client).await?;
+        if available < quote.plan.total {
+            return Err(insufficient(quote.plan.total, available));
+        }
+        match (module(&client)?, &quote.plan.terms) {
+            (LnModule::V1(module), Terms::V1 { gateway }) => {
+                v1::send(federation, &client, &module, &quote, gateway.clone()).await
+            }
+            (
+                LnModule::V2(module),
+                Terms::V2 {
+                    gateway,
+                    send_fee,
+                    expiration_delta,
+                },
+            ) => {
+                v2::send(
+                    federation,
+                    &client,
+                    &module,
+                    &quote,
+                    gateway.clone(),
+                    *send_fee,
+                    *expiration_delta,
+                )
+                .await
+            }
+            // The federation changed generation between the quote and now, which the
+            // generation rule makes a different federation for every practical purpose.
+            _ => Err(Error::new(
+                ErrorCode::QuoteChanged,
+                "this federation's lightning module changed since the quote was issued",
+            )),
+        }
     }
 
     /// Issues an invoice payable into this federation.
@@ -176,12 +228,19 @@ impl Lightning {
     /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self, amount: Amount, description: &str) -> Result<LnReceive> {
-        // Implementation notes (delete once implemented):
-        // - Write `LnReceiveDetails` in the same storage transaction that creates the
-        //   operation.
-        // - Record the phase the receive reaches durably (see the notes on `LnReceiveState`):
-        //   the terminal v1 event alone does not say whether a payment was ever confirmed.
-        unimplemented!()
+        if amount == Amount::from_msats(0) {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "an invoice for nothing cannot be issued",
+            ));
+        }
+        check_description(description)?;
+        let federation = &self.inner.federation;
+        let client = federation.client(true).await?;
+        match module(&client)? {
+            LnModule::V1(module) => v1::receive(federation, &module, amount, description).await,
+            LnModule::V2(module) => v2::receive(federation, &module, amount, description).await,
+        }
     }
 
     /// Builds the facade for one federation. Handed out by `Federation::lightning`.
