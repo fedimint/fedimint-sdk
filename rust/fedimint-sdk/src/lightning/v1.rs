@@ -290,6 +290,28 @@ impl ReclaimContext {
             ));
         }
 
+        // Upstream commits the reclaim's own operation entry inside `reclaim_ln_receive`
+        // (`manual_operation_start_dbtx` then `dbtx.commit_tx()`,
+        // fedimint-ln-client/src/lib.rs) before this function gets to persist its id on the
+        // record below. A crash in that window would otherwise call `reclaim_ln_receive` again
+        // here and start a second claim state machine competing with the first for the same
+        // contract. The scan is bounded: a reclaim is always newer than the receive it retries,
+        // so nothing the walk finds older than this record's `created_at` can be it.
+        if let Some(reclaim_id) = existing_reclaim(&self.db, self.id, record.created_at).await? {
+            // Persisted before it is followed: same reasoning as below, and this path exists
+            // because that persist step is exactly what a crash could have skipped last time.
+            details.reclaim_operation_id =
+                Some(crate::OperationId::from_upstream(reclaim_id).to_string());
+            write_details_in(&self.db, self.id, wire::encode_receive_wire(&details)?).await?;
+            return Ok(ReclaimStart::Started(
+                module
+                    .subscribe_ln_receive(reclaim_id)
+                    .await
+                    .map_err(subscribe_error)?
+                    .into_stream(),
+            ));
+        }
+
         let reclaim_id = match module.reclaim_ln_receive(self.id).await {
             Ok(id) => id,
             Err(err) => {
@@ -309,6 +331,53 @@ impl ReclaimContext {
                 .into_stream(),
         ))
     }
+}
+
+/// Looks for a reclaim of `original` that upstream already started and committed, so a retry
+/// after a crash follows it instead of starting a competing one.
+///
+/// Walks the client's chronological index newest first, the way
+/// [`FederationInner::creation_time_of`](crate::federation::FederationInner::creation_time_of)
+/// does, and stops at the first entry older than `created_at` (the receive's own creation time):
+/// a reclaim is always newer than the receive it retries, so nothing older can be it.
+async fn existing_reclaim(
+    db: &Database,
+    original: OperationId,
+    created_at: u64,
+) -> Result<Option<OperationId>> {
+    let mut dbtx = db.begin_transaction_nc().await;
+    let keys: Vec<fedimint_client::db::ChronologicalOperationLogKey> = dbtx
+        .find_by_prefix_sorted_descending(&fedimint_client::db::ChronologicalOperationLogKeyPrefix)
+        .await
+        .map(|(key, ())| key)
+        .collect()
+        .await;
+    drop(dbtx);
+
+    let log = fedimint_client::oplog::OperationLog::new(db.clone());
+    for key in keys {
+        if crate::db::millis_of(key.creation_time) < created_at {
+            break;
+        }
+        let Some(entry) = log.get_operation(key.operation_id).await else {
+            continue;
+        };
+        if entry.operation_module_kind() != "ln" {
+            continue;
+        }
+        let Ok(meta) = entry.try_meta::<LightningOperationMeta>() else {
+            continue;
+        };
+        if let LightningOperationMetaVariant::ReceiveReclaim {
+            original_operation_id,
+            ..
+        } = meta.variant
+            && original_operation_id == original
+        {
+            return Ok(Some(key.operation_id));
+        }
+    }
+    Ok(None)
 }
 
 /// Follows a retry that was already started, from the id the record stores for it.
@@ -1263,5 +1332,115 @@ mod tests {
         });
         assert!(backfill(&meta, 0).is_none());
         assert!(backfill(&serde_json::Value::Null, 0).is_none());
+    }
+
+    /// Writes a v1 log entry the way the module itself does, dated at `created_at`.
+    async fn write_ln_log_entry(
+        db: &fedimint_core::db::Database,
+        id: OperationId,
+        meta: serde_json::Value,
+        created_at: u64,
+    ) {
+        use fedimint_client::oplog::OperationLog;
+
+        let mut dbtx = db.begin_transaction().await;
+        OperationLog::new(db.clone())
+            .add_operation_log_entry_dbtx_with_creation_time(
+                &mut dbtx.to_ref_nc(),
+                id,
+                "ln",
+                meta,
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(created_at),
+            )
+            .await;
+        dbtx.commit_tx().await;
+    }
+
+    fn reclaim_meta(original: OperationId) -> serde_json::Value {
+        serde_json::json!({
+            "variant": {
+                "receive_reclaim": {
+                    "original_operation_id": original.fmt_full().to_string(),
+                    "invoice": REGTEST_INVOICE,
+                    "gateway_id": null,
+                }
+            },
+            "extra_meta": null,
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn existing_reclaim_finds_a_retry_committed_after_the_receive() {
+        let db = crate::db::in_memory_root();
+        let original = OperationId([7u8; 32]);
+        let reclaim = OperationId([8u8; 32]);
+        let created_at = 1_700_000_000_000u64;
+        write_ln_log_entry(&db, reclaim, reclaim_meta(original), created_at + 1_000).await;
+
+        let found = existing_reclaim(&db, original, created_at)
+            .await
+            .expect("scan")
+            .expect("the retry the crash lost is still found");
+        assert_eq!(found, reclaim);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn existing_reclaim_ignores_an_entry_older_than_the_receive() {
+        let db = crate::db::in_memory_root();
+        let original = OperationId([7u8; 32]);
+        let reclaim = OperationId([8u8; 32]);
+        let created_at = 1_700_000_000_000u64;
+        // Nothing older than the receive it retries can be its reclaim, so the walk stops here
+        // rather than reporting this unrelated, earlier entry.
+        write_ln_log_entry(&db, reclaim, reclaim_meta(original), created_at - 1_000).await;
+
+        assert_eq!(
+            existing_reclaim(&db, original, created_at)
+                .await
+                .expect("scan"),
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn existing_reclaim_skips_entries_that_are_not_this_receives_retry() {
+        let db = crate::db::in_memory_root();
+        let original = OperationId([7u8; 32]);
+        let other_original = OperationId([9u8; 32]);
+        let created_at = 1_700_000_000_000u64;
+
+        // A reclaim of a different receive: newer, but not a match.
+        write_ln_log_entry(
+            &db,
+            OperationId([8u8; 32]),
+            reclaim_meta(other_original),
+            created_at + 1_000,
+        )
+        .await;
+        // The receive entry itself, at its own creation time: a `Receive`, not a
+        // `ReceiveReclaim`, so it is skipped rather than mistaken for the retry.
+        write_ln_log_entry(
+            &db,
+            original,
+            serde_json::json!({
+                "variant": {
+                    "receive": {
+                        "out_point": { "txid": "00".repeat(32), "out_idx": 0 },
+                        "invoice": REGTEST_INVOICE,
+                        "gateway_id": GATEWAY_ID,
+                    }
+                },
+                "extra_meta": null,
+            }),
+            created_at,
+        )
+        .await;
+
+        assert_eq!(
+            existing_reclaim(&db, original, created_at)
+                .await
+                .expect("scan"),
+            None
+        );
     }
 }
