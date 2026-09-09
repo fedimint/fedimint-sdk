@@ -1468,62 +1468,12 @@ impl Backfiller for EcashBackfiller {
             let op_meta: fedimint_mintv2_client::MintOperationMeta =
                 serde_json::from_value(meta.clone()).ok()?;
             return match op_meta {
-                fedimint_mintv2_client::MintOperationMeta::Send { ecash, custom_meta } => {
-                    let decoded_ecash = fedimint_core::base32::decode_prefixed::<
-                        fedimint_mintv2_client::ECash,
-                    >(
-                        fedimint_core::base32::FEDIMINT_PREFIX, &ecash
-                    )
-                    .ok();
-                    let notes = ecash.parse::<crate::Notes>().ok().or_else(|| {
-                        decoded_ecash
-                            .as_ref()
-                            .map(|e| crate::Notes::from_mintv2(e.clone(), ecash.clone()))
-                    })?;
-                    let notes_val = decoded_ecash
-                        .as_ref()
-                        .map(|e| e.amount().msats)
-                        .unwrap_or_else(|| notes.value().msats());
-                    let (req_amount, fee_msats, total_msats, reclaim_at, created_at) =
-                        if let Some(meta_obj) = custom_meta.as_object() {
-                            let req = meta_obj
-                                .get("requested_amount_msats")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(notes_val);
-                            let fee = meta_obj
-                                .get("fee_msats")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let total = notes_val.saturating_add(fee);
-                            let reclaim = meta_obj
-                                .get("reclaim_at_epoch_ms")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let created = meta_obj
-                                .get("created_at_epoch_ms")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            (req, fee, total, reclaim, created)
-                        } else {
-                            (notes_val, 0u64, notes_val, 0, 0)
-                        };
-                    let wire = crate::ecash::EcashSendDetailsWire {
-                        notes: notes.to_string(),
-                        requested_amount_msats: req_amount,
-                        notes_value_msats: notes_val,
-                        fee_msats,
-                        total_debited_msats: total_msats,
-                        reclaim_at_epoch_ms: reclaim_at,
-                        created_at_epoch_ms: created_at,
-                    };
-                    let details = serde_json::to_string(&wire).ok()?;
-                    Some(Backfilled {
-                        kind: kinds::ECASH_SEND,
-                        details,
-                        phase: Some(1),
-                        final_state: None,
-                    })
-                }
+                // Mintv2 out-of-band sends do not have an upstream state machine or subscription
+                // to track whether notes are redeemed or reclaimed (in mintv2, a send is an immediate
+                // bearer extraction with no lifecycle polling). Leaving it unclaimed preserves the
+                // entry under the `mintv2` module kind honestly rather than advertising a send
+                // operation stuck in `Created` forever.
+                fedimint_mintv2_client::MintOperationMeta::Send { .. } => None,
                 fedimint_mintv2_client::MintOperationMeta::Receive {
                     ecash, custom_meta, ..
                 } => {
@@ -2711,7 +2661,7 @@ mod tests {
         assert_eq!(wire.notes, None);
         assert_eq!(wire.notes_value_msats, 1_000);
 
-        // mintv2 Send with parseable Notes
+        // mintv2 Send is left unclaimed because mintv2 has no send state machine / tracking
         let mintv2_send = fedimint_mintv2_client::MintOperationMeta::Send {
             ecash: TOKEN.to_string(),
             custom_meta: serde_json::json!({
@@ -2721,18 +2671,9 @@ mod tests {
             }),
         };
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
-        let backfilled_v2_send = backfiller
-            .backfill("mintv2", &mintv2_send_json)
-            .expect("claims a Send entry under mintv2 when notes parse");
-        assert_eq!(backfilled_v2_send.kind, kinds::ECASH_SEND);
-        let wire_send: crate::ecash::EcashSendDetailsWire =
-            serde_json::from_str(&backfilled_v2_send.details).expect("valid wire json");
-        assert_eq!(wire_send.requested_amount_msats, 700);
-        assert_eq!(wire_send.notes_value_msats, 1_000);
-        assert_eq!(wire_send.fee_msats, 50);
-        assert_eq!(wire_send.total_debited_msats, 1_050);
+        assert!(backfiller.backfill("mintv2", &mintv2_send_json).is_none());
 
-        // mintv2 Send with unparseable notes returns None to avoid failing decode_details later
+        // mintv2 Send with unparseable notes also returns None
         let unparseable_send = fedimint_mintv2_client::MintOperationMeta::Send {
             ecash: "not_valid_notes".to_string(),
             custom_meta: serde_json::Value::Null,

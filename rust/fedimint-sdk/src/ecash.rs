@@ -1055,10 +1055,10 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                if record.cancel_requested_at.is_some() {
-                    return Ok(EcashSendState::CancelRequested);
-                }
-                return Ok(EcashSendState::Created);
+                return Err(Error::new(
+                    ErrorCode::NotSupported,
+                    "mintv2 ecash send operations do not support state tracking",
+                ));
             }
 
             let client = match federation.client(false).await {
@@ -1110,13 +1110,10 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                let state = if record.cancel_requested_at.is_some() {
-                    EcashSendState::CancelRequested
-                } else {
-                    EcashSendState::Created
-                };
-                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
-                    as BoxStream<'static, Result<EcashSendState>>);
+                return Err(Error::new(
+                    ErrorCode::NotSupported,
+                    "mintv2 ecash send operations do not support state tracking",
+                ));
             }
 
             let client = match federation.client(false).await {
