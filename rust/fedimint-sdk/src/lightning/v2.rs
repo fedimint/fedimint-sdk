@@ -350,7 +350,8 @@ pub(super) async fn send(
     // Upstream re-derives the gateway's terms itself inside `send` and funds the contract at
     // whatever it reads there; nothing binds that read to the `routing_info` re-check above, so a
     // gateway that changes its fee in the instant between the two funds a different contract than
-    // the one this record is about to describe. The committed contract, read back from the
+    // the one this record is about to describe (an API that takes the checked terms is requested
+    // as fedimint/fedimint#9124). The committed contract, read back from the
     // operation's own log entry, is the only place that says what was actually funded, so it
     // corrects the record's fee and total after the fact. A read or a computation that does not
     // come back clean leaves the quoted figures in place: an `Internal` error here would report a
