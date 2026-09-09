@@ -41,9 +41,9 @@ where
     }))
 }
 
-/// A subscription that yields the current state first: the replayed history is drained the way
-/// `settle` drains it, the last state it produced is yielded, and every state after that is
-/// forwarded as it comes.
+/// A subscription that yields the current state first: the replayed history is drained until it
+/// settles, the last state it produced is yielded, and every state after that is forwarded as it
+/// comes.
 ///
 /// If the inner stream ends before producing anything, this ends too, without yielding: that is
 /// not an "empty" current state, it is the absence of one, and `OperationUpdates::next`'s
@@ -62,11 +62,10 @@ where
             }
             // The first item is awaited without a timeout: both generations yield it promptly,
             // and the engine already races every wait in this call against the federation's
-            // `closed` watch. Every item after that is drained with the same per-item timeout
-            // `settle` used to apply itself, stopping at the first final state, the first error,
-            // or the first timeout.
+            // `closed` watch. Every item after that is drained with the same per-item timeout,
+            // stopping at the first final state, the first error, or the first timeout.
             let mut last = stream.next().await?;
-            while !matches!(&last, Ok(state) if state.is_final()) && last.is_ok() {
+            while matches!(&last, Ok(state) if !state.is_final()) {
                 match fedimint_core::runtime::timeout(CURRENT_STATE_SETTLE, stream.next()).await {
                     Ok(Some(item)) => last = item,
                     Ok(None) | Err(_) => break,
@@ -77,12 +76,15 @@ where
     ))
 }
 
-/// The last state a fresh subscription yields promptly: the current one.
-pub(super) async fn settle<S>(stream: BoxStream<'static, Result<S>>) -> Result<S>
+/// The first state a stream yields, mapping an ended stream to this operation's "no state" error.
+///
+/// `Driver::subscribe` already returns a stream wrapped in [`settled`], so this drains it once
+/// rather than draining it a second time the way calling [`settled`] again over it would.
+pub(super) async fn first_state<S>(mut stream: BoxStream<'static, Result<S>>) -> Result<S>
 where
     S: OperationState,
 {
-    match settled(stream).next().await {
+    match stream.next().await {
         Some(item) => item,
         None => Err(Error::new(
             ErrorCode::Internal,
@@ -105,7 +107,7 @@ impl Driver<LnSendState> for LnSendDriver {
             if let Some(encoded) = &record.final_state {
                 return wire::decode_send_state(encoded);
             }
-            settle(self.subscribe(federation, id, record).await?).await
+            first_state(self.subscribe(federation, id, record).await?).await
         })
     }
 
@@ -155,7 +157,7 @@ impl Driver<LnReceiveState> for LnReceiveDriver {
             if let Some(encoded) = &record.final_state {
                 return wire::decode_receive_state(encoded);
             }
-            settle(self.subscribe(federation, id, record).await?).await
+            first_state(self.subscribe(federation, id, record).await?).await
         })
     }
 
@@ -307,9 +309,10 @@ mod tests {
         let mut settled_stream = settled(stream);
         assert!(settled_stream.next().await.is_none());
 
-        // `settle` (the engine's own direct read) turns that into its usual "no state" error.
+        // `first_state` (what `current` calls on `subscribe`'s stream) turns that into its usual
+        // "no state" error.
         let stream: BoxStream<'static, Result<LnSendState>> = Box::pin(stream::empty());
-        let err = settle(stream)
+        let err = first_state(stream)
             .await
             .expect_err("an empty stream must not settle");
         assert_eq!(err.code, ErrorCode::Internal);

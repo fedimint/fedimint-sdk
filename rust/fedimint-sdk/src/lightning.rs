@@ -312,7 +312,9 @@ impl LnQuote {
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), whose
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
     /// names this total and the one the payment would now cost. The same
-    /// figure is what [`LnSendDetails::total`] records.
+    /// figure is what [`LnSendDetails::total`] records, unless the gateway's
+    /// fee moved in the instant [`Lightning::send`] funds the payment; its
+    /// docs say what is recorded then.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }
@@ -494,11 +496,14 @@ pub struct LnSendDetails {
     /// charge is known not to have applied and the rest of the fee is the
     /// quote's estimate, so this is an upper bound.
     ///
-    /// Exact for an operation this SDK created — including one recovered
-    /// after a restart — other than the residual case above, which after a
-    /// restart still reports the quote's upper bound rather than the
-    /// corrected figure. An estimate only for a log entry this SDK did not
-    /// create.
+    /// Exact for an operation this SDK created, including one recovered
+    /// after a restart, except for the residual case above.
+    ///
+    /// That residual case is never corrected: even once recovered after a
+    /// restart, it still reports the quote's upper bound, not the settled
+    /// figure.
+    ///
+    /// An estimate only for a log entry this SDK did not create.
     pub total: Amount,
     /// How the payment is routed, [`LnQuote::route`].
     pub route: LightningRoute,

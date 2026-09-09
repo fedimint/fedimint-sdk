@@ -354,7 +354,10 @@ pub(super) async fn send(
     // operation's own log entry, is the only place that says what was actually funded, so it
     // corrects the record's fee and total after the fact. A read or a computation that does not
     // come back clean leaves the quoted figures in place: an `Internal` error here would report a
-    // payment that was in fact started as failed, which is worse than an inexact record.
+    // payment that was in fact started as failed, which is worse than an inexact record. The
+    // metadata copy already handed to the module above still keeps the quoted figures, since it
+    // was built before this correction; only this SDK's own record ends up with the corrected
+    // ones.
     if let Some(committed) = committed_contract_amount(federation, id).await
         && let Ok((fee, total)) = committed_fee(quote, committed)
     {
@@ -586,15 +589,21 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             let invoice = Bolt11Invoice::from_upstream(invoice);
             let invoice_amount = invoice.amount()?;
             // Trusted only when it names this exact invoice: an entry created by something
-            // other than this SDK could carry anything under the same metadata key.
+            // other than this SDK could carry anything under the same metadata key. A copy that
+            // passes that check but whose route does not parse (a gateway id from a build this
+            // one cannot read) is no more trustworthy than no copy at all, so it falls back to
+            // the same upstream-derived estimate as a missing copy.
             let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&custom_meta)
-                .filter(|copy| copy.invoice == invoice.to_string());
+                .filter(|copy| copy.invoice == invoice.to_string())
+                .and_then(|copy| {
+                    Some((
+                        Amount::from_msats(copy.fee_msats),
+                        Amount::from_msats(copy.total_msats),
+                        LightningRoute::try_from(copy.route).ok()?,
+                    ))
+                });
             let (fee, total, route) = match copy {
-                Some(copy) => (
-                    Amount::from_msats(copy.fee_msats),
-                    Amount::from_msats(copy.total_msats),
-                    LightningRoute::try_from(copy.route).ok()?,
-                ),
+                Some(values) => values,
                 None => {
                     let total = from_upstream(contract.amount);
                     let fee = total.checked_sub(invoice_amount)?;

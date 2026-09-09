@@ -333,13 +333,13 @@ impl ReclaimContext {
     }
 }
 
-/// Looks for a reclaim of `original` that upstream already started and committed, so a retry
-/// after a crash follows it instead of starting a competing one.
-///
-/// Walks the client's chronological index newest first, the way
-/// [`FederationInner::creation_time_of`](crate::federation::FederationInner::creation_time_of)
-/// does, and stops at the first entry older than `created_at` (the receive's own creation time):
-/// a reclaim is always newer than the receive it retries, so nothing older can be it.
+// Looks for a reclaim of `original` that upstream already started and committed, so a retry
+// after a crash follows it instead of starting a competing one.
+//
+// Walks the client's chronological index newest first, the way
+// `FederationInner::creation_time_of` does, and stops at the first entry older than
+// `created_at` (the receive's own creation time): a reclaim is always newer than the receive
+// it retries, so nothing older can be it.
 async fn existing_reclaim(
     db: &Database,
     original: OperationId,
@@ -380,7 +380,7 @@ async fn existing_reclaim(
     Ok(None)
 }
 
-/// Follows a retry that was already started, from the id the record stores for it.
+// Follows a retry that was already started, from the id the record stores for it.
 async fn follow_reclaim(
     module: &LightningClientModule,
     reclaim: &str,
@@ -982,15 +982,21 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             let invoice = Bolt11Invoice::from_upstream(pay.invoice);
             let invoice_amount = invoice.amount()?;
             // Trusted only when it names this exact invoice: an entry created by something
-            // other than this SDK could carry anything under the same metadata key.
+            // other than this SDK could carry anything under the same metadata key. A copy that
+            // passes that check but whose route does not parse (a gateway id from a build this
+            // one cannot read) is no more trustworthy than no copy at all, so it falls back to
+            // the same upstream-derived estimate as a missing copy.
             let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&extra_meta)
-                .filter(|copy| copy.invoice == invoice.to_string());
+                .filter(|copy| copy.invoice == invoice.to_string())
+                .and_then(|copy| {
+                    Some((
+                        Amount::from_msats(copy.fee_msats),
+                        Amount::from_msats(copy.total_msats),
+                        LightningRoute::try_from(copy.route).ok()?,
+                    ))
+                });
             let (fee, total, route) = match copy {
-                Some(copy) => (
-                    Amount::from_msats(copy.fee_msats),
-                    Amount::from_msats(copy.total_msats),
-                    LightningRoute::try_from(copy.route).ok()?,
-                ),
+                Some(values) => values,
                 None => {
                     let fee = from_upstream(pay.fee);
                     let route = if pay.is_internal_payment {
@@ -1466,6 +1472,42 @@ mod tests {
         // SDK put it there, so the gateway-fee-only estimate is used instead.
         assert_eq!(details.fee, Amount::from_msats(1_000));
         assert_eq!(details.total, Amount::from_msats(101_000));
+    }
+
+    #[test]
+    fn a_pay_log_entry_with_a_copy_naming_an_unparseable_gateway_id_falls_back_to_the_estimate() {
+        let copy = wire::LnSendDetailsWire {
+            invoice: REGTEST_INVOICE.to_owned(),
+            invoice_amount_msats: 100_000,
+            fee_msats: 1_500,
+            total_msats: 101_500,
+            route: wire::RouteWire::Gateway {
+                gateway_id: "not a valid gateway id".to_owned(),
+            },
+            created_at: 1_650_000_000_000,
+        };
+        let meta = serde_json::json!({
+            "variant": {
+                "pay": {
+                    "out_point": { "txid": "00".repeat(32), "out_idx": 0 },
+                    "invoice": REGTEST_INVOICE,
+                    "fee": 1000,
+                    "change": [],
+                    "is_internal_payment": false,
+                    "contract_id": "11".repeat(32),
+                    "gateway_id": GATEWAY_ID,
+                }
+            },
+            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+        });
+        let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
+        let details = wire::decode_send_details(&claimed.details).expect("decodes");
+        // A copy whose invoice matches but whose route this build cannot parse is no more
+        // trustworthy than a missing copy, so the gateway-fee-only estimate is used instead, and
+        // the record is not dropped the way propagating the parse failure would drop it.
+        assert_eq!(details.fee, Amount::from_msats(1_000));
+        assert_eq!(details.total, Amount::from_msats(101_000));
+        assert_eq!(details.route, gateway_route());
     }
 
     #[test]
