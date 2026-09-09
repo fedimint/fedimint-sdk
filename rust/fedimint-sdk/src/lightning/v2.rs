@@ -328,14 +328,6 @@ pub(super) async fn send(
     if current != (send_fee, expiration_delta) || fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
     }
-    let id = module
-        .send(
-            quote.invoice.inner().clone(),
-            Some(gateway),
-            serde_json::Value::Null,
-        )
-        .await
-        .map_err(|err| send_error(err, quote, federation.record().network.into()))?;
     let details = crate::LnSendDetails {
         invoice: quote.invoice.clone(),
         invoice_amount: quote.invoice_amount,
@@ -344,6 +336,17 @@ pub(super) async fn send(
         route: quote.plan.route.clone(),
         created_at: now(),
     };
+    // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
+    // between upstream's commit and the SDK's write (`federation.create_operation` below) has
+    // the exact quoted terms, not just the contract amount the log entry gives on its own.
+    let id = module
+        .send(
+            quote.invoice.inner().clone(),
+            Some(gateway),
+            wire::custom_meta(&wire::LnSendDetailsWire::from(&details))?,
+        )
+        .await
+        .map_err(|err| send_error(err, quote, federation.record().network.into()))?;
     federation
         .create_operation(
             id,
@@ -441,13 +444,30 @@ pub(super) async fn receive(
             "the amount does not cover the receive-side fee",
         )
     })?;
+    // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
+    // between upstream's commit and the SDK's write (`federation.create_operation` below) has
+    // the exact quoted terms, not just the gateway's share of the fee the log entry gives on its
+    // own. The invoice is not known until the call returns, so the copy carries a placeholder
+    // for it and `expires_at`; the backfiller takes both from upstream's own meta instead.
+    let created_at = now();
     let (invoice, id) = module
         .receive(
             to_upstream(amount),
             INVOICE_EXPIRY_SECS,
             Bolt11InvoiceDescription::Direct(description.to_owned()),
             Some(gateway),
-            serde_json::Value::Null,
+            wire::custom_meta(&wire::LnReceiveDetailsWire {
+                invoice: String::new(),
+                description: description.to_owned(),
+                requested_amount_msats: amount.msats(),
+                invoice_amount_msats: amount.msats(),
+                fee_msats: fee.msats(),
+                net_credit_msats: net_credit.msats(),
+                gateway_id: Some(GatewayId::from_upstream(routing.module_public_key).to_string()),
+                expires_at: 0,
+                created_at: created_at.epoch_millis(),
+                reclaim_operation_id: None,
+            })?,
         )
         .await
         .map_err(receive_error)?;
@@ -461,7 +481,7 @@ pub(super) async fn receive(
         net_credit,
         gateway_id: Some(GatewayId::from_upstream(routing.module_public_key)),
         expires_at: invoice.expires_at(),
-        created_at: now(),
+        created_at,
     };
     let operation = federation
         .create_operation(
@@ -492,9 +512,10 @@ fn receive_error(err: ReceiveError) -> Error {
     }
 }
 
-/// Rebuilds a record from an lnv2 log entry. The contract carries the gateway's key and the
-/// gateway's fee (the contract amount less the invoice amount) but not the federation's, so a
-/// rebuilt send's total is a floor and a rebuilt receive's fee is the gateway's share only.
+/// Rebuilds a record from an lnv2 log entry: exact for an operation this SDK created, whose
+/// custom metadata carries the quoted terms verbatim; an estimate — the contract's own amount
+/// only, a send's total a floor and a receive's fee the gateway's share only — for an entry the
+/// log holds that this SDK did not create.
 pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Backfilled> {
     let meta: LightningOperationMeta = serde_json::from_value(meta.clone()).ok()?;
     let created_at = Timestamp::from_epoch_millis(created_at);
@@ -502,20 +523,36 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
         LightningOperationMeta::Send(SendOperationMeta {
             contract,
             invoice: LightningInvoice::Bolt11(invoice),
+            custom_meta,
             ..
         }) => {
             let invoice = Bolt11Invoice::from_upstream(invoice);
             let invoice_amount = invoice.amount()?;
-            let total = from_upstream(contract.amount);
-            let fee = total.checked_sub(invoice_amount)?;
+            // Trusted only when it names this exact invoice: an entry created by something
+            // other than this SDK could carry anything under the same metadata key.
+            let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&custom_meta)
+                .filter(|copy| copy.invoice == invoice.to_string());
+            let (fee, total, route) = match copy {
+                Some(copy) => (
+                    Amount::from_msats(copy.fee_msats),
+                    Amount::from_msats(copy.total_msats),
+                    LightningRoute::try_from(copy.route).ok()?,
+                ),
+                None => {
+                    let total = from_upstream(contract.amount);
+                    let fee = total.checked_sub(invoice_amount)?;
+                    let route = LightningRoute::Gateway {
+                        gateway_id: GatewayId::from_upstream(contract.claim_pk),
+                    };
+                    (fee, total, route)
+                }
+            };
             let details = crate::LnSendDetails {
                 invoice,
                 invoice_amount,
                 fee,
                 total,
-                route: LightningRoute::Gateway {
-                    gateway_id: GatewayId::from_upstream(contract.claim_pk),
-                },
+                route,
                 created_at,
             };
             Some(Backfilled {
@@ -528,18 +565,31 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             let LightningInvoice::Bolt11(invoice) = meta.invoice;
             let invoice = Bolt11Invoice::from_upstream(invoice);
             let amount = invoice.amount()?;
-            let net_credit = from_upstream(meta.contract.commitment.amount);
-            let fee = amount.checked_sub(net_credit)?;
+            let copy = wire::from_custom_meta::<wire::LnReceiveDetailsWire>(&meta.custom_meta);
+            let (description, requested_amount, fee, net_credit, created_at) = match &copy {
+                Some(copy) => (
+                    copy.description.clone(),
+                    Amount::from_msats(copy.requested_amount_msats),
+                    Amount::from_msats(copy.fee_msats),
+                    Amount::from_msats(copy.net_credit_msats),
+                    Timestamp::from_epoch_millis(copy.created_at),
+                ),
+                None => {
+                    let net_credit = from_upstream(meta.contract.commitment.amount);
+                    let fee = amount.checked_sub(net_credit)?;
+                    (invoice.description(), amount, fee, net_credit, created_at)
+                }
+            };
             let details = LnReceiveDetails {
-                description: invoice.description(),
-                requested_amount: amount,
+                invoice: invoice.clone(),
+                description,
+                requested_amount,
                 invoice_amount: amount,
                 fee,
                 net_credit,
                 gateway_id: Some(GatewayId::from_upstream(meta.contract.commitment.refund_pk)),
                 expires_at: invoice.expires_at(),
                 created_at,
-                invoice,
             };
             Some(Backfilled {
                 kind: kinds::LN_RECEIVE,
@@ -640,7 +690,7 @@ mod tests {
     const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
     const REGTEST_INVOICE: &str = "lnbcrt1u1pj48ugqdq2vdhkven9v5pp5g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zqsp5242424242424242424242424242424242424242424242424242s9qrsgqcqzys2reg4wsryjt5w8z33ugydecgfmgyvtttwa7e0yzlm803z203j9hqspa4lr6m09cd808xkw9uh4sxc8wf3w6k0gaf5zrqm7zhcxug0vqqpdkpja";
 
-    fn outgoing_meta(contract_msats: u64) -> serde_json::Value {
+    fn outgoing_meta(contract_msats: u64, custom_meta: serde_json::Value) -> serde_json::Value {
         // `all_zeros` is the `bitcoin::hashes::Hash` trait's; `TransactionId` is a hash newtype.
         use fedimint_core::bitcoin::hashes::Hash;
         use fedimint_lnv2_common::contracts::{OutgoingContract, PaymentImage};
@@ -665,14 +715,48 @@ mod tests {
             gateway: SafeUrl::parse("http://127.0.0.1:1/").expect("a url"),
             contract,
             invoice: fedimint_lnv2_common::LightningInvoice::Bolt11(invoice),
-            custom_meta: serde_json::Value::Null,
+            custom_meta,
         }))
         .expect("serialises")
     }
 
+    /// A v2 receive log entry, `commitment.amount` set to `net_credit_msats` and `refund_pk` to
+    /// `GATEWAY_ID`. The payment image and ciphertext are opaque to `backfill` (nothing here
+    /// ever checks or decrypts them), so they are fixed, syntactically valid values rather than
+    /// a fresh encryption.
+    fn incoming_meta(net_credit_msats: u64, custom_meta: serde_json::Value) -> serde_json::Value {
+        const PAYMENT_HASH: &str =
+            "107661134f21fc7c02223d50ab9eb3600bc3ffc3712423a1e47bb1f9a9dbf55f";
+        const CIPHERTEXT_PK: &str = "b2d3ced866057f6caf291f81630301571816663a5189aab23d06d0a1140e86f12232b0c2200513f942db0978a50f09d3";
+        const CIPHERTEXT_SIGNATURE: &str = "abcc29588c6342a99d036733ae838445eb78154452a6eea4492f63a5f512182a2ac9840f779b696b19117a204149216d0e58ad3a0f3d01f404bd0697c27c8aa7aee02a84de30c9f9d90e2eb714f5922efb2768f18a31961108a757afc88089ed";
+        serde_json::json!({
+            "Receive": {
+                "gateway": "http://127.0.0.1:1/",
+                "contract": {
+                    "commitment": {
+                        "payment_image": { "Hash": PAYMENT_HASH },
+                        "amount": net_credit_msats,
+                        "expiration": 2_000_000_000u64,
+                        "claim_pk": GATEWAY_ID,
+                        "refund_pk": GATEWAY_ID,
+                        "ephemeral_pk": GATEWAY_ID,
+                    },
+                    "ciphertext": {
+                        "encrypted_preimage": vec![0u8; 32],
+                        "pk": CIPHERTEXT_PK,
+                        "signature": CIPHERTEXT_SIGNATURE,
+                    },
+                },
+                "invoice": { "Bolt11": REGTEST_INVOICE },
+                "custom_meta": custom_meta,
+            }
+        })
+    }
+
     #[test]
     fn a_send_log_entry_backfills_a_send_record() {
-        let claimed = backfill(&outgoing_meta(101_000), 9).expect("claimed");
+        let claimed =
+            backfill(&outgoing_meta(101_000, serde_json::Value::Null), 9).expect("claimed");
         assert_eq!(claimed.kind, crate::operation::kinds::LN_SEND);
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
         assert_eq!(details.invoice_amount, Amount::from_msats(100_000));
@@ -684,8 +768,55 @@ mod tests {
 
     #[test]
     fn a_contract_below_the_invoice_amount_is_not_claimed() {
-        assert!(backfill(&outgoing_meta(1), 0).is_none());
+        assert!(backfill(&outgoing_meta(1, serde_json::Value::Null), 0).is_none());
         assert!(backfill(&serde_json::Value::Null, 0).is_none());
+    }
+
+    #[test]
+    fn a_send_log_entry_with_an_sdk_copy_uses_the_copys_fee_and_total() {
+        let copy = wire::LnSendDetailsWire {
+            invoice: REGTEST_INVOICE.to_owned(),
+            invoice_amount_msats: 100_000,
+            fee_msats: 1_500,
+            total_msats: 101_500,
+            route: wire::RouteWire::Gateway {
+                gateway_id: GATEWAY_ID.to_owned(),
+            },
+            created_at: 1_650_000_000_000,
+        };
+        let meta = outgoing_meta(101_000, wire::custom_meta(&copy).expect("encode"));
+        let claimed = backfill(&meta, 9).expect("claimed");
+        let details = wire::decode_send_details(&claimed.details).expect("decodes");
+        // The copy's figures, not the contract-derived estimate (1_000 / 101_000) the log entry
+        // alone would give.
+        assert_eq!(details.fee, Amount::from_msats(1_500));
+        assert_eq!(details.total, Amount::from_msats(101_500));
+    }
+
+    #[test]
+    fn a_receive_log_entry_with_an_sdk_copy_uses_the_copys_fee_and_net_credit() {
+        let copy = wire::LnReceiveDetailsWire {
+            invoice: String::new(),
+            description: "coffee".to_owned(),
+            requested_amount_msats: 100_000,
+            invoice_amount_msats: 100_000,
+            fee_msats: 750,
+            net_credit_msats: 99_250,
+            gateway_id: None,
+            expires_at: 0,
+            created_at: 1_650_000_000_000,
+            reclaim_operation_id: None,
+        };
+        let meta = incoming_meta(99_500, wire::custom_meta(&copy).expect("encode"));
+        let claimed = backfill(&meta, 9).expect("claimed");
+        let details = wire::decode_receive_details(&claimed.details).expect("decodes");
+        // The copy's figures, not the contract-derived estimate (fee 500, net credit 99_500)
+        // the log entry alone would give.
+        assert_eq!(details.fee, Amount::from_msats(750));
+        assert_eq!(details.net_credit, Amount::from_msats(99_250));
+        assert_eq!(details.description, "coffee");
+        // The gateway id still comes from upstream's own meta, not the copy's placeholder.
+        assert_eq!(details.gateway_id, Some(GATEWAY_ID.parse().expect("id")));
     }
 
     fn a_quote() -> LnQuoteInner {

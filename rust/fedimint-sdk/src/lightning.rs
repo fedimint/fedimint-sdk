@@ -486,6 +486,12 @@ pub struct LnSendDetails {
     /// module settled inside the federation after all, where the gateway's
     /// charge is known not to have applied and the rest of the fee is the
     /// quote's estimate, so this is an upper bound.
+    ///
+    /// Exact for an operation this SDK created — including one recovered
+    /// after a restart — other than the residual case above, which after a
+    /// restart still reports the quote's upper bound rather than the
+    /// corrected figure. An estimate only for a log entry this SDK did not
+    /// create.
     pub total: Amount,
     /// How the payment is routed, [`LnQuote::route`].
     pub route: LightningRoute,
@@ -618,9 +624,11 @@ pub struct LnReceiveDetails {
     ///
     /// This is the whole difference between what the payer pays and what
     /// lands; no other deduction appears later. It can be zero but usually is
-    /// not, since issuing the notes is itself a federation transaction. A
-    /// record rebuilt from the client's own log after a crash reports zero,
-    /// because the log does not keep the fee.
+    /// not, since issuing the notes is itself a federation transaction.
+    ///
+    /// Exact for an operation this SDK created, even one recovered after a
+    /// restart; a record rebuilt from a log entry this SDK did not create
+    /// has no fee to recover and reports zero.
     pub fee: Amount,
     /// What lands in the spendable balance:
     /// [`invoice_amount`](LnReceiveDetails::invoice_amount) minus

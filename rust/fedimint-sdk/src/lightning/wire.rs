@@ -15,6 +15,28 @@ use crate::{
 /// incoming contract was confirmed paid. The only phase a lightning record ever carries.
 pub(super) const PHASE_FUNDED: u32 = 1;
 
+/// The key under which the SDK's own details record rides inside the module's metadata, so a
+/// record rebuilt from the module's log entry after a crash carries the exact quoted terms.
+pub(super) const CUSTOM_META_KEY: &str = "fedimint_sdk";
+
+/// The details record wrapped for the module's custom metadata.
+pub(super) fn custom_meta<W>(wire: &W) -> Result<serde_json::Value>
+where
+    W: Serialize,
+{
+    let wire = serde_json::to_value(wire).map_err(encode_error)?;
+    Ok(serde_json::json!({ CUSTOM_META_KEY: wire }))
+}
+
+/// The details record carried inside the module's custom metadata, if this SDK put one there.
+pub(super) fn from_custom_meta<W>(meta: &serde_json::Value) -> Option<W>
+where
+    W: serde::de::DeserializeOwned,
+{
+    let wire = meta.as_object()?.get(CUSTOM_META_KEY)?;
+    serde_json::from_value(wire.clone()).ok()
+}
+
 /// [`LightningRoute`] as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -383,6 +405,31 @@ mod tests {
         assert_eq!(
             decode_receive_details(&json).expect("decode"),
             receive_details()
+        );
+    }
+
+    #[test]
+    fn custom_meta_round_trips_through_from_custom_meta() {
+        let wire = LnSendDetailsWire::from(&send_details());
+        let meta = custom_meta(&wire).expect("encode");
+        assert_eq!(from_custom_meta::<LnSendDetailsWire>(&meta), Some(wire));
+    }
+
+    #[test]
+    fn from_custom_meta_is_none_when_absent_or_malformed() {
+        assert_eq!(
+            from_custom_meta::<LnSendDetailsWire>(&serde_json::Value::Null),
+            None
+        );
+        assert_eq!(
+            from_custom_meta::<LnSendDetailsWire>(&serde_json::json!({"other": 1})),
+            None
+        );
+        assert_eq!(
+            from_custom_meta::<LnSendDetailsWire>(
+                &serde_json::json!({ CUSTOM_META_KEY: "not the right shape" })
+            ),
+            None
         );
     }
 
