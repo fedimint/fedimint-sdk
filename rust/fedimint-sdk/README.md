@@ -14,7 +14,14 @@ This crate currently contains the **public API skeleton only**:
 - The crate tracks fedimint `master` at one pinned revision, the same one
   the repo's `flake.nix` pins for devimint and the wasm client, so the SDK
   and the federation its tests run against always come from one commit.
-- The FFI (UniFFI) and wasm layers are not wired up to this crate yet.
+- The wasm layer is not wired up to this crate yet. The UniFFI layer is,
+  behind the `uniffi` feature: a `#[uniffi::export]` block in `src/sdk.rs`
+  exposes the calls whose bodies are real — open an instance, show its
+  mnemonic, preview a federation, join one — and [the Android SDK](../../android)
+  is generated from them. The exports hand out this crate's own types
+  (`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`,
+  `Error`, `ErrorCode`), so a binding is a view of this API rather than a
+  copy that can drift.
 
 The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the

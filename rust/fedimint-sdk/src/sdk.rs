@@ -160,11 +160,13 @@ pub struct Sdk {
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn create_fedimint_sdk(
     data_dir: String,
-    mnemonic: Option<Mnemonic>,
+    mnemonic: Option<Arc<Mnemonic>>,
 ) -> crate::Result<Arc<Sdk>> {
     let mut builder = Sdk::builder().storage(Storage::at(&data_dir)?);
     if let Some(mnemonic) = mnemonic {
-        builder = builder.mnemonic(mnemonic);
+        // `Mnemonic` crosses as an opaque object, so the binding hands over an
+        // `Arc`; the builder wants it by value and `Mnemonic` is a cheap clone.
+        builder = builder.mnemonic(Mnemonic::clone(&mnemonic));
     }
     Ok(Arc::new(builder.build().await?))
 }

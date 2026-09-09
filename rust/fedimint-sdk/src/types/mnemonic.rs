@@ -44,18 +44,21 @@ use crate::{Error, ErrorCode};
 // The crate lints on `#[warn(missing_debug_implementations)]`, promoted to a hard error by CI;
 // `#[allow(missing_debug_implementations)]` on this type records the omission as intentional
 // rather than an oversight.
+// Crosses a UniFFI boundary as an opaque object rather than a `Vec<String>`,
+// which is what the type's own design already asks for: it implements neither
+// `Debug` nor `Display`, and [`Mnemonic::words`] is "the deliberate point at
+// which a caller chooses to have them as a plain string". The object keeps that
+// property across the boundary — a binding holds a handle, and the words stay
+// behind the zeroizing `fedimint_bip39::Mnemonic` until it calls `words()`.
+// Behind the `uniffi` feature.
 #[allow(missing_debug_implementations)]
 #[derive(Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Mnemonic {
     phrase: fedimint_bip39::Mnemonic,
 }
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Mnemonic, Vec<String>, {
-    lower: |mnemonic| mnemonic.words(),
-    try_lift: |words| words.join(" ").parse::<Mnemonic>().map_err(Into::into),
-});
-
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl Mnemonic {
     /// Generates a fresh 12-word English BIP-39 mnemonic.
     ///
@@ -68,6 +71,7 @@ impl Mnemonic {
     /// [`Entropy`](crate::ErrorCode::Entropy) if the platform's secure random
     /// source was unavailable or failed. That is the only failure: nothing
     /// here reads storage or contacts a federation.
+    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn generate() -> crate::Result<Mnemonic> {
         use fedimint_core::secp256k1::rand::RngCore;
 
@@ -93,6 +97,21 @@ impl Mnemonic {
         Ok(Self { phrase })
     }
 
+    /// Rebuilds a mnemonic from a written-down phrase, given as its words in
+    /// order.
+    ///
+    /// The words are joined and validated exactly as [`FromStr`](core::str::FromStr)
+    /// does — case and stray whitespace are forgiven, the checksum is not.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed phrase,
+    /// wrong word count, or checksum failure.
+    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    pub fn from_words(words: Vec<String>) -> crate::Result<Mnemonic> {
+        words.join(" ").parse()
+    }
+
     /// Returns the mnemonic's words, in order, as owned strings.
     ///
     /// Calling this is the deliberate act of exporting the seed out of the
@@ -104,7 +123,9 @@ impl Mnemonic {
         // the same iterator.
         self.phrase.words().map(str::to_owned).collect()
     }
+}
 
+impl Mnemonic {
     /// Wraps an already-parsed BIP-39 mnemonic.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not
