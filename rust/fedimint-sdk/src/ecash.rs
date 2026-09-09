@@ -66,11 +66,16 @@ impl Ecash {
     /// the balance cannot cover the rounded-up note value plus the fee,
     /// which can happen for an `amount` the balance would have covered
     /// exactly, and is itself a reason for this call to exist,
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) if assembling
+    /// `amount` would require the wallet to reissue itself change: this
+    /// build only ever hands out notes it already holds in the exact
+    /// denominations requested, never mints new ones to make change, so a
+    /// wallet that cannot represent `amount` from its current notes cannot
+    /// send it at all yet (see [`Ecash::send`]'s errors for why), or if the
+    /// mint module disappeared from the federation's configuration after
+    /// this facade was obtained,
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for
     /// this federation is incomplete,
-    /// [`NotSupported`](crate::ErrorCode::NotSupported) if the mint module
-    /// disappeared from the federation's configuration after this facade
-    /// was obtained,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
@@ -98,7 +103,31 @@ impl Ecash {
         let rounded_upstream = fee_consensus.round_up(upstream_amount);
         let notes_value = Amount::from_msats(rounded_upstream.msats);
 
-        let fee = Amount::from_msats(fee_consensus.fee(rounded_upstream).msats);
+        // `send_fee_quote` runs the same selection `send` itself will use against the
+        // live note inventory, rather than a flat per-amount formula that cannot tell
+        // "the wallet already holds exact change" (free) apart from "it would have to
+        // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
+        // first case.
+        let fee_quote = mint
+            .send_fee_quote(rounded_upstream)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+
+        // A nonzero fee here means the wallet's current notes cannot cover
+        // `notes_value` exactly, so producing it would require a self-reissue.
+        // `Ecash::send` has no way to perform that reissue and still hand back a
+        // trackable, cancellable operation (see its doc), so refuse here rather than
+        // freeze a quote `send` can never actually execute.
+        if fee.msats() > 0 {
+            return Err(Error::new(
+                ErrorCode::NotSupported,
+                "sending this amount would require reissuing notes to make exact change, \
+                 which this build does not yet support; the wallet must already hold notes \
+                 in the exact denominations needed",
+            ));
+        }
+
         let total = notes_value
             .checked_add(fee)
             .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
@@ -113,7 +142,7 @@ impl Ecash {
 
         let now = crate::db::now_millis();
         let expires_at = Timestamp::from_epoch_millis(now + 60_000);
-        let inventory_hash = balance.msats();
+        let balance_snapshot_msats = balance.msats();
 
         Ok(EcashQuote {
             inner: EcashQuoteInner {
@@ -122,7 +151,7 @@ impl Ecash {
                 fee,
                 total,
                 expires_at,
-                inventory_hash,
+                balance_snapshot_msats,
             },
         })
     }
@@ -159,7 +188,12 @@ impl Ecash {
     /// # Errors
     ///
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired),
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged),
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if the balance or
+    /// the note inventory the quote was computed against no longer matches:
+    /// the total dropped, or the specific denominations needed to hand out
+    /// exactly [`EcashQuote::notes_value`] are no longer available even
+    /// though the total is unchanged (spent and received in the meantime by
+    /// some other operation). Both mean the same thing: quote again,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance),
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for
     /// this federation is incomplete,
@@ -192,27 +226,46 @@ impl Ecash {
                 )
             })?;
 
+        // A cheap early exit for the common case. This is not a note-composition
+        // check: the total can stay identical while the specific denominations
+        // available change (spent and received back in the meantime). The exact
+        // selection below is what actually verifies the plan is still realizable;
+        // this only saves a doomed selection attempt when the balance alone already
+        // rules the quote out.
         let current_balance = self.inner.federation.balance().await?;
-        if current_balance < quote.total() || current_balance.msats() != quote.inner.inventory_hash
+        if current_balance < quote.total()
+            || current_balance.msats() != quote.inner.balance_snapshot_msats
         {
             return Err(Error::new(
                 ErrorCode::QuoteChanged,
-                "note inventory or balance changed since quote was created",
+                "balance changed since quote was created",
             ));
         }
 
         let timeout = std::time::Duration::from_secs(86_400);
         let upstream_notes_val = fedimint_core::Amount::from_msats(quote.notes_value().msats());
+        // Exact selection: the quote promised `notes_value`, and this must produce
+        // exactly that or fail, never more. `spend_notes_with_selector` never itself
+        // reissues to make change regardless of selector (only
+        // `MintClientModule::send_oob_notes` does that, and it returns no operation
+        // id this facade could track for cancellation), so `quote` already refused to
+        // freeze a plan needing one; a failure to select exactly `notes_value` here
+        // means the note inventory changed since then; a race, not a capability gap.
         let (operation_id, oob_notes) = mint
             .spend_notes_with_selector(
-                &fedimint_mint_client::SelectNotesWithAtleastAmount,
+                &fedimint_mint_client::SelectNotesWithExactAmount,
                 upstream_notes_val,
                 Some(timeout),
                 true,
                 serde_json::Value::Null,
             )
             .await
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::QuoteChanged,
+                    "note inventory changed since quote was created",
+                )
+            })?;
 
         let notes = Notes::from_upstream(oob_notes);
         let created_at = now;
@@ -304,9 +357,15 @@ impl Ecash {
                 )
             })?;
 
-        let fee_consensus = mint.cfg().fee_consensus;
-        let upstream_val = fedimint_core::Amount::from_msats(notes.value().msats());
-        let fee = Amount::from_msats(fee_consensus.fee(upstream_val).msats);
+        // `reissue_fee_quote` sums the fee per input note the real reissue will
+        // submit, rather than one flat fee on the notes' combined value: a token
+        // made of several notes pays more than a single note carrying the same
+        // total, and only the per-note sum reflects that.
+        let fee_quote = mint
+            .reissue_fee_quote(notes.as_upstream())
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
         let net_credit = notes
             .value()
             .checked_sub(fee)
@@ -319,7 +378,7 @@ impl Ecash {
 
         let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
         let details = EcashReceiveDetails {
-            notes: notes.clone(),
+            notes: Some(notes.clone()),
             notes_value: notes.value(),
             fee,
             net_credit,
@@ -358,17 +417,15 @@ impl Ecash {
 ///
 /// The requested amount and the actual note value can differ, and this is
 /// the ordinary case rather than an edge case: a mint issues notes in fixed
-/// denominations, so a request is satisfied with notes worth at least as
-/// much, never less, and assembling those notes can itself cost a fee. So
-/// the debit is [`notes_value`](EcashQuote::notes_value) plus
-/// [`fee`](EcashQuote::fee), and both can exceed what the user typed. Show
+/// denominations (mintv2 rounds up to a multiple of 512 msat), so a request
+/// is satisfied with notes worth at least as much, never less. Show
 /// [`total`](EcashQuote::total) before the user agrees, because that is the
 /// number their balance moves by.
-// Implementation notes (delete once implemented):
-// - mintv2 rounds a request up to a multiple of 512 msat.
-// - The resolved note value and fee are quoted once and appear nowhere in the send's
-//   progress stream, so the executed quote is what `EcashSendDetails` copies its terms
-//   from, for the whole life of the operation and after a restart.
+///
+/// The resolved note value is quoted once here and appears nowhere in the
+/// send's progress stream, so this executed quote is what
+/// [`EcashSendDetails`] copies its terms from, for the whole life of the
+/// operation and after a restart.
 #[derive(Debug)]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
@@ -397,10 +454,13 @@ impl EcashQuote {
     /// What issuing and selecting those notes will cost, on top of
     /// [`EcashQuote::notes_value`].
     ///
-    /// Zero when the notes already held can be handed over as they are.
-    /// Non-zero when they have to be re-issued to assemble the value, which
-    /// is a fee the caller pays for the shape of their own note inventory
-    /// rather than for anything the receiver gets.
+    /// Always zero today: [`Ecash::quote`] refuses with
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) rather than freeze a
+    /// quote that would need the wallet to reissue itself change to
+    /// assemble the value, since [`Ecash::send`] has no way to perform that
+    /// reissue yet. The field stays, rather than being removed, because a
+    /// future build that can perform that reissue will report its real cost
+    /// here without changing this type's shape.
     pub fn fee(&self) -> Amount {
         self.inner.fee
     }
@@ -524,8 +584,6 @@ impl Operation<EcashSendState> {
 /// or reclaimed long after some call failed to observe them. See
 /// [`Sdk::forget_federation`](crate::Sdk::forget_federation), which refuses
 /// while reclaimable outgoing value remains.
-// Implementation notes (delete once implemented):
-//
 // Upstream `fedimint-mint-client` models this as `SpendOOBState`: `Created`,
 // `UserCanceledProcessing`, `UserCanceledSuccess`, `UserCanceledFailure`, `Success`,
 // `Refunded`. Two of those names mean the opposite of what they suggest read in
@@ -660,10 +718,11 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 }
 
 /// The lifecycle of redeeming out-of-band ecash notes.
-// Implementation notes (delete once implemented):
-// - Maps one-to-one onto upstream `fedimint-mint-client`'s `ReissueExternalNotesState`
-//   (`Created`, `Issuing`, `Done`, `Failed(String)`); the only change is carrying the
-//   failure reason as a named field rather than a positional tuple.
+///
+/// Maps one-to-one onto upstream `fedimint-mint-client`'s
+/// `ReissueExternalNotesState` (`Created`, `Issuing`, `Done`,
+/// `Failed(String)`); the only change is carrying the failure reason as a
+/// named field rather than a positional tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashReceiveState {
@@ -714,10 +773,6 @@ impl OperationState for EcashReceiveState {
 ///   why a receive nets down where a send totals up.
 ///
 /// `Debug` output redacts the notes, as [`Notes`] itself does.
-// Implementation notes (delete once implemented):
-// - Should the fee turn out not to be knowable locally after all, `fee` and `net_credit`
-//   become `Option` together, never one without the other: each is derivable from the
-//   other given `notes_value`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EcashReceiveDetails {
@@ -731,7 +786,16 @@ pub struct EcashReceiveDetails {
     /// submission of the same notes. While the redemption is pending these
     /// are still bearer value, which is the other reason [`Notes`] redacts
     /// its own `Debug`.
-    pub notes: Notes,
+    ///
+    /// `None` for a record [`Ecash::receive`] did not itself create: one
+    /// reconstructed by reconciliation from the upstream mint's own
+    /// operation log after this build never observed the original call, for
+    /// instance after a crash between the federation accepting the
+    /// reissuance and this SDK persisting its own record. Upstream's log
+    /// entry for a reissuance does not retain the notes that funded it, only
+    /// the resulting amount, so there is no bearer string to recover here;
+    /// this is the honest absence of that data, not a decode failure.
+    pub notes: Option<Notes>,
     /// The gross face value redeemed, before the reissuance fee.
     ///
     /// This is the figure activity history reports as an ecash receive's
@@ -783,7 +847,12 @@ struct EcashQuoteInner {
     fee: Amount,
     total: Amount,
     expires_at: Timestamp,
-    inventory_hash: u64,
+    /// The balance [`Ecash::quote`] read while computing this quote, in
+    /// msats. Not a hash of note composition: it only lets [`Ecash::send`]
+    /// notice the total dropped before attempting a doomed selection. The
+    /// exact-amount selection `send` performs is what actually verifies the
+    /// specific denominations are still there.
+    balance_snapshot_msats: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -830,7 +899,10 @@ impl TryFrom<EcashSendDetailsWire> for EcashSendDetails {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EcashReceiveDetailsWire {
-    pub(crate) notes: String,
+    /// `None` when the notes are not recoverable, as for a record
+    /// [`EcashBackfiller`] reconstructed rather than one [`Ecash::receive`]
+    /// created directly; see [`EcashReceiveDetails::notes`].
+    pub(crate) notes: Option<String>,
     pub(crate) notes_value_msats: u64,
     pub(crate) fee_msats: u64,
     pub(crate) net_credit_msats: u64,
@@ -840,7 +912,7 @@ pub(crate) struct EcashReceiveDetailsWire {
 impl From<&EcashReceiveDetails> for EcashReceiveDetailsWire {
     fn from(details: &EcashReceiveDetails) -> Self {
         Self {
-            notes: details.notes.to_string(),
+            notes: details.notes.as_ref().map(Notes::to_string),
             notes_value_msats: details.notes_value.msats(),
             fee_msats: details.fee.msats(),
             net_credit_msats: details.net_credit.msats(),
@@ -853,12 +925,11 @@ impl TryFrom<EcashReceiveDetailsWire> for EcashReceiveDetails {
     type Error = Error;
 
     fn try_from(wire: EcashReceiveDetailsWire) -> Result<Self> {
-        let notes = if wire.notes.is_empty() {
-            "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ=="
-                .parse::<Notes>()?
-        } else {
-            wire.notes.parse::<Notes>()?
-        };
+        // `None` stays `None`: the notes genuinely were not recoverable. `Some`
+        // must still parse as valid notes, exactly like every other decode path;
+        // there is no third option that silently substitutes different bearer
+        // value for missing data.
+        let notes = wire.notes.map(|s| s.parse::<Notes>()).transpose()?;
         Ok(Self {
             notes,
             notes_value: Amount::from_msats(wire.notes_value_msats),
@@ -1062,7 +1133,17 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
     }
 
     fn encode_state(&self, state: &EcashReceiveState) -> Result<String> {
-        Ok(format!("{state:?}"))
+        // Not `format!("{state:?}")`: `Failed`'s `reason` is free-form text that can
+        // itself contain anything, including something that looks like this enum's
+        // own `Debug` output, so a derived `Debug` round-trip cannot be parsed back
+        // apart from that text unambiguously. `Failed:` is a prefix no other variant
+        // produces, and everything after it, verbatim, is the reason.
+        Ok(match state {
+            EcashReceiveState::Created => "Created".to_string(),
+            EcashReceiveState::Issuing => "Issuing".to_string(),
+            EcashReceiveState::Done => "Done".to_string(),
+            EcashReceiveState::Failed { reason } => format!("Failed:{reason}"),
+        })
     }
 
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
@@ -1095,10 +1176,11 @@ fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
         "Created" => Some(EcashReceiveState::Created),
         "Issuing" => Some(EcashReceiveState::Issuing),
         "Done" => Some(EcashReceiveState::Done),
-        s if s.starts_with("Failed") => Some(EcashReceiveState::Failed {
-            reason: s.to_string(),
-        }),
-        _ => None,
+        s => s
+            .strip_prefix("Failed:")
+            .map(|reason| EcashReceiveState::Failed {
+                reason: reason.to_string(),
+            }),
     }
 }
 
@@ -1127,7 +1209,7 @@ mod tests {
 
     fn receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
-            notes: TOKEN.parse().expect("a valid ecash token"),
+            notes: Some(TOKEN.parse().expect("a valid ecash token")),
             notes_value: Amount::from_msats(1_000),
             fee: Amount::from_msats(36),
             net_credit: Amount::from_msats(964),
@@ -1291,7 +1373,7 @@ mod tests {
                 fee: Amount::from_msats(50),
                 total: Amount::from_msats(1_050),
                 expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
-                inventory_hash: 100_000,
+                balance_snapshot_msats: 100_000,
             },
         };
         assert_eq!(quote.requested_amount(), Amount::from_msats(750));
@@ -1360,5 +1442,65 @@ mod tests {
                 reason: "expired".to_string()
             }
         );
+    }
+
+    #[test]
+    fn receive_state_failed_round_trips_its_reason_exactly_through_persisted_encoding() {
+        // The reason a driver's `current()` reconstructs from `record.final_state`
+        // after a restart must be the original text, not a re-wrapped rendering of
+        // it: the persisted encoding is not `Debug`.
+        let original = EcashReceiveState::Failed {
+            reason: "notes already spent".to_string(),
+        };
+        let driver = EcashReceiveDriver;
+        let encoded = driver.encode_state(&original).expect("encodes");
+        assert_eq!(encoded, "Failed:notes already spent");
+        assert_eq!(parse_receive_state(&encoded), Some(original));
+    }
+
+    #[test]
+    fn receive_state_failed_round_trips_even_when_the_reason_itself_looks_like_a_state() {
+        // A reason string is arbitrary text and may itself contain something that
+        // looks like this encoding, e.g. a diagnostic that quotes another state.
+        // The `Failed:` prefix marks where the fixed part of the encoding ends; the
+        // reason is exactly everything after it, however it is spelled.
+        let original = EcashReceiveState::Failed {
+            reason: "Failed:Created:whatever the guardian said".to_string(),
+        };
+        let driver = EcashReceiveDriver;
+        let encoded = driver.encode_state(&original).expect("encodes");
+        assert_eq!(parse_receive_state(&encoded), Some(original));
+    }
+
+    #[test]
+    fn receive_details_wire_with_no_notes_decodes_to_none_not_a_fabricated_token() {
+        // What `EcashBackfiller` persists for a `Reissuance` log entry, which does
+        // not retain the original notes: absence stays absence, never a stand-in
+        // bearer token, fabricated or otherwise.
+        let wire = EcashReceiveDetailsWire {
+            notes: None,
+            notes_value_msats: 1_000,
+            fee_msats: 36,
+            net_credit_msats: 964,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
+        let details = EcashReceiveDetails::try_from(wire).expect("decodes without notes");
+        assert_eq!(details.notes, None);
+        assert_eq!(details.notes_value, Amount::from_msats(1_000));
+    }
+
+    #[test]
+    fn receive_details_wire_with_present_notes_still_validates_them() {
+        // `Some` is not a licence to skip validation: malformed notes are rejected
+        // exactly as they would be anywhere else notes are parsed.
+        let wire = EcashReceiveDetailsWire {
+            notes: Some("not a token".to_string()),
+            notes_value_msats: 1_000,
+            fee_msats: 36,
+            net_credit_msats: 964,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
+        let error = EcashReceiveDetails::try_from(wire).expect_err("malformed notes are rejected");
+        assert_eq!(error.code, ErrorCode::InvalidInput);
     }
 }

@@ -1443,6 +1443,25 @@ pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
 }
 
 /// A backfiller that reconstructs ecash operations from upstream mint operation logs.
+///
+/// Reconstructed, not observed: this runs from the module's own persisted log entry
+/// alone, with no live federation connection and no fee-consensus lookup available to
+/// it (see [`Backfiller::backfill`]'s signature), so two things it cannot know are
+/// filled in with an honest placeholder rather than a guess:
+///
+/// - `fee` is always recorded as zero. The log entry does not retain what the
+///   federation actually charged, and this backfiller has no way to ask it again.
+/// - `reclaim_at`/`created_at` (send) and `created_at` (receive) are recorded as
+///   epoch zero. The upstream log entry this reads does not carry the original
+///   wall-clock time either.
+///
+/// Both are a known gap in a record built this way, not a lie asserted with
+/// confidence: a caller displaying a backfilled record should not treat these two
+/// as trustworthy the way it can the same fields on a record [`Ecash::send`] or
+/// [`Ecash::receive`] created directly.
+///
+/// [`Ecash::send`]: crate::ecash::Ecash::send
+/// [`Ecash::receive`]: crate::ecash::Ecash::receive
 pub(crate) struct EcashBackfiller;
 
 impl Backfiller for EcashBackfiller {
@@ -1461,6 +1480,7 @@ impl Backfiller for EcashBackfiller {
             } => {
                 let notes = crate::Notes::from_upstream(oob_notes);
                 let notes_value = notes.value();
+                // See this type's doc: not recoverable from the log entry alone.
                 let fee = Amount::ZERO;
                 let total = notes_value;
                 let wire = crate::ecash::EcashSendDetailsWire {
@@ -1481,9 +1501,14 @@ impl Backfiller for EcashBackfiller {
             }
             fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
                 let notes_value = Amount::from_msats(op_meta.amount.msats);
+                // See this type's doc: not recoverable from the log entry alone.
                 let fee = Amount::ZERO;
+                // Unlike `SpendOOB`, upstream's `Reissuance` variant does not retain the
+                // notes that funded it, only the resulting amount: there is no bearer
+                // string to recover here, so this is `None`, not a fabricated one. See
+                // `EcashReceiveDetails::notes`.
                 let wire = crate::ecash::EcashReceiveDetailsWire {
-                    notes: String::new(),
+                    notes: None,
                     notes_value_msats: notes_value.msats(),
                     fee_msats: fee.msats(),
                     net_credit_msats: notes_value.msats(),
@@ -2449,6 +2474,64 @@ mod tests {
                 .backfill("unknown_module", &serde_json::Value::Null)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn ecash_backfiller_reconstructs_spend_oob_and_reissuance_entries() {
+        // Real `SpendOOB`/`Reissuance` meta, not a stand-in shape: this is what
+        // `EcashBackfiller` actually has to parse off the upstream mint module's own
+        // operation log, so the test builds the same upstream type and serializes it
+        // the same way, rather than hand-writing JSON that could drift from it.
+        const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
+        let oob_notes: fedimint_mint_client::OOBNotes = TOKEN.parse().expect("a valid ecash token");
+        let requested_amount = fedimint_core::Amount::from_msats(750);
+
+        let spend_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount,
+                oob_notes: oob_notes.clone(),
+                no_timeout: false,
+            },
+            amount: oob_notes.total_amount(),
+            extra_meta: serde_json::Value::Null,
+        };
+        let spend_json = serde_json::to_value(&spend_meta).expect("serializes");
+
+        let backfiller = EcashBackfiller;
+        let backfilled = backfiller
+            .backfill("mint", &spend_json)
+            .expect("claims a SpendOOB entry under the mint module kind");
+        assert_eq!(backfilled.kind, kinds::ECASH_SEND);
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes, oob_notes.to_string());
+        assert_eq!(wire.requested_amount_msats, 750);
+        assert_eq!(wire.notes_value_msats, oob_notes.total_amount().msats);
+
+        let reissue_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::Reissuance {
+                legacy_out_point: None,
+                txid: None,
+                out_point_indices: vec![0],
+            },
+            amount: fedimint_core::Amount::from_msats(1_000),
+            extra_meta: serde_json::Value::Null,
+        };
+        let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mintv2", &reissue_json)
+            .expect("claims a Reissuance entry under the mintv2 module kind too");
+        assert_eq!(backfilled.kind, kinds::ECASH_RECEIVE);
+        let wire: crate::ecash::EcashReceiveDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        // Upstream's `Reissuance` meta does not retain the original notes, only the
+        // amount: absence, never a fabricated stand-in bearer token.
+        assert_eq!(wire.notes, None);
+        assert_eq!(wire.notes_value_msats, 1_000);
+
+        // A module kind this backfiller does not own claims nothing, even with a
+        // shape it would otherwise recognise.
+        assert!(backfiller.backfill("wallet", &spend_json).is_none());
     }
 
     /// A driver whose one subscription is fed by hand, for the timing the scripted driver
