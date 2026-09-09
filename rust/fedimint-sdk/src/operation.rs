@@ -32,7 +32,7 @@ use fedimint_core::util::{BoxFuture, BoxStream};
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
 use crate::{
-    Amount, EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
+    EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
     OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
 };
 
@@ -1541,8 +1541,8 @@ impl Backfiller for EcashBackfiller {
                     };
                 let wire = crate::ecash::EcashReceiveDetailsWire {
                     notes: None,
-                    notes_value_msats: notes_value.msats(),
-                    fee_msats: fee.msats(),
+                    notes_value_msats,
+                    fee_msats,
                     net_credit_msats: net_credit,
                     created_at_epoch_ms: created_at,
                 };

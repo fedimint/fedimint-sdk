@@ -115,15 +115,28 @@ impl Ecash {
         let rounded_upstream = fee_consensus.round_up(upstream_amount);
         let notes_value = Amount::from_msats(rounded_upstream.msats);
 
+        let balance = self.inner.federation.balance().await?;
+        if balance < notes_value {
+            return Err(Error::new(
+                ErrorCode::InsufficientBalance,
+                format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
+            ));
+        }
+
         // `send_fee_quote` runs the same selection `send` itself will use against the
         // live note inventory, rather than a flat per-amount formula that cannot tell
         // "the wallet already holds exact change" (free) apart from "it would have to
         // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
         // first case.
-        let fee_quote = mint
-            .send_fee_quote(rounded_upstream)
-            .await
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
+            let msg = err.to_string();
+            let lower = msg.to_lowercase();
+            if lower.contains("insufficient") || lower.contains("balance") {
+                Error::new(ErrorCode::InsufficientBalance, msg)
+            } else {
+                Error::new(ErrorCode::Internal, msg)
+            }
+        })?;
         let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
 
         // A nonzero fee here means the wallet's current notes cannot cover
@@ -144,7 +157,6 @@ impl Ecash {
             .checked_add(fee)
             .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
 
-        let balance = self.inner.federation.balance().await?;
         if balance < total {
             return Err(Error::new(
                 ErrorCode::InsufficientBalance,
