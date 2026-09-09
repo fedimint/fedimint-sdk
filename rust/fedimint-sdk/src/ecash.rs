@@ -1301,7 +1301,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
 
             if record.module == "mintv2" {
                 let mintv2 = client
-                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .get_first_module_arc::<fedimint_mintv2_client::MintClientModule>()
                     .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
                 let is_active = client.has_active_states(id).await;
