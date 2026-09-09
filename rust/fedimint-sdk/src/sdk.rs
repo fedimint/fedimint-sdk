@@ -152,10 +152,10 @@ pub struct Sdk {
 
 /// Opens an instance over `data_dir` — the entry point a mobile host calls.
 ///
-/// Pass `mnemonic` to restore a wallet from a written-down phrase. Pass `None`
-/// to use the seed the storage already holds, or, over storage proven empty, to
-/// generate and persist a fresh one. The failure modes are exactly those of
-/// [`SdkBuilder::build`].
+/// Pass a `mnemonic` ([`Mnemonic::from_words`] / [`Mnemonic::generate`]) to
+/// establish that seed. Pass `None` to use the seed the storage already holds,
+/// or, over storage proven empty, to generate and persist a fresh one. The
+/// failure modes are exactly those of [`SdkBuilder::build`].
 #[cfg(feature = "uniffi")]
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn create_fedimint_sdk(
@@ -172,10 +172,11 @@ pub async fn create_fedimint_sdk(
 }
 
 /// The methods a language binding calls. These are the crate's real methods,
-/// exported as-is: [`Sdk::preview`] and [`Sdk::join`] take the string form of an
-/// invite code (`InviteCode` is a UniFFI custom type over `String`), an error
-/// crosses as [`Error`](crate::Error), and [`Sdk::join`] hands back a
-/// [`Federation`] handle. The rest of `Sdk` stays Rust-only for now.
+/// exported as-is: [`Sdk::preview`] and [`Sdk::join`] take an [`InviteCode`]
+/// handle (a UniFFI object a binding builds with [`InviteCode::parse`]), an
+/// error crosses as [`Error`](crate::Error), [`Sdk::export_mnemonic`] hands back
+/// a [`Mnemonic`] handle, and [`Sdk::join`] a [`Federation`] one. The rest of
+/// `Sdk` stays Rust-only for now.
 #[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Sdk {
     /// Returns this instance's seed phrase, for the user to write down.

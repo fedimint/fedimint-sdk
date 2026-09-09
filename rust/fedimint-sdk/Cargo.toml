@@ -62,10 +62,10 @@ futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.149"
 tracing = "0.1.44"
-# Same version fedimint's `[workspace.dependencies]` uses: the
-# `use_remote_type!` calls in src/types/ delegate to fedimint's own
-# `FfiConverter` impls, which only line up if both crates build one `uniffi`.
-# Behind the `uniffi` feature.
+# Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the
+# `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata
+# this version bakes into the built `.so`, so a mismatch fails codegen. `tokio`
+# for `#[uniffi::export(async_runtime = "tokio")]`. Behind the `uniffi` feature.
 uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -80,10 +80,9 @@ tokio = { version = "1.48.0", features = [
     "sync",
     "macros",
     "time",
-    # `net` + `io-util` are for the multi-threaded runtime the `uniffi` feature
-    # spawns exported work onto (see `ffi_runtime` in src/sdk.rs): its
-    # `enable_all()` wants the IO driver, and fedimint-client's transport runs
-    # on it.
+    # `net` + `io-util` are for the runtime `#[uniffi::export(async_runtime =
+    # "tokio")]` spawns exported async work onto: its `enable_all()` wants the IO
+    # driver, and fedimint-client's transport runs on it.
     "net",
     "io-util",
 ] }
@@ -120,10 +119,10 @@ cc = "1"
 # where it looks for it in the nix shell.
 #
 # `panic = "abort"` is also a correctness setting, not only a size one: the
-# UniFFI response path must not unwind across the FFI boundary. It is what the
-# no-panic discipline in `src/sdk.rs` (the export block) and `src/lib.rs`
-# refers to. Cargo ignores
-# it for the test and bench profiles, so `cargo test --release` is unaffected.
+# UniFFI response path must not unwind across the FFI boundary, which is the
+# no-panic discipline the implementation notes in `src/lib.rs` spell out. Cargo
+# ignores it for the test and bench profiles, so `cargo test --release` is
+# unaffected.
 #
 # Profiles only apply when a package is the build root, so nothing here reaches
 # a crate that depends on fedimint-sdk.
