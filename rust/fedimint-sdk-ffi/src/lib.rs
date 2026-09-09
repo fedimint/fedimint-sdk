@@ -9,8 +9,8 @@
 //!
 //! `fedimint-sdk` carries `wasm-bindgen` for its WASM target and enforces
 //! `#![deny(missing_docs)]` plus a `wasm32-unknown-unknown` check gate.
-//! UniFFI's proc-macro expansions generate items that break both of those
-//! gates, and adding UniFFI as even an optional dependency would pull its
+//! UniFFI's proc-macro expansions conflict with the documentation lint
+//! and complicate the wasm target, and adding UniFFI as even an optional dependency would pull its
 //! proc-macro tree into the SDK's `Cargo.lock`, bloating every contributor's
 //! build whether they touch FFI or not. Keeping the boundary here means the
 //! SDK crate stays lean and portable, and this crate can set its own lint
@@ -46,6 +46,9 @@ pub enum FfiError {
 
 impl From<fedimint_sdk::Error> for FfiError {
     fn from(e: fedimint_sdk::Error) -> Self {
+        // TODO: forward `e.details` (ErrorDetails from T3) to the binding
+        // layer once the full FFI surface is built, so Swift/Kotlin callers
+        // can read structured fields like `required` / `available` amounts.
         match e.code {
             fedimint_sdk::ErrorCode::Entropy => FfiError::Entropy {
                 msg: e.message.clone(),
@@ -53,6 +56,11 @@ impl From<fedimint_sdk::Error> for FfiError {
             fedimint_sdk::ErrorCode::InvalidInput => FfiError::InvalidInput {
                 msg: e.message.clone(),
             },
+            // TODO: expand as facades are wrapped. Mnemonic only returns
+            // Entropy and InvalidInput; the remaining 21 ErrorCode variants
+            // (InsufficientBalance, GatewayUnavailable, QuoteExpired, etc.)
+            // need dedicated FfiError variants once Ecash/Lightning/Onchain
+            // are exposed.
             _ => FfiError::Sdk {
                 msg: format!("{}: {}", e.code, e.message),
             },
