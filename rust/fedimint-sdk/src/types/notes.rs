@@ -71,6 +71,16 @@ impl Notes {
         // (modules/fedimint-mint-client/src/lib.rs:277-286, :392-447).
         self.notes.federation_id_prefix().to_string()
     }
+
+    /// Returns a clone of the underlying upstream `OOBNotes`.
+    pub(crate) fn to_upstream(&self) -> OOBNotes {
+        self.notes.clone()
+    }
+
+    /// Borrows the underlying upstream `OOBNotes`.
+    pub(crate) fn as_upstream(&self) -> &OOBNotes {
+        &self.notes
+    }
 }
 
 impl core::hash::Hash for Notes {

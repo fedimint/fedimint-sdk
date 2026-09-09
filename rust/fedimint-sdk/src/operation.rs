@@ -1405,18 +1405,13 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
         // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash and lightning in T7-T8, on-chain in T9, recovery in T12. Until an arm is
-        // filled in this build cannot observe that kind, which is a real answer rather than a
-        // gap: the record is still found, still listed, and still says what it is.
-        //
-        // The probe stands in for the ecash-send driver so that the type-erased accessors are
-        // exercised end to end before any facade exists; T7 replaces the pair of arms below with
-        // a single unconditional one.
-        #[cfg(test)]
-        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(ProbeEcashSendDriver))),
-        #[cfg(not(test))]
-        kinds::ECASH_SEND => None,
-        kinds::ECASH_RECEIVE => None,
+        // kind: ecash and lightning in T7-T8, on-chain in T9, recovery in T12.
+        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
+            crate::ecash::EcashSendDriver,
+        ))),
+        kinds::ECASH_RECEIVE => Some(ErasedDriver::EcashReceive(Arc::new(
+            crate::ecash::EcashReceiveDriver,
+        ))),
         kinds::LN_SEND => None,
         kinds::LN_RECEIVE => None,
         kinds::ONCHAIN_SEND => None,
@@ -1434,16 +1429,74 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
-    // One entry per facade that owns a module kind, added by the task that writes the facade:
-    // ecash and lightning in T7-T8, on-chain in T9. The probe entry is the engine's own fixture
-    // and exists only in a test build.
     #[cfg(test)]
     {
-        vec![Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>]
+        vec![
+            Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
+            Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
+        ]
     }
     #[cfg(not(test))]
     {
-        Vec::new()
+        vec![Arc::new(EcashBackfiller) as Arc<dyn Backfiller>]
+    }
+}
+
+/// A backfiller that reconstructs ecash operations from upstream mint operation logs.
+pub(crate) struct EcashBackfiller;
+
+impl Backfiller for EcashBackfiller {
+    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled> {
+        if module_kind != "mint" && module_kind != "mintv2" {
+            return None;
+        }
+
+        let op_meta: fedimint_mint_client::MintOperationMeta =
+            serde_json::from_value(meta.clone()).ok()?;
+        match op_meta.variant {
+            fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount,
+                oob_notes,
+                ..
+            } => {
+                let notes = crate::Notes::from_upstream(oob_notes);
+                let notes_value = notes.value();
+                let fee = Amount::ZERO;
+                let total = notes_value;
+                let wire = crate::ecash::EcashSendDetailsWire {
+                    notes: notes.to_string(),
+                    requested_amount_msats: requested_amount.msats,
+                    notes_value_msats: notes_value.msats(),
+                    fee_msats: fee.msats(),
+                    total_debited_msats: total.msats(),
+                    reclaim_at_epoch_ms: 0,
+                    created_at_epoch_ms: 0,
+                };
+                let details = serde_json::to_string(&wire).ok()?;
+                Some(Backfilled {
+                    kind: kinds::ECASH_SEND,
+                    details,
+                    phase: Some(1),
+                })
+            }
+            fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
+                let notes_value = Amount::from_msats(op_meta.amount.msats);
+                let fee = Amount::ZERO;
+                let wire = crate::ecash::EcashReceiveDetailsWire {
+                    notes: String::new(),
+                    notes_value_msats: notes_value.msats(),
+                    fee_msats: fee.msats(),
+                    net_credit_msats: notes_value.msats(),
+                    created_at_epoch_ms: 0,
+                };
+                let details = serde_json::to_string(&wire).ok()?;
+                Some(Backfilled {
+                    kind: kinds::ECASH_RECEIVE,
+                    details,
+                    phase: Some(1),
+                })
+            }
+        }
     }
 }
 
@@ -2370,12 +2423,13 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // The one arm T6 fills in is the probe fixture standing in for the ecash-send driver
-        // T7 writes. Every other kind is a record this build can find, list and label but not
-        // observe, which the accessors report as `None` rather than as a failure.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::ECASH_RECEIVE),
+            Some(ErasedDriver::EcashReceive(_))
         ));
         assert!(driver_for(kinds::LN_SEND).is_none());
         assert!(driver_for(kinds::RECOVERY).is_none());
@@ -2384,15 +2438,15 @@ mod tests {
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 1);
+        assert_eq!(backfillers.len(), 2);
         assert!(
-            backfillers[0]
+            backfillers[1]
                 .backfill("probe_module", &serde_json::Value::Null)
                 .is_some()
         );
         assert!(
             backfillers[0]
-                .backfill("mint", &serde_json::Value::Null)
+                .backfill("unknown_module", &serde_json::Value::Null)
                 .is_none()
         );
     }

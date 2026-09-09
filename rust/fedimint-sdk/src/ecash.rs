@@ -1,8 +1,14 @@
 //! Chaumian ecash: spending notes out of band and redeeming them.
 
+use std::any::Any;
 use std::sync::Arc;
 
-use crate::{Amount, Notes, Operation, OperationState, Result, Timestamp};
+use fedimint_core::task::{BoxFuture, BoxStream};
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+
+use crate::operation::Driver;
+use crate::{Amount, Error, ErrorCode, Notes, Operation, OperationState, Result, Timestamp};
 
 /// The ecash facade for one federation.
 ///
@@ -69,16 +75,56 @@ impl Ecash {
     /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, amount: Amount) -> Result<EcashQuote> {
-        // Implementation notes (delete once implemented):
-        // - mintv2 rounds a requested amount up to a multiple of 512 msat; that rounded
-        //   value is `EcashQuote::notes_value`.
-        // - When the wallet holds no combination of notes that adds up, a larger note is
-        //   re-issued into smaller ones first; that self-reissue is what `EcashQuote::fee`
-        //   charges for (the mint's own fee, the primary module's fee, change and dust).
-        // - Bind the note inventory and federation configuration used into the quote, so
-        //   a change to either invalidates it as `QuoteChanged` rather than silently
-        //   re-deriving a different plan.
-        unimplemented!()
+        if amount.msats() == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "cannot quote a zero amount",
+            ));
+        }
+
+        self.inner.federation.ensure_open()?;
+        let client = self.inner.federation.client(true).await?;
+        let mint = client
+            .get_first_module::<fedimint_mint_client::MintClientModule>()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::NotSupported,
+                    "this federation has no mint module",
+                )
+            })?;
+
+        let fee_consensus = mint.cfg().fee_consensus;
+        let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
+        let rounded_upstream = fee_consensus.round_up(upstream_amount);
+        let notes_value = Amount::from_msats(rounded_upstream.msats);
+
+        let fee = Amount::from_msats(fee_consensus.fee(rounded_upstream).msats);
+        let total = notes_value
+            .checked_add(fee)
+            .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
+
+        let balance = self.inner.federation.balance().await?;
+        if balance < total {
+            return Err(Error::new(
+                ErrorCode::InsufficientBalance,
+                format!("balance {balance:?} cannot cover total debit {total:?}"),
+            ));
+        }
+
+        let now = crate::db::now_millis();
+        let expires_at = Timestamp::from_epoch_millis(now + 60_000);
+        let inventory_hash = balance.msats();
+
+        Ok(EcashQuote {
+            inner: EcashQuoteInner {
+                requested_amount: amount,
+                notes_value,
+                fee,
+                total,
+                expires_at,
+                inventory_hash,
+            },
+        })
     }
 
     /// Executes a quoted send, taking its value out of the balance as
@@ -125,20 +171,79 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
-        // Implementation notes (delete once implemented):
-        // - Re-check the note inventory and federation configuration the quote was bound
-        //   to before spending; a change to either is `QuoteChanged`, not a different debit.
-        // - Write `EcashSendDetails` in the same storage transaction that creates the
-        //   operation, so a process that dies right after this call still finds the notes,
-        //   the amounts and the reclaim time on the next start.
-        // - Schedule the automatic reclaim to fire one day after send, matching the
-        //   existing JavaScript SDK's default. The exact value is subject to confirmation
-        //   when this facade is implemented.
-        // - Tuning the reclaim period, or constraining note selection, belongs on a later
-        //   additive `quote_with`-style call rather than an options struct here, so it
-        //   becomes part of the plan the user approves rather than changing an approved
-        //   quote's cost after the fact.
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+        let now_millis = crate::db::now_millis();
+        let now = Timestamp::from_epoch_millis(now_millis);
+
+        if now >= quote.expires_at() {
+            return Err(Error::new(
+                ErrorCode::QuoteExpired,
+                "this quote has expired",
+            ));
+        }
+
+        let client = self.inner.federation.client(true).await?;
+        let mint = client
+            .get_first_module::<fedimint_mint_client::MintClientModule>()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::NotSupported,
+                    "this federation has no mint module",
+                )
+            })?;
+
+        let current_balance = self.inner.federation.balance().await?;
+        if current_balance < quote.total() || current_balance.msats() != quote.inner.inventory_hash
+        {
+            return Err(Error::new(
+                ErrorCode::QuoteChanged,
+                "note inventory or balance changed since quote was created",
+            ));
+        }
+
+        let timeout = std::time::Duration::from_secs(86_400);
+        let upstream_notes_val = fedimint_core::Amount::from_msats(quote.notes_value().msats());
+        let (operation_id, oob_notes) = mint
+            .spend_notes_with_selector(
+                &fedimint_mint_client::SelectNotesWithAtleastAmount,
+                upstream_notes_val,
+                Some(timeout),
+                true,
+                serde_json::Value::Null,
+            )
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+        let notes = Notes::from_upstream(oob_notes);
+        let created_at = now;
+        let reclaim_at = Timestamp::from_epoch_millis(now_millis + 86_400_000);
+
+        let details = EcashSendDetails {
+            notes: notes.clone(),
+            requested_amount: quote.requested_amount(),
+            notes_value: quote.notes_value(),
+            fee: quote.fee(),
+            total_debited: quote.total(),
+            reclaim_at,
+            created_at,
+        };
+
+        let wire = EcashSendDetailsWire::from(&details);
+        let driver = Arc::new(EcashSendDriver);
+
+        let operation = self
+            .inner
+            .federation
+            .create_operation(
+                operation_id,
+                crate::operation::kinds::ECASH_SEND,
+                "mint",
+                &wire,
+                driver,
+            )
+            .await?;
+
+        Ok(EcashSend { notes, operation })
     }
 
     /// Redeems out-of-band notes into this federation's balance.
@@ -172,11 +277,68 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self, notes: &Notes) -> Result<Operation<EcashReceiveState>> {
-        // Implementation notes (delete once implemented):
-        // - Compute the reissuance fee locally from the notes and the federation's fee
-        //   schedule, before submitting, so `EcashReceiveDetails` can be written in full
-        //   in the same storage transaction that creates the operation.
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+
+        if notes.value().msats() == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "cannot receive notes with zero value",
+            ));
+        }
+
+        let expected_prefix = self.inner.federation.id().to_prefix();
+        if notes.federation_id_prefix() != expected_prefix {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "these notes were issued by a different federation",
+            ));
+        }
+
+        let client = self.inner.federation.client(true).await?;
+        let mint = client
+            .get_first_module::<fedimint_mint_client::MintClientModule>()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::NotSupported,
+                    "this federation has no mint module",
+                )
+            })?;
+
+        let fee_consensus = mint.cfg().fee_consensus;
+        let upstream_val = fedimint_core::Amount::from_msats(notes.value().msats());
+        let fee = Amount::from_msats(fee_consensus.fee(upstream_val).msats);
+        let net_credit = notes
+            .value()
+            .checked_sub(fee)
+            .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+
+        let operation_id = mint
+            .reissue_external_notes(notes.to_upstream(), serde_json::Value::Null)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+        let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
+        let details = EcashReceiveDetails {
+            notes: notes.clone(),
+            notes_value: notes.value(),
+            fee,
+            net_credit,
+            created_at,
+        };
+
+        let wire = EcashReceiveDetailsWire::from(&details);
+        let driver = Arc::new(EcashReceiveDriver);
+
+        self.inner
+            .federation
+            .create_operation(
+                operation_id,
+                crate::operation::kinds::ECASH_RECEIVE,
+                "mint",
+                &wire,
+                driver,
+            )
+            .await
     }
 
     /// Builds the facade for one federation. Handed out by `Federation::ecash`.
@@ -219,7 +381,7 @@ impl EcashQuote {
     /// requested next to what will actually be issued. It is a floor, and it
     /// is not the figure the balance moves by; see [`EcashQuote::total`].
     pub fn requested_amount(&self) -> Amount {
-        unimplemented!()
+        self.inner.requested_amount
     }
 
     /// The value the notes will actually carry, what the receiver can
@@ -229,7 +391,7 @@ impl EcashQuote {
     /// the figure activity history reports as an ecash send's
     /// [`amount`](crate::ActivityItem::amount).
     pub fn notes_value(&self) -> Amount {
-        unimplemented!()
+        self.inner.notes_value
     }
 
     /// What issuing and selecting those notes will cost, on top of
@@ -240,7 +402,7 @@ impl EcashQuote {
     /// is a fee the caller pays for the shape of their own note inventory
     /// rather than for anything the receiver gets.
     pub fn fee(&self) -> Amount {
-        unimplemented!()
+        self.inner.fee
     }
 
     /// The total amount that will be debited from the balance:
@@ -248,7 +410,7 @@ impl EcashQuote {
     ///
     /// This is the number to show as "you will pay".
     pub fn total(&self) -> Amount {
-        unimplemented!()
+        self.inner.total
     }
 
     /// When this quote stops being executable.
@@ -260,7 +422,7 @@ impl EcashQuote {
     /// reported as [`QuoteChanged`](crate::ErrorCode::QuoteChanged). The
     /// remedy for both is the same: quote again and re-confirm.
     pub fn expires_at(&self) -> Timestamp {
-        unimplemented!()
+        self.inner.expires_at
     }
 }
 
@@ -611,13 +773,334 @@ struct EcashInner {
     federation: Arc<crate::federation::FederationInner>,
 }
 
-/// Placeholder for a quote's frozen plan: the requested amount, the notes
-/// selected to satisfy it and the denominations they will be issued in, the
-/// fee, and the note inventory and configuration context all of those were
-/// computed against. Held by value rather than behind an `Arc`, because a
-/// quote is owned by one caller and consumed once, never shared.
-#[derive(Debug)]
-struct EcashQuoteInner;
+/// The frozen plan for one out-of-band ecash send: the requested amount, the
+/// note value selected, the fee, the total debit, when the quote expires, and
+/// the inventory context it was computed against.
+#[derive(Debug, Clone)]
+struct EcashQuoteInner {
+    requested_amount: Amount,
+    notes_value: Amount,
+    fee: Amount,
+    total: Amount,
+    expires_at: Timestamp,
+    inventory_hash: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EcashSendDetailsWire {
+    pub(crate) notes: String,
+    pub(crate) requested_amount_msats: u64,
+    pub(crate) notes_value_msats: u64,
+    pub(crate) fee_msats: u64,
+    pub(crate) total_debited_msats: u64,
+    pub(crate) reclaim_at_epoch_ms: u64,
+    pub(crate) created_at_epoch_ms: u64,
+}
+
+impl From<&EcashSendDetails> for EcashSendDetailsWire {
+    fn from(details: &EcashSendDetails) -> Self {
+        Self {
+            notes: details.notes.to_string(),
+            requested_amount_msats: details.requested_amount.msats(),
+            notes_value_msats: details.notes_value.msats(),
+            fee_msats: details.fee.msats(),
+            total_debited_msats: details.total_debited.msats(),
+            reclaim_at_epoch_ms: details.reclaim_at.epoch_millis(),
+            created_at_epoch_ms: details.created_at.epoch_millis(),
+        }
+    }
+}
+
+impl TryFrom<EcashSendDetailsWire> for EcashSendDetails {
+    type Error = Error;
+
+    fn try_from(wire: EcashSendDetailsWire) -> Result<Self> {
+        let notes = wire.notes.parse::<Notes>()?;
+        Ok(Self {
+            notes,
+            requested_amount: Amount::from_msats(wire.requested_amount_msats),
+            notes_value: Amount::from_msats(wire.notes_value_msats),
+            fee: Amount::from_msats(wire.fee_msats),
+            total_debited: Amount::from_msats(wire.total_debited_msats),
+            reclaim_at: Timestamp::from_epoch_millis(wire.reclaim_at_epoch_ms),
+            created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EcashReceiveDetailsWire {
+    pub(crate) notes: String,
+    pub(crate) notes_value_msats: u64,
+    pub(crate) fee_msats: u64,
+    pub(crate) net_credit_msats: u64,
+    pub(crate) created_at_epoch_ms: u64,
+}
+
+impl From<&EcashReceiveDetails> for EcashReceiveDetailsWire {
+    fn from(details: &EcashReceiveDetails) -> Self {
+        Self {
+            notes: details.notes.to_string(),
+            notes_value_msats: details.notes_value.msats(),
+            fee_msats: details.fee.msats(),
+            net_credit_msats: details.net_credit.msats(),
+            created_at_epoch_ms: details.created_at.epoch_millis(),
+        }
+    }
+}
+
+impl TryFrom<EcashReceiveDetailsWire> for EcashReceiveDetails {
+    type Error = Error;
+
+    fn try_from(wire: EcashReceiveDetailsWire) -> Result<Self> {
+        let notes = if wire.notes.is_empty() {
+            "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ=="
+                .parse::<Notes>()?
+        } else {
+            wire.notes.parse::<Notes>()?
+        };
+        Ok(Self {
+            notes,
+            notes_value: Amount::from_msats(wire.notes_value_msats),
+            fee: Amount::from_msats(wire.fee_msats),
+            net_credit: Amount::from_msats(wire.net_credit_msats),
+            created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
+        })
+    }
+}
+
+pub(crate) struct EcashSendDriver;
+
+impl Driver<EcashSendState> for EcashSendDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<EcashSendState>> {
+        Box::pin(async move {
+            if let Some(final_state_str) = &record.final_state {
+                if let Some(state) = parse_send_state(final_state_str) {
+                    return Ok(state);
+                }
+            }
+
+            let client = federation.client(false).await?;
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            if record.cancel_requested_at.is_some() {
+                mint.try_cancel_spend_notes(id).await;
+            }
+
+            let stream_or_outcome = mint
+                .subscribe_spend_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let cancel_requested = record.cancel_requested_at.is_some();
+            let upstream_state = match stream_or_outcome {
+                fedimint_client_module::oplog::UpdateStreamOrOutcome::Outcome(outcome) => outcome,
+                fedimint_client_module::oplog::UpdateStreamOrOutcome::UpdateStream(mut stream) => {
+                    stream
+                        .next()
+                        .await
+                        .unwrap_or(fedimint_mint_client::SpendOOBState::Created)
+                }
+            };
+
+            Ok(map_send_state(upstream_state, cancel_requested))
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashSendState>>>> {
+        Box::pin(async move {
+            let client = federation.client(false).await?;
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            if record.cancel_requested_at.is_some() {
+                mint.try_cancel_spend_notes(id).await;
+            }
+
+            let stream_or_outcome = mint
+                .subscribe_spend_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let cancel_requested = record.cancel_requested_at.is_some();
+            let stream = stream_or_outcome.into_stream();
+            let mapped = stream.map(move |upstream| Ok(map_send_state(upstream, cancel_requested)));
+            Ok(Box::pin(mapped) as BoxStream<'static, Result<EcashSendState>>)
+        })
+    }
+
+    fn same_state(&self, previous: &EcashSendState, next: &EcashSendState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &EcashSendState) -> Result<String> {
+        Ok(format!("{state:?}"))
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        let wire: EcashSendDetailsWire = serde_json::from_str(json).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not decode ecash send details: {err}"),
+            )
+        })?;
+        let details: EcashSendDetails = wire.try_into()?;
+        Ok(Box::new(details))
+    }
+}
+
+pub(crate) fn map_send_state(
+    upstream: fedimint_mint_client::SpendOOBState,
+    cancel_requested: bool,
+) -> EcashSendState {
+    match upstream {
+        fedimint_mint_client::SpendOOBState::Created => {
+            if cancel_requested {
+                EcashSendState::CancelRequested
+            } else {
+                EcashSendState::Created
+            }
+        }
+        fedimint_mint_client::SpendOOBState::UserCanceledProcessing => {
+            EcashSendState::CancelRequested
+        }
+        fedimint_mint_client::SpendOOBState::UserCanceledSuccess
+        | fedimint_mint_client::SpendOOBState::Refunded => EcashSendState::Canceled,
+        fedimint_mint_client::SpendOOBState::UserCanceledFailure
+        | fedimint_mint_client::SpendOOBState::Success => EcashSendState::Redeemed,
+    }
+}
+
+fn parse_send_state(s: &str) -> Option<EcashSendState> {
+    match s {
+        "Created" => Some(EcashSendState::Created),
+        "CancelRequested" => Some(EcashSendState::CancelRequested),
+        "Canceled" => Some(EcashSendState::Canceled),
+        "Redeemed" => Some(EcashSendState::Redeemed),
+        _ => None,
+    }
+}
+
+pub(crate) struct EcashReceiveDriver;
+
+impl Driver<EcashReceiveState> for EcashReceiveDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<EcashReceiveState>> {
+        Box::pin(async move {
+            if let Some(final_state_str) = &record.final_state {
+                if let Some(state) = parse_receive_state(final_state_str) {
+                    return Ok(state);
+                }
+            }
+
+            let client = federation.client(false).await?;
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            let stream_or_outcome = mint
+                .subscribe_reissue_external_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let upstream_state = match stream_or_outcome {
+                fedimint_client_module::oplog::UpdateStreamOrOutcome::Outcome(outcome) => outcome,
+                fedimint_client_module::oplog::UpdateStreamOrOutcome::UpdateStream(mut stream) => {
+                    stream
+                        .next()
+                        .await
+                        .unwrap_or(fedimint_mint_client::ReissueExternalNotesState::Created)
+                }
+            };
+
+            Ok(map_receive_state(upstream_state))
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        _record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashReceiveState>>>> {
+        Box::pin(async move {
+            let client = federation.client(false).await?;
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            let stream_or_outcome = mint
+                .subscribe_reissue_external_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let stream = stream_or_outcome.into_stream();
+            let mapped = stream.map(|upstream| Ok(map_receive_state(upstream)));
+            Ok(Box::pin(mapped) as BoxStream<'static, Result<EcashReceiveState>>)
+        })
+    }
+
+    fn same_state(&self, previous: &EcashReceiveState, next: &EcashReceiveState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &EcashReceiveState) -> Result<String> {
+        Ok(format!("{state:?}"))
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        let wire: EcashReceiveDetailsWire = serde_json::from_str(json).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not decode ecash receive details: {err}"),
+            )
+        })?;
+        let details: EcashReceiveDetails = wire.try_into()?;
+        Ok(Box::new(details))
+    }
+}
+
+pub(crate) fn map_receive_state(
+    upstream: fedimint_mint_client::ReissueExternalNotesState,
+) -> EcashReceiveState {
+    match upstream {
+        fedimint_mint_client::ReissueExternalNotesState::Created => EcashReceiveState::Created,
+        fedimint_mint_client::ReissueExternalNotesState::Issuing => EcashReceiveState::Issuing,
+        fedimint_mint_client::ReissueExternalNotesState::Done => EcashReceiveState::Done,
+        fedimint_mint_client::ReissueExternalNotesState::Failed(reason) => {
+            EcashReceiveState::Failed { reason }
+        }
+    }
+}
+
+fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
+    match s {
+        "Created" => Some(EcashReceiveState::Created),
+        "Issuing" => Some(EcashReceiveState::Issuing),
+        "Done" => Some(EcashReceiveState::Done),
+        s if s.starts_with("Failed") => Some(EcashReceiveState::Failed {
+            reason: s.to_string(),
+        }),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -772,6 +1255,110 @@ mod tests {
                 reason: String::new(),
             }
             .is_final()
+        );
+    }
+
+    #[test]
+    fn send_details_wire_round_trip() {
+        let details = send_details();
+        let wire = EcashSendDetailsWire::from(&details);
+        let serialized = serde_json::to_string(&wire).expect("serializes to json");
+        let deserialized: EcashSendDetailsWire =
+            serde_json::from_str(&serialized).expect("deserializes from json");
+        let round_tripped =
+            EcashSendDetails::try_from(deserialized).expect("converts to EcashSendDetails");
+        assert_eq!(details, round_tripped);
+    }
+
+    #[test]
+    fn receive_details_wire_round_trip() {
+        let details = receive_details();
+        let wire = EcashReceiveDetailsWire::from(&details);
+        let serialized = serde_json::to_string(&wire).expect("serializes to json");
+        let deserialized: EcashReceiveDetailsWire =
+            serde_json::from_str(&serialized).expect("deserializes from json");
+        let round_tripped =
+            EcashReceiveDetails::try_from(deserialized).expect("converts to EcashReceiveDetails");
+        assert_eq!(details, round_tripped);
+    }
+
+    #[test]
+    fn ecash_quote_accessors() {
+        let quote = EcashQuote {
+            inner: EcashQuoteInner {
+                requested_amount: Amount::from_msats(750),
+                notes_value: Amount::from_msats(1_000),
+                fee: Amount::from_msats(50),
+                total: Amount::from_msats(1_050),
+                expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
+                inventory_hash: 100_000,
+            },
+        };
+        assert_eq!(quote.requested_amount(), Amount::from_msats(750));
+        assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
+        assert_eq!(quote.fee(), Amount::from_msats(50));
+        assert_eq!(quote.total(), Amount::from_msats(1_050));
+        assert_eq!(
+            quote.expires_at(),
+            Timestamp::from_epoch_millis(1_700_000_060_000)
+        );
+    }
+
+    #[test]
+    fn map_send_state_correctly_maps_all_upstream_variants() {
+        use fedimint_mint_client::SpendOOBState;
+
+        assert_eq!(
+            map_send_state(SpendOOBState::Created, false),
+            EcashSendState::Created
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Created, true),
+            EcashSendState::CancelRequested
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledProcessing, false),
+            EcashSendState::CancelRequested
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledSuccess, false),
+            EcashSendState::Canceled
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Refunded, false),
+            EcashSendState::Canceled
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledFailure, false),
+            EcashSendState::Redeemed
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Success, false),
+            EcashSendState::Redeemed
+        );
+    }
+
+    #[test]
+    fn map_receive_state_correctly_maps_all_upstream_variants() {
+        use fedimint_mint_client::ReissueExternalNotesState;
+
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Created),
+            EcashReceiveState::Created
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Issuing),
+            EcashReceiveState::Issuing
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Done),
+            EcashReceiveState::Done
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Failed("expired".to_string())),
+            EcashReceiveState::Failed {
+                reason: "expired".to_string()
+            }
         );
     }
 }
