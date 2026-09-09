@@ -1480,17 +1480,38 @@ impl Backfiller for EcashBackfiller {
             } => {
                 let notes = crate::Notes::from_upstream(oob_notes);
                 let notes_value = notes.value();
-                // See this type's doc: not recoverable from the log entry alone.
-                let fee = Amount::from_msats(0);
-                let total = notes_value;
+                let (req_amount, fee, total, reclaim_at, created_at) =
+                    if let Some(meta_obj) = op_meta.extra_meta.as_object() {
+                        let req = meta_obj
+                            .get("requested_amount_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(requested_amount.msats);
+                        let fee = meta_obj
+                            .get("fee_msats")
+                            .and_then(|v| v.as_u64())
+                            .map(Amount::from_msats)
+                            .unwrap_or(Amount::ZERO);
+                        let total = notes_value + fee;
+                        let reclaim = meta_obj
+                            .get("reclaim_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let created = meta_obj
+                            .get("created_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        (req, fee, total, reclaim, created)
+                    } else {
+                        (requested_amount.msats, Amount::ZERO, notes_value, 0, 0)
+                    };
                 let wire = crate::ecash::EcashSendDetailsWire {
                     notes: notes.to_string(),
-                    requested_amount_msats: requested_amount.msats,
+                    requested_amount_msats: req_amount,
                     notes_value_msats: notes_value.msats(),
                     fee_msats: fee.msats(),
                     total_debited_msats: total.msats(),
-                    reclaim_at_epoch_ms: 0,
-                    created_at_epoch_ms: 0,
+                    reclaim_at_epoch_ms: reclaim_at,
+                    created_at_epoch_ms: created_at,
                 };
                 let details = serde_json::to_string(&wire).ok()?;
                 Some(Backfilled {
@@ -1501,18 +1522,31 @@ impl Backfiller for EcashBackfiller {
             }
             fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
                 let notes_value = Amount::from_msats(op_meta.amount.msats);
-                // See this type's doc: not recoverable from the log entry alone.
-                let fee = Amount::from_msats(0);
-                // Unlike `SpendOOB`, upstream's `Reissuance` variant does not retain the
-                // notes that funded it, only the resulting amount: there is no bearer
-                // string to recover here, so this is `None`, not a fabricated one. See
-                // `EcashReceiveDetails::notes`.
+                let (fee, net_credit, created_at) =
+                    if let Some(meta_obj) = op_meta.extra_meta.as_object() {
+                        let fee = meta_obj
+                            .get("fee_msats")
+                            .and_then(|v| v.as_u64())
+                            .map(Amount::from_msats)
+                            .unwrap_or(Amount::ZERO);
+                        let net = meta_obj
+                            .get("net_credit_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_else(|| notes_value.msats().saturating_sub(fee.msats()));
+                        let created = meta_obj
+                            .get("created_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        (fee, net, created)
+                    } else {
+                        (Amount::ZERO, notes_value.msats(), 0)
+                    };
                 let wire = crate::ecash::EcashReceiveDetailsWire {
                     notes: None,
                     notes_value_msats: notes_value.msats(),
                     fee_msats: fee.msats(),
-                    net_credit_msats: notes_value.msats(),
-                    created_at_epoch_ms: 0,
+                    net_credit_msats: net_credit,
+                    created_at_epoch_ms: created_at,
                 };
                 let details = serde_json::to_string(&wire).ok()?;
                 Some(Backfilled {
@@ -2532,6 +2566,68 @@ mod tests {
         // A module kind this backfiller does not own claims nothing, even with a
         // shape it would otherwise recognise.
         assert!(backfiller.backfill("wallet", &spend_json).is_none());
+    }
+
+    #[test]
+    fn ecash_backfiller_restores_quote_terms_and_receive_details_from_extra_meta() {
+        const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
+        let oob_notes: fedimint_mint_client::OOBNotes = TOKEN.parse().expect("a valid ecash token");
+
+        let spend_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount: fedimint_core::Amount::from_msats(1_000),
+                oob_notes: oob_notes.clone(),
+                no_timeout: false,
+            },
+            amount: oob_notes.total_amount(),
+            extra_meta: serde_json::json!({
+                "requested_amount_msats": 700u64,
+                "notes_value_msats": 1_000u64,
+                "fee_msats": 50u64,
+                "created_at_epoch_ms": 1_700_000_000_000u64,
+                "reclaim_at_epoch_ms": 1_700_086_400_000u64,
+            }),
+        };
+        let spend_json = serde_json::to_value(&spend_meta).expect("serializes");
+
+        let backfiller = EcashBackfiller;
+        let backfilled = backfiller
+            .backfill("mint", &spend_json)
+            .expect("claims SpendOOB");
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.requested_amount_msats, 700);
+        assert_eq!(wire.notes_value_msats, 1_000);
+        assert_eq!(wire.fee_msats, 50);
+        assert_eq!(wire.total_debited_msats, 1_050);
+        assert_eq!(wire.created_at_epoch_ms, 1_700_000_000_000);
+        assert_eq!(wire.reclaim_at_epoch_ms, 1_700_086_400_000);
+
+        let reissue_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::Reissuance {
+                legacy_out_point: None,
+                txid: None,
+                out_point_indices: vec![0],
+            },
+            amount: fedimint_core::Amount::from_msats(1_000),
+            extra_meta: serde_json::json!({
+                "facade": "ecash_receive",
+                "notes_value_msats": 1_000u64,
+                "fee_msats": 25u64,
+                "net_credit_msats": 975u64,
+                "created_at_epoch_ms": 1_700_000_000_000u64,
+            }),
+        };
+        let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mint", &reissue_json)
+            .expect("claims Reissuance");
+        let wire: crate::ecash::EcashReceiveDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes_value_msats, 1_000);
+        assert_eq!(wire.fee_msats, 25);
+        assert_eq!(wire.net_credit_msats, 975);
+        assert_eq!(wire.created_at_epoch_ms, 1_700_000_000_000);
     }
 
     /// A driver whose one subscription is fed by hand, for the timing the scripted driver

@@ -263,25 +263,28 @@ impl Ecash {
         // id this facade could track for cancellation), so `quote` already refused to
         // freeze a plan needing one; a failure to select exactly `notes_value` here
         // means the note inventory changed since then; a race, not a capability gap.
+        let reclaim_at = Timestamp::from_epoch_millis(now_millis + 86_400_000);
+        let extra_meta = serde_json::json!({
+            "requested_amount_msats": quote.requested_amount().msats(),
+            "notes_value_msats": quote.notes_value().msats(),
+            "fee_msats": quote.fee().msats(),
+            "created_at_epoch_ms": now_millis,
+            "reclaim_at_epoch_ms": reclaim_at.epoch_millis(),
+        });
+
         let (operation_id, oob_notes) = mint
             .spend_notes_with_selector(
                 &fedimint_mint_client::SelectNotesWithExactAmount,
                 upstream_notes_val,
                 Some(timeout),
                 true,
-                serde_json::Value::Null,
+                extra_meta,
             )
             .await
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::QuoteChanged,
-                    "note inventory changed since quote was created",
-                )
-            })?;
+            .map_err(map_spend_error)?;
 
         let notes = Notes::from_upstream(oob_notes);
         let created_at = now;
-        let reclaim_at = Timestamp::from_epoch_millis(now_millis + 86_400_000);
 
         let details = EcashSendDetails {
             notes: notes.clone(),
@@ -376,19 +379,26 @@ impl Ecash {
         let fee_quote = mint
             .reissue_fee_quote(notes.as_upstream())
             .await
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+            .map_err(map_reissue_error)?;
         let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
         let net_credit = notes
             .value()
             .checked_sub(fee)
             .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
 
-        let operation_id = mint
-            .reissue_external_notes(notes.to_upstream(), serde_json::Value::Null)
-            .await
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-
         let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
+        let extra_meta = serde_json::json!({
+            "facade": "ecash_receive",
+            "notes_value_msats": notes.value().msats(),
+            "fee_msats": fee.msats(),
+            "net_credit_msats": net_credit.msats(),
+            "created_at_epoch_ms": created_at.epoch_millis(),
+        });
+
+        let operation_id = mint
+            .reissue_external_notes(notes.to_upstream(), extra_meta)
+            .await
+            .map_err(map_reissue_error)?;
         let details = EcashReceiveDetails {
             notes: Some(notes.clone()),
             notes_value: notes.value(),
@@ -1223,6 +1233,44 @@ fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
             .map(|reason| EcashReceiveState::Failed {
                 reason: reason.to_string(),
             }),
+    }
+}
+
+pub(crate) fn map_spend_error(err: anyhow::Error) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("could not select notes with exact amount")
+        || lower.contains("insufficient balance")
+        || lower.contains("insufficientbalance")
+    {
+        Error::new(
+            ErrorCode::QuoteChanged,
+            "note inventory changed since quote was created",
+        )
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        Error::new(ErrorCode::Timeout, msg)
+    } else if lower.contains("unreachable") || lower.contains("connection refused") {
+        Error::new(ErrorCode::FederationUnreachable, msg)
+    } else if lower.contains("storage") || lower.contains("database") {
+        Error::new(ErrorCode::Storage, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
+    }
+}
+
+pub(crate) fn map_reissue_error(err: anyhow::Error) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("federation id does not match") || lower.contains("already reissued") {
+        Error::new(ErrorCode::InvalidInput, msg)
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        Error::new(ErrorCode::Timeout, msg)
+    } else if lower.contains("unreachable") || lower.contains("connection refused") {
+        Error::new(ErrorCode::FederationUnreachable, msg)
+    } else if lower.contains("storage") || lower.contains("database") {
+        Error::new(ErrorCode::Storage, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
     }
 }
 
