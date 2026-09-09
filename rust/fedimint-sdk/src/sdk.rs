@@ -992,7 +992,6 @@ impl Sdk {
         Ok(())
     }
 
-
     /// Best-effort: flushes everything to storage, stops all background
     /// work, and releases the storage lock.
     ///
