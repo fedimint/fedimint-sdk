@@ -1481,7 +1481,7 @@ impl Backfiller for EcashBackfiller {
                 let notes = crate::Notes::from_upstream(oob_notes);
                 let notes_value = notes.value();
                 // See this type's doc: not recoverable from the log entry alone.
-                let fee = Amount::ZERO;
+                let fee = Amount::from_msats(0);
                 let total = notes_value;
                 let wire = crate::ecash::EcashSendDetailsWire {
                     notes: notes.to_string(),
@@ -1502,7 +1502,7 @@ impl Backfiller for EcashBackfiller {
             fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
                 let notes_value = Amount::from_msats(op_meta.amount.msats);
                 // See this type's doc: not recoverable from the log entry alone.
-                let fee = Amount::ZERO;
+                let fee = Amount::from_msats(0);
                 // Unlike `SpendOOB`, upstream's `Reissuance` variant does not retain the
                 // notes that funded it, only the resulting amount: there is no bearer
                 // string to recover here, so this is `None`, not a fabricated one. See

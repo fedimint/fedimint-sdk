@@ -2302,6 +2302,7 @@ dependencies = [
  "fedimint-lnv2-common",
  "fedimint-meta-client",
  "fedimint-mint-client",
+ "fedimint-mint-common",
  "fedimint-mintv2-client",
  "fedimint-rocksdb",
  "fedimint-wallet-client",

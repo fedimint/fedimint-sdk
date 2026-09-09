@@ -103,7 +103,11 @@ impl Ecash {
             .await
             .get_module_cfg(mint.id)
             .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-        let mint_cfg: &fedimint_mint_client::MintClientConfig = module_cfg
+        // `MintClientConfig` is kept private by `fedimint-mint-client` itself and
+        // re-exported nowhere nameable there, so the cast target has to name it at
+        // its own defining crate, `fedimint-mint-common` (see the dependency comment
+        // in Cargo.toml).
+        let mint_cfg: &fedimint_mint_common::config::MintClientConfig = module_cfg
             .cast()
             .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
         let fee_consensus = mint_cfg.fee_consensus.clone();
