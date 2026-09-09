@@ -328,7 +328,7 @@ pub(super) async fn send(
     if current != (send_fee, expiration_delta) || fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
     }
-    let details = crate::LnSendDetails {
+    let mut details = crate::LnSendDetails {
         invoice: quote.invoice.clone(),
         invoice_amount: quote.invoice_amount,
         fee: quote.plan.fee,
@@ -347,6 +347,20 @@ pub(super) async fn send(
         )
         .await
         .map_err(|err| send_error(err, quote, federation.record().network.into()))?;
+    // Upstream re-derives the gateway's terms itself inside `send` and funds the contract at
+    // whatever it reads there; nothing binds that read to the `routing_info` re-check above, so a
+    // gateway that changes its fee in the instant between the two funds a different contract than
+    // the one this record is about to describe. The committed contract, read back from the
+    // operation's own log entry, is the only place that says what was actually funded, so it
+    // corrects the record's fee and total after the fact. A read or a computation that does not
+    // come back clean leaves the quoted figures in place: an `Internal` error here would report a
+    // payment that was in fact started as failed, which is worse than an inexact record.
+    if let Some(committed) = committed_contract_amount(federation, id).await
+        && let Ok((fee, total)) = committed_fee(quote, committed)
+    {
+        details.fee = fee;
+        details.total = total;
+    }
     federation
         .create_operation(
             id,
@@ -356,6 +370,49 @@ pub(super) async fn send(
             Arc::new(LnSendDriver) as Arc<dyn Driver<LnSendState>>,
         )
         .await
+}
+
+/// The amount of the contract upstream actually funded for `id`'s send, read back from the
+/// operation's own log entry. `None` when the entry is not there, or its meta does not decode as
+/// an `lnv2` send: both are read failures the caller treats as "unknown", never as proof that
+/// nothing was funded.
+async fn committed_contract_amount(
+    federation: &FederationInner,
+    id: OperationId,
+) -> Option<Amount> {
+    let entry = fedimint_client::oplog::OperationLog::new(federation.db())
+        .get_operation(id)
+        .await?;
+    let LightningOperationMeta::Send(SendOperationMeta { contract, .. }) =
+        entry.try_meta::<LightningOperationMeta>().ok()?
+    else {
+        return None;
+    };
+    Some(from_upstream(contract.amount))
+}
+
+/// The fee and total to record for a send once the contract upstream actually committed is
+/// known. Equal to what the quote itself would have funded (`invoice_amount` plus the quoted
+/// gateway fee), the quote's own figures come back unchanged. Otherwise the difference between
+/// the committed and the quoted gateway fee is folded into both: `fee` moves by exactly that much
+/// and `total` follows it, since `total` is always `invoice_amount` plus `fee`. Errors only if
+/// `committed_contract` funds less than the invoice amount, which upstream never actually does;
+/// the caller keeps the quoted figures rather than surface that as a payment failure.
+fn committed_fee(quote: &LnQuoteInner, committed_contract: Amount) -> Result<(Amount, Amount)> {
+    let quoted_contract = add(quote.invoice_amount, quote.plan.breakdown.gateway)?;
+    if committed_contract == quoted_contract {
+        return Ok((quote.plan.fee, quote.plan.total));
+    }
+    let committed_gateway_fee = committed_contract
+        .checked_sub(quote.invoice_amount)
+        .ok_or_else(|| internal("the committed contract funds less than the invoice amount"))?;
+    let fee = quote
+        .plan
+        .fee
+        .checked_sub(quote.plan.breakdown.gateway)
+        .and_then(|fee| fee.checked_add(committed_gateway_fee))
+        .ok_or_else(|| internal("an amount overflowed"))?;
+    Ok((fee, add(quote.invoice_amount, fee)?))
 }
 
 fn select_error(err: SelectGatewayError) -> Error {
@@ -866,5 +923,53 @@ mod tests {
             }
             other => panic!("expected NetworkMismatch details, got {other:?}"),
         }
+    }
+
+    /// A quote with a nonzero gateway fee, so `committed_fee`'s folding of the difference
+    /// between the quoted and the committed gateway fee is actually exercised rather than
+    /// collapsing on a zero.
+    fn quote_with_gateway_fee(gateway_fee_msats: u64) -> LnQuoteInner {
+        let mut quote = a_quote();
+        quote.plan.breakdown.gateway = Amount::from_msats(gateway_fee_msats);
+        quote.plan.breakdown.lightning_module = Amount::from_msats(50);
+        quote.plan.fee = Amount::from_msats(gateway_fee_msats + 50);
+        quote.plan.total =
+            Amount::from_msats(quote.invoice_amount.msats() + gateway_fee_msats + 50);
+        quote
+    }
+
+    #[test]
+    fn committed_fee_keeps_the_quoted_figures_when_the_contract_matches_the_quote() {
+        let quote = quote_with_gateway_fee(1_000);
+        let committed = Amount::from_msats(101_000); // invoice (100_000) + quoted gateway fee.
+        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
+        assert_eq!(fee, quote.plan.fee);
+        assert_eq!(total, quote.plan.total);
+    }
+
+    #[test]
+    fn committed_fee_raises_both_by_the_gateways_increase() {
+        let quote = quote_with_gateway_fee(1_000);
+        let committed = Amount::from_msats(102_000); // gateway actually took 2_000, not 1_000.
+        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
+        assert_eq!(fee, Amount::from_msats(2_050));
+        assert_eq!(total, Amount::from_msats(102_050));
+    }
+
+    #[test]
+    fn committed_fee_lowers_both_by_the_gateways_decrease() {
+        let quote = quote_with_gateway_fee(1_000);
+        let committed = Amount::from_msats(100_500); // gateway actually took 500, not 1_000.
+        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
+        assert_eq!(fee, Amount::from_msats(550));
+        assert_eq!(total, Amount::from_msats(100_550));
+    }
+
+    #[test]
+    fn committed_fee_refuses_a_contract_below_the_invoice_amount() {
+        let quote = quote_with_gateway_fee(1_000);
+        let committed = Amount::from_msats(99_000); // less than the invoice's own 100_000.
+        let err = committed_fee(&quote, committed).expect_err("below the invoice amount");
+        assert_eq!(err.code, ErrorCode::Internal);
     }
 }

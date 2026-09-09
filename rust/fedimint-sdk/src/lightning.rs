@@ -41,7 +41,8 @@ impl Lightning {
     /// The returned [`LnQuote`] is the frozen plan for paying `invoice`: the
     /// amount the invoice names, the route, the aggregate fee and the total
     /// debit. Show those numbers to the user, then pass the quote to
-    /// [`Lightning::send`], which executes exactly what was shown.
+    /// [`Lightning::send`], whose docs say exactly what executing it
+    /// guarantees.
     ///
     /// The amount is always the invoice's own. An invoice that names no
     /// amount cannot be paid through fedimint and is refused here with
@@ -123,14 +124,21 @@ impl Lightning {
 
     /// Executes a quoted payment.
     ///
-    /// The quote is consumed. Execution follows it exactly, same amount, same
-    /// fee, same route, or does not happen:
+    /// The quote is consumed. Its terms are checked again immediately before
+    /// funding and execution refuses to proceed if they moved:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
     /// quote depends on moved underneath it, such as the gateway withdrawing
-    /// or changing its fee. Both mean the same thing to a caller: quote again
-    /// and re-confirm with the user.
+    /// or changing its fee before that check runs. Both mean the same thing
+    /// to a caller: quote again and re-confirm with the user.
+    ///
+    /// That check cannot close the gap after itself: a gateway that changes
+    /// its fee in the instant between the check and the payment actually
+    /// being funded is not caught by it, and the payment funds anyway, at
+    /// the fee the gateway actually took rather than the quoted one.
+    /// [`LnSendDetails::fee`] and [`LnSendDetails::total`] report that true
+    /// figure, not the quote's.
     ///
     /// The returned operation tracks the payment from funding to preimage. A
     /// payment that fails ends in a final state, not in an error from this
@@ -261,10 +269,9 @@ impl Lightning {
 
 /// A frozen, executable plan for one lightning payment.
 ///
-/// Produced by [`Lightning::quote`] and consumed by [`Lightning::send`].
-/// Everything a user needs to approve is readable through the accessors
-/// below. The numbers shown are the numbers charged: a quote is executed
-/// exactly or not at all.
+/// Produced by [`Lightning::quote`] and consumed by [`Lightning::send`], whose
+/// docs say exactly what is guaranteed to hold at execution. Everything a
+/// user needs to approve is readable through the accessors below.
 #[derive(Debug)]
 pub struct LnQuote {
     inner: LnQuoteInner,
