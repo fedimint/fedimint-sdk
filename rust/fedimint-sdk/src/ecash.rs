@@ -153,12 +153,37 @@ impl Ecash {
         })?;
         let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
 
-        // A nonzero fee here means the wallet's current notes cannot cover
-        // `notes_value` exactly, so producing it would require a self-reissue.
+        let (module_db, _) = client.db().with_prefix_module_id(mint.id);
+        let mut dbtx = module_db.begin_transaction_nc().await;
+        let counts = mint.get_note_counts_by_denomination(&mut dbtx).await;
+        drop(dbtx);
+
+        let mut held_notes = Vec::new();
+        for (tier_amount, count) in counts.iter() {
+            for _ in 0..count {
+                held_notes.push((tier_amount, ()));
+            }
+        }
+        held_notes.sort_by_key(|(amt, _)| *amt);
+        held_notes.reverse();
+
+        use fedimint_mint_client::NotesSelector as _;
+        let can_select_exact = fedimint_mint_client::SelectNotesWithExactAmount
+            .select_notes(
+                futures::stream::iter(held_notes),
+                rounded_upstream,
+                fedimint_mint_common::config::FeeConsensus::zero(),
+            )
+            .await
+            .is_ok();
+
+        // A nonzero fee or inability to select exact notes means the wallet's
+        // current note inventory cannot cover `notes_value` exactly, so producing it
+        // would require a self-reissue (which quotes zero fees if the federation charges none).
         // `Ecash::send` has no way to perform that reissue and still hand back a
         // trackable, cancellable operation (see its doc), so refuse here rather than
         // freeze a quote `send` can never actually execute.
-        if fee.msats() > 0 {
+        if fee.msats() > 0 || !can_select_exact {
             return Err(Error::new(
                 ErrorCode::NotSupported,
                 "sending this amount would require reissuing notes to make exact change, \
@@ -1205,16 +1230,25 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     .get_first_module::<fedimint_mintv2_client::MintClientModule>()
                     .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
-                return match mintv2.await_final_receive_operation_state(id).await {
-                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                if client.has_active_states(id).await {
+                    return Ok(EcashReceiveState::Issuing);
+                }
+
+                use futures::FutureExt as _;
+                return match mintv2
+                    .await_final_receive_operation_state(id)
+                    .now_or_never()
+                {
+                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success)) => {
                         Ok(EcashReceiveState::Done)
                     }
-                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected)) => {
                         Ok(EcashReceiveState::Failed {
                             reason: "Transaction was rejected".to_string(),
                         })
                     }
-                    Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    Some(Err(err)) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    None => Ok(EcashReceiveState::Issuing),
                 };
             }
 
@@ -1270,20 +1304,28 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     .get_first_module::<fedimint_mintv2_client::MintClientModule>()
                     .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
-                let res = mintv2.await_final_receive_operation_state(id).await;
-                let state = match res {
-                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
-                        Ok(EcashReceiveState::Done)
-                    }
-                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
-                        Ok(EcashReceiveState::Failed {
-                            reason: "Transaction was rejected".to_string(),
-                        })
-                    }
-                    Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                let is_active = client.has_active_states(id).await;
+                let initial = if is_active {
+                    Some(Ok(EcashReceiveState::Issuing))
+                } else {
+                    None
                 };
-                return Ok(Box::pin(futures::stream::iter(vec![state]))
-                    as BoxStream<'static, Result<EcashReceiveState>>);
+                let final_stream = futures::stream::once(async move {
+                    let res = mintv2.await_final_receive_operation_state(id).await;
+                    match res {
+                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                            Ok(EcashReceiveState::Done)
+                        }
+                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                            Ok(EcashReceiveState::Failed {
+                                reason: "Transaction was rejected".to_string(),
+                            })
+                        }
+                        Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    }
+                });
+                let stream = futures::stream::iter(initial).chain(final_stream);
+                return Ok(Box::pin(stream) as BoxStream<'static, Result<EcashReceiveState>>);
             }
 
             let mint = client
