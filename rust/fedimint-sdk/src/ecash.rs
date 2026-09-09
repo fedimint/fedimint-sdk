@@ -551,7 +551,7 @@ impl EcashQuote {
 
     /// The federation this quote was created for.
     pub fn federation_id(&self) -> crate::FederationId {
-        self.inner.federation_id
+        crate::FederationId::from_upstream(self.inner.federation_id)
     }
 }
 
@@ -922,7 +922,7 @@ struct EcashQuoteInner {
     /// exact-amount selection `send` performs is what actually verifies the
     /// specific denominations are still there.
     balance_snapshot_msats: u64,
-    federation_id: crate::FederationId,
+    federation_id: fedimint_core::config::FederationId,
     module_id: fedimint_core::core::ModuleInstanceId,
 }
 
@@ -1505,8 +1505,8 @@ mod tests {
 
     #[test]
     fn ecash_quote_accessors() {
-        let fed_id =
-            crate::FederationId::from_upstream(fedimint_core::config::FederationId::dummy());
+        let upstream_id = fedimint_core::config::FederationId::dummy();
+        let expected_fed_id = crate::FederationId::from_upstream(upstream_id);
         let quote = EcashQuote {
             inner: EcashQuoteInner {
                 requested_amount: Amount::from_msats(750),
@@ -1515,7 +1515,7 @@ mod tests {
                 total: Amount::from_msats(1_050),
                 expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
                 balance_snapshot_msats: 100_000,
-                federation_id: fed_id,
+                federation_id: upstream_id,
                 module_id: 0,
             },
         };
@@ -1523,7 +1523,7 @@ mod tests {
         assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
         assert_eq!(quote.fee(), Amount::from_msats(50));
         assert_eq!(quote.total(), Amount::from_msats(1_050));
-        assert_eq!(quote.federation_id(), fed_id);
+        assert_eq!(quote.federation_id(), expected_fed_id);
         assert_eq!(
             quote.expires_at(),
             Timestamp::from_epoch_millis(1_700_000_060_000)
