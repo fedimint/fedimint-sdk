@@ -50,6 +50,12 @@ pub struct Mnemonic {
     phrase: fedimint_bip39::Mnemonic,
 }
 
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Mnemonic, Vec<String>, {
+    lower: |mnemonic| mnemonic.words(),
+    try_lift: |words| words.join(" ").parse::<Mnemonic>().map_err(Into::into),
+});
+
 impl Mnemonic {
     /// Generates a fresh 12-word English BIP-39 mnemonic.
     ///
