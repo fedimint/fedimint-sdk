@@ -1471,25 +1471,10 @@ impl Backfiller for EcashBackfiller {
                 serde_json::from_value(meta.clone()).ok()?;
             return match op_meta {
                 fedimint_mintv2_client::MintOperationMeta::Send { ecash, custom_meta } => {
-                    let decoded_amount = fedimint_core::base32::decode_prefixed::<
-                        fedimint_mintv2_client::ECash,
-                    >(
-                        fedimint_core::base32::FEDIMINT_PREFIX, &ecash
-                    )
-                    .map(|e| e.amount().msats)
-                    .ok()
-                    .or_else(|| {
-                        ecash
-                            .parse::<crate::Notes>()
-                            .map(|n| n.value().msats())
-                            .ok()
-                    });
-                    let (req_amount, notes_val, fee_msats, total_msats, reclaim_at, created_at) =
+                    let notes = ecash.parse::<crate::Notes>().ok()?;
+                    let notes_val = notes.value().msats();
+                    let (req_amount, fee_msats, total_msats, reclaim_at, created_at) =
                         if let Some(meta_obj) = custom_meta.as_object() {
-                            let notes_val = meta_obj
-                                .get("notes_value_msats")
-                                .and_then(|v| v.as_u64())
-                                .or(decoded_amount)?;
                             let req = meta_obj
                                 .get("requested_amount_msats")
                                 .and_then(|v| v.as_u64())
@@ -1507,13 +1492,12 @@ impl Backfiller for EcashBackfiller {
                                 .get("created_at_epoch_ms")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
-                            (req, notes_val, fee, total, reclaim, created)
+                            (req, fee, total, reclaim, created)
                         } else {
-                            let notes_val = decoded_amount?;
-                            (notes_val, notes_val, 0u64, notes_val, 0, 0)
+                            (notes_val, 0u64, notes_val, 0, 0)
                         };
                     let wire = crate::ecash::EcashSendDetailsWire {
-                        notes: ecash,
+                        notes: notes.to_string(),
                         requested_amount_msats: req_amount,
                         notes_value_msats: notes_val,
                         fee_msats,
@@ -1531,6 +1515,7 @@ impl Backfiller for EcashBackfiller {
                 fedimint_mintv2_client::MintOperationMeta::Receive {
                     ecash, custom_meta, ..
                 } => {
+                    let parsed_notes = ecash.parse::<crate::Notes>().ok();
                     let decoded_amount = fedimint_core::base32::decode_prefixed::<
                         fedimint_mintv2_client::ECash,
                     >(
@@ -1538,12 +1523,7 @@ impl Backfiller for EcashBackfiller {
                     )
                     .map(|e| e.amount().msats)
                     .ok()
-                    .or_else(|| {
-                        ecash
-                            .parse::<crate::Notes>()
-                            .map(|n| n.value().msats())
-                            .ok()
-                    });
+                    .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
                     let (notes_val, fee_msats, net_credit, created_at) =
                         if let Some(meta_obj) = custom_meta.as_object() {
                             let notes_val = meta_obj
@@ -1568,7 +1548,7 @@ impl Backfiller for EcashBackfiller {
                             (notes_val, 0u64, notes_val, 0)
                         };
                     let wire = crate::ecash::EcashReceiveDetailsWire {
-                        notes: Some(ecash),
+                        notes: parsed_notes.map(|n| n.to_string()),
                         notes_value_msats: notes_val,
                         fee_msats,
                         net_credit_msats: net_credit,
@@ -2709,9 +2689,9 @@ mod tests {
         assert_eq!(wire.notes, None);
         assert_eq!(wire.notes_value_msats, 1_000);
 
-        // mintv2 Send
+        // mintv2 Send with parseable Notes
         let mintv2_send = fedimint_mintv2_client::MintOperationMeta::Send {
-            ecash: "dummy_token".to_string(),
+            ecash: TOKEN.to_string(),
             custom_meta: serde_json::json!({
                 "requested_amount_msats": 700u64,
                 "notes_value_msats": 1_000u64,
@@ -2721,7 +2701,7 @@ mod tests {
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
         let backfilled_v2_send = backfiller
             .backfill("mintv2", &mintv2_send_json)
-            .expect("claims a Send entry under mintv2");
+            .expect("claims a Send entry under mintv2 when notes parse");
         assert_eq!(backfilled_v2_send.kind, kinds::ECASH_SEND);
         let wire_send: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled_v2_send.details).expect("valid wire json");
@@ -2729,6 +2709,18 @@ mod tests {
         assert_eq!(wire_send.notes_value_msats, 1_000);
         assert_eq!(wire_send.fee_msats, 50);
         assert_eq!(wire_send.total_debited_msats, 1_050);
+
+        // mintv2 Send with unparseable notes returns None to avoid failing decode_details later
+        let unparseable_send = fedimint_mintv2_client::MintOperationMeta::Send {
+            ecash: "not_valid_notes".to_string(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let unparseable_send_json = serde_json::to_value(&unparseable_send).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &unparseable_send_json)
+                .is_none()
+        );
 
         // mintv2 Receive
         let txid: fedimint_core::TransactionId =
@@ -2753,10 +2745,16 @@ mod tests {
         assert_eq!(backfilled_v2_receive.kind, kinds::ECASH_RECEIVE);
         let wire_recv: crate::ecash::EcashReceiveDetailsWire =
             serde_json::from_str(&backfilled_v2_receive.details).expect("valid wire json");
-        assert_eq!(wire_recv.notes, Some("dummy_receive_notes".to_string()));
+        // Non-v1 ecash strings stay None so decode_details does not fail on them
+        assert_eq!(wire_recv.notes, None);
         assert_eq!(wire_recv.notes_value_msats, 2_000);
         assert_eq!(wire_recv.fee_msats, 100);
         assert_eq!(wire_recv.net_credit_msats, 1_900);
+        let details: crate::ecash::EcashReceiveDetails = wire_recv
+            .try_into()
+            .expect("decodes cleanly with notes = None");
+        assert_eq!(details.notes, None);
+        assert_eq!(details.notes_value.msats(), 2_000);
 
         // mintv2 internal Reissue is ignored
         let mintv2_reissue = fedimint_mintv2_client::MintOperationMeta::Reissue {

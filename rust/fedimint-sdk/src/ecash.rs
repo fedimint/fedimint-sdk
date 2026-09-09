@@ -190,6 +190,8 @@ impl Ecash {
                 total,
                 expires_at,
                 balance_snapshot_msats,
+                federation_id: self.inner.federation.id,
+                module_id: mint.id,
             },
         })
     }
@@ -254,6 +256,13 @@ impl Ecash {
             ));
         }
 
+        if quote.inner.federation_id != self.inner.federation.id {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "quote was created for a different federation",
+            ));
+        }
+
         let client = self.inner.federation.client(true).await?;
         let mint = client
             .get_first_module::<fedimint_mint_client::MintClientModule>()
@@ -263,6 +272,13 @@ impl Ecash {
                     "this federation has no mint module",
                 )
             })?;
+
+        if quote.inner.module_id != mint.id {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "quote was created for a different mint module",
+            ));
+        }
 
         // A cheap early exit for the common case. This is not a note-composition
         // check: the total can stay identical while the specific denominations
@@ -531,6 +547,11 @@ impl EcashQuote {
     /// remedy for both is the same: quote again and re-confirm.
     pub fn expires_at(&self) -> Timestamp {
         self.inner.expires_at
+    }
+
+    /// The federation this quote was created for.
+    pub fn federation_id(&self) -> crate::FederationId {
+        self.inner.federation_id
     }
 }
 
@@ -901,6 +922,8 @@ struct EcashQuoteInner {
     /// exact-amount selection `send` performs is what actually verifies the
     /// specific denominations are still there.
     balance_snapshot_msats: u64,
+    federation_id: crate::FederationId,
+    module_id: fedimint_core::core::ModuleInstanceId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1482,6 +1505,8 @@ mod tests {
 
     #[test]
     fn ecash_quote_accessors() {
+        let fed_id =
+            crate::FederationId::from_upstream(fedimint_core::config::FederationId::dummy());
         let quote = EcashQuote {
             inner: EcashQuoteInner {
                 requested_amount: Amount::from_msats(750),
@@ -1490,12 +1515,15 @@ mod tests {
                 total: Amount::from_msats(1_050),
                 expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
                 balance_snapshot_msats: 100_000,
+                federation_id: fed_id,
+                module_id: 0,
             },
         };
         assert_eq!(quote.requested_amount(), Amount::from_msats(750));
         assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
         assert_eq!(quote.fee(), Amount::from_msats(50));
         assert_eq!(quote.total(), Amount::from_msats(1_050));
+        assert_eq!(quote.federation_id(), fed_id);
         assert_eq!(
             quote.expires_at(),
             Timestamp::from_epoch_millis(1_700_000_060_000)
