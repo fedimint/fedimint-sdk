@@ -962,10 +962,8 @@ impl Driver<EcashSendState> for EcashSendDriver {
         record: &'a crate::db::OperationRecord,
     ) -> BoxFuture<'a, Result<EcashSendState>> {
         Box::pin(async move {
-            if let Some(final_state_str) = &record.final_state {
-                if let Some(state) = parse_send_state(final_state_str) {
-                    return Ok(state);
-                }
+            if let Some(state) = record.final_state.as_deref().and_then(parse_send_state) {
+                return Ok(state);
             }
 
             let client = federation.client(false).await?;
@@ -1087,10 +1085,8 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
         record: &'a crate::db::OperationRecord,
     ) -> BoxFuture<'a, Result<EcashReceiveState>> {
         Box::pin(async move {
-            if let Some(final_state_str) = &record.final_state {
-                if let Some(state) = parse_receive_state(final_state_str) {
-                    return Ok(state);
-                }
+            if let Some(state) = record.final_state.as_deref().and_then(parse_receive_state) {
+                return Ok(state);
             }
 
             let client = federation.client(false).await?;
