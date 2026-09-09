@@ -8,7 +8,8 @@ use fedimint_core::core::OperationId;
 use fedimint_core::util::{BoxStream, SafeUrl};
 use fedimint_lnv2_client::{
     LightningClientModule, LightningOperationMeta, ReceiveError, ReceiveOperationState,
-    SelectGatewayError, SendOperationMeta, SendOperationState, SendPaymentError,
+    ReceiveWithTermsError, SelectGatewayError, SendOperationMeta, SendOperationState,
+    SendPaymentError, SendWithTermsError,
 };
 use fedimint_lnv2_common::gateway_api::{PaymentFee, RoutingInfo};
 use fedimint_lnv2_common::{Bolt11InvoiceDescription, LightningInvoice};
@@ -328,7 +329,7 @@ pub(super) async fn send(
     if current != (send_fee, expiration_delta) || fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
     }
-    let mut details = crate::LnSendDetails {
+    let details = crate::LnSendDetails {
         invoice: quote.invoice.clone(),
         invoice_amount: quote.invoice_amount,
         fee: quote.plan.fee,
@@ -339,32 +340,45 @@ pub(super) async fn send(
     // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
     // between upstream's commit and the SDK's write (`federation.create_operation` below) has
     // the exact quoted terms, not just the contract amount the log entry gives on its own.
-    let id = module
-        .send(
+    let id = match module
+        .send_with_terms(
             quote.invoice.inner().clone(),
-            Some(gateway),
+            gateway.clone(),
+            send_fee,
+            expiration_delta,
             wire::custom_meta(&wire::LnSendDetailsWire::from(&details))?,
         )
         .await
-        .map_err(|err| send_error(err, quote, federation.record().network.into()))?;
-    // Upstream re-derives the gateway's terms itself inside `send` and funds the contract at
-    // whatever it reads there; nothing binds that read to the `routing_info` re-check above, so a
-    // gateway that changes its fee in the instant between the two funds a different contract than
-    // the one this record is about to describe (an API that takes the checked terms is requested
-    // as fedimint/fedimint#9124). The committed contract, read back from the
-    // operation's own log entry, is the only place that says what was actually funded, so it
-    // corrects the record's fee and total after the fact. A read or a computation that does not
-    // come back clean leaves the quoted figures in place: an `Internal` error here would report a
-    // payment that was in fact started as failed, which is worse than an inexact record. The
-    // metadata copy already handed to the module above still keeps the quoted figures, since it
-    // was built before this correction; only this SDK's own record ends up with the corrected
-    // ones.
-    if let Some(committed) = committed_contract_amount(federation, id).await
-        && let Ok((fee, total)) = committed_fee(quote, committed)
     {
-        details.fee = fee;
-        details.total = total;
-    }
+        Ok(id) => id,
+        Err(SendWithTermsError::Send(inner)) => {
+            return Err(send_error(inner, quote, federation.record().network.into()));
+        }
+        // Upstream re-checked the gateway's terms itself, right before funding, and found them
+        // different from the ones just passed: the same drift the `routing_info` re-check above
+        // guards against, just caught a moment later. Reported the same way, at the terms
+        // upstream says are current now.
+        Err(SendWithTermsError::TermsChanged {
+            send_fee,
+            expiration_delta,
+        }) => {
+            let actual = terms_for(
+                client,
+                module,
+                quote.invoice_amount,
+                gateway.clone(),
+                &routing,
+                send_fee,
+                expiration_delta,
+            )
+            .await?;
+            return Err(quote_changed(quote.plan.total, actual.total));
+        }
+        // `SendWithTermsError` is `#[non_exhaustive]`; a variant added upstream after this was
+        // written carries no case this SDK can act on, so it is reported as unexpected rather
+        // than silently folded into one of the arms above.
+        Err(other) => return Err(internal(other)),
+    };
     federation
         .create_operation(
             id,
@@ -374,49 +388,6 @@ pub(super) async fn send(
             Arc::new(LnSendDriver) as Arc<dyn Driver<LnSendState>>,
         )
         .await
-}
-
-/// The amount of the contract upstream actually funded for `id`'s send, read back from the
-/// operation's own log entry. `None` when the entry is not there, or its meta does not decode as
-/// an `lnv2` send: both are read failures the caller treats as "unknown", never as proof that
-/// nothing was funded.
-async fn committed_contract_amount(
-    federation: &FederationInner,
-    id: OperationId,
-) -> Option<Amount> {
-    let entry = fedimint_client::oplog::OperationLog::new(federation.db())
-        .get_operation(id)
-        .await?;
-    let LightningOperationMeta::Send(SendOperationMeta { contract, .. }) =
-        entry.try_meta::<LightningOperationMeta>().ok()?
-    else {
-        return None;
-    };
-    Some(from_upstream(contract.amount))
-}
-
-/// The fee and total to record for a send once the contract upstream actually committed is
-/// known. Equal to what the quote itself would have funded (`invoice_amount` plus the quoted
-/// gateway fee), the quote's own figures come back unchanged. Otherwise the difference between
-/// the committed and the quoted gateway fee is folded into both: `fee` moves by exactly that much
-/// and `total` follows it, since `total` is always `invoice_amount` plus `fee`. Errors only if
-/// `committed_contract` funds less than the invoice amount, which upstream never actually does;
-/// the caller keeps the quoted figures rather than surface that as a payment failure.
-fn committed_fee(quote: &LnQuoteInner, committed_contract: Amount) -> Result<(Amount, Amount)> {
-    let quoted_contract = add(quote.invoice_amount, quote.plan.breakdown.gateway)?;
-    if committed_contract == quoted_contract {
-        return Ok((quote.plan.fee, quote.plan.total));
-    }
-    let committed_gateway_fee = committed_contract
-        .checked_sub(quote.invoice_amount)
-        .ok_or_else(|| internal("the committed contract funds less than the invoice amount"))?;
-    let fee = quote
-        .plan
-        .fee
-        .checked_sub(quote.plan.breakdown.gateway)
-        .and_then(|fee| fee.checked_add(committed_gateway_fee))
-        .ok_or_else(|| internal("an amount overflowed"))?;
-    Ok((fee, add(quote.invoice_amount, fee)?))
 }
 
 fn select_error(err: SelectGatewayError) -> Error {
@@ -477,61 +448,60 @@ pub(super) async fn receive(
     description: &str,
 ) -> Result<LnReceive> {
     let (gateway, routing) = module.select_gateway(None).await.map_err(select_error)?;
-    // The contract the gateway funds is the invoice amount less its fee
-    // (`fedimint-lnv2-client/src/lib.rs:1064`); the federation's claim fee comes off that.
-    let contract_amount = from_upstream(routing.receive_fee.subtract_from(amount.msats()));
-    let gateway_fee = amount.checked_sub(contract_amount).ok_or_else(|| {
-        internal("the gateway's fee schedule produced a contract above the amount")
-    })?;
-    let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            let text = err.to_string();
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
-            return Err(fee_quote_failure(
-                client,
-                short,
-                &text,
-                contract_amount,
-                "could not quote the claim fee",
+    let mut receive_fee = routing.receive_fee;
+    let (mut fee, mut net_credit) = receive_terms(client, module, amount, receive_fee).await?;
+    let created_at = now();
+    let mut retried = false;
+    let (invoice, id) = loop {
+        // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
+        // between upstream's commit and the SDK's write (`federation.create_operation` below)
+        // has the exact quoted terms, not just the gateway's share of the fee the log entry
+        // gives on its own. The invoice is not known until the call returns, so the copy
+        // carries a placeholder for it and `expires_at`; the backfiller takes both from
+        // upstream's own meta instead.
+        let copy = wire::custom_meta(&wire::LnReceiveDetailsWire {
+            invoice: String::new(),
+            description: description.to_owned(),
+            requested_amount_msats: amount.msats(),
+            invoice_amount_msats: amount.msats(),
+            fee_msats: fee.msats(),
+            net_credit_msats: net_credit.msats(),
+            gateway_id: Some(GatewayId::from_upstream(routing.module_public_key).to_string()),
+            expires_at: 0,
+            created_at: created_at.epoch_millis(),
+            reclaim_operation_id: None,
+        })?;
+        match module
+            .receive_with_terms(
+                to_upstream(amount),
+                INVOICE_EXPIRY_SECS,
+                Bolt11InvoiceDescription::Direct(description.to_owned()),
+                gateway.clone(),
+                receive_fee,
+                copy,
             )
-            .await);
+            .await
+        {
+            Ok(issued) => break issued,
+            Err(ReceiveWithTermsError::Receive(inner)) => return Err(receive_error(inner)),
+            // One read apart, a changed fee is the gateway moving under us, so one retry at the
+            // fresh fee is fair; a second refusal means the gateway is not usable right now.
+            Err(ReceiveWithTermsError::TermsChanged { receive_fee: fresh }) if !retried => {
+                retried = true;
+                receive_fee = fresh;
+                (fee, net_credit) = receive_terms(client, module, amount, receive_fee).await?;
+            }
+            Err(ReceiveWithTermsError::TermsChanged { .. }) => {
+                return Err(gateway_unavailable(
+                    "the gateway's receive fee keeps changing",
+                ));
+            }
+            // `ReceiveWithTermsError` is `#[non_exhaustive]`; a variant added upstream after
+            // this was written carries no case this SDK can act on, so it is reported as
+            // unexpected rather than silently folded into an arm above.
+            Err(other) => return Err(internal(other)),
         }
     };
-    let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
-    let net_credit = amount.checked_sub(fee).ok_or_else(|| {
-        Error::new(
-            ErrorCode::InvalidInput,
-            "the amount does not cover the receive-side fee",
-        )
-    })?;
-    // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
-    // between upstream's commit and the SDK's write (`federation.create_operation` below) has
-    // the exact quoted terms, not just the gateway's share of the fee the log entry gives on its
-    // own. The invoice is not known until the call returns, so the copy carries a placeholder
-    // for it and `expires_at`; the backfiller takes both from upstream's own meta instead.
-    let created_at = now();
-    let (invoice, id) = module
-        .receive(
-            to_upstream(amount),
-            INVOICE_EXPIRY_SECS,
-            Bolt11InvoiceDescription::Direct(description.to_owned()),
-            Some(gateway),
-            wire::custom_meta(&wire::LnReceiveDetailsWire {
-                invoice: String::new(),
-                description: description.to_owned(),
-                requested_amount_msats: amount.msats(),
-                invoice_amount_msats: amount.msats(),
-                fee_msats: fee.msats(),
-                net_credit_msats: net_credit.msats(),
-                gateway_id: Some(GatewayId::from_upstream(routing.module_public_key).to_string()),
-                expires_at: 0,
-                created_at: created_at.epoch_millis(),
-                reclaim_operation_id: None,
-            })?,
-        )
-        .await
-        .map_err(receive_error)?;
     let invoice = Bolt11Invoice::from_upstream(invoice);
     let details = LnReceiveDetails {
         invoice: invoice.clone(),
@@ -554,6 +524,59 @@ pub(super) async fn receive(
         )
         .await?;
     Ok(LnReceive { invoice, operation })
+}
+
+/// The receive-side fee and what lands from an lnv2 receive of `amount` at `receive_fee`: the
+/// gateway's share plus the federation's claim fee, quoted by the module for the contract the
+/// gateway would fund. Shared by the first attempt and the one retry after the gateway's fee
+/// moved.
+async fn receive_terms(
+    client: &Client,
+    module: &LightningClientModule,
+    amount: Amount,
+    receive_fee: PaymentFee,
+) -> Result<(Amount, Amount)> {
+    let (contract_amount, gateway_fee) = receive_contract_and_gateway_fee(amount, receive_fee)?;
+    let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            return Err(fee_quote_failure(
+                client,
+                short,
+                &text,
+                contract_amount,
+                "could not quote the claim fee",
+            )
+            .await);
+        }
+    };
+    let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
+    let net_credit = amount.checked_sub(fee).ok_or_else(|| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            "the amount does not cover the receive-side fee",
+        )
+    })?;
+    Ok((fee, net_credit))
+}
+
+/// The contract amount and gateway fee an lnv2 receive of `amount` would use at `receive_fee`.
+/// The contract the gateway funds is the invoice amount less its fee
+/// (`fedimint-lnv2-client/src/lib.rs:1064`); the federation's own claim fee comes off that
+/// contract separately, once the module quotes it for the returned `contract_amount`. Pure in
+/// `receive_fee` so a retry after the gateway's fee changed shares this step with the first
+/// attempt instead of duplicating it.
+fn receive_contract_and_gateway_fee(
+    amount: Amount,
+    receive_fee: PaymentFee,
+) -> Result<(Amount, Amount)> {
+    let contract_amount = from_upstream(receive_fee.subtract_from(amount.msats()));
+    let gateway_fee = amount.checked_sub(contract_amount).ok_or_else(|| {
+        internal("the gateway's fee schedule produced a contract above the amount")
+    })?;
+    Ok((contract_amount, gateway_fee))
 }
 
 fn receive_error(err: ReceiveError) -> Error {
@@ -935,51 +958,18 @@ mod tests {
         }
     }
 
-    /// A quote with a nonzero gateway fee, so `committed_fee`'s folding of the difference
-    /// between the quoted and the committed gateway fee is actually exercised rather than
-    /// collapsing on a zero.
-    fn quote_with_gateway_fee(gateway_fee_msats: u64) -> LnQuoteInner {
-        let mut quote = a_quote();
-        quote.plan.breakdown.gateway = Amount::from_msats(gateway_fee_msats);
-        quote.plan.breakdown.lightning_module = Amount::from_msats(50);
-        quote.plan.fee = Amount::from_msats(gateway_fee_msats + 50);
-        quote.plan.total =
-            Amount::from_msats(quote.invoice_amount.msats() + gateway_fee_msats + 50);
-        quote
-    }
-
     #[test]
-    fn committed_fee_keeps_the_quoted_figures_when_the_contract_matches_the_quote() {
-        let quote = quote_with_gateway_fee(1_000);
-        let committed = Amount::from_msats(101_000); // invoice (100_000) + quoted gateway fee.
-        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
-        assert_eq!(fee, quote.plan.fee);
-        assert_eq!(total, quote.plan.total);
-    }
-
-    #[test]
-    fn committed_fee_raises_both_by_the_gateways_increase() {
-        let quote = quote_with_gateway_fee(1_000);
-        let committed = Amount::from_msats(102_000); // gateway actually took 2_000, not 1_000.
-        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
-        assert_eq!(fee, Amount::from_msats(2_050));
-        assert_eq!(total, Amount::from_msats(102_050));
-    }
-
-    #[test]
-    fn committed_fee_lowers_both_by_the_gateways_decrease() {
-        let quote = quote_with_gateway_fee(1_000);
-        let committed = Amount::from_msats(100_500); // gateway actually took 500, not 1_000.
-        let (fee, total) = committed_fee(&quote, committed).expect("committed fee");
-        assert_eq!(fee, Amount::from_msats(550));
-        assert_eq!(total, Amount::from_msats(100_550));
-    }
-
-    #[test]
-    fn committed_fee_refuses_a_contract_below_the_invoice_amount() {
-        let quote = quote_with_gateway_fee(1_000);
-        let committed = Amount::from_msats(99_000); // less than the invoice's own 100_000.
-        let err = committed_fee(&quote, committed).expect_err("below the invoice amount");
-        assert_eq!(err.code, ErrorCode::Internal);
+    fn receive_contract_and_gateway_fee_takes_the_gateways_cut_off_the_amount() {
+        let receive_fee = PaymentFee {
+            base: fedimint_core::Amount::from_msats(1_000),
+            parts_per_million: 10_000,
+        };
+        let (contract_amount, gateway_fee) =
+            receive_contract_and_gateway_fee(Amount::from_msats(100_000), receive_fee)
+                .expect("a contract amount and gateway fee");
+        // Base 1_000 plus one percent of 100_000 (parts_per_million 10_000): 2_000 msat, taken
+        // off the amount to leave the contract the gateway actually funds.
+        assert_eq!(gateway_fee, Amount::from_msats(2_000));
+        assert_eq!(contract_amount, Amount::from_msats(98_000));
     }
 }

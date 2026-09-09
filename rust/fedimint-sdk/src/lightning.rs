@@ -124,21 +124,14 @@ impl Lightning {
 
     /// Executes a quoted payment.
     ///
-    /// The quote is consumed. Its terms are checked again immediately before
-    /// funding and execution refuses to proceed if they moved:
+    /// The quote is consumed. Execution follows it exactly, same amount, same
+    /// fee, same route, or does not happen:
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired) if the quote's
     /// validity window has passed,
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if something the
     /// quote depends on moved underneath it, such as the gateway withdrawing
-    /// or changing its fee before that check runs. Both mean the same thing
-    /// to a caller: quote again and re-confirm with the user.
-    ///
-    /// That check cannot close the gap after itself: a gateway that changes
-    /// its fee in the instant between the check and the payment actually
-    /// being funded is not caught by it, and the payment funds anyway, at
-    /// the fee the gateway actually took rather than the quoted one.
-    /// [`LnSendDetails::fee`] and [`LnSendDetails::total`] report that true
-    /// figure, not the quote's.
+    /// or changing its fee. Both mean the same thing to a caller: quote again
+    /// and re-confirm with the user.
     ///
     /// The returned operation tracks the payment from funding to preimage. A
     /// payment that fails ends in a final state, not in an error from this
@@ -312,9 +305,7 @@ impl LnQuote {
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), whose
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
     /// names this total and the one the payment would now cost. The same
-    /// figure is what [`LnSendDetails::total`] records, unless the gateway's
-    /// fee moved in the instant [`Lightning::send`] funds the payment; its
-    /// docs say what is recorded then.
+    /// figure is what [`LnSendDetails::total`] records.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }
