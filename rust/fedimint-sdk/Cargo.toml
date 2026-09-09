@@ -8,6 +8,19 @@ description = "High-level Fedimint client SDK: one ergonomic API over fedimint-c
 repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
+[lib]
+# `cdylib` is the shared library a mobile host loads, and the file
+# uniffi-bindgen reads its metadata back out of to generate Kotlin/Swift;
+# `staticlib` is the iOS/XCFramework form; `lib` is the ordinary Rust rlib.
+#
+# Cargo has no per-target crate-type, so these are built on every target. Only
+# `cargo build` pays for the extra links — `check`, `clippy`, `test` and `doc`
+# do not — which is where nearly all of this crate's CI time goes.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+uniffi = ["dep:uniffi"]
+
 [dependencies]
 # The SDK tracks fedimint `master`, not a published release. Every fedimint
 # crate below is a git dependency pinned to one revision, and that revision
@@ -49,6 +62,11 @@ futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.149"
 tracing = "0.1.44"
+# Same version fedimint's `[workspace.dependencies]` uses: the
+# `use_remote_type!` calls in src/types/ delegate to fedimint's own
+# `FfiConverter` impls, which only line up if both crates build one `uniffi`.
+# Behind the `uniffi` feature.
+uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
@@ -56,7 +74,19 @@ tracing = "0.1.44"
 # contention rather than block. See src/storage.rs.
 fd-lock = "4"
 fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
-tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+tokio = { version = "1.48.0", features = [
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "macros",
+    "time",
+    # `net` + `io-util` are for the multi-threaded runtime the `uniffi` feature
+    # spawns exported work onto (see `ffi_runtime` in src/sdk.rs): its
+    # `enable_all()` wants the IO driver, and fedimint-client's transport runs
+    # on it.
+    "net",
+    "io-util",
+] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
@@ -78,6 +108,31 @@ web-sys = { version = "0.3.83", features = [
     "WorkerGlobalScope",
     "WorkerNavigator",
 ] }
+
+[build-dependencies]
+# Only ever invoked on Android, to compile sdallocx_stub.c; see build.rs.
+cc = "1"
+
+# Tuned for the artifact this crate ships as on mobile: the `cdylib` goes
+# inside an application's APK or IPA, where every megabyte is one the user
+# downloads. Without these the Android library is ~82 MB per ABI; with them,
+# ~61 MB — and AGP cannot strip it further, because the NDK's strip is not
+# where it looks for it in the nix shell.
+#
+# `panic = "abort"` is also a correctness setting, not only a size one: the
+# UniFFI response path must not unwind across the FFI boundary. It is what the
+# no-panic discipline in `src/sdk.rs` (the export block) and `src/lib.rs`
+# refers to. Cargo ignores
+# it for the test and bench profiles, so `cargo test --release` is unaffected.
+#
+# Profiles only apply when a package is the build root, so nothing here reaches
+# a crate that depends on fedimint-sdk.
+[profile.release]
+opt-level = 'z'     # Optimize for size.
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = "3.20.0"

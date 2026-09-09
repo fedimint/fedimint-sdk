@@ -142,22 +142,63 @@ use crate::{
 /// the first with the same handle is pointless; retrying the second is the
 /// whole plan.
 #[derive(Debug, Clone)]
+// Crosses a UniFFI boundary as an opaque object: a mobile host holds an
+// `Arc<Sdk>` handle and calls the `#[uniffi::export]` methods below. Behind the
+// `uniffi` feature; the wasm and plain-Rust builds are untouched.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Sdk {
     inner: Arc<SdkInner>,
 }
 
+/// Opens an instance over `data_dir` — the entry point a mobile host calls.
+///
+/// Pass `mnemonic` to restore a wallet from a written-down phrase. Pass `None`
+/// to use the seed the storage already holds, or, over storage proven empty, to
+/// generate and persist a fresh one. The failure modes are exactly those of
+/// [`SdkBuilder::build`].
+#[cfg(feature = "uniffi")]
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn create_fedimint_sdk(
+    data_dir: String,
+    mnemonic: Option<Mnemonic>,
+) -> crate::Result<Arc<Sdk>> {
+    let mut builder = Sdk::builder().storage(Storage::at(&data_dir)?);
+    if let Some(mnemonic) = mnemonic {
+        builder = builder.mnemonic(mnemonic);
+    }
+    Ok(Arc::new(builder.build().await?))
+}
+
+/// The methods a language binding calls. These are the crate's real methods,
+/// exported as-is: [`Sdk::preview`] and [`Sdk::join`] take the string form of an
+/// invite code (`InviteCode` is a UniFFI custom type over `String`), an error
+/// crosses as [`Error`](crate::Error), and [`Sdk::join`] hands back a
+/// [`Federation`] handle. The rest of `Sdk` stays Rust-only for now.
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Sdk {
-    /// Starts building an instance.
+    /// Returns this instance's seed phrase, for the user to write down.
     ///
-    /// The returned builder holds no storage and no mnemonic yet; see
-    /// [`SdkBuilder`] for what each setting means and
-    /// [`SdkBuilder::build`] for the rules applied when the instance is
-    /// actually opened.
-    pub fn builder() -> SdkBuilder {
-        SdkBuilder {
-            storage: None,
-            mnemonic: None,
-        }
+    /// The name says *export* on purpose: this is the one call that takes a
+    /// secret out of the SDK's custody, and it should be obvious at the
+    /// call site that this is what is happening.
+    ///
+    /// What the caller receives is a [`Mnemonic`], which neither prints nor
+    /// formats itself; extracting the words from it is a separate,
+    /// deliberate step ([`Mnemonic::words`]). Everything downstream of that
+    /// step is the application's responsibility, as documented on that
+    /// type.
+    ///
+    /// Infallible and synchronous: the seed is loaded once when the
+    /// instance is built and held in memory for its lifetime, so this does
+    /// not read storage and remains available after [`Sdk::shutdown`]. It
+    /// is also why [`SdkBuilder::build`] never fails over a federation: an
+    /// instance whose every federation is quarantined still exports its
+    /// seed, the user's route to their money by any other client.
+    pub fn export_mnemonic(&self) -> Mnemonic {
+        // Loaded once when the instance was built and held for its lifetime, which is why this
+        // reads no storage and survives shutdown: an instance whose every federation is
+        // quarantined still exports its seed.
+        self.inner.mnemonic.clone()
     }
 
     /// Fetches a federation's configuration and renders it as a
@@ -358,6 +399,21 @@ impl Sdk {
         crate::federation::reconcile_on_open(&federation).await;
         self.inner.announce(&federation);
         Ok(Federation::new(federation))
+    }
+}
+
+impl Sdk {
+    /// Starts building an instance.
+    ///
+    /// The returned builder holds no storage and no mnemonic yet; see
+    /// [`SdkBuilder`] for what each setting means and
+    /// [`SdkBuilder::build`] for the rules applied when the instance is
+    /// actually opened.
+    pub fn builder() -> SdkBuilder {
+        SdkBuilder {
+            storage: None,
+            mnemonic: None,
+        }
     }
 
     /// Every federation this instance currently has open.
@@ -934,30 +990,6 @@ impl Sdk {
         Ok(())
     }
 
-    /// Returns this instance's seed phrase, for the user to write down.
-    ///
-    /// The name says *export* on purpose: this is the one call that takes a
-    /// secret out of the SDK's custody, and it should be obvious at the
-    /// call site that this is what is happening.
-    ///
-    /// What the caller receives is a [`Mnemonic`], which neither prints nor
-    /// formats itself; extracting the words from it is a separate,
-    /// deliberate step ([`Mnemonic::words`]). Everything downstream of that
-    /// step is the application's responsibility, as documented on that
-    /// type.
-    ///
-    /// Infallible and synchronous: the seed is loaded once when the
-    /// instance is built and held in memory for its lifetime, so this does
-    /// not read storage and remains available after [`Sdk::shutdown`]. It
-    /// is also why [`SdkBuilder::build`] never fails over a federation: an
-    /// instance whose every federation is quarantined still exports its
-    /// seed, the user's route to their money by any other client.
-    pub fn export_mnemonic(&self) -> Mnemonic {
-        // Loaded once when the instance was built and held for its lifetime, which is why this
-        // reads no storage and survives shutdown: an instance whose every federation is
-        // quarantined still exports its seed.
-        self.inner.mnemonic.clone()
-    }
 
     /// Best-effort: flushes everything to storage, stops all background
     /// work, and releases the storage lock.

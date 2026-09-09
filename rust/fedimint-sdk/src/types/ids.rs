@@ -72,6 +72,15 @@ impl core::str::FromStr for FederationId {
     }
 }
 
+// Crosses a UniFFI boundary as its canonical string, the same form
+// `Display`/`FromStr` use, so a binding carries it as a plain `String` and the
+// validating parse stays here. Behind the `uniffi` feature.
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(FederationId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<FederationId>().map_err(Into::into),
+});
+
 /// Identifies one operation (a send, a receive, a recovery, ...) within a
 /// federation.
 ///

@@ -1,0 +1,18 @@
+# Android-only overrides, handed to uniffi-bindgen as its `--config` file by the
+# Android generation flow. A crate's own uniffi.toml is auto-loaded; this one is
+# not, so these settings apply to that flow and nothing else.
+#
+# `android = true` uses Android's own JNA integration; `android_cleaner = true`
+# swaps the JVM cleaner for `android.system.SystemCleaner` on API 34+, which
+# matches Android's GC semantics, so native handles are released correctly.
+#
+# The nesting in the table name is load bearing. uniffi 0.32's `--config` takes
+# a *global* config file, whose `[defaults]` is merged into the same shape as a
+# crate's uniffi.toml — where the Kotlin backend reads its settings from
+# `bindings.kotlin`. `[defaults.kotlin]` therefore parses fine, merges a table
+# nothing ever reads, and is silently ignored: the global config file is
+# deserialized without `deny_unknown_fields`, so nothing warns. The only symptom
+# is generated bindings that quietly fall back to `JavaLangRefCleaner`.
+[defaults.bindings.kotlin]
+android = true
+android_cleaner = true

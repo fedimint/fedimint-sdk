@@ -74,6 +74,11 @@ use crate::{
 ///   where a caller can act on it, rather than being swallowed by an
 ///   accessor that cannot return one.
 #[derive(Debug, Clone)]
+// Crosses a UniFFI boundary as an opaque object: [`Sdk::join`] hands the binding
+// an `Arc<Federation>` handle. None of its methods are exported yet, so the
+// binding can hold the handle but not call it — the facades land in a later
+// stage. Behind the `uniffi` feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Federation {
     inner: Arc<FederationInner>,
 }

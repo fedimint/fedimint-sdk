@@ -1,16 +1,23 @@
-# `getrandom` picks its wasm backend from a cfg flag as well as from a Cargo
-# feature, and the flag is the half a downstream crate can set. This is the
-# same flag fedimint's own build environment sets
-# (nix/flakebox.nix: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS), kept here
-# so that `cargo check --target wasm32-unknown-unknown` works with no ambient
-# environment.
+# 16 KB page alignment for Android, matching fedimint-sdk-ffi's own
+# .cargo/config.toml (fedimint/fedimint-sdk-ffi@cb8b157).
 #
-# Cargo ignores `target.<triple>.rustflags` whenever the RUSTFLAGS environment
-# variable is set, and actions-rust-lang/setup-rust-toolchain sets it (to
-# `-D warnings`) by default, so in CI this file has no effect. The wasm check
-# was verified to pass both ways at the pinned revision: `getrandom` resolves
-# to 0.3.4 there, which selects the backend from the feature alone. The file
-# is what keeps the local build working if the lock ever moves back to a
-# `getrandom` where the cfg is mandatory.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
+# Android 15 introduced devices with 16 KB pages rather than 4 KB. A library
+# aligned to the old page size cannot be mapped directly on them — the loader
+# takes a compatibility path and the system tells the user the app is not
+# 16 KB compatible — and the Play Store requires 16 KB support for submissions
+# targeting Android 15+.
+#
+# `max-page-size` is what aligns the loadable segments; `common-page-size`
+# keeps the linker from padding between them as if pages were still 4 KB.
+#
+# This only applies when fedimint-sdk is the directory cargo is invoked from,
+# which is what scripts/generate-android-so.sh does. Verify the result with:
+#   llvm-readelf -l libfedimint_sdk.so | grep LOAD
+# where every alignment should read 0x4000.
+[target.'cfg(target_os = "android")']
+rustflags = [
+    "-C", "link-arg=-z",
+    "-C", "link-arg=max-page-size=16384",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=common-page-size=16384",
+]

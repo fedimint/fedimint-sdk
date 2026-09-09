@@ -422,6 +422,12 @@ mod sdk;
 mod storage;
 mod types;
 
+// Generates the per-crate UniFFI scaffolding the `#[uniffi::export]` items in
+// `sdk.rs` / `error.rs` and the type derives in `error.rs` / `types/` rely on.
+// Behind the `uniffi` feature; the wasm and plain-Rust builds never see it.
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
 pub use activity::{ActivityItem, ActivityPage, ActivityStatus, Direction};
 pub use ecash::{
     Ecash, EcashQuote, EcashReceiveDetails, EcashReceiveState, EcashSend, EcashSendDetails,
@@ -447,6 +453,11 @@ pub use operation::{
 };
 pub use recovery::{Recovery, RecoveryState};
 pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, SdkBuilder};
+// The UniFFI entry point a mobile host calls to open an instance. Native, behind
+// the `uniffi` feature; the rest of the surface is `#[uniffi::export]` methods on
+// `Sdk` (in `sdk.rs`) and derives on the value types.
+#[cfg(feature = "uniffi")]
+pub use sdk::create_fedimint_sdk;
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,

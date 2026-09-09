@@ -1,6 +1,8 @@
 //! Federation invite codes and join previews.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "uniffi")]
+use std::collections::HashMap;
 
 use fedimint_core::invite_code;
 
@@ -120,6 +122,16 @@ impl core::str::FromStr for InviteCode {
     }
 }
 
+// Crosses a UniFFI boundary as its canonical string — the form `Display` /
+// `FromStr` already use — so `Sdk::preview` / `Sdk::join` take it as a plain
+// `String` and the validating parse stays here. `Display` is fine to lower
+// through: the redaction is a `Debug`-only concern. Behind the `uniffi` feature.
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(InviteCode, String, {
+    lower: |code| code.to_string(),
+    try_lift: |s| s.parse::<InviteCode>().map_err(Into::into),
+});
+
 /// Everything needed to render a "join this federation?" screen before
 /// committing to anything.
 ///
@@ -136,6 +148,10 @@ impl core::str::FromStr for InviteCode {
 /// releases, so construct it only through the SDK and match it only with a
 /// `..` pattern or by field access, never by exhaustive destructuring.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Crosses a UniFFI boundary as a plain record. Every field is FFI-safe:
+// `FederationId` is a custom string type, `Network` a plain enum, and `meta` is
+// bridged below. Not additive for a generated binding; regenerate with the SDK.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct FederationPreview {
     /// The federation's identifier.
@@ -165,6 +181,21 @@ pub struct FederationPreview {
     /// arbitrary string keys as defined by the federation's configuration.
     pub meta: BTreeMap<String, String>,
 }
+
+// `BTreeMap` has no UniFFI converter (unlike `HashMap`), and `custom_type!`
+// needs a bare identifier, so the `meta` field's shape is bridged to its
+// `HashMap` equivalent through an alias. `remote` because the target type is
+// `std`'s. The map's contents are unchanged; a binding's map type is
+// insertion-ordered regardless. Mirrors `fedimint-core`'s own `MetaMap`.
+#[cfg(feature = "uniffi")]
+type MetaMap = BTreeMap<String, String>;
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(MetaMap, HashMap<String, String>, {
+    remote,
+    lower: |m| m.into_iter().collect(),
+    try_lift: |h| Ok(h.into_iter().collect()),
+});
 
 #[cfg(test)]
 mod tests {
