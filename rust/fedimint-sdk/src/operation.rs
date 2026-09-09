@@ -1361,6 +1361,8 @@ pub(crate) struct Backfilled {
     pub(crate) details: String,
     /// The phase the entry proves was reached, if the meta says.
     pub(crate) phase: Option<u32>,
+    /// The final state if known at backfill time.
+    pub(crate) final_state: Option<String>,
 }
 
 /// A driver for one of the seven kinds, with its state type recovered by matching.
@@ -1519,6 +1521,7 @@ impl Backfiller for EcashBackfiller {
                         kind: kinds::ECASH_SEND,
                         details,
                         phase: Some(1),
+                        final_state: None,
                     })
                 }
                 fedimint_mintv2_client::MintOperationMeta::Receive {
@@ -1574,6 +1577,7 @@ impl Backfiller for EcashBackfiller {
                         kind: kinds::ECASH_RECEIVE,
                         details,
                         phase: Some(1),
+                        final_state: None,
                     })
                 }
                 fedimint_mintv2_client::MintOperationMeta::Reissue { .. } => None,
@@ -1631,6 +1635,7 @@ impl Backfiller for EcashBackfiller {
                     kind: kinds::ECASH_SEND,
                     details,
                     phase: Some(1),
+                    final_state: None,
                 })
             }
             fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
@@ -1674,6 +1679,7 @@ impl Backfiller for EcashBackfiller {
                     kind: kinds::ECASH_RECEIVE,
                     details,
                     phase: Some(1),
+                    final_state: None,
                 })
             }
         }
@@ -1746,6 +1752,7 @@ impl Backfiller for ProbeBackfiller {
             kind: kinds::ECASH_SEND,
             details: meta.to_string(),
             phase: Some(1),
+            final_state: None,
         })
     }
 }

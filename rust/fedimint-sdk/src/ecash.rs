@@ -863,14 +863,12 @@ pub struct EcashReceiveDetails {
     /// are still bearer value, which is the other reason [`Notes`] redacts
     /// its own `Debug`.
     ///
-    /// `None` for a record [`Ecash::receive`] did not itself create: one
-    /// reconstructed by reconciliation from the upstream mint's own
-    /// operation log after this build never observed the original call, for
-    /// instance after a crash between the federation accepting the
-    /// reissuance and this SDK persisting its own record. Upstream's log
-    /// entry for a reissuance does not retain the notes that funded it, only
-    /// the resulting amount, so there is no bearer string to recover here;
-    /// this is the honest absence of that data, not a decode failure.
+    /// `None` when the redeemed notes are unrecoverable from the underlying
+    /// operation log (for example, upstream v1 mint reissuance entries only
+    /// retain the resulting amount rather than the consumed bearer notes) or
+    /// if unparseable. When available (such as operations created directly by
+    /// [`Ecash::receive`] or backfilled from `mintv2` entries that retain the
+    /// incoming token), this is `Some(notes)`.
     pub notes: Option<Notes>,
     /// The gross face value redeemed, before the reissuance fee.
     ///
@@ -1003,11 +1001,10 @@ impl TryFrom<EcashReceiveDetailsWire> for EcashReceiveDetails {
     type Error = Error;
 
     fn try_from(wire: EcashReceiveDetailsWire) -> Result<Self> {
-        // `None` stays `None`: the notes genuinely were not recoverable. `Some`
-        // must still parse as valid notes, exactly like every other decode path;
-        // there is no third option that silently substitutes different bearer
-        // value for missing data.
-        let notes = wire.notes.map(|s| s.parse::<Notes>()).transpose()?;
+        let notes = match wire.notes {
+            Some(s) => Some(s.parse::<Notes>()?),
+            None => None,
+        };
         Ok(Self {
             notes,
             notes_value: Amount::from_msats(wire.notes_value_msats),
@@ -1030,6 +1027,13 @@ impl Driver<EcashSendState> for EcashSendDriver {
         Box::pin(async move {
             if let Some(state) = record.final_state.as_deref().and_then(parse_send_state) {
                 return Ok(state);
+            }
+
+            if record.module == "mintv2" {
+                if record.cancel_requested_at.is_some() {
+                    return Ok(EcashSendState::CancelRequested);
+                }
+                return Ok(EcashSendState::Created);
             }
 
             let client = match federation.client(false).await {
@@ -1075,6 +1079,21 @@ impl Driver<EcashSendState> for EcashSendDriver {
         record: &'a crate::db::OperationRecord,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashSendState>>>> {
         Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_send_state) {
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashSendState>>);
+            }
+
+            if record.module == "mintv2" {
+                let state = if record.cancel_requested_at.is_some() {
+                    EcashSendState::CancelRequested
+                } else {
+                    EcashSendState::Created
+                };
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashSendState>>);
+            }
+
             let client = match federation.client(false).await {
                 Ok(client) => client,
                 #[cfg(test)]
@@ -1180,6 +1199,25 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                 }
                 Err(err) => return Err(err),
             };
+
+            if record.module == "mintv2" {
+                let mintv2 = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+                return match mintv2.await_final_receive_operation_state(id).await {
+                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                        Ok(EcashReceiveState::Done)
+                    }
+                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                        Ok(EcashReceiveState::Failed {
+                            reason: "Transaction was rejected".to_string(),
+                        })
+                    }
+                    Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                };
+            }
+
             let mint = client
                 .get_first_module::<fedimint_mint_client::MintClientModule>()
                 .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
@@ -1207,9 +1245,14 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
         &'a self,
         federation: &'a crate::federation::FederationInner,
         id: fedimint_core::core::OperationId,
-        _record: &'a crate::db::OperationRecord,
+        record: &'a crate::db::OperationRecord,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashReceiveState>>>> {
         Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_receive_state) {
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashReceiveState>>);
+            }
+
             let client = match federation.client(false).await {
                 Ok(client) => client,
                 #[cfg(test)]
@@ -1221,6 +1264,28 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                 }
                 Err(err) => return Err(err),
             };
+
+            if record.module == "mintv2" {
+                let mintv2 = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+                let res = mintv2.await_final_receive_operation_state(id).await;
+                let state = match res {
+                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                        Ok(EcashReceiveState::Done)
+                    }
+                    Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                        Ok(EcashReceiveState::Failed {
+                            reason: "Transaction was rejected".to_string(),
+                        })
+                    }
+                    Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                };
+                return Ok(Box::pin(futures::stream::iter(vec![state]))
+                    as BoxStream<'static, Result<EcashReceiveState>>);
+            }
+
             let mint = client
                 .get_first_module::<fedimint_mint_client::MintClientModule>()
                 .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;

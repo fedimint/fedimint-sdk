@@ -843,7 +843,7 @@ impl FederationInner {
                 details: claimed.details,
                 phase: claimed.phase,
                 cancel_requested_at: None,
-                final_state: None,
+                final_state: claimed.final_state,
             },
             // Nothing claimed it, so it is recorded under the module that owns it and reads back
             // as a kind this build does not know: real, listable, and honestly not actionable.
