@@ -83,6 +83,11 @@ pub(super) struct LnSendDetailsWire {
     pub(super) total_msats: u64,
     pub(super) route: RouteWire,
     pub(super) created_at: u64,
+    /// v1 only: the gateway's share of `fee_msats` at quote time, so a record rebuilt from the
+    /// module's log can back it out when the module settled the payment internally after all.
+    /// Not part of the public record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) gateway_fee_msats: Option<u64>,
 }
 
 impl From<&LnSendDetails> for LnSendDetailsWire {
@@ -94,6 +99,7 @@ impl From<&LnSendDetails> for LnSendDetailsWire {
             total_msats: details.total.msats(),
             route: RouteWire::from(&details.route),
             created_at: details.created_at.epoch_millis(),
+            gateway_fee_msats: None,
         }
     }
 }
@@ -358,6 +364,40 @@ mod tests {
         let details = send_details();
         let json = serde_json::to_string(&LnSendDetailsWire::from(&details)).expect("encode");
         assert_eq!(decode_send_details(&json).expect("decode"), details);
+    }
+
+    #[test]
+    fn the_send_wire_round_trips_with_and_without_the_gateway_fee() {
+        let mut wire = LnSendDetailsWire::from(&send_details());
+        wire.gateway_fee_msats = Some(50);
+        let json = serde_json::to_string(&wire).expect("encode");
+        assert!(json.contains("gateway_fee_msats"), "{json}");
+        let decoded: LnSendDetailsWire = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, wire);
+
+        wire.gateway_fee_msats = None;
+        let json = serde_json::to_string(&wire).expect("encode");
+        assert!(!json.contains("gateway_fee_msats"), "{json}");
+        let decoded: LnSendDetailsWire = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, wire);
+    }
+
+    #[test]
+    fn a_send_record_without_the_gateway_fee_field_decodes() {
+        // An older build's record, written before this field existed: the key is absent
+        // entirely, not just `null`.
+        let mut value =
+            serde_json::to_value(LnSendDetailsWire::from(&send_details())).expect("encode");
+        value
+            .as_object_mut()
+            .expect("an object")
+            .remove("gateway_fee_msats");
+        let wire: LnSendDetailsWire = serde_json::from_value(value).expect("decode");
+        assert_eq!(wire.gateway_fee_msats, None);
+        assert_eq!(
+            LnSendDetails::try_from(wire).expect("decode"),
+            send_details()
+        );
     }
 
     #[test]

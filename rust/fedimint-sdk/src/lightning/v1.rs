@@ -747,11 +747,16 @@ pub(super) async fn send(
         route: quote.plan.route.clone(),
         created_at,
     };
+    let mut quoted_wire = wire::LnSendDetailsWire::from(&quoted_details);
+    // Named so a record rebuilt from the module's log after a crash between upstream's commit
+    // and the SDK's write below can back this out, the same way the internal-settlement branch
+    // just below does, if the module ends up settling the payment internally after all.
+    quoted_wire.gateway_fee_msats = Some(quote.plan.breakdown.gateway.msats());
     let payment: OutgoingLightningPayment = module
         .pay_bolt11_invoice(
             gateway.map(|gateway| *gateway),
             quote.invoice.inner().clone(),
-            wire::custom_meta(&wire::LnSendDetailsWire::from(&quoted_details))?,
+            wire::custom_meta(&quoted_wire)?,
         )
         .await
         .map_err(|err| {
@@ -823,8 +828,10 @@ pub(super) async fn send(
                 .ok_or_else(|| internal("the quoted fee is smaller than the quoted gateway fee"))?;
             let total = add(quote.invoice_amount, fee)?;
             // The metadata copy above carries the quoted `fee`/`total`, not this corrected
-            // figure: a record rebuilt from the log after a crash in this residual case reports
-            // the quote's upper bound rather than what was actually debited.
+            // figure, but it also names its gateway share (`gateway_fee_msats`): a record
+            // rebuilt from the log after a crash in this residual case backs that share out of
+            // the copy's figures the same way this branch just did, instead of reporting the
+            // quote's upper bound.
             (id, LightningRoute::Internal, fee, total)
         }
         PayType::Lightning(id) => (
@@ -981,32 +988,47 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
         LightningOperationMetaVariant::Pay(pay) => {
             let invoice = Bolt11Invoice::from_upstream(pay.invoice);
             let invoice_amount = invoice.amount()?;
+            // The route always comes from upstream's own meta, never from the copy below: the
+            // module decides the route at execution, after the copy was written, and it is what
+            // `LnSendDriver` picks its subscription by (upstream refuses `subscribe_ln_pay` for
+            // a payment it settled internally).
+            let route = if pay.is_internal_payment {
+                LightningRoute::Internal
+            } else {
+                LightningRoute::Gateway {
+                    gateway_id: GatewayId::from_upstream(pay.gateway_id?),
+                }
+            };
             // Trusted only when it names this exact invoice: an entry created by something
-            // other than this SDK could carry anything under the same metadata key. A copy that
-            // passes that check but whose route does not parse (a gateway id from a build this
-            // one cannot read) is no more trustworthy than no copy at all, so it falls back to
-            // the same upstream-derived estimate as a missing copy.
+            // other than this SDK could carry anything under the same metadata key.
             let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&extra_meta)
-                .filter(|copy| copy.invoice == invoice.to_string())
-                .and_then(|copy| {
-                    Some((
-                        Amount::from_msats(copy.fee_msats),
-                        Amount::from_msats(copy.total_msats),
-                        LightningRoute::try_from(copy.route).ok()?,
-                    ))
-                });
-            let (fee, total, route) = match copy {
-                Some(values) => values,
+                .filter(|copy| copy.invoice == invoice.to_string());
+            let (fee, total) = match copy {
+                Some(copy) => {
+                    let fee = Amount::from_msats(copy.fee_msats);
+                    let total = Amount::from_msats(copy.total_msats);
+                    let quoted_gateway = matches!(copy.route, wire::RouteWire::Gateway { .. });
+                    match (
+                        pay.is_internal_payment,
+                        quoted_gateway,
+                        copy.gateway_fee_msats,
+                    ) {
+                        // Quoted through a gateway but settled internally after all: the copy's
+                        // figures still include the gateway's share, so it is backed out the
+                        // same way the live send path does for this same residual case.
+                        (true, true, Some(gateway_fee_msats)) => {
+                            let fee = fee.checked_sub(Amount::from_msats(gateway_fee_msats))?;
+                            (fee, invoice_amount.checked_add(fee)?)
+                        }
+                        // Either the quote already agreed with the settlement, or the copy
+                        // predates `gateway_fee_msats` (an older build): its figures are kept as
+                        // written, an upper bound in the latter case.
+                        _ => (fee, total),
+                    }
+                }
                 None => {
                     let fee = from_upstream(pay.fee);
-                    let route = if pay.is_internal_payment {
-                        LightningRoute::Internal
-                    } else {
-                        LightningRoute::Gateway {
-                            gateway_id: GatewayId::from_upstream(pay.gateway_id?),
-                        }
-                    };
-                    (fee, invoice_amount.checked_add(fee)?, route)
+                    (fee, invoice_amount.checked_add(fee)?)
                 }
             };
             let details = crate::LnSendDetails {
@@ -1411,6 +1433,7 @@ mod tests {
                 gateway_id: GATEWAY_ID.to_owned(),
             },
             created_at: 1_650_000_000_000,
+            gateway_fee_msats: None,
         };
         let meta = serde_json::json!({
             "variant": {
@@ -1432,6 +1455,8 @@ mod tests {
         // alone would give.
         assert_eq!(details.fee, Amount::from_msats(1_500));
         assert_eq!(details.total, Amount::from_msats(101_500));
+        // Upstream settled through a gateway, matching the copy's route: upstream's own id,
+        // read regardless of what the copy says.
         assert_eq!(details.route, gateway_route());
         // The record's own creation time, not the copy's.
         assert_eq!(details.created_at.epoch_millis(), 1_700_000_000_000);
@@ -1451,6 +1476,7 @@ mod tests {
                 gateway_id: GATEWAY_ID.to_owned(),
             },
             created_at: 1_650_000_000_000,
+            gateway_fee_msats: None,
         };
         let meta = serde_json::json!({
             "variant": {
@@ -1475,16 +1501,17 @@ mod tests {
     }
 
     #[test]
-    fn a_pay_log_entry_with_a_copy_naming_an_unparseable_gateway_id_falls_back_to_the_estimate() {
+    fn a_gateway_quoted_pay_settled_internally_backs_the_gateway_fee_out_of_the_copy() {
         let copy = wire::LnSendDetailsWire {
             invoice: REGTEST_INVOICE.to_owned(),
             invoice_amount_msats: 100_000,
             fee_msats: 1_500,
             total_msats: 101_500,
             route: wire::RouteWire::Gateway {
-                gateway_id: "not a valid gateway id".to_owned(),
+                gateway_id: GATEWAY_ID.to_owned(),
             },
             created_at: 1_650_000_000_000,
+            gateway_fee_msats: Some(500),
         };
         let meta = serde_json::json!({
             "variant": {
@@ -1493,21 +1520,58 @@ mod tests {
                     "invoice": REGTEST_INVOICE,
                     "fee": 1000,
                     "change": [],
-                    "is_internal_payment": false,
+                    "is_internal_payment": true,
                     "contract_id": "11".repeat(32),
-                    "gateway_id": GATEWAY_ID,
+                    "gateway_id": null,
                 }
             },
             "extra_meta": wire::custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
-        // A copy whose invoice matches but whose route this build cannot parse is no more
-        // trustworthy than a missing copy, so the gateway-fee-only estimate is used instead, and
-        // the record is not dropped the way propagating the parse failure would drop it.
+        // Upstream settled internally, not through the gateway the copy was quoted through: the
+        // route is upstream's, and the copy's fee/total are corrected by backing the quoted
+        // gateway share out of them, the same way the live send path does for this case.
+        assert_eq!(details.route, LightningRoute::Internal);
         assert_eq!(details.fee, Amount::from_msats(1_000));
         assert_eq!(details.total, Amount::from_msats(101_000));
-        assert_eq!(details.route, gateway_route());
+    }
+
+    #[test]
+    fn an_older_copy_without_the_gateway_fee_keeps_its_figures_when_settled_internally() {
+        let copy = wire::LnSendDetailsWire {
+            invoice: REGTEST_INVOICE.to_owned(),
+            invoice_amount_msats: 100_000,
+            fee_msats: 1_500,
+            total_msats: 101_500,
+            route: wire::RouteWire::Gateway {
+                gateway_id: GATEWAY_ID.to_owned(),
+            },
+            created_at: 1_650_000_000_000,
+            gateway_fee_msats: None,
+        };
+        let meta = serde_json::json!({
+            "variant": {
+                "pay": {
+                    "out_point": { "txid": "00".repeat(32), "out_idx": 0 },
+                    "invoice": REGTEST_INVOICE,
+                    "fee": 1000,
+                    "change": [],
+                    "is_internal_payment": true,
+                    "contract_id": "11".repeat(32),
+                    "gateway_id": null,
+                }
+            },
+            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+        });
+        let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
+        let details = wire::decode_send_details(&claimed.details).expect("decodes");
+        // Nothing to back the gateway share out of: an older build's copy is kept as written,
+        // an upper bound on what was actually debited, exactly as the live send path's own
+        // comment describes for this residual case.
+        assert_eq!(details.route, LightningRoute::Internal);
+        assert_eq!(details.fee, Amount::from_msats(1_500));
+        assert_eq!(details.total, Amount::from_msats(101_500));
     }
 
     #[test]

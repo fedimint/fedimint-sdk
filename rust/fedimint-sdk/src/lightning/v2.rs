@@ -300,7 +300,11 @@ pub(super) async fn send(
     // re-quoted below: the balance can drop between a quote and this call, and it must be asked
     // whether the invoice was already paid before it is asked whether the balance still covers
     // it, or a second quote for an already-paid invoice is misreported as a shortfall instead of
-    // the truth.
+    // the truth. Upstream's `send_with_terms` below binds the gateway's terms, but the funding
+    // notes are still selected inside it: the mint's fees and the dust the re-quote computes are
+    // therefore only the figures for the balance at this moment, and a wallet whose notes change
+    // in the same instant can still fund at a different figure. That remainder is tracked as
+    // fedimint/fedimint#9124.
     let available = balance_of(client).await?;
     if available < quote.plan.total {
         return Err(insufficient(quote.plan.total, available));
@@ -873,6 +877,7 @@ mod tests {
                 gateway_id: GATEWAY_ID.to_owned(),
             },
             created_at: 1_650_000_000_000,
+            gateway_fee_msats: None,
         };
         let meta = outgoing_meta(101_000, wire::custom_meta(&copy).expect("encode"));
         let claimed = backfill(&meta, 9).expect("claimed");
