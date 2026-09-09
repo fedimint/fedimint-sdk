@@ -9,14 +9,14 @@
       # input, fedimint-wasm below, and rust/fedimint-sdk/Cargo.toml together —
       # the pins-agree job in .github/workflows/rust-sdk-ci.yaml fails the build
       # when they drift.
-      url = "github:fedimint/fedimint?rev=84fd7e635d959c9855a81a55f247bdfacdad8826";
+      url = "github:fedimint/fedimint?rev=1ab15e4b89aaa35727ca16e401d0cbc7d066de58";
     };
     fedimint-wasm = {
       # The wasm client is built from this revision; keep it in sync with the
       # devimint input above and with rust/fedimint-sdk/Cargo.toml, so that
       # every client in this repo and the federation they are tested against
       # come from the same commit.
-      url = "github:fedimint/fedimint?rev=84fd7e635d959c9855a81a55f247bdfacdad8826";
+      url = "github:fedimint/fedimint?rev=1ab15e4b89aaa35727ca16e401d0cbc7d066de58";
     };
     nixpkgs-playwright = {
       # Playwright browsers have to match the `playwright` version pnpm-lock.yaml

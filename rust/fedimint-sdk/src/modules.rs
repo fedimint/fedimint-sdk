@@ -41,17 +41,8 @@ pub(crate) fn module_inits() -> ClientModuleInitRegistry {
 ///
 /// The client defaults are taken with the environment's overrides applied, which is what lets a
 /// test federation redirect a guardian's advertised URL without the SDK growing a knob for it.
-pub(crate) async fn connectors() -> Result<ConnectorRegistry> {
-    ConnectorRegistry::build_from_client_env()
-        .map_err(|err| {
-            Error::new(
-                ErrorCode::Internal,
-                format!("unusable transport settings: {err}"),
-            )
-        })?
-        .bind()
-        .await
-        .map_err(|err| Error::new(ErrorCode::Internal, format!("no usable transport: {err}")))
+pub(crate) async fn connectors() -> ConnectorRegistry {
+    ConnectorRegistry::build_from_client_env().bind().await
 }
 
 /// The generation a module kind declares, or `None` for a kind that declares none.
