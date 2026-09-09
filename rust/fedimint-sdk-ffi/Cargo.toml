@@ -1,0 +1,30 @@
+[package]
+name = "fedimint-sdk-ffi"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "MIT"
+authors = ["The Fedimint Developers"]
+description = "UniFFI bindings for fedimint-sdk: the language-binding layer for Swift, Kotlin, and other targets"
+repository = "https://github.com/fedimint/fedimint-sdk"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+name = "fedimint_sdk_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+fedimint-sdk = { path = "../fedimint-sdk" }
+thiserror = "2.0.12"
+tokio = { version = "1.48.0", features = ["rt-multi-thread"] }
+uniffi = { version = "0.29", features = ["cli"] }
+
+[profile.release]
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
