@@ -34,12 +34,31 @@ use crate::{Error, ErrorCode};
 /// what logging, crash reporters and `assert!` failures reach for, and any
 /// struct holding an `InviteCode` would otherwise print it merely by being
 /// logged.
+// Crosses a UniFFI boundary as an opaque object, not a bare `String`: an invite
+// code is a bearer credential (it can embed an `api_secret`), which is why its
+// `Debug` is redacted. As an object a binding parses it once into a handle, gets
+// [`federation_id`](InviteCode::federation_id) without a network round trip, and
+// renders it deliberately through `display()` rather than being handed a string
+// it can log by accident. Behind the `uniffi` feature.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct InviteCode {
     code: invite_code::InviteCode,
 }
 
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl InviteCode {
+    /// Parses and validates an invite code from its canonical string form.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value.
+    /// The rejected string is never echoed back: it may carry an `api_secret`.
+    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    pub fn parse(code: String) -> crate::Result<InviteCode> {
+        code.parse()
+    }
+
     /// The id of the federation this code invites to.
     ///
     /// Read from the code itself, which encodes it: no network round trip,
@@ -64,6 +83,17 @@ impl InviteCode {
         FederationId::from_upstream(self.code.federation_id())
     }
 
+    /// The invite code in its canonical `fed1…` bech32m string, for showing the
+    /// user, putting in a QR code, or sharing so someone else can join.
+    ///
+    /// This is the deliberate way to render the value; see the type-level
+    /// documentation for why [`Debug`] is not.
+    pub fn display(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl InviteCode {
     /// Wraps an already-parsed invite code.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not
@@ -121,16 +151,6 @@ impl core::str::FromStr for InviteCode {
         Ok(Self { code })
     }
 }
-
-// Crosses a UniFFI boundary as its canonical string — the form `Display` /
-// `FromStr` already use — so `Sdk::preview` / `Sdk::join` take it as a plain
-// `String` and the validating parse stays here. `Display` is fine to lower
-// through: the redaction is a `Debug`-only concern. Behind the `uniffi` feature.
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(InviteCode, String, {
-    lower: |code| code.to_string(),
-    try_lift: |s| s.parse::<InviteCode>().map_err(Into::into),
-});
 
 /// Everything needed to render a "join this federation?" screen before
 /// committing to anything.
