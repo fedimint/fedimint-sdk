@@ -32,7 +32,7 @@ use fedimint_core::util::{BoxFuture, BoxStream};
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
 use crate::{
-    EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
+    Amount, EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
     OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
 };
 

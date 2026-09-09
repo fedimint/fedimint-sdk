@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use fedimint_core::task::{BoxFuture, BoxStream};
+use fedimint_core::util::{BoxFuture, BoxStream};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -98,7 +98,15 @@ impl Ecash {
                 )
             })?;
 
-        let fee_consensus = mint.cfg().fee_consensus;
+        let module_cfg = client
+            .config()
+            .await
+            .get_module_cfg(mint.id)
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        let mint_cfg: &fedimint_mint_client::MintClientConfig = module_cfg
+            .cast()
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        let fee_consensus = mint_cfg.fee_consensus.clone();
         let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
         let rounded_upstream = fee_consensus.round_up(upstream_amount);
         let notes_value = Amount::from_msats(rounded_upstream.msats);
@@ -339,7 +347,7 @@ impl Ecash {
             ));
         }
 
-        let expected_prefix = self.inner.federation.id().to_prefix();
+        let expected_prefix = self.inner.federation.id.to_prefix().to_string();
         if notes.federation_id_prefix() != expected_prefix {
             return Err(Error::new(
                 ErrorCode::InvalidInput,

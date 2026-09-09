@@ -140,22 +140,7 @@ impl Federation {
     /// doing and not a storage fault, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self) -> Result<Amount> {
-        // Reading a balance is not fund-touching: a recovery-locked federation's number is
-        // partial and worth showing as progress, and it is the spends that are refused.
-        let client = self.inner.client(false).await?;
-        let balance = client
-            .get_balance_for_unit(AmountUnit::BITCOIN)
-            .await
-            .map_err(|err| {
-                // The one way this fails in practice is a client with no primary module, which
-                // happens when API-version negotiation left every module out. That is not the
-                // caller's doing and not a storage fault.
-                crate::Error::new(
-                    crate::ErrorCode::Internal,
-                    format!("this federation cannot report a balance: {err}"),
-                )
-            })?;
-        Ok(Amount::from_msats(balance.msats))
+        self.inner.balance().await
     }
 
     /// Opens a new, independent subscription to the balance.
@@ -502,6 +487,21 @@ impl FederationInner {
             ));
         }
         Ok(ClientGuard(guard))
+    }
+
+    /// The ecash balance: the value this instance currently holds as its balance with this federation.
+    pub(crate) async fn balance(&self) -> Result<Amount> {
+        let client = self.client(false).await?;
+        let balance = client
+            .get_balance_for_unit(AmountUnit::BITCOIN)
+            .await
+            .map_err(|err| {
+                crate::Error::new(
+                    crate::ErrorCode::Internal,
+                    format!("this federation cannot report a balance: {err}"),
+                )
+            })?;
+        Ok(Amount::from_msats(balance.msats))
     }
 
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
