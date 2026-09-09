@@ -1300,10 +1300,11 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
             };
 
             if record.module == "mintv2" {
-                let mintv2 = client
-                    .get_first_module_arc::<fedimint_mintv2_client::MintClientModule>()
+                let _ = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
                     .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
+                let client_arc = client.handle();
                 let is_active = client.has_active_states(id).await;
                 let initial = if is_active {
                     Some(Ok(EcashReceiveState::Issuing))
@@ -1311,6 +1312,11 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     None
                 };
                 let final_stream = futures::stream::once(async move {
+                    let mintv2 = client_arc
+                        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                        .map_err(|_| {
+                            Error::new(ErrorCode::NotSupported, "mintv2 module not found")
+                        })?;
                     let res = mintv2.await_final_receive_operation_state(id).await;
                     match res {
                         Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {

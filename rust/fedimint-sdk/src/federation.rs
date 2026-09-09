@@ -1081,6 +1081,15 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
 /// Holding it keeps a close, an erase or a shutdown waiting until the call is done.
 pub(crate) struct ClientGuard<'a>(tokio::sync::RwLockReadGuard<'a, Option<ClientHandleArc>>);
 
+impl<'a> ClientGuard<'a> {
+    pub(crate) fn handle(&self) -> ClientHandleArc {
+        self.0
+            .as_ref()
+            .expect("a client guard is only built while the client is live")
+            .clone()
+    }
+}
+
 impl core::ops::Deref for ClientGuard<'_> {
     type Target = Client;
 
