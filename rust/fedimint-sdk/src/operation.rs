@@ -1446,19 +1446,15 @@ pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
 ///
 /// Reconstructed, not observed: this runs from the module's own persisted log entry
 /// alone, with no live federation connection and no fee-consensus lookup available to
-/// it (see [`Backfiller::backfill`]'s signature), so two things it cannot know are
-/// filled in with an honest placeholder rather than a guess:
+/// it (see [`Backfiller::backfill`]'s signature). When the creating facade persisted
+/// terms into `extra_meta` / `custom_meta`, those terms (`requested_amount`, `fee`,
+/// `net_credit`, timestamps) are restored; otherwise, unrecorded terms fall back to
+/// honest placeholders (e.g. zero fee, epoch-zero timestamps).
 ///
-/// - `fee` is always recorded as zero. The log entry does not retain what the
-///   federation actually charged, and this backfiller has no way to ask it again.
-/// - `reclaim_at`/`created_at` (send) and `created_at` (receive) are recorded as
-///   epoch zero. The upstream log entry this reads does not carry the original
-///   wall-clock time either.
-///
-/// Both are a known gap in a record built this way, not a lie asserted with
-/// confidence: a caller displaying a backfilled record should not treat these two
-/// as trustworthy the way it can the same fields on a record [`Ecash::send`] or
-/// [`Ecash::receive`] created directly.
+/// Both placeholders are a known gap in an unannotated record built this way, not a lie
+/// asserted with confidence: a caller displaying an unannotated backfilled record should
+/// not treat these two as trustworthy the way it can the same fields on a record
+/// [`Ecash::send`] or [`Ecash::receive`] created directly.
 ///
 /// [`Ecash::send`]: crate::ecash::Ecash::send
 /// [`Ecash::receive`]: crate::ecash::Ecash::receive
@@ -1471,8 +1467,21 @@ impl Backfiller for EcashBackfiller {
                 serde_json::from_value(meta.clone()).ok()?;
             return match op_meta {
                 fedimint_mintv2_client::MintOperationMeta::Send { ecash, custom_meta } => {
-                    let notes = ecash.parse::<crate::Notes>().ok()?;
-                    let notes_val = notes.value().msats();
+                    let decoded_ecash = fedimint_core::base32::decode_prefixed::<
+                        fedimint_mintv2_client::ECash,
+                    >(
+                        fedimint_core::base32::FEDIMINT_PREFIX, &ecash
+                    )
+                    .ok();
+                    let notes = ecash.parse::<crate::Notes>().ok().or_else(|| {
+                        decoded_ecash
+                            .as_ref()
+                            .map(|e| crate::Notes::from_mintv2(e.clone(), ecash.clone()))
+                    })?;
+                    let notes_val = decoded_ecash
+                        .as_ref()
+                        .map(|e| e.amount().msats)
+                        .unwrap_or_else(|| notes.value().msats());
                     let (req_amount, fee_msats, total_msats, reclaim_at, created_at) =
                         if let Some(meta_obj) = custom_meta.as_object() {
                             let req = meta_obj
@@ -1515,15 +1524,21 @@ impl Backfiller for EcashBackfiller {
                 fedimint_mintv2_client::MintOperationMeta::Receive {
                     ecash, custom_meta, ..
                 } => {
-                    let parsed_notes = ecash.parse::<crate::Notes>().ok();
-                    let decoded_amount = fedimint_core::base32::decode_prefixed::<
+                    let decoded_ecash = fedimint_core::base32::decode_prefixed::<
                         fedimint_mintv2_client::ECash,
                     >(
                         fedimint_core::base32::FEDIMINT_PREFIX, &ecash
                     )
-                    .map(|e| e.amount().msats)
-                    .ok()
-                    .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
+                    .ok();
+                    let parsed_notes = ecash.parse::<crate::Notes>().ok().or_else(|| {
+                        decoded_ecash
+                            .as_ref()
+                            .map(|e| crate::Notes::from_mintv2(e.clone(), ecash.clone()))
+                    });
+                    let decoded_amount = decoded_ecash
+                        .as_ref()
+                        .map(|e| e.amount().msats)
+                        .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
                     let (notes_val, fee_msats, net_credit, created_at) =
                         if let Some(meta_obj) = custom_meta.as_object() {
                             let notes_val = meta_obj

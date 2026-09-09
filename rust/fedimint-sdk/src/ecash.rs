@@ -418,8 +418,14 @@ impl Ecash {
         // submit, rather than one flat fee on the notes' combined value: a token
         // made of several notes pays more than a single note carrying the same
         // total, and only the per-note sum reflects that.
+        let v1_notes = notes.as_upstream().ok_or_else(|| {
+            Error::new(
+                ErrorCode::NotSupported,
+                "mintv2 notes cannot be redeemed through v1 mint",
+            )
+        })?;
         let fee_quote = mint
-            .reissue_fee_quote(notes.as_upstream())
+            .reissue_fee_quote(v1_notes)
             .await
             .map_err(map_reissue_error)?;
         let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
@@ -437,8 +443,9 @@ impl Ecash {
             "created_at_epoch_ms": created_at.epoch_millis(),
         });
 
+        let to_reissue = notes.to_upstream().expect("already checked");
         let operation_id = mint
-            .reissue_external_notes(notes.to_upstream(), extra_meta)
+            .reissue_external_notes(to_reissue, extra_meta)
             .await
             .map_err(map_reissue_error)?;
         let details = EcashReceiveDetails {
