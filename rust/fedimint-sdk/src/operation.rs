@@ -2731,9 +2731,12 @@ mod tests {
         assert_eq!(wire_send.total_debited_msats, 1_050);
 
         // mintv2 Receive
+        let txid: fedimint_core::TransactionId =
+            "0000000000000000000000000000000000000000000000000000000000000000"
+                .parse()
+                .expect("valid txid");
         let outpoint_range =
-            fedimint_core::OutPointRange::new_single(fedimint_core::TransactionId::all_zeros(), 0)
-                .expect("valid range");
+            fedimint_core::OutPointRange::new_single(txid, 0).expect("valid range");
         let mintv2_receive = fedimint_mintv2_client::MintOperationMeta::Receive {
             change_outpoint_range: outpoint_range,
             ecash: "dummy_receive_notes".to_string(),

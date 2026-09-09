@@ -112,12 +112,7 @@ impl Ecash {
             .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
         let fee_consensus = mint_cfg.fee_consensus.clone();
         let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
-        let multiple = fee_consensus
-            .base
-            .msats
-            .checked_mul(4)
-            .and_then(|m| m.checked_next_power_of_two())
-            .unwrap_or(0);
+        let multiple = fee_consensus.min_economical_denomination().msats;
         if multiple == 0 {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
