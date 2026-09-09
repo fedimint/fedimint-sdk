@@ -1236,7 +1236,7 @@ fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
     }
 }
 
-pub(crate) fn map_spend_error(err: anyhow::Error) -> Error {
+pub(crate) fn map_spend_error(err: impl std::fmt::Display) -> Error {
     let msg = err.to_string();
     let lower = msg.to_lowercase();
     if lower.contains("could not select notes with exact amount")
@@ -1258,7 +1258,7 @@ pub(crate) fn map_spend_error(err: anyhow::Error) -> Error {
     }
 }
 
-pub(crate) fn map_reissue_error(err: anyhow::Error) -> Error {
+pub(crate) fn map_reissue_error(err: impl std::fmt::Display) -> Error {
     let msg = err.to_string();
     let lower = msg.to_lowercase();
     if lower.contains("federation id does not match") || lower.contains("already reissued") {

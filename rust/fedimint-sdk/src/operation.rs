@@ -1480,7 +1480,7 @@ impl Backfiller for EcashBackfiller {
             } => {
                 let notes = crate::Notes::from_upstream(oob_notes);
                 let notes_value = notes.value();
-                let (req_amount, fee, total, reclaim_at, created_at) =
+                let (req_amount, fee_msats, total_msats, reclaim_at, created_at) =
                     if let Some(meta_obj) = op_meta.extra_meta.as_object() {
                         let req = meta_obj
                             .get("requested_amount_msats")
@@ -1489,9 +1489,8 @@ impl Backfiller for EcashBackfiller {
                         let fee = meta_obj
                             .get("fee_msats")
                             .and_then(|v| v.as_u64())
-                            .map(Amount::from_msats)
-                            .unwrap_or(Amount::ZERO);
-                        let total = notes_value + fee;
+                            .unwrap_or(0);
+                        let total = notes_value.msats().saturating_add(fee);
                         let reclaim = meta_obj
                             .get("reclaim_at_epoch_ms")
                             .and_then(|v| v.as_u64())
@@ -1502,14 +1501,14 @@ impl Backfiller for EcashBackfiller {
                             .unwrap_or(0);
                         (req, fee, total, reclaim, created)
                     } else {
-                        (requested_amount.msats, Amount::ZERO, notes_value, 0, 0)
+                        (requested_amount.msats, 0u64, notes_value.msats(), 0, 0)
                     };
                 let wire = crate::ecash::EcashSendDetailsWire {
                     notes: notes.to_string(),
                     requested_amount_msats: req_amount,
                     notes_value_msats: notes_value.msats(),
-                    fee_msats: fee.msats(),
-                    total_debited_msats: total.msats(),
+                    fee_msats,
+                    total_debited_msats: total_msats,
                     reclaim_at_epoch_ms: reclaim_at,
                     created_at_epoch_ms: created_at,
                 };
@@ -1521,25 +1520,24 @@ impl Backfiller for EcashBackfiller {
                 })
             }
             fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
-                let notes_value = Amount::from_msats(op_meta.amount.msats);
-                let (fee, net_credit, created_at) =
+                let notes_value_msats = op_meta.amount.msats;
+                let (fee_msats, net_credit, created_at) =
                     if let Some(meta_obj) = op_meta.extra_meta.as_object() {
                         let fee = meta_obj
                             .get("fee_msats")
                             .and_then(|v| v.as_u64())
-                            .map(Amount::from_msats)
-                            .unwrap_or(Amount::ZERO);
+                            .unwrap_or(0);
                         let net = meta_obj
                             .get("net_credit_msats")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or_else(|| notes_value.msats().saturating_sub(fee.msats()));
+                            .unwrap_or_else(|| notes_value_msats.saturating_sub(fee));
                         let created = meta_obj
                             .get("created_at_epoch_ms")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
                         (fee, net, created)
                     } else {
-                        (Amount::ZERO, notes_value.msats(), 0)
+                        (0u64, notes_value_msats, 0)
                     };
                 let wire = crate::ecash::EcashReceiveDetailsWire {
                     notes: None,
