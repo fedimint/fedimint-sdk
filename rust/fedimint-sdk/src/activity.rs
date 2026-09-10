@@ -2,7 +2,10 @@
 
 use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 
+mod page;
 mod rows;
+
+pub(crate) use page::page;
 
 /// One row of a federation's activity history.
 ///

@@ -286,7 +286,7 @@ impl Federation {
     /// is not one this federation issued, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn activity(&self, cursor: Option<Cursor>, limit: u16) -> Result<ActivityPage> {
-        unimplemented!()
+        crate::activity::page(&self.inner, cursor, limit).await
     }
 
     /// Uploads a fresh encrypted backup to the federation.
