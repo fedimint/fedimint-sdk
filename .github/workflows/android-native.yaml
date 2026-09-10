@@ -53,18 +53,10 @@ on:
   # different concurrency groups, so neither would cancel the other. One PR
   # entry point instead: whatever needs the `.so` asks for it.
 
-# The group name is a literal rather than `${{ github.workflow }}`, which is
-# the one thing that must not be used here: in a *called* workflow that
-# expression resolves to the **caller's** workflow name, so this would land in
-# the same group as kotlin-sdk.yaml's own run and, with cancel-in-progress,
-# cancel the very run that called it.
 concurrency:
   group: android-native-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-# Enough for `actions/checkout`, and no more. This has to be at least what
-# kotlin-sdk.yaml grants when it calls this workflow: a callee asking for more
-# than its caller holds is refused outright.
 permissions:
   contents: read
 
@@ -95,9 +87,6 @@ jobs:
           name: fedimint
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      # Built explicitly, ahead of the ABI-laid-out tree below, so that both
-      # the per-target libraries and their dependency-only builds exist as
-      # named outputs to push.
       - name: 'Build per-target .so + deps'
         run: |
           nix build -L --accept-flake-config \
