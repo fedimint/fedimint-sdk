@@ -25,10 +25,10 @@
       # input moved the browsers to 1.59.1 and the tests could not find them.
       url = "github:NixOS/nixpkgs/76701a179d3a98b07653e2b0409847499b2a07d3";
     };
-    # nixpkgs, fenix, flakebox and android-nixpkgs feed the FFI cross-compile
-    # derivations in nix/ffi.nix (see #androidBundle / #iosBundle). Pinned to
-    # the same revisions the fedimint-sdk-ffi repo's flake.lock used before it
-    # was merged in here, since that combination is known to build.
+    # nixpkgs, fenix, flakebox and android-nixpkgs feed the Android cross-compile
+    # derivations in nix/ffi.nix (`.#fedimint-sdk-android*`). Pinned to the same
+    # revisions the fedimint-sdk-ffi repo's flake.lock used before it was merged
+    # in here, since that combination is known to build.
     nixpkgs = {
       # nixos-25.05
       url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
@@ -89,25 +89,6 @@
           platformVersions = ["36"];
           cmdLineToolsVersion = "13.0";
         };
-        
-        # Xcode wrapper to expose system tools in the impure Nix shell
-        xcode-wrapper = pkgs.stdenv.mkDerivation {
-          name = "xcode-wrapper-impure";
-          # Fails in sandbox. Use `--option sandbox relaxed` or `--option sandbox false`.
-          __noChroot = true;
-          buildCommand = ''
-            mkdir -p $out/bin
-            ln -s /usr/bin/ld $out/bin/ld
-            ln -s /usr/bin/clang $out/bin/clang
-            ln -s /usr/bin/clang++ $out/bin/clang++
-            # ln -s /usr/bin/xcodebuild $out/bin/xcodebuild
-            ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
-            ln -s /usr/bin/xcrun $out/bin/xcrun
-            ln -s /usr/bin/xcode-select $out/bin/xcode-select
-            ln -s /usr/bin/security $out/bin/security
-            ln -s /usr/bin/codesign $out/bin/codesign
-          '';
-        };
 
         fenixPkgs = fenix.packages.${system};
         baseToolchain = fenixPkgs.stable.toolchain;
@@ -117,18 +98,14 @@
           ++ (map (t: fenixPkgs.targets.${t}.stable.rust-std) targets)
         );
 
-        # Only the ABIs we ship (see ubrn.config.yaml's android targets).
+        # The two ABIs the Android SDK ships. The cacheable cross-compile lives
+        # in nix/ffi.nix (its own flakebox toolchain); this one backs the
+        # `.#android` dev shell for Gradle work and manual `cargo ndk` runs.
         androidToolchain = mkToolchain [
           "aarch64-linux-android"
           "x86_64-linux-android"
         ];
-        
-        iosToolchain = mkToolchain [
-          "aarch64-apple-ios"
-          "aarch64-apple-ios-sim"
-          "x86_64-apple-ios"
-        ];
-        
+
         wasmToolchain = mkToolchain [
           "wasm32-unknown-unknown"
         ];
@@ -149,9 +126,9 @@
             pkgs.just
           ];
 
-          # Used by the android/ios shells; referencing playwright-driver here
-          # would pull the browser bundles (>1 GiB) into their closures, so
-          # only the wasm shells (via wasmShellHook) set up Playwright.
+          # Used by the android shell; referencing playwright-driver here would
+          # pull the browser bundles (>1 GiB) into its closure, so only the wasm
+          # shells (via wasmShellHook) set up Playwright.
           commonShellHook = ''
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
@@ -205,94 +182,7 @@
             if [ -f "$TOOLCHAIN/bin/clang" ]; then
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
             fi
-            
-          '';
 
-          iosShellHook = ''
-            export PATH=${xcode-wrapper}/bin:$PATH
-
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                unset SDKROOT
-                unset NIX_CFLAGS_COMPILE
-                unset NIX_LDFLAGS
-
-                # Unset generic compiler variables to avoid Nix wrapper
-                unset CC CXX LD AR NM RANLIB
-                
-                # Force usage of system tools found in PATH (via xcode-wrapper)
-                export AR=/usr/bin/ar
-                export CC=clang
-                export CXX=clang++
-                
-                # Explicitly set compilers for targets to system clang
-                export CC_aarch64_apple_ios=clang
-                export CC_x86_64_apple_ios=clang
-                export CC_aarch64_apple_darwin=clang
-                export CC_x86_64_apple_darwin=clang
-                
-                export CXX_aarch64_apple_ios=clang++
-                export CXX_x86_64_apple_ios=clang++
-                export CXX_aarch64_apple_darwin=clang++
-                export CXX_x86_64_apple_darwin=clang++
-
-                # Bypass Nix's cc-wrapper for host builds — it hardcodes
-                # --sysroot to an incompatible apple-sdk-11 store path that
-                # lacks libSystem.dylib on modern macOS runners, causing
-                # "symbol not found" errors for _writev, _sysconf, etc.
-                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
-                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
-
-                unset CC_aarch64_apple_ios_sim
-                unset CC_x86_64_apple_ios_sim
-                unset LD_aarch64_apple_ios LD_aarch64_apple_darwin LD_aarch64_apple_ios_sim
-                unset LD_x86_64_apple_ios LD_x86_64_apple_ios_sim LD_x86_64_apple_darwin
-                
-                # Unset Nix include paths to prevent interference with system SDK
-                unset CPATH
-                unset C_INCLUDE_PATH
-                unset CPLUS_INCLUDE_PATH
-                unset OBJC_INCLUDE_PATH
-
-                unset CPATH
-                unset C_INCLUDE_PATH
-                unset CPLUS_INCLUDE_PATH
-                unset OBJC_INCLUDE_PATH
-
-                # Remove Nix libiconv from path to rely on system SDK
-                # export LIBRARY_PATH=${pkgs.libiconv}/lib:$LIBRARY_PATH
-                
-                # Force usage of system Xcode
-                export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-                
-                # Do NOT set SDKROOT globally; let xcrun/rustc find the correct one (iphoneos vs iphonesimulator)
-                unset SDKROOT
-                
-                export SNAPPY_STATIC=1
-
-                # Set deployment targets
-                export MACOSX_DEPLOYMENT_TARGET="15.0"
-                export IPHONEOS_DEPLOYMENT_TARGET="15.0"
-
-                # Force bindgen to use Xcode clang instead of any Homebrew/system LLVM
-                # This prevents aws-lc-sys build failures when Homebrew LLVM is installed
-                export CLANG_PATH=$(xcrun --find clang 2>/dev/null || which clang)
-
-                # Set BINDGEN_EXTRA_CLANG_ARGS for iOS cross-compilation targets
-                IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
-                SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)
-                if [ -n "$IOS_SDKROOT" ]; then
-                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
-                fi
-                if [ -n "$SIM_SDKROOT" ]; then
-                  # x86_64 and aarch64-sim need the simulator SDK (iPhoneOS SDK is ARM-only)
-                  export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
-                  # aws-lc-sys bundles an older bindgen that passes "aarch64-apple-ios-sim" to clang,
-                  # but clang expects "aarch64-apple-ios-simulator". Override the target explicitly.
-                  # See: https://github.com/rust-lang/rust-bindgen/pull/3182
-                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--sysroot=$SIM_SDKROOT --target=arm64-apple-ios-simulator"
-                fi
-
-            fi
           '';
         in {
           default = pkgs.mkShell {
@@ -319,20 +209,6 @@
             shellHook = commonShellHook + androidShellHook;
           };
 
-          ios = pkgs.mkShellNoCC {
-            # Set as derivation env var so it can't be overridden by user shell profiles
-            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-            nativeBuildInputs = commonNativeBuildInputs ++ [
-               pkgs.cmake
-               pkgs.go
-               pkgs.libclang # Needed for bindgen (aws-lc-sys etc.)
-               iosToolchain
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-               xcode-wrapper
-            ];
-            shellHook = commonShellHook + iosShellHook;
-          };
-
           wasm-tests = pkgs.mkShell {
              nativeBuildInputs = wasmNativeBuildInputs ++ [
                fedimint.packages.${system}.devimint
@@ -345,11 +221,11 @@
           };
         };
         packages =
-          # Cross-compiled builds of the in-tree fedimint-client-uniffi crate:
-          # per-target `android-<triple>` / `ios-<triple>` packages plus the
-          # androidBundle / iosBundle aggregates. Build scripts `nix build`
-          # these and place the artifacts into the cargo target directory for
-          # consumption by `ubrn build --no-cargo`.
+          # Cacheable cross-compiled builds of `rust/fedimint-sdk`'s `uniffi`
+          # feature for Android, plus the Kotlin bindings generated from them:
+          # `fedimint-sdk-android` (jniLibs + Kotlin), `fedimint-sdk-android-jni`
+          # (jniLibs only — the React-Native-reusable half), and per-target
+          # `.so` / `-deps` derivations. See nix/ffi.nix.
           import ./nix/ffi.nix {
             inherit
               system
