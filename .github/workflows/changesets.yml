@@ -16,51 +16,14 @@ jobs:
     uses: ./.github/workflows/verify.yml
     secrets: inherit
 
-  build-rn-android:
-    name: Build Android Bindings
-    needs: verify
-    runs-on: [self-hosted, linux, x64]
-    outputs:
-      sha256: ${{ steps.build.outputs.sha256 }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - id: build
-        uses: ./.github/actions/build-rn-android
-        timeout-minutes: 90
-
-  build-rn-ios:
-    name: Build iOS Bindings
-    needs: verify
-    runs-on: macos-latest
-    outputs:
-      sha256: ${{ steps.build.outputs.sha256 }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - id: build
-        uses: ./.github/actions/build-rn-ios
-        timeout-minutes: 120
-
   changesets:
     name: Publish Changesets
-    needs: [build-rn-android, build-rn-ios]
+    needs: verify
     permissions:
       contents: write
       id-token: write
       pull-requests: write
     runs-on: macos-latest
-    env:
-      ANDROID_SHA256: ${{ needs.build-rn-android.outputs.sha256 }}
-      IOS_SHA256: ${{ needs.build-rn-ios.outputs.sha256 }}
 
     steps:
       - name: Checkout Repo
@@ -73,18 +36,6 @@ jobs:
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Download Android Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: generated-bindings-android
-          path: js/react-native/react-native-bindings/
-
-      - name: Download iOS Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: generated-bindings-ios
-          path: js/react-native/react-native-bindings/
-
       - name: Build WASM
         uses: ./.github/actions/build-wasm
         with:
@@ -96,12 +47,6 @@ jobs:
             pnpm --dir js install
             pnpm --dir js build
           EOF
-
-      - name: Re-apply React Native Checksums
-        run: |
-          cd js/react-native/react-native-bindings
-          node -e "const pkg = require('./package.json'); pkg.checksums={android:'${{ env.ANDROID_SHA256 }}',ios:'${{ env.IOS_SHA256 }}'}; require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n')"
-          cd ../../..
 
       # changesets/action@v2 no longer writes ~/.npmrc from NPM_TOKEN, so the
       # publish script below authenticates through this shared user config.
@@ -129,23 +74,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Get React Native Bindings Version
-        if: steps.changesets.outputs.published == 'true'
-        id: rn_version
-        run: echo "version=$(node -p 'require("./js/react-native/react-native-bindings/package.json").version')" >> $GITHUB_OUTPUT
-
-      - name: Upload Artifacts to Release (Stable)
-        if: steps.changesets.outputs.published == 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            js/react-native/react-native-bindings/android-artifacts.zip
-            js/react-native/react-native-bindings/ios-artifacts.zip
-          tag_name: react-native-v${{ steps.rn_version.outputs.version }}
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Publish prerelease
         # Only publish a prerelease if we didn't publish a release
         if: steps.changesets.outputs.published != 'true'
@@ -161,25 +89,6 @@ jobs:
             git reset --hard origin/main
             pnpm --dir js clean
             pnpm --dir js changeset version --no-git-tag --snapshot canary
-
-            # Re-apply checksums (action exported them to env)
-            cd js/react-native/react-native-bindings
-            node -e "const pkg = require(\"./package.json\"); pkg.checksums={android:\"$ANDROID_SHA256\",ios:\"$IOS_SHA256\"}; require(\"fs\").writeFileSync(\"package.json\",JSON.stringify(pkg,null,2)+\"\\n\")"
-            patch -p0 --forward < patches/snapshot_version.patch || true
-            cd ../../..
-
             pnpm --dir js build
-            pnpm --dir js build:reactnative
             pnpm --dir js changeset publish --no-git-tag --snapshot canary --tag canary
           '
-
-      - name: Upload Artifacts to Release (Canary)
-        if: steps.changesets.outputs.published != 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            js/react-native/react-native-bindings/android-artifacts.zip
-            js/react-native/react-native-bindings/ios-artifacts.zip
-          tag_name: canary
-          name: Canary Release
-          prerelease: true
