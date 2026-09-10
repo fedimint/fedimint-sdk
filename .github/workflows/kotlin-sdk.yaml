@@ -1,0 +1,115 @@
+name: Kotlin SDK
+
+# Generates the Kotlin bindings from the shared Android native library, then
+# proves the whole chain builds: the AAR, and the demo app compiled against
+# the freshly generated bindings.
+#
+# The native `.so` is not built here. `android-native.yaml` builds it once and
+# this workflow calls that, then runs `uniffi-bindgen` against the artifact it
+# produced. Generating from the built binary rather than from the crate source
+# is what makes the Kotlin and the library it loads impossible to get out of
+# step — and it leaves the expensive cross-compile as one job that any other
+# binding generator can call the same way.
+#
+# No publishing yet. This only proves the chain builds; libs.versions.toml's
+# `fedimintSdk` names the version for whenever it is.
+
+on:
+  workflow_dispatch:
+  # The single PR entry point for the Android chain. android-native.yaml has no
+  # PR trigger of its own precisely so that this list is the whole story: one
+  # run, one cross-compile, whatever the PR touched. That is why the Nix and
+  # flake paths are here — a change to the derivations is validated by building
+  # what they produce and then generating against it, which is a stronger check
+  # than building the `.so` alone.
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'rust/fedimint-sdk/**'
+      - 'rust/uniffi-bindgen/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'scripts/nix-build-android-so.sh'
+      - 'scripts/generate-kotlin-bindings.sh'
+      - '.github/workflows/kotlin-sdk.yaml'
+      - '.github/workflows/android-native.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# `contents: read` rather than `{}`: this workflow calls another one, and a
+# called workflow can never hold more permissions than its caller grants. With
+# no permissions at all the call is refused before the callee's jobs are ever
+# created — which shows up as this workflow's own job being skipped, with no
+# log to read anywhere.
+permissions:
+  contents: read
+
+jobs:
+  # The shared half. Builds nothing Kotlin-specific and uploads the `.so`
+  # tree as the `jniLibs` artifact for the job below.
+  native:
+    name: 'Native library'
+    uses: ./.github/workflows/android-native.yaml
+    secrets: inherit
+
+  kotlin:
+    name: 'Generate the bindings, assemble the AAR + demo'
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # jniLibs is a build output and gitignored, so it has to be put back
+      # before either uniffi-bindgen or Gradle can see it.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.native.outputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      # `rust/uniffi-bindgen`'s only dependency is `uniffi` itself, so this is a
+      # small host build — no NDK, no cross-compile, no Nix. Everything heavy
+      # was done by the `native` job.
+      - name: 'Set up Rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: 'Generate the Kotlin bindings'
+        run: ./scripts/generate-kotlin-bindings.sh
+
+      - name: 'Upload Kotlin bindings'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-bindings
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+          if-no-files-found: error
+
+      - name: 'Set up JDK'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 'Set up Gradle'
+        uses: gradle/actions/setup-gradle@v4
+
+      # The demo app is the reason `:app:assembleDebug` is here: compiling it
+      # is what proves the generated bindings are usable from ordinary Kotlin,
+      # not merely that they parse.
+      - name: 'Assemble the library + compile the demo'
+        working-directory: android
+        run: ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
+
+      - name: 'Upload AAR'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedimint-android-aar
+          path: android/fedimint-sdk/build/outputs/aar/*.aar
+          if-no-files-found: error

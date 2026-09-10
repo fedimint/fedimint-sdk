@@ -1,18 +1,12 @@
 name: Rust SDK Continuous Integration
 
-# Continuous integration for the fedimint-sdk crate.
-# Builds, tests, and runs clippy linting, rustfmt, doc, and wasm-target checks
-# on the Rust code.
-# Ensures code formatting follows project standards using rustfmt.
-# Runs on changes to the rust/fedimint-sdk directory on pushes and pull requests.
-#
-# This crate has its own workflow file rather than being matrixed into
-# rust-ci.yaml: GitHub Actions path filters are workflow-level, so folding it
-# in there would build the unrelated fedimint-client-uniffi crate on every
-# sdk-only change (and vice versa), and disambiguating the shared job names
-# would silently unmatch any branch-protection rule pinned to rust-ci.yaml's
-# existing check contexts. A separate file keeps those names stable and lets
-# each crate be path-filtered independently.
+# Continuous integration for the fedimint-sdk crate: build, test, clippy
+# (default + `--features uniffi`), rustfmt, doc, and the wasm-target check,
+# path-filtered to rust/fedimint-sdk. The `--features uniffi` clippy is the
+# cheap Android-surface gate: it compiles the `#[uniffi::export]` blocks and
+# type derives on the host, no cross-compile. The real Android build (2 ABIs)
+# lives in android-native.yaml, and the `uniffi-bindgen` run over its output
+# in kotlin-sdk.yaml.
 
 on:
   push:
@@ -214,6 +208,9 @@ jobs:
 
       - name: 'Check clippy'
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: 'Check clippy (uniffi feature)'
+        run: cargo clippy --locked --lib --features uniffi -- -D warnings
 
       - name: 'Check docs'
         run: cargo doc --no-deps --locked

@@ -77,8 +77,6 @@ app-example
 
 # generated native folders
 /ios
-/android
-
 
 # OSX
 .DS_Store
@@ -174,6 +172,12 @@ js/react-native/react-native-bindings/cpp/generated/
 js/react-native/react-native-bindings/src/generated/
 js/react-native/react-native-bindings/android/cpp-adapter.cpp.rej
 js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
+
+# android/: both are produced by scripts/generate-android-so.sh
+# (run it inside `nix develop .#android`) and must never be committed — a
+# stale checked-in binding is worse than no binding at all.
+android/fedimint-sdk/src/main/jniLibs
+android/fedimint-sdk/src/main/java/org/fedimint/sdk
 
 # js/examples/react-native
 js/examples/react-native/vendor
