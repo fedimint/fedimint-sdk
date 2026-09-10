@@ -13,7 +13,7 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [],
+  "ignore": ["@fedimint/react-native", "@fedimint/react-native-bindings"],
   "privatePackages": { "version": true, "tag": false },
   "snapshot": {
     "prereleaseTemplate": "{tag}-{commit}"
