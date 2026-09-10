@@ -1324,6 +1324,13 @@ where
     /// finished without decoding it.
     fn encode_state(&self, state: &S) -> Result<String>;
 
+    /// The state back from what [`encode_state`](Driver::encode_state) wrote.
+    ///
+    /// Read by a history row to report how a finished operation turned out without asking the
+    /// module again. A value this build cannot read, such as a variant a newer build added, is
+    /// an error here rather than a guess; the row then reports its outcome as unknown.
+    fn decode_state(&self, encoded: &str) -> Result<S>;
+
     /// The details record this kind persisted at creation, decoded from its JSON.
     ///
     /// Type-erased because [`Operation::details`] is one generic body over every kind: the
@@ -1679,6 +1686,19 @@ impl Driver<EcashSendState> for ProbeEcashSendDriver {
         Ok(format!("{state:?}"))
     }
 
+    fn decode_state(&self, encoded: &str) -> Result<EcashSendState> {
+        match encoded {
+            "Created" => Ok(EcashSendState::Created),
+            "CancelRequested" => Ok(EcashSendState::CancelRequested),
+            "Canceled" => Ok(EcashSendState::Canceled),
+            "Redeemed" => Ok(EcashSendState::Redeemed),
+            _ => Err(Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised ecash send state: {encoded}"),
+            )),
+        }
+    }
+
     fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
         Err(Error::new(
             ErrorCode::Internal,
@@ -1931,6 +1951,20 @@ mod tests {
         }
     }
 
+    /// The inverse of every test driver's `encode_state` for [`ProbeState`]: a bare
+    /// `"Running"`/`"Done"` or a JSON-quoted `"\"Running\""`/`"\"Done\""`, matching whichever
+    /// form the calling driver wrote. Anything else is a state this fixture did not write.
+    fn decode_probe_state(encoded: &str) -> Result<ProbeState> {
+        match encoded.trim_matches('"') {
+            "Running" => Ok(ProbeState::Running),
+            "Done" => Ok(ProbeState::Done),
+            _ => Err(Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised probe state: {encoded}"),
+            )),
+        }
+    }
+
     impl sealed::Sealed for ProbeDetails {}
 
     impl OperationDetails for ProbeDetails {}
@@ -2063,6 +2097,10 @@ mod tests {
             })
         }
 
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
+        }
+
         fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
             let wire: ProbeDetailsWire = serde_json::from_str(json).map_err(|err| {
                 Error::new(
@@ -2103,6 +2141,15 @@ mod tests {
     fn probe_state_finality_is_unaffected_by_having_details() {
         assert!(!ProbeState::Running.is_final());
         assert!(ProbeState::Done.is_final());
+    }
+
+    #[test]
+    fn a_probe_driver_refuses_a_state_it_did_not_write() {
+        let driver = ScriptedDriver::new(vec![]);
+        let err = driver
+            .decode_state("\"Elsewhere\"")
+            .expect_err("no variant is named Elsewhere");
+        assert_eq!(err.code, ErrorCode::Internal);
     }
 
     #[test]
@@ -2853,6 +2900,10 @@ mod tests {
             Ok(format!("{state:?}"))
         }
 
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
+        }
+
         fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
             Err(Error::new(
                 ErrorCode::Internal,
@@ -3151,6 +3202,10 @@ mod tests {
             Ok(format!("{state:?}"))
         }
 
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
+        }
+
         fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
             Err(Error::new(ErrorCode::Internal, "no details"))
         }
@@ -3226,6 +3281,10 @@ mod tests {
 
         fn encode_state(&self, state: &ProbeState) -> Result<String> {
             Ok(format!("{state:?}"))
+        }
+
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
         }
 
         fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {

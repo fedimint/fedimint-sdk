@@ -1155,6 +1155,15 @@ impl Driver<EcashSendState> for EcashSendDriver {
         Ok(format!("{state:?}"))
     }
 
+    fn decode_state(&self, encoded: &str) -> Result<EcashSendState> {
+        parse_send_state(encoded).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised ecash send state: {encoded}"),
+            )
+        })
+    }
+
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
         let wire: EcashSendDetailsWire = serde_json::from_str(json).map_err(|err| {
             Error::new(
@@ -1361,6 +1370,15 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
             EcashReceiveState::Issuing => "Issuing".to_string(),
             EcashReceiveState::Done => "Done".to_string(),
             EcashReceiveState::Failed { reason } => format!("Failed:{reason}"),
+        })
+    }
+
+    fn decode_state(&self, encoded: &str) -> Result<EcashReceiveState> {
+        parse_receive_state(encoded).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised ecash receive state: {encoded}"),
+            )
         })
     }
 
@@ -1763,5 +1781,47 @@ mod tests {
         };
         let error = EcashReceiveDetails::try_from(wire).expect_err("malformed notes are rejected");
         assert_eq!(error.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn send_driver_decodes_what_it_encodes() {
+        let driver = EcashSendDriver;
+        for state in [
+            EcashSendState::Created,
+            EcashSendState::CancelRequested,
+            EcashSendState::Canceled,
+            EcashSendState::Redeemed,
+        ] {
+            let encoded = driver.encode_state(&state).expect("encodes");
+            let decoded = driver.decode_state(&encoded).expect("decodes");
+            assert_eq!(decoded, state);
+        }
+
+        let err = driver
+            .decode_state("UnknownState")
+            .expect_err("unknown state rejected");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn receive_driver_decodes_what_it_encodes() {
+        let driver = EcashReceiveDriver;
+        for state in [
+            EcashReceiveState::Created,
+            EcashReceiveState::Issuing,
+            EcashReceiveState::Done,
+            EcashReceiveState::Failed {
+                reason: "signature failed".to_string(),
+            },
+        ] {
+            let encoded = driver.encode_state(&state).expect("encodes");
+            let decoded = driver.decode_state(&encoded).expect("decodes");
+            assert_eq!(decoded, state);
+        }
+
+        let err = driver
+            .decode_state("UnknownState")
+            .expect_err("unknown state rejected");
+        assert_eq!(err.code, ErrorCode::Internal);
     }
 }
