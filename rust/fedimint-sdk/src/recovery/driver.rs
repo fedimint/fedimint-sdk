@@ -38,9 +38,17 @@ impl Driver<RecoveryState> for RecoveryDriver {
         record: &'a OperationRecord,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<RecoveryState>>>> {
         Box::pin(async move {
-            let current = current_state(record)?;
+            // Subscribed to the watch before the record is read, and the record read fresh
+            // rather than taken from the caller: a receiver only ever wakes for bumps made after
+            // it was created, so an ending recorded and bumped between the caller's read of
+            // `record` and this subscription would otherwise never be seen, and the stream
+            // would wait for a second bump that never comes.
             let changed = federation.recovery_changed();
             let db = federation.db();
+            let current = match reload_final_state(&db, id).await? {
+                Some(state) => state,
+                None => current_state(record)?,
+            };
             // Every other driver's `subscribe` replays an upstream state machine and has to
             // reason about whether resubscribing after a lagged notifier could skip a
             // transition it already produced. This one cannot lose anything that way, because
@@ -259,6 +267,43 @@ mod tests {
         assert_eq!(
             stream.next().await.expect("second item").expect("ok"),
             ending
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ending_recorded_between_the_read_and_the_subscription_is_not_missed() {
+        let federation = detached_federation();
+        let id = OperationId([9u8; 32]);
+        federation
+            .record_recovery_attempt(id)
+            .await
+            .expect("record the attempt");
+        // The caller's snapshot says the attempt is running.
+        let stale = record_of(&federation, id).await;
+
+        // The ending lands, and is bumped, before the subscription exists.
+        let inner = Arc::new(OperationInner {
+            federation: federation.clone(),
+            id,
+            record: stale.clone(),
+        });
+        let encoded = RecoveryDriver
+            .encode_state(&RecoveryState::Done)
+            .expect("encode");
+        inner
+            .record_final_state(encoded)
+            .await
+            .expect("record final state");
+        federation.bump_recovery();
+
+        let mut stream = RecoveryDriver
+            .subscribe(&federation, id, &stale)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.expect("first item").expect("ok"),
+            RecoveryState::Done
         );
         assert!(stream.next().await.is_none());
     }
