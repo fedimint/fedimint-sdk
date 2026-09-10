@@ -1,0 +1,122 @@
+name: Android Native Library
+
+# Builds `rust/fedimint-sdk`'s `uniffi` feature for Android and nothing else:
+# the cross-compiled `libfedimint_sdk.so` per ABI, plus the `libc++_shared.so`
+# the NDK ships alongside it. No bindings of any language are generated here.
+#
+# It stands on its own because the native library is the input every binding
+# generator shares. `kotlin-sdk.yaml` calls this workflow and then runs
+# `uniffi-bindgen` against the `.so` it produces, reading the metadata baked
+# into the binary rather than the crate source — so the bindings cannot drift
+# from what the device actually loads. A second generator added later reads
+# the very same artifact, and the expensive half (rocksdb + aws-lc from C) is
+# paid for once.
+#
+# Two things come out of a run:
+#
+#   * the `jniLibs` artifact, for whatever job needs the `.so` next, and
+#   * warm Cachix entries, so nothing downstream compiles from source.
+#
+# The `-deps` derivations are pushed alongside the libraries themselves to
+# cover the common case where a source edit misses the library cache but can
+# still substitute the whole cross-compiled dependency tree.
+
+on:
+  # Callable so a binding workflow can build its own input rather than
+  # depending on a previous run's artifacts having survived.
+  workflow_call:
+    outputs:
+      jni-artifact:
+        description: 'Name of the uploaded jniLibs artifact'
+        value: ${{ jobs.build.outputs.jni-artifact }}
+
+  workflow_dispatch:
+
+  # On `main`, repopulate Cachix after anything that can invalidate the
+  # cross-compile — including the crate itself, so a PR that merges without
+  # having run this still lands warm.
+  push:
+    branches: [main]
+    paths:
+      - 'rust/fedimint-sdk/**'
+      - 'rust/uniffi-bindgen/**'
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'scripts/nix-build-android-so.sh'
+      - '.github/workflows/android-native.yaml'
+
+  # Deliberately no `pull_request` trigger. kotlin-sdk.yaml calls this workflow
+  # and covers the same paths, so a PR trigger here would mean two
+  # cross-compiles of the same commit for any PR that touched both a Nix file
+  # and something under android/ — as two separate workflows they have
+  # different concurrency groups, so neither would cancel the other. One PR
+  # entry point instead: whatever needs the `.so` asks for it.
+
+concurrency:
+  group: android-native-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 'Cross-compile the .so via Nix'
+    # Self-hosted for the persistent /nix/store: a cold cross-compile of
+    # rocksdb and aws-lc is far too slow for a hosted runner.
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 120
+    outputs:
+      jni-artifact: jniLibs
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Install Nix'
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: 'Setup Cachix'
+        uses: cachix/cachix-action@v17
+        with:
+          name: fedimint
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: 'Build per-target .so + deps'
+        run: |
+          nix build -L --accept-flake-config \
+            .#fedimint-sdk-android-aarch64-linux-android \
+            .#fedimint-sdk-android-x86_64-linux-android \
+            .#fedimint-sdk-android-aarch64-linux-android-deps \
+            .#fedimint-sdk-android-x86_64-linux-android-deps
+
+      # The shared artifact: jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so,
+      # laid out the way AGP expects so a consumer needs no extra wiring.
+      - name: 'Assemble the jniLibs tree'
+        run: ./scripts/nix-build-android-so.sh
+
+      - name: 'Upload jniLibs'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jniLibs
+          path: android/fedimint-sdk/src/main/jniLibs/
+          if-no-files-found: error
+
+      - name: 'Push to Cachix'
+        # cachix-action's post-run hook only pushes paths it saw *built*; on a
+        # warm self-hosted store nothing is ever "new", so the entries would
+        # quietly expire. Push the outputs explicitly instead.
+        continue-on-error: true
+        run: |
+          nix build --accept-flake-config --no-link --print-out-paths \
+            .#fedimint-sdk-android-aarch64-linux-android \
+            .#fedimint-sdk-android-x86_64-linux-android \
+            .#fedimint-sdk-android-aarch64-linux-android-deps \
+            .#fedimint-sdk-android-x86_64-linux-android-deps \
+            .#fedimint-sdk-android-jni \
+            | cachix push fedimint

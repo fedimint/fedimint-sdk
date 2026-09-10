@@ -1,9 +1,29 @@
-# Cross-compiled Android (.so) and iOS (.a) builds of the in-tree
-# fedimint-client-uniffi crate, exposed as cacheable Nix derivations.
+# Cross-compiled Android build of `rust/fedimint-sdk`'s `uniffi` feature,
+# exposed as cacheable Nix derivations, plus the host tool that turns one into
+# language bindings.
 #
-# Ported from the fedimint-sdk-ffi repo's flake.nix (rev 6873aa3) when that
-# repo was merged in here; the build logic is unchanged apart from taking its
-# inputs as arguments and reading the crate source from this repo.
+#   .#fedimint-sdk-android-<triple>        the cross-compiled cdylib
+#   .#fedimint-sdk-android-<triple>-deps   crane deps-only build (cache seed)
+#   .#fedimint-sdk-android-jni             jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so
+#   .#fedimint-uniffi-bindgen              host build of rust/uniffi-bindgen
+#
+# Note that nothing depends on `.#fedimint-uniffi-bindgen` today:
+# scripts/generate-kotlin-bindings.sh builds that crate with plain cargo, since
+# its only dependency is `uniffi` and doing so keeps the whole Kotlin half free
+# of Nix. The derivation is also currently broken — crane's vendoring loses
+# `uniffi_bindgen`'s askama.toml, so its templates fail to compile.
+#
+# `-jni` is the native library on its own — no bindings of any language — and
+# it is deliberately the last step Nix takes. Generating bindings is neither
+# expensive nor a cross-compile: it reads the UniFFI metadata out of the built
+# `.so` in seconds. Keeping it outside means the shared, costly half is built
+# and cached exactly once (.github/workflows/android-native.yaml) and each
+# binding generator is a separate, cheap step over that same artifact —
+# scripts/generate-kotlin-bindings.sh being the one that exists today.
+#
+# Ported from the fedimint-sdk-ffi repo's flake.nix (rev 6873aa3); the crane +
+# flakebox cross-compile scaffold is unchanged, retargeted from
+# fedimint-client-uniffi to fedimint-sdk.
 {
   system,
   nixpkgs,
@@ -18,18 +38,11 @@ let
       android_sdk.accept_license = true;
     };
   };
-  # lib from the flake output and isDarwin from the system string, so that
-  # computing the returned attr *names* (which every `nix build .#wasmBundle`
-  # does through the merge in flake.nix) never forces the pkgs import above.
   lib = nixpkgs.lib;
-  isDarwin = lib.hasSuffix "-darwin" system;
 
-  # NOTE: at the pinned flakebox rev, mkStdTargets only uses this argument's
-  # presence to gate the android-* target attrs — the cross-compile env it
-  # generates comes from flakebox's own default Android SDK (NDK 25.2, API
-  # level 24), not from this NDK 27.1 composition. Inherited as-is from the
-  # fedimint-sdk-ffi repo; switching the builds to this SDK is a separate,
-  # build-affecting change.
+  # Used only for `libc++_shared.so` (a target-ABI runtime lib the NDK ships;
+  # the exact NDK revision barely matters for it). The cross-compile itself
+  # runs through flakebox's own bundled Android SDK — see the note below.
   androidSdk = android-nixpkgs.sdk."${system}" (
     sdkPkgs: with sdkPkgs; [
       cmdline-tools-latest
@@ -48,162 +61,86 @@ let
     };
   };
 
-  # `mkStdTargets` provides target descriptors (mkIOSTarget for ios-*,
-  # mkAndroidTarget for android-*, etc.) that wire up the right
-  # CC/AR/LINKER/RUSTFLAGS env vars per cargo target triple.
-  # Each entry is a lambda; calling it with `{}` materialises
-  # `{ args, componentTargets }`.
+  # NOTE: at the pinned flakebox rev, `mkStdTargets` only uses `androidSdk`'s
+  # presence to gate the `android-*` target attrs — the cross-compile env it
+  # generates comes from flakebox's own default Android SDK (NDK 25.2, API 24),
+  # not the NDK 27.1 the `.#android` dev shell / `scripts/build-android-so.sh`
+  # use. The `.so` still runs on API 28+ (forward compatible); the 16 KB
+  # page-align link args in `rust/fedimint-sdk/.cargo/config.toml` are applied
+  # regardless (lld honours them). Aligning this build to NDK 27.1 is a
+  # separate, build-affecting change.
   stdTargets = flakeboxLib.mkStdTargets {
     inherit androidSdk;
   };
 
-  # Fenix toolchain combining all the cross-compile std libraries we
-  # need (host + android + ios on darwin).
   toolchain = flakeboxLib.mkFenixToolchain {
     components = [
       "rustc"
       "cargo"
       "rust-src"
     ];
-    targets = lib.getAttrs (
-      [
-        "default"
-        "aarch64-android"
-        "x86_64-android"
-      ]
-      ++ lib.optionals isDarwin [
-        "aarch64-ios"
-        "aarch64-ios-sim"
-        "x86_64-ios"
-      ]
-    ) stdTargets;
+    targets = lib.getAttrs [
+      "default"
+      "aarch64-android"
+      "x86_64-android"
+    ] stdTargets;
   };
 
   craneLib = toolchain.craneLib;
 
-  # Keep sdallocx_stub.c (compiled by build.rs) alongside the Rust sources
-  # craneLib.filterCargoSources keeps. The uniffi*.toml configs are
-  # deliberately NOT included: these builds only run `cargo build --lib`
-  # (bindgen runs later via ubrn, outside Nix), so including bindgen-only
-  # config would needlessly invalidate every cross-compile on edits to it.
+  # `.cargo/config.toml` carries the Android 16 KB page-align rustflags and
+  # `sdallocx_stub.c` is compiled by `build.rs` on Android — both must be in
+  # the copied source. `uniffi*.toml` are read by the bindgen step from the
+  # crate path directly, not from here.
   src =
     let
-      crateDir = ../rust/fedimint-client-uniffi;
+      crateDir = ../rust/fedimint-sdk;
+      # `.cargo` (the dir) and `config.toml` (the file inside it) so crane does
+      # not prune the subtree before reaching the rustflags; `sdallocx_stub.c`
+      # for `build.rs`.
+      keep = [
+        ".cargo"
+        "config.toml"
+        "sdallocx_stub.c"
+      ];
       filter =
-        path: type: baseNameOf path == "sdallocx_stub.c" || craneLib.filterCargoSources path type;
+        path: type: lib.elem (baseNameOf path) keep || craneLib.filterCargoSources path type;
     in
     lib.cleanSourceWith {
       src = crateDir;
       inherit filter;
-      name = "source";
+      name = "fedimint-sdk-source";
     };
 
-  # Symlink-only derivation that exposes /usr/bin/* and the
-  # Xcode.app dirs to the Nix build sandbox. Same pattern fedi uses
-  # for their `nix develop .#xcode` shell. `__noChroot = true` so
-  # the symlink targets are accessible at build time; this requires
-  # the Nix daemon to allow relaxed sandboxing
-  # (`sandbox = relaxed` in nix.conf or `--option sandbox relaxed`).
-  xcode-wrapper = pkgs.runCommand "xcode-wrapper-impure" { __noChroot = true; } ''
-    mkdir -p $out/bin
-    ln -s /usr/bin/ld $out/bin/ld
-    ln -s /usr/bin/clang $out/bin/clang
-    ln -s /usr/bin/clang++ $out/bin/clang++
-    ln -s /usr/bin/cc $out/bin/cc
-    ln -s /usr/bin/c++ $out/bin/c++
-    ln -s /usr/bin/ar $out/bin/ar
-    ln -s /usr/bin/xcrun $out/bin/xcrun
-    ln -s /usr/bin/xcode-select $out/bin/xcode-select
-    ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
-  '';
-
-  # Build the crate for a single (rustTarget, targetKey) pair, returning
-  # `{ deps, lib }`: the crane dependency-only derivation and the final
-  # library build on top of it. Exposing deps as its own package lets CI
-  # push it to Cachix, so a source edit only recompiles the crate itself
-  # instead of the whole cross-compiled dependency tree.
-  # `targetKey` is the flakebox-stdTargets key (e.g. `aarch64-ios`),
-  # `rustTarget` is the Cargo triple (e.g. `aarch64-apple-ios`).
+  # Build `rust/fedimint-sdk --features uniffi` for one Android target.
+  # Exposes `deps` on its own so CI can push it to Cachix: a source edit then
+  # only recompiles the crate, not the whole cross-compiled dependency tree.
   buildOne =
     {
       targetKey,
       rustTarget,
-      isIos ? false,
     }:
     let
       target = stdTargets.${targetKey} { };
-      commonArgs =
-        target.args
-        // (lib.optionalAttrs isDarwin {
-          # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to
-          # the cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what
-          # makes `cc -liconv` resolve in the host build-script link
-          # step on macOS 14+ (where iconv lives only in the Apple SDK).
-          # iOS cross-compile linker invocations also see this path but
-          # harmlessly skip the wrong-arch Mach-O lib (with a warning)
-          # and resolve via the SDK paths supplied by mkIOSTarget.
-          buildInputs = [ pkgs.libiconv ];
-        })
-        // (lib.optionalAttrs isIos {
-          # iOS cross-compile reads /Applications/Xcode.app and /usr/bin
-          # via the xcode-wrapper symlinks; this requires relaxed
-          # sandboxing.
-          __noChroot = true;
-          IPHONEOS_DEPLOYMENT_TARGET = "15.0";
-          MACOSX_DEPLOYMENT_TARGET = "14.0";
-
-          # nixpkgs' darwin stdenv sets SDKROOT to its bundled
-          # apple-sdk-11 (a macOS SDK) and points DEVELOPER_DIR into
-          # the Nix store. When cc-rs's build script runs
-          # `xcrun --sdk iphoneos --show-sdk-path` to find the
-          # iPhoneOS SDK, those Nix-store paths confuse xcrun and it
-          # exits 255. Reset to the real /Applications/Xcode.app so
-          # xcrun resolves SDKs via xcode-select.
-          #
-          # Mirrors the iosShellHook in flake.nix + fedi's xcode dev shell.
-          preBuild = ''
-            unset SDKROOT
-            unset NIX_CFLAGS_COMPILE
-            unset NIX_LDFLAGS
-            # APPEND (not prepend) /usr/bin so xcrun resolves but
-            # bare `tar` still picks up Nix's GNU tar — crane's deps
-            # archive uses GNU-only `--sort=name` and would fail
-            # against macOS's BSD tar.
-            export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
-            export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-
-            # Nix's cc-wrapper hardcodes --sysroot to a Nix-store
-            # SDK that lacks libSystem on modern macOS runners.
-            # Bypass it for host builds by pointing Cargo's host
-            # linker to the system clang, which resolves libSystem
-            # natively via xcrun.
-            export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
-            export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
-          '';
-        })
-        // {
-          inherit src;
-          pname = "fedimint-client-uniffi-${rustTarget}";
-          version = "0.1.0";
-          cargoExtraArgs = "--locked --target ${rustTarget} --lib";
-          CARGO_BUILD_TARGET = rustTarget;
-          doCheck = false;
-          strictDeps = true;
-          # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go.
-          # python3 is needed by some ring/aws-lc generation scripts.
-          # gnutar overrides macOS's BSD tar so crane's depsArchive
-          # (`tar --sort=name`) works.
-          nativeBuildInputs =
-            (target.args.nativeBuildInputs or [ ])
-            ++ [
-              pkgs.gnutar
-              pkgs.cmake
-              pkgs.pkg-config
-              pkgs.perl
-              pkgs.python3
-              pkgs.go
-            ]
-            ++ lib.optionals isIos [ xcode-wrapper ];
+      commonArgs = target.args // {
+        inherit src;
+        pname = "fedimint-sdk-android-${rustTarget}";
+        version = "0.1.0-alpha.1";
+        cargoExtraArgs = "--locked --target ${rustTarget} --lib --features uniffi";
+        CARGO_BUILD_TARGET = rustTarget;
+        doCheck = false;
+        strictDeps = true;
+        # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go; python3 is
+        # used by some ring / aws-lc generation scripts.
+        nativeBuildInputs =
+          (target.args.nativeBuildInputs or [ ])
+          ++ [
+            pkgs.cmake
+            pkgs.pkg-config
+            pkgs.perl
+            pkgs.python3
+            pkgs.go
+          ];
       };
       deps = craneLib.buildDepsOnly commonArgs;
     in
@@ -212,105 +149,65 @@ let
       lib = craneLib.buildPackage (commonArgs // { cargoArtifacts = deps; });
     };
 
-  ##############
-  # Android
-  ##############
-
-  # Targets we actually ship .so files for (matches ubrn.config.yaml
-  # in js/react-native/react-native-bindings). The toolchain has more wired
-  # up so adding more is one entry per row below.
   androidShipped = [
     {
       targetKey = "aarch64-android";
       rustTarget = "aarch64-linux-android";
       abi = "arm64-v8a";
+      ndkTriple = "aarch64-linux-android";
     }
     {
       targetKey = "x86_64-android";
       rustTarget = "x86_64-linux-android";
       abi = "x86_64";
+      ndkTriple = "x86_64-linux-android";
     }
   ];
 
-  androidPerTargetBuilds = lib.listToAttrs (
+  perTarget = lib.listToAttrs (
     map (
-      t:
-      lib.nameValuePair t.rustTarget (buildOne {
-        inherit (t) targetKey rustTarget;
-      })
+      t: lib.nameValuePair t.rustTarget (buildOne { inherit (t) targetKey rustTarget; })
     ) androidShipped
   );
 
-  androidJniLibs = pkgs.runCommand "fedimint-uniffi-android-jniLibs" { } ''
-    mkdir -p $out/jniLibs
+  # The `.so` payload, ABI-laid-out for AGP's default `src/main/jniLibs`. This
+  # is the artifact every binding generator reads — nothing Kotlin here.
+  #
+  # `libc++_shared.so` is the NDK's shared C++ runtime; rocksdb and aws-lc link
+  # it, and nothing else puts it in an APK, so without it the app dies at load
+  # with `UnsatisfiedLinkError: ... "libc++_shared.so" not found`.
+  androidJni = pkgs.runCommand "fedimint-sdk-android-jni" { } ''
     ${lib.concatMapStringsSep "\n" (t: ''
-      mkdir -p $out/jniLibs/${t.abi}
-      cp ${androidPerTargetBuilds.${t.rustTarget}.lib}/lib/libfedimint_client_uniffi.so \
-         $out/jniLibs/${t.abi}/
+      mkdir -p "$out/jniLibs/${t.abi}"
+      cp ${perTarget.${t.rustTarget}.lib}/lib/libfedimint_sdk.so "$out/jniLibs/${t.abi}/"
+      libcxx=$(find ${androidSdk} -name libc++_shared.so -path '*/${t.ndkTriple}/*' | head -n1)
+      test -n "$libcxx" || { echo "no libc++_shared.so for ${t.ndkTriple} in the NDK" >&2; exit 1; }
+      cp "$libcxx" "$out/jniLibs/${t.abi}/"
+      chmod u+w "$out/jniLibs/${t.abi}"/*.so
     '') androidShipped}
   '';
 
-  ##############
-  # iOS (darwin only)
-  ##############
-
-  iosShipped = [
-    {
-      targetKey = "aarch64-ios";
-      rustTarget = "aarch64-apple-ios";
-    }
-    {
-      targetKey = "aarch64-ios-sim";
-      rustTarget = "aarch64-apple-ios-sim";
-    }
-    {
-      targetKey = "x86_64-ios";
-      rustTarget = "x86_64-apple-ios";
-    }
-  ];
-
-  iosPerTargetBuilds = lib.listToAttrs (
-    map (
-      t:
-      lib.nameValuePair t.rustTarget (buildOne {
-        inherit (t) targetKey rustTarget;
-        isIos = true;
-      })
-    ) iosShipped
-  );
-
-  # Layout matches what `xcodebuild -create-xcframework` consumes:
-  #   ios-arm64/                      device slice (aarch64-apple-ios)
-  #   ios-arm64_x86_64-simulator/    fat sim slice (lipo'd)
-  # The xcframework wrap stays in ubrn so the uniffi-generated
-  # module map and headers can be folded in there.
-  iosBundle =
-    pkgs.runCommand "fedimint-uniffi-ios-libs"
-      {
-        __noChroot = true;
-      }
-      ''
-        export PATH=/usr/bin:$PATH
-        mkdir -p $out/ios-arm64
-        cp ${iosPerTargetBuilds."aarch64-apple-ios".lib}/lib/libfedimint_client_uniffi.a \
-           $out/ios-arm64/
-
-        mkdir -p $out/ios-arm64_x86_64-simulator
-        /usr/bin/lipo -create \
-          ${iosPerTargetBuilds."aarch64-apple-ios-sim".lib}/lib/libfedimint_client_uniffi.a \
-          ${iosPerTargetBuilds."x86_64-apple-ios".lib}/lib/libfedimint_client_uniffi.a \
-          -output $out/ios-arm64_x86_64-simulator/libfedimint_client_uniffi.a
-      '';
+  # Host `uniffi-bindgen` — pinned to the same `uniffi` `rust/fedimint-sdk`
+  # links, so it reads the metadata baked into the `.so` correctly. A version
+  # skew here does not degrade gracefully: the reader walks the metadata with
+  # the wrong layout and fails partway through a record, so this pin is what
+  # keeps codegen honest rather than merely tidy. Built with
+  # crane (no `CARGO_BUILD_TARGET` -> host), which vendors with `cargo` and so
+  # handles the `+spec` build-metadata crate versions in its lockfile that
+  # nixpkgs' `importCargoLock` on the pinned rev does not. Its only real
+  # dependency is `uniffi`, so this is quick.
+  uniffiBindgen = craneLib.buildPackage {
+    src = craneLib.cleanCargoSource ../rust/uniffi-bindgen;
+    pname = "fedimint-uniffi-bindgen";
+    version = "0.1.0-alpha.1";
+    cargoExtraArgs = "--locked";
+    doCheck = false;
+    strictDeps = true;
+  };
 in
 {
-  androidBundle = androidJniLibs;
+  fedimint-sdk-android-jni = androidJni;
+  fedimint-uniffi-bindgen = uniffiBindgen;
 }
-// lib.mapAttrs' (t: b: lib.nameValuePair "android-${t}" b.lib) androidPerTargetBuilds
-// lib.mapAttrs' (t: b: lib.nameValuePair "android-${t}-deps" b.deps) androidPerTargetBuilds
-// lib.optionalAttrs isDarwin (
-  {
-    iosBundle = iosBundle;
-  }
-  // lib.mapAttrs' (t: b: lib.nameValuePair "ios-${t}" b.lib) iosPerTargetBuilds
-  // lib.mapAttrs' (t: b: lib.nameValuePair "ios-${t}-deps" b.deps) iosPerTargetBuilds
-)
+// lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}" b.lib) perTarget
+// lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}-deps" b.deps) perTarget

@@ -1,6 +1,7 @@
 {
   "name": "@fedimint/react-native-bindings",
   "version": "0.1.0",
+  "private": true,
   "description": "Fedimint Client SDK for React-Native",
   "source": "./src/index.tsx",
   "main": "./lib/commonjs/index.js",
@@ -79,9 +80,6 @@
     "url": "https://github.com/fedimint/fedimint-sdk/issues"
   },
   "homepage": "https://github.com/fedimint/fedimint-sdk#readme",
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/"
-  },
   "devDependencies": {
     "@babel/preset-env": "^7.29.0",
     "@expo/config-plugins": "^54.0.4",
