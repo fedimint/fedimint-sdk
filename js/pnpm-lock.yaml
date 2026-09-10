@@ -255,11 +255,11 @@ importers:
   examples/vite-core:
     dependencies:
       '@fedimint/core':
-        specifier: latest
-        version: 0.1.3
+        specifier: workspace:*
+        version: link:../../shared/core
       '@fedimint/transport-web':
-        specifier: latest
-        version: 0.1.2(@fedimint/core@0.1.3)
+        specifier: workspace:*
+        version: link:../../web/transport-web
       react:
         specifier: '>=19.2.4'
         version: 19.2.4
@@ -292,8 +292,11 @@ importers:
   examples/webpack-app:
     dependencies:
       '@fedimint/core':
-        specifier: latest
-        version: 0.1.3
+        specifier: workspace:*
+        version: link:../../shared/core
+      '@fedimint/transport-web':
+        specifier: workspace:*
+        version: link:../../web/transport-web
     devDependencies:
       '@babel/core':
         specifier: ^7.29.0
@@ -2459,14 +2462,6 @@ packages:
 
   '@fedimint/core@0.1.3':
     resolution: {integrity: sha512-tM+KPUxrTQAWxdMXXlTf4wPo4hqGgtqW/lSrPdKkCOjoSx4TMahuxogXiA9ibp5TMeca+YewmCEjb6IPSuc+5w==}
-
-  '@fedimint/fedimint-client-wasm-bundler@0.1.1':
-    resolution: {integrity: sha512-1nRSQzMMB2DA8iVtvSb6SFz+XQ6nbyN9MWaebfns9fBRfXG58IKa5BWbM9Evj8G6TlM3JkMBR5J5nA9JkERjMQ==}
-
-  '@fedimint/transport-web@0.1.2':
-    resolution: {integrity: sha512-3pKpGsa+fsQM5uOgV+fvpiHt0rwQN8r16GR0eZqklMExTWO3SR1m3DHRG/qDjNFHuamXwOjJNiXwIWOnqR4MBw==}
-    peerDependencies:
-      '@fedimint/core': 0.1.3
 
   '@fedimint/types@0.0.3':
     resolution: {integrity: sha512-rOv3GjcqfnUjDuOl27hcQVpG6qky4i84DBQNmch40aM9cT8hOFjtTRnhb38K8IW5peXGRDd/HNqt2vB9aQOS1Q==}
@@ -12432,14 +12427,6 @@ snapshots:
 
   '@fedimint/core@0.1.3':
     dependencies:
-      '@fedimint/types': 0.0.3
-
-  '@fedimint/fedimint-client-wasm-bundler@0.1.1': {}
-
-  '@fedimint/transport-web@0.1.2(@fedimint/core@0.1.3)':
-    dependencies:
-      '@fedimint/core': 0.1.3
-      '@fedimint/fedimint-client-wasm-bundler': 0.1.1
       '@fedimint/types': 0.0.3
 
   '@fedimint/types@0.0.3': {}

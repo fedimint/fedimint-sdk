@@ -4,101 +4,159 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Fedimint Webpack Demo</title>
     <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
-    <header>
-        <h1>Fedimint Typescript Library Demo</h1>
-        <div class="steps">
-            <strong>Steps to get started:</strong>
-            <ol>
-                <li>Join a Federation (persists across sessions)</li>
-                <li>Generate an Invoice</li>
-                <li>
-                    Pay the Invoice using the
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-spinner"></div>
+        <p>Initializing wallet...</p>
+    </div>
+
+    <!-- Onboarding Screen -->
+    <div id="onboarding-screen" class="onboarding" style="display: none;">
+        <div class="onboarding-card">
+            <h1>Welcome to Fedimint</h1>
+            <p class="onboarding-subtitle">
+                Set up your wallet to get started. You can create a new wallet or
+                restore an existing one from a mnemonic phrase.
+            </p>
+            <div id="onboarding-welcome">
+                <div class="onboarding-actions">
+                    <button id="btn-generate" class="btn btn-primary btn-large">Create New Wallet</button>
+                    <button id="btn-restore-show" class="btn btn-secondary btn-large">Restore from Mnemonic</button>
+                </div>
+            </div>
+
+            <!-- Generate step -->
+            <div id="onboarding-generate" style="display: none;">
+                <h3>Your Recovery Phrase</h3>
+                <p class="onboarding-subtitle">Write down these words in order and store them somewhere safe.</p>
+                <div id="mnemonic-words" class="mnemonic-words-grid"></div>
+                <label class="backup-checkbox">
+                    <input type="checkbox" id="backup-confirm">
+                    I have written down my recovery phrase and stored it safely
+                </label>
+                <div class="onboarding-actions">
+                    <button id="btn-confirm" class="btn btn-primary btn-large" disabled>Continue</button>
+                    <button id="btn-back-generate" class="btn btn-secondary">← Back</button>
+                </div>
+            </div>
+
+            <!-- Restore step -->
+            <div id="onboarding-restore" style="display: none;">
+                <h3>Restore Wallet</h3>
+                <p class="onboarding-subtitle">Enter your 12 or 24 word recovery phrase.</p>
+                <form id="restore-form">
+                    <textarea id="restore-input" class="mnemonic-textarea"
+                        placeholder="Enter your recovery phrase (12 or 24 words separated by spaces)"
+                        rows="3"></textarea>
+                    <div class="onboarding-actions">
+                        <button type="submit" class="btn btn-primary btn-large">Restore Wallet</button>
+                        <button type="button" id="btn-back-restore" class="btn btn-secondary">← Back</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="onboarding-error" class="onboarding-error" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Main Wallet UI (hidden until onboarding complete) -->
+    <div id="wallet-ui" style="display: none;">
+        <header>
+            <h1>Fedimint Typescript Library Demo</h1>
+            <div class="steps">
+                <strong>Steps to get started:</strong>
+                <ol>
+                    <li>Join a Federation (persists across sessions)</li>
+                    <li>Generate an Invoice</li>
+                    <li>
+                        Pay the Invoice using the
+                        <a href="https://faucet.mutinynet.com/" target="_blank">
+                            mutinynet faucet
+                        </a>
+                    </li>
+                    <li>
+                        Investigate the Browser Tools
+                        <ul>
+                            <li>Browser Console for logs</li>
+                            <li>Network Tab (websocket) for guardian requests</li>
+                            <li>Application Tab for state</li>
+                        </ul>
+                    </li>
+                </ol>
+            </div>
+        </header>
+        <main>
+            <div class="section">
+                <h3>Wallet Status</h3>
+                <div class="row">
+                    <strong>Is Wallet Open?</strong>
+                    <div id="walletResult">No</div>
+                    <button onclick="checkIsOpen()">Check</button>
+                </div>
+                <div class="row">
+                    <strong>Balance:</strong>
+                    <div class="balance" id="bal"></div>
+                    sats
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>Join Federation</h3>
+                <form class="row JoinFederation">
+                    <input id="join-input" class="ecash-input" type="text" placeholder="Invite Code..." required>
+                    <button type="submit">Join</button>
+                </form>
+                <div id="joinResult"></div>
+            </div>
+            <div class="section">
+                <h3>Redeem Ecash</h3>
+                <form class="row RedeemForm">
+                    <input id="redeemInput" type="text" placeholder="Long ecash string..." required>
+                    <button type="submit">redeem</button>
+                </form>
+                <div id="redeemResult"></div>
+            </div>
+
+            <div class="section">
+                <h3>Pay Lightning</h3>
+                <form class="row PayForm">
+                    <input id="payInput" type="text" placeholder="lnbc..." required>
+                    <button type="submit">pay</button>
+                </form>
+                <div id="payResult"></div>
+            </div>
+
+            <div class="section">
+                <h3>Generate Lightning Invoice</h3>
+                <form class="InvoiceForm">
+                    <div class="input-group">
+                        <label htmlFor="amount">Amount (sats):</label>
+                        <input id="Invoiceamount" type="text" placeholder="Enter amount" required>
+                    </div>
+                    <div class="input-group">
+                        <label htmlFor="description">Description:</label>
+                        <input id="description" type="text" placeholder="Enter description" required>
+                    </div>
+                    <button type="submit" id="InvoiceBtn">
+                        Generate Invoice
+                    </button>
+                </form>
+                <div>
+                    mutinynet faucet:
                     <a href="https://faucet.mutinynet.com/" target="_blank">
-                        mutinynet faucet
+                        https://faucet.mutinynet.com/
                     </a>
-                </li>
-                <li>
-                    Investigate the Browser Tools
-                    <ul>
-                        <li>Browser Console for logs</li>
-                        <li>Network Tab (websocket) for guardian requests</li>
-                        <li>Application Tab for state</li>
-                    </ul>
-                </li>
-            </ol>
-        </div>
-    </header>
-    <main>
-        <div class="section">
-            <h3>Wallet Status</h3>
-            <div class="row">
-                <strong>Is Wallet Open?</strong>
-                <div id="walletResult">No</div>
-                <button onclick="checkIsOpen()">Check</button>
-            </div>
-            <div class="row">
-                <strong>Balance:</strong>
-                <div class="balance" id="bal"></div>
-                sats
-            </div>
-        </div>
-
-        <div class="section">
-            <h3>Join Federation</h3>
-            <form class="row JoinFederation">
-                <input id="join-input" class="ecash-input" type="text" placeholder="Invite Code..." required>
-                <button type="submit">Join</button>
-            </form>
-            <div id="joinResult"></div>
-        </div>
-        <div class="section">
-            <h3>Redeem Ecash</h3>
-            <form class="row RedeemForm">
-                <input id="redeemInput" type="text" placeholder="Long ecash string..." required>
-                <button type="submit">redeem</button>
-            </form>
-            <div id="redeemResult"></div>
-        </div>
-
-        <div class="section">
-            <h3>Pay Lightning</h3>
-            <form class="row PayForm">
-                <input id="payInput" type="text" placeholder="lnbc..." required>
-                <button type="submit">pay</button>
-            </form>
-            <div id="payResult"></div>
-        </div>
-
-        <div class="section">
-            <h3>Generate Lightning Invoice</h3>
-            <form class="InvoiceForm">
-                <div class="input-group">
-                    <label htmlFor="amount">Amount (sats):</label>
-                    <input id="Invoiceamount" type="text" placeholder="Enter amount" required>
                 </div>
-                <div class="input-group">
-                    <label htmlFor="description">Description:</label>
-                    <input id="description" type="text" placeholder="Enter description" required>
-                </div>
-                <button type="submit" id="InvoiceBtn">
-                    Generate Invoice
-                </button>
-            </form>
-            <div>
-                mutinynet faucet:
-                <a href="https://faucet.mutinynet.com/" target="_blank">
-                    https://faucet.mutinynet.com/
-                </a>
+                <div class="success"></div>
+                <div class="error"></div>
             </div>
-            <div class="success"></div>
-            <div class="error"></div>
-        </div>
-    </main>
+        </main>
+    </div>
 
     <script src="./bundle.js"></script>
 </body>
