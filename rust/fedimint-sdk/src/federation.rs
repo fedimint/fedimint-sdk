@@ -276,6 +276,10 @@ impl Federation {
     /// each following one. At most `limit` items are returned; fewer is
     /// normal, and an empty page with no cursor means the end.
     ///
+    /// Rows still in flight are brought up to date before the page is
+    /// returned, so a page that has any takes a moment longer than one
+    /// that has none.
+    ///
     /// The history is *local*, see [`ActivityItem`](crate::ActivityItem)
     /// for exactly what that excludes.
     ///
@@ -283,7 +287,7 @@ impl Federation {
     ///
     /// [`Storage`](crate::ErrorCode::Storage),
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a cursor that
-    /// is not one this federation issued, and
+    /// is not one this federation issued or for a `limit` of zero, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn activity(&self, cursor: Option<Cursor>, limit: u16) -> Result<ActivityPage> {
         crate::activity::page(&self.inner, cursor, limit).await
