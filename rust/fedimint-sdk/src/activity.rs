@@ -2,6 +2,8 @@
 
 use crate::{Amount, Cursor, OperationId, OperationKind, Timestamp};
 
+mod rows;
+
 /// One row of a federation's activity history.
 ///
 /// Read through [`Federation::activity`](crate::Federation::activity),
