@@ -242,8 +242,9 @@ dependencies = [
 
 [[package]]
 name = "async-compat"
-version = "0.2.5"
-source = "git+https://github.com/MrImmortal09/async-compat?branch=multi-thread-fallback-runtime#8d43ef512283dd2c4dd5153b588af07efdc34e57"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c97d7ff3c25d6c10d64170c12acaf5d4245e76dece3779c1d92b153a64f11df"
 dependencies = [
  "futures-core",
  "futures-io",
