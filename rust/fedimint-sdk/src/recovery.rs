@@ -169,6 +169,8 @@
 
 use crate::{Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk};
 
+mod wire;
+
 impl Sdk {
     /// Joins a federation and restores this seed's wallet in it from the
     /// federation's backup plus a rescan.
