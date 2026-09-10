@@ -138,6 +138,10 @@ impl Driver<LnSendState> for LnSendDriver {
         wire::encode_send_state(state)
     }
 
+    fn decode_state(&self, encoded: &str) -> Result<LnSendState> {
+        wire::decode_send_state(encoded)
+    }
+
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
         Ok(Box::new(wire::decode_send_details(json)?))
     }
@@ -186,6 +190,10 @@ impl Driver<LnReceiveState> for LnReceiveDriver {
         wire::encode_receive_state(state)
     }
 
+    fn decode_state(&self, encoded: &str) -> Result<LnReceiveState> {
+        wire::decode_receive_state(encoded)
+    }
+
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
         Ok(Box::new(wire::decode_receive_details(json)?))
     }
@@ -222,6 +230,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::{Amount, LightningRoute, Preimage};
 
     // Only `LnSendState`'s non-final (`Created`, `Funded`) and final (`Refunded`, `Failed`)
     // variants that need no fields are used below; `settled` treats every state the same way
@@ -316,5 +325,46 @@ mod tests {
             .await
             .expect_err("an empty stream must not settle");
         assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn send_driver_decodes_what_it_encodes() {
+        let driver = LnSendDriver;
+        let preimage: Preimage = "11".repeat(32).parse().expect("a preimage");
+        for state in [
+            LnSendState::Created,
+            LnSendState::Funded,
+            LnSendState::Success {
+                preimage,
+                fee: Amount::from_msats(1_050),
+                route: LightningRoute::Internal,
+            },
+            LnSendState::Refunded,
+            LnSendState::Failed {
+                reason: "gone".to_owned(),
+            },
+        ] {
+            let encoded = driver.encode_state(&state).expect("encode");
+            assert_eq!(driver.decode_state(&encoded).expect("decode"), state);
+        }
+    }
+
+    #[test]
+    fn receive_driver_decodes_what_it_encodes() {
+        let driver = LnReceiveDriver;
+        for state in [
+            LnReceiveState::Created,
+            LnReceiveState::WaitingForPayment,
+            LnReceiveState::Funded,
+            LnReceiveState::Claimed,
+            LnReceiveState::Canceled {
+                reason: "withdrawn".to_owned(),
+            },
+            LnReceiveState::Expired,
+            LnReceiveState::Failed,
+        ] {
+            let encoded = driver.encode_state(&state).expect("encode");
+            assert_eq!(driver.decode_state(&encoded).expect("decode"), state);
+        }
     }
 }
