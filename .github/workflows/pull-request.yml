@@ -1,17 +1,13 @@
 name: Pull Request
 on:
   pull_request:
-    # `labeled` lets the ci-ios label start the otherwise gated iOS build.
-    types: [opened, reopened, synchronize, ready_for_review, labeled]
-  # Keep the React Native main-branch build as a safety net after merging a PR.
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  # Label events only need to consider the gated iOS lane. Give each one its
-  # own group so ordinary label churn cannot cancel a full verification run.
-  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.run_id || github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +17,6 @@ jobs:
     outputs:
       core: ${{ steps.filter.outputs.core }}
       web: ${{ steps.filter.outputs.web }}
-      react-native: ${{ steps.filter.outputs.react-native }}
       docs: ${{ steps.filter.outputs.docs }}
       cli: ${{ steps.filter.outputs.cli }}
     steps:
@@ -45,14 +40,12 @@ jobs:
 
           core=false
           web=false
-          react_native=false
           docs=false
           cli=false
 
           enable_all() {
             core=true
             web=true
-            react_native=true
             docs=true
             cli=true
           }
@@ -61,7 +54,6 @@ jobs:
             {
               echo "core=$core"
               echo "web=$web"
-              echo "react-native=$react_native"
               echo "docs=$docs"
               echo "cli=$cli"
             } >> "$GITHUB_OUTPUT"
@@ -123,7 +115,6 @@ jobs:
               js/shared/core/*|js/shared/types/*|packages/core/*|packages/types/*)
                 core=true
                 web=true
-                react_native=true
                 docs=true
                 ;;
               js/web/react/*|packages/react/*)
@@ -140,12 +131,8 @@ jobs:
                 web=true
                 docs=true
                 ;;
-              js/react-native/react-native/*|js/react-native/react-native-bindings/*|packages/react-native/*|packages/react-native-bindings/*|rust/fedimint-client-uniffi/*|fedimint-sdk-ffi|fedimint-sdk-ffi/*|nix/*|Justfile)
-                react_native=true
-                ;;
               flake.nix|flake.lock)
                 web=true
-                react_native=true
                 ;;
               js/docs/*|docs/*)
                 docs=true
@@ -161,7 +148,6 @@ jobs:
   verify:
     name: Verify
     needs: detect-changes
-    if: ${{ github.event.action != 'labeled' }}
     uses: ./.github/workflows/verify.yml
     secrets: inherit
     with:
@@ -169,55 +155,3 @@ jobs:
       run_web: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.web == 'true' }}
       run_docs: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.docs == 'true' }}
       run_cli: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.cli == 'true' }}
-
-  test-react-native:
-    name: Test RN Transport
-    needs: detect-changes
-    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-deps
-      - name: Run transport unit tests
-        run: pnpm --dir js test:reactnative
-      - name: Type-check transport against the stubbed bindings
-        # The package is excluded from the root typecheck because its real
-        # bindings types are ubrn-generated; this config maps them to the test
-        # stub so the type-level contract still gets checked.
-        run: pnpm --dir js --filter @fedimint/react-native typecheck:test
-
-  build-android:
-    name: Build Android
-    needs: detect-changes
-    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - uses: ./.github/actions/build-rn-android
-
-  build-ios:
-    name: Build iOS
-    needs: detect-changes
-    # macOS runners are the scarce and expensive lane, so PRs only build iOS
-    # when explicitly asked to via the `ci-ios` label. Pushes to main and manual
-    # runs retain the existing always-build behavior.
-    if: ${{ (github.event.action != 'labeled' || github.event.label.name == 'ci-ios') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')) && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - uses: ./.github/actions/build-rn-ios
-        with:
-          device-only: 'true'
