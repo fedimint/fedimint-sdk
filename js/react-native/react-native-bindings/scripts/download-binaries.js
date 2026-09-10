@@ -1,9 +1,9 @@
-// TODO: Add check for checksums and fail if they don't match.
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const crypto = require('crypto');
+const { pipeline, PassThrough } = require('stream');
 
 const pkg = require('../package.json');
 
@@ -56,33 +56,60 @@ if (!ANDROID_CHECKSUM || !IOS_CHECKSUM) {
     process.exit(0);
 }
 
-const downloadFile = (url, dest) => {
+const downloadAndVerify = (url, dest, expectedChecksum) => {
     return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        https.get(url, (response) => {
-            if (response.statusCode === 302 || response.statusCode === 301) {
-                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(resolve);
-            });
-        }).on('error', (err) => {
-            fs.unlink(dest, () => { });
-            reject(err);
-        });
-    });
-};
+        const follow = (currentUrl) => {
+            https.get(currentUrl, (response) => {
+                if (response.statusCode === 302 || response.statusCode === 301) {
+                    follow(response.headers.location);
+                    return;
+                }
+                const file = fs.createWriteStream(dest);
+                const hash = crypto.createHash('sha256');
+                const passThrough = new PassThrough();
+                
+                passThrough.on('data', (chunk) => {
+                    hash.update(chunk);
+                });
 
-const verifyChecksum = (file, expected) => {
-  // TODO : complete this
-  return true;
+                pipeline(
+                    response,
+                    passThrough,
+                    file,
+                    (err) => {
+                        if (err) {
+                            fs.unlink(dest, () => { });
+                            reject(err);
+                        } else {
+                            const actualChecksum = hash.digest('hex');
+                            if (expectedChecksum && actualChecksum !== expectedChecksum) {
+                                fs.unlinkSync(dest);
+                                reject(new Error(`Checksum mismatch for ${dest}. Expected: ${expectedChecksum}, Got: ${actualChecksum}`));
+                            } else {
+                                if (expectedChecksum) {
+                                    console.log(`${dest} checksum verified successfully.`);
+                                }
+                                resolve();
+                            }
+                        }
+                    }
+                );
+            }).on('error', (err) => {
+                fs.unlink(dest, () => { });
+                reject(err);
+            });
+        };
+        follow(url);
+    });
 };
 
 const unzip = (file, dest) => {
     try {
-        execSync(`unzip -o ${file} -d ${dest}`);
+        if (process.platform === 'win32') {
+            execFileSync('tar', ['-xf', file, '-C', dest]);
+        } else {
+            execFileSync('unzip', ['-o', file, '-d', dest]);
+        }
     } catch (e) {
         console.error(`Failed to unzip ${file}: ${e.message}`);
         throw e;
@@ -94,26 +121,15 @@ const main = async () => {
     const iosUrl = `${REPO}/releases/download/${TAG}/ios-artifacts.zip`;
 
     console.log(`Downloading Android artifacts from ${androidUrl}...`);
-    await downloadFile(androidUrl, 'android-artifacts.zip');
-
-    if (!verifyChecksum('android-artifacts.zip', ANDROID_CHECKSUM)) {
-        console.error('Android checkum mismatch!');
-        process.exit(1);
-    }
+    await downloadAndVerify(androidUrl, 'android-artifacts.zip', ANDROID_CHECKSUM);
 
     console.log('Extracting Android artifacts...');
     // Adjust destination if needed based on zip structure
     unzip('android-artifacts.zip', path.join(__dirname, '../'));
     fs.unlinkSync('android-artifacts.zip');
 
-
     console.log(`Downloading iOS artifacts from ${iosUrl}...`);
-    await downloadFile(iosUrl, 'ios-artifacts.zip');
-
-    if (!verifyChecksum('ios-artifacts.zip', IOS_CHECKSUM)) {
-        console.error('iOS checkum mismatch!');
-        process.exit(1);
-    }
+    await downloadAndVerify(iosUrl, 'ios-artifacts.zip', IOS_CHECKSUM);
 
     console.log('Extracting iOS artifacts...');
     unzip('ios-artifacts.zip', path.join(__dirname, '../'));
