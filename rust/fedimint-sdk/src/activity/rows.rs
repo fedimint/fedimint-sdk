@@ -190,24 +190,6 @@ pub(super) trait Row: Bucket {
     fn figures(driver: &dyn Driver<Self>, details: &str) -> Result<Figures>;
 }
 
-/// [`Row::figures`] for a kind that persists a details record.
-fn detailed<S>(driver: &dyn Driver<S>, details: &str) -> Result<Figures>
-where
-    S: DetailedOperationState,
-    S::Details: Accounted,
-{
-    let decoded = driver.decode_details(details)?;
-    match decoded.downcast::<S::Details>() {
-        Ok(details) => Ok(details.figures()),
-        // Unreachable through the page walk, which pairs each kind with its own driver; an
-        // `Internal` rather than a panic for the same reason `Operation::details` gives.
-        Err(_) => Err(Error::new(
-            ErrorCode::Internal,
-            "this operation's details record does not match its kind",
-        )),
-    }
-}
-
 impl Row for EcashSendState {
     fn figures(driver: &dyn Driver<EcashSendState>, details: &str) -> Result<Figures> {
         detailed(driver, details)
@@ -249,6 +231,24 @@ impl Row for RecoveryState {
     /// its driver is `Internal` by contract, and no caller can reach it.
     fn figures(_driver: &dyn Driver<RecoveryState>, _details: &str) -> Result<Figures> {
         Ok(Figures::NONE)
+    }
+}
+
+/// [`Row::figures`] for a kind that persists a details record.
+fn detailed<S>(driver: &dyn Driver<S>, details: &str) -> Result<Figures>
+where
+    S: DetailedOperationState,
+    S::Details: Accounted,
+{
+    let decoded = driver.decode_details(details)?;
+    match decoded.downcast::<S::Details>() {
+        Ok(details) => Ok(details.figures()),
+        // Unreachable through the page walk, which pairs each kind with its own driver; an
+        // `Internal` rather than a panic for the same reason `Operation::details` gives.
+        Err(_) => Err(Error::new(
+            ErrorCode::Internal,
+            "this operation's details record does not match its kind",
+        )),
     }
 }
 

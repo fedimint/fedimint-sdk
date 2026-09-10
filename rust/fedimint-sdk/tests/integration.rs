@@ -909,9 +909,9 @@ async fn activity_lists_what_the_federation_was_used_for() {
         .expect("reopens");
     let federation = reopened.federation(&federation_id).expect("still there");
 
-    // The same two rows in the same order, with the same figures and buckets. On v2 the send's
-    // `Success` now comes off the record itself (the earlier read is what first persisted it),
-    // rather than a fresh read through the driver, but the row looks the same either way.
+    // The same two rows in the same order, with the same figures and buckets. `await_final`
+    // above already persisted the send's final state before the first `activity` call, so both
+    // that read and this one come off the record rather than a fresh one through the driver.
     let restarted = federation.activity(None, 10).await.expect("both rows");
     assert_eq!(restarted.items.len(), 2);
     let send_row = &restarted.items[0];

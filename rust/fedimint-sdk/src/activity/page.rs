@@ -132,6 +132,10 @@ async fn row(
     let driver = (any.support() == OperationSupport::Observable)
         .then(|| driver_for(&inner.record.kind))
         .flatten();
+    // A kind this build knows but has no driver for (`driver_for` answers `None`: ecash receive,
+    // on-chain, recovery until T7, T9, T12 land) falls through to `unreadable` below. Nothing
+    // then records a final state for it, so its row keeps `is_final == false` even after the
+    // operation finishes; the gap closes the moment that kind's arm in `driver_for` lands.
     let Some(driver) = driver else {
         return Ok(unreadable(id, &inner.record, kind));
     };
@@ -269,20 +273,27 @@ mod tests {
 
     /// Writes one operation's record and its index entry together, mirroring
     /// `FederationInner::write_record`.
-    #[expect(clippy::too_many_arguments, reason = "a test fixture, not API")]
-    async fn write(
-        db: &Database,
-        id: [u8; 32],
+    async fn write(db: &Database, id: [u8; 32], record: OperationRecord) {
+        let id = UpstreamOperationId(id);
+        let created_at = record.created_at;
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.insert_entry(&OperationIndexKey { created_at, id }, &())
+            .await;
+        dbtx.commit_tx().await;
+    }
+
+    /// The record most tests need: a readable schema, no phase and no cancellation. The one test
+    /// that needs a different schema version overrides it on the returned struct.
+    fn record(
         kind: &str,
         module: &str,
         created_at: u64,
         details: String,
         final_state: Option<String>,
-        schema_version: u32,
-    ) {
-        let id = UpstreamOperationId(id);
-        let record = OperationRecord {
-            schema_version,
+    ) -> OperationRecord {
+        OperationRecord {
+            schema_version: crate::operation::READABLE_STATE_SCHEMA,
             kind: kind.to_owned(),
             module: module.to_owned(),
             created_at,
@@ -290,12 +301,7 @@ mod tests {
             phase: None,
             cancel_requested_at: None,
             final_state,
-        };
-        let mut dbtx = db.begin_transaction().await;
-        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
-        dbtx.insert_entry(&OperationIndexKey { created_at, id }, &())
-            .await;
-        dbtx.commit_tx().await;
+        }
     }
 
     fn ids(activity: &ActivityPage) -> Vec<OperationId> {
@@ -318,12 +324,13 @@ mod tests {
             write(
                 &db,
                 id_bytes(n),
-                kinds::LN_RECEIVE,
-                "lnv2",
-                u64::from(n),
-                details.clone(),
-                Some(claimed.clone()),
-                1,
+                record(
+                    kinds::LN_RECEIVE,
+                    "lnv2",
+                    u64::from(n),
+                    details.clone(),
+                    Some(claimed.clone()),
+                ),
             )
             .await;
         }
@@ -355,12 +362,13 @@ mod tests {
             write(
                 &db,
                 id_bytes(n),
-                kinds::LN_RECEIVE,
-                "lnv2",
-                1_000,
-                details.clone(),
-                Some(claimed.clone()),
-                1,
+                record(
+                    kinds::LN_RECEIVE,
+                    "lnv2",
+                    1_000,
+                    details.clone(),
+                    Some(claimed.clone()),
+                ),
             )
             .await;
         }
@@ -426,12 +434,13 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::LN_SEND,
-            "lnv2",
-            1_700_000_000_000,
-            send_details_json(&details),
-            Some(encoded),
-            1,
+            record(
+                kinds::LN_SEND,
+                "lnv2",
+                1_700_000_000_000,
+                send_details_json(&details),
+                Some(encoded),
+            ),
         )
         .await;
 
@@ -465,12 +474,13 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::LN_SEND,
-            "lnv2",
-            1,
-            send_details.clone(),
-            Some(refunded),
-            1,
+            record(
+                kinds::LN_SEND,
+                "lnv2",
+                1,
+                send_details.clone(),
+                Some(refunded),
+            ),
         )
         .await;
 
@@ -482,12 +492,7 @@ mod tests {
         write(
             &db,
             id_bytes(2),
-            kinds::LN_SEND,
-            "lnv2",
-            2,
-            send_details,
-            Some(failed),
-            1,
+            record(kinds::LN_SEND, "lnv2", 2, send_details, Some(failed)),
         )
         .await;
 
@@ -497,12 +502,13 @@ mod tests {
         write(
             &db,
             id_bytes(3),
-            kinds::LN_RECEIVE,
-            "lnv2",
-            3,
-            receive_details.clone(),
-            Some(claimed),
-            1,
+            record(
+                kinds::LN_RECEIVE,
+                "lnv2",
+                3,
+                receive_details.clone(),
+                Some(claimed),
+            ),
         )
         .await;
 
@@ -514,12 +520,13 @@ mod tests {
         write(
             &db,
             id_bytes(4),
-            kinds::LN_RECEIVE,
-            "lnv2",
-            4,
-            receive_details.clone(),
-            Some(canceled),
-            1,
+            record(
+                kinds::LN_RECEIVE,
+                "lnv2",
+                4,
+                receive_details.clone(),
+                Some(canceled),
+            ),
         )
         .await;
 
@@ -529,12 +536,13 @@ mod tests {
         write(
             &db,
             id_bytes(5),
-            kinds::LN_RECEIVE,
-            "lnv2",
-            5,
-            receive_details.clone(),
-            Some(expired),
-            1,
+            record(
+                kinds::LN_RECEIVE,
+                "lnv2",
+                5,
+                receive_details.clone(),
+                Some(expired),
+            ),
         )
         .await;
 
@@ -544,12 +552,13 @@ mod tests {
         write(
             &db,
             id_bytes(6),
-            kinds::LN_RECEIVE,
-            "lnv2",
-            6,
-            receive_details,
-            Some(failed_receive),
-            1,
+            record(
+                kinds::LN_RECEIVE,
+                "lnv2",
+                6,
+                receive_details,
+                Some(failed_receive),
+            ),
         )
         .await;
 
@@ -580,12 +589,13 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::LN_SEND,
-            "lnv2",
-            1,
-            send_details_json(&send_details()),
-            Some(r#"{"Settled":{}}"#.to_owned()),
-            1,
+            record(
+                kinds::LN_SEND,
+                "lnv2",
+                1,
+                send_details_json(&send_details()),
+                Some(r#"{"Settled":{}}"#.to_owned()),
+            ),
         )
         .await;
 
@@ -606,23 +616,19 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            "widget",
-            "widget",
-            1,
-            "{}".to_owned(),
-            None,
-            1,
+            record("widget", "widget", 1, "{}".to_owned(), None),
         )
         .await;
         write(
             &db,
             id_bytes(2),
-            "widget",
-            "widget",
-            2,
-            "{}".to_owned(),
-            Some("done".to_owned()),
-            1,
+            record(
+                "widget",
+                "widget",
+                2,
+                "{}".to_owned(),
+                Some("done".to_owned()),
+            ),
         )
         .await;
 
@@ -663,12 +669,16 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::LN_SEND,
-            "lnv2",
-            1,
-            send_details_json(&details),
-            Some(encoded),
-            2,
+            OperationRecord {
+                schema_version: 2,
+                ..record(
+                    kinds::LN_SEND,
+                    "lnv2",
+                    1,
+                    send_details_json(&details),
+                    Some(encoded),
+                )
+            },
         )
         .await;
 
@@ -690,12 +700,7 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::ECASH_SEND,
-            "mint",
-            1,
-            String::new(),
-            None,
-            1,
+            record(kinds::ECASH_SEND, "mint", 1, String::new(), None),
         )
         .await;
 
@@ -792,12 +797,7 @@ mod tests {
         write(
             &db,
             id_bytes(1),
-            kinds::ECASH_SEND,
-            "mint",
-            1,
-            String::new(),
-            None,
-            1,
+            record(kinds::ECASH_SEND, "mint", 1, String::new(), None),
         )
         .await;
         let inner = a_pending_ecash_send(&federation);
