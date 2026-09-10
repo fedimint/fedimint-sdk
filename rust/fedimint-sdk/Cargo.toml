@@ -24,6 +24,13 @@ crate-type = ["lib", "cdylib", "staticlib"]
 # exported async fn. `async-compat/multi-thread` then makes that fallback a
 # multi-threaded scheduler — see the `async-compat` entry below for why the
 # crate does not work without it.
+#
+# Never combine this with `--target wasm32-unknown-unknown`, including via
+# `--all-features`: `uniffi/tokio` needs tokio's `net` feature, which tokio's
+# own wasm feature-compat check hard-rejects with a `compile_error!`. This is
+# why the feature stays off by default rather than living in a separate
+# `fedimint-sdk-ffi` crate — see rust/uniffi-bindgen/DECISION.md for the
+# tradeoff this was weighed against.
 uniffi = ["dep:uniffi", "uniffi/tokio", "async-compat/multi-thread"]
 
 [dependencies]
@@ -86,9 +93,10 @@ uniffi = { version = "0.32.0", optional = true }
 # multi-threaded, which is the whole reason the exported methods need no
 # runtime plumbing of their own.
 #
-# The feature is not on crates.io yet; `[patch.crates-io]` below points at the
-# branch it comes from.
-async-compat = { version = "0.2.5", optional = true }
+# Pinned exactly: `multi-thread` first exists in 0.2.6, and this whole
+# arrangement is temporary — it goes away with the pending uniffi change, at
+# which point the dependency can be dropped rather than bumped.
+async-compat = { version = "=0.2.6", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
@@ -158,9 +166,3 @@ strip = "debuginfo"
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = "3.20.0"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "time"] }
-
-# Until smol-rs/async-compat ships the `multi-thread` feature the `uniffi`
-# feature above depends on. Pinned to the branch the PR is cut from; drop this
-# block and bump the version once it is released.
-[patch.crates-io]
-async-compat = { git = "https://github.com/MrImmortal09/async-compat", branch = "multi-thread-fallback-runtime" }

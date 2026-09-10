@@ -19,6 +19,9 @@ on:
     branches: [main]
     paths:
       - 'rust/fedimint-sdk/**'
+      # The host-side generator that reads fedimint-sdk's `uniffi` metadata;
+      # the check job builds it and lints the crate under `--features uniffi`.
+      - 'rust/uniffi-bindgen/**'
       - '.github/workflows/rust-sdk-ci.yaml'
       # The crate pins the same fedimint revision the flake does, so a flake
       # bump has to re-run this workflow: pins-agree below checks flake.nix
@@ -29,6 +32,7 @@ on:
   pull_request:
     paths:
       - 'rust/fedimint-sdk/**'
+      - 'rust/uniffi-bindgen/**'
       - '.github/workflows/rust-sdk-ci.yaml'
       - 'flake.nix'
       - 'flake.lock'
@@ -207,13 +211,65 @@ jobs:
         with:
           components: clippy, rustfmt
           target: wasm32-unknown-unknown
-          cache-workspaces: rust/fedimint-sdk
+          cache-workspaces: |
+            rust/fedimint-sdk
+            rust/uniffi-bindgen
 
       - name: 'Check fmt'
         run: cargo fmt --all -- --check
 
       - name: 'Check clippy'
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: 'Check clippy (uniffi feature)'
+        # The `uniffi` feature is off by default, so the plain clippy run above
+        # never compiles the `#[cfg(feature = "uniffi")]` FFI exports or the
+        # metadata they generate. Lint them here so the FFI contract cannot
+        # regress while CI stays green. Linux only: on macOS the host build
+        # under this feature reaches iroh's netwatch BSD backend, which does
+        # not compile against this graph's socket2 (see rust/uniffi-bindgen).
+        run: cargo clippy --locked --all-targets --features uniffi -- -D warnings
+
+      - name: 'Check the uniffi-bindgen generator crate'
+        # `cache-workspaces` above only warms the build cache for this crate;
+        # it does not build or lint it. Without a step that actually invokes
+        # cargo here, a change that breaks rust/uniffi-bindgen/Cargo.toml or
+        # src/main.rs would still pass CI, because every other step in this
+        # job runs with `working-directory: rust/fedimint-sdk` and never
+        # touches the generator crate.
+        working-directory: rust/uniffi-bindgen
+        run: cargo clippy --locked -- -D warnings
+
+      - name: 'Smoke check: generate Android bindings'
+        # Validates the end-to-end contract this PR introduces, not just that
+        # the two crates individually compile: build fedimint-sdk's cdylib
+        # with the uniffi feature, run the bindgen crate against it with
+        # uniffi-android.toml, and confirm that config actually took effect.
+        # `android_cleaner = true` fails silently on a malformed config table
+        # (see the comment in uniffi-android.toml) — its only symptom is
+        # generated bindings quietly falling back to the JVM cleaner — so this
+        # greps the output for the Android-specific class instead of trusting
+        # a zero exit code.
+        run: |
+          set -euo pipefail
+
+          cargo build --locked --lib --features uniffi
+
+          so=$(find target/debug -maxdepth 1 -name 'libfedimint_sdk.so' | head -n1)
+          [ -n "$so" ] || { echo "::error::no libfedimint_sdk.so found under target/debug"; exit 1; }
+
+          out=$(mktemp -d)
+          cargo run --locked --manifest-path ../uniffi-bindgen/Cargo.toml -- \
+            generate --language kotlin --config uniffi-android.toml --out-dir "$out" "$so"
+
+          grep -rq 'AndroidSystemCleaner' "$out" || {
+            echo "::error::generated Kotlin has no AndroidSystemCleaner:" \
+                 "uniffi-android.toml's android_cleaner=true did not take effect" \
+                 "(bindings fell back to the JVM cleaner)"
+            exit 1
+          }
+
+          echo "uniffi-android.toml applied: generated Kotlin uses AndroidSystemCleaner"
 
       - name: 'Check docs'
         run: cargo doc --no-deps --locked
