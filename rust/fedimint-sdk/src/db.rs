@@ -289,6 +289,7 @@ impl_db_lookup!(key = FederationKey, query_prefix = FederationKeyPrefix);
 #[derive(Debug, Clone, Encodable, Decodable)]
 pub(crate) struct RecoveryKey(pub(crate) FederationId);
 
+/// Every recovery record in the instance.
 #[derive(Debug, Clone, Encodable, Decodable)]
 pub(crate) struct RecoveryKeyPrefix;
 

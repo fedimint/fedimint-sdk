@@ -621,15 +621,19 @@ impl FederationInner {
         Fut: Future<Output = Result<ClientHandleArc>>,
     {
         let mut guard = self.client.write().await;
-        if let Some(old) = guard.take()
-            && let Err(err) = shutdown_client(old).await
-        {
-            tracing::warn!(
-                target: "fedimint_sdk",
-                federation = %self.id,
-                error = %err,
-                "could not cleanly shut down the client being replaced",
-            );
+        if let Some(old) = guard.take() {
+            // Told to stop before the consuming shutdown is attempted, as `quiesce` does: a
+            // stray handle to the old client (a watcher's clone, say) makes that shutdown fail,
+            // and without this the old client would keep running until the stray handle went.
+            old.task_group().shutdown();
+            if let Err(err) = shutdown_client(old).await {
+                tracing::warn!(
+                    target: "fedimint_sdk",
+                    federation = %self.id,
+                    error = %err,
+                    "could not cleanly shut down the client being replaced",
+                );
+            }
         }
         let fresh = open().await?;
         *guard = Some(fresh);
