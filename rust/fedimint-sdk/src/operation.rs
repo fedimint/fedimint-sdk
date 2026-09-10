@@ -763,13 +763,13 @@ impl AnyOperation {
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
     // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7, T8, T9 and T12. Until then, `support_of` still answers `Observable` for every kind whose
-    // arm is `None`: the record's kind and schema version are all it looks at, and neither says
-    // whether a driver has been written yet. That is six kinds in a test build, where `ECASH_SEND`
-    // has its own probe arm and note below, and seven in any other build, where that arm is `None`
-    // too. This is not a bug in the accessor, which is honest about what it can do, but a
-    // temporary gap between what `support` promises and what a build this incomplete can deliver;
-    // it closes as each task above lands its arm.
+    // T7, T9 and T12 (T8 filled in the two lightning arms). Until then, `support_of` still answers
+    // `Observable` for every kind whose arm is `None`: the record's kind and schema version are
+    // all it looks at, and neither says whether a driver has been written yet. That is four kinds
+    // in a test build, where `ECASH_SEND` has its own probe arm, and five in any other build,
+    // where that arm is `None` too. This is not a bug in the accessor, which is honest about what
+    // it can do, but a temporary gap between what `support` promises and what a build this
+    // incomplete can deliver; it closes as each task above lands its arm.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -1353,10 +1353,16 @@ pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
     /// What the SDK would have written for this entry, or `None` if this backfiller does not
     /// recognise it.
     ///
-    /// `module_kind` is `OperationLogEntry::operation_module_kind`, and `meta` is the entry's
-    /// own JSON, read with `try_meta` so that a shape this build does not know is a `None` here
-    /// rather than a panic.
-    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled>;
+    /// `module_kind` is `OperationLogEntry::operation_module_kind`, `meta` is the entry's own
+    /// JSON, read with `try_meta` so that a shape this build does not know is a `None` here
+    /// rather than a panic, and `created_at` is the client's own creation time in milliseconds,
+    /// for the details records that carry one.
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        created_at: u64,
+    ) -> Option<Backfilled>;
 }
 
 /// What a [`Backfiller`] recovered from a log entry.
@@ -1414,15 +1420,22 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
         // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash and lightning in T7-T8, on-chain in T9, recovery in T12.
+        // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
+        // kind: ecash in T7, lightning in T8, on-chain in T9, recovery in T12. Until an arm is
+        // filled in this build cannot observe that kind, which is a real answer rather than a gap:
+        // the record is still found, still listed, and still says what it is.
         kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
             crate::ecash::EcashSendDriver,
         ))),
         kinds::ECASH_RECEIVE => Some(ErasedDriver::EcashReceive(Arc::new(
             crate::ecash::EcashReceiveDriver,
         ))),
-        kinds::LN_SEND => None,
-        kinds::LN_RECEIVE => None,
+        kinds::LN_SEND => Some(ErasedDriver::LnSend(Arc::new(
+            crate::lightning::LnSendDriver,
+        ))),
+        kinds::LN_RECEIVE => Some(ErasedDriver::LnReceive(Arc::new(
+            crate::lightning::LnReceiveDriver,
+        ))),
         kinds::ONCHAIN_SEND => None,
         kinds::ONCHAIN_RECEIVE => None,
         kinds::RECOVERY => None,
@@ -1438,17 +1451,19 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
+    // One entry per facade that owns a module kind: ecash in T7, lightning in T8, on-chain in T9.
+    // The probe entry is the engine's own fixture and exists only in a test build.
     #[cfg(test)]
-    {
-        vec![
-            Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
-            Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
-        ]
-    }
+    return vec![
+        Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
+        Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
+        Arc::new(crate::lightning::LnBackfiller),
+    ];
     #[cfg(not(test))]
-    {
-        vec![Arc::new(EcashBackfiller) as Arc<dyn Backfiller>]
-    }
+    vec![
+        Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
+        Arc::new(crate::lightning::LnBackfiller),
+    ]
 }
 
 /// A backfiller that reconstructs ecash operations from upstream mint operation logs.
@@ -1458,19 +1473,19 @@ pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
 /// it (see [`Backfiller::backfill`]'s signature). When the creating facade persisted
 /// terms into `extra_meta` / `custom_meta`, those terms (`requested_amount`, `fee`,
 /// `net_credit`, timestamps) are restored; otherwise, unrecorded terms fall back to
-/// honest placeholders (e.g. zero fee, epoch-zero timestamps).
-///
-/// Both placeholders are a known gap in an unannotated record built this way, not a lie
-/// asserted with confidence: a caller displaying an unannotated backfilled record should
-/// not treat these two as trustworthy the way it can the same fields on a record
-/// [`Ecash::send`] or [`Ecash::receive`] created directly.
+/// honest placeholders (e.g. zero fee, the operation log's created_at timestamp).
 ///
 /// [`Ecash::send`]: crate::ecash::Ecash::send
 /// [`Ecash::receive`]: crate::ecash::Ecash::receive
 pub(crate) struct EcashBackfiller;
 
 impl Backfiller for EcashBackfiller {
-    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled> {
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        created_at: u64,
+    ) -> Option<Backfilled> {
         if module_kind == "mintv2" {
             let op_meta: fedimint_mintv2_client::MintOperationMeta =
                 serde_json::from_value(meta.clone()).ok()?;
@@ -1499,7 +1514,7 @@ impl Backfiller for EcashBackfiller {
                         .as_ref()
                         .map(|e| e.amount().msats)
                         .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
-                    let (notes_val, fee_msats, net_credit, created_at) =
+                    let (notes_val, fee_msats, net_credit, created_at_ms) =
                         if let Some(meta_obj) = custom_meta.as_object() {
                             let notes_val = decoded_amount.or_else(|| {
                                 meta_obj.get("notes_value_msats").and_then(|v| v.as_u64())
@@ -1515,18 +1530,18 @@ impl Backfiller for EcashBackfiller {
                             let created = meta_obj
                                 .get("created_at_epoch_ms")
                                 .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                                .unwrap_or(created_at);
                             (notes_val, fee, net, created)
                         } else {
                             let notes_val = decoded_amount?;
-                            (notes_val, 0u64, notes_val, 0)
+                            (notes_val, 0u64, notes_val, created_at)
                         };
                     let wire = crate::ecash::EcashReceiveDetailsWire {
                         notes: parsed_notes.map(|n| n.to_string()),
                         notes_value_msats: notes_val,
                         fee_msats,
                         net_credit_msats: net_credit,
-                        created_at_epoch_ms: created_at,
+                        created_at_epoch_ms: created_at_ms,
                     };
                     let details = serde_json::to_string(&wire).ok()?;
                     Some(Backfilled {
@@ -1554,7 +1569,7 @@ impl Backfiller for EcashBackfiller {
             } => {
                 let notes = crate::Notes::from_upstream(oob_notes);
                 let notes_value = notes.value();
-                let (req_amount, fee_msats, total_msats, reclaim_at, created_at) =
+                let (req_amount, fee_msats, total_msats, reclaim_at, created_at_ms) =
                     if let Some(meta_obj) = op_meta.extra_meta.as_object() {
                         let req = meta_obj
                             .get("requested_amount_msats")
@@ -1572,10 +1587,16 @@ impl Backfiller for EcashBackfiller {
                         let created = meta_obj
                             .get("created_at_epoch_ms")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                            .unwrap_or(created_at);
                         (req, fee, total, reclaim, created)
                     } else {
-                        (requested_amount.msats, 0u64, notes_value.msats(), 0, 0)
+                        (
+                            requested_amount.msats,
+                            0u64,
+                            notes_value.msats(),
+                            0,
+                            created_at,
+                        )
                     };
                 let wire = crate::ecash::EcashSendDetailsWire {
                     notes: notes.to_string(),
@@ -1584,7 +1605,7 @@ impl Backfiller for EcashBackfiller {
                     fee_msats,
                     total_debited_msats: total_msats,
                     reclaim_at_epoch_ms: reclaim_at,
-                    created_at_epoch_ms: created_at,
+                    created_at_epoch_ms: created_at_ms,
                 };
                 let details = serde_json::to_string(&wire).ok()?;
                 Some(Backfilled {
@@ -1605,7 +1626,7 @@ impl Backfiller for EcashBackfiller {
                     return None;
                 }
                 let notes_value_msats = op_meta.amount.msats;
-                let (fee_msats, net_credit, created_at) =
+                let (fee_msats, net_credit, created_at_ms) =
                     if let Some(meta_obj) = op_meta.extra_meta.as_object() {
                         let fee = meta_obj
                             .get("fee_msats")
@@ -1618,17 +1639,17 @@ impl Backfiller for EcashBackfiller {
                         let created = meta_obj
                             .get("created_at_epoch_ms")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                            .unwrap_or(created_at);
                         (fee, net, created)
                     } else {
-                        (0u64, notes_value_msats, 0)
+                        (0u64, notes_value_msats, created_at)
                     };
                 let wire = crate::ecash::EcashReceiveDetailsWire {
                     notes: None,
                     notes_value_msats,
                     fee_msats,
                     net_credit_msats: net_credit,
-                    created_at_epoch_ms: created_at,
+                    created_at_epoch_ms: created_at_ms,
                 };
                 let details = serde_json::to_string(&wire).ok()?;
                 Some(Backfilled {
@@ -1716,7 +1737,12 @@ pub(crate) struct ProbeBackfiller;
 
 #[cfg(test)]
 impl Backfiller for ProbeBackfiller {
-    fn backfill(&self, module_kind: &str, meta: &serde_json::Value) -> Option<Backfilled> {
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        _created_at: u64,
+    ) -> Option<Backfilled> {
         (module_kind == "probe_module").then(|| Backfilled {
             kind: kinds::ECASH_SEND,
             details: meta.to_string(),
@@ -1868,30 +1894,80 @@ impl OperationInner {
     ///
     /// [`Storage`](crate::ErrorCode::Storage).
     pub(crate) async fn record_phase(&self, phase: u32) -> Result<()> {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-
-        let db = self.federation.db();
-        let id = self.id;
-        db.autocommit(
-            |dbtx, _| {
-                Box::pin(async move {
-                    let key = crate::db::OperationRecordKey(id);
-                    let Some(mut record) = dbtx.get_value(&key).await else {
-                        return Ok(());
-                    };
-                    if record.phase.is_some_and(|reached| reached >= phase) {
-                        return Ok(());
-                    }
-                    record.phase = Some(phase);
-                    dbtx.insert_entry(&key, &record).await;
-                    Ok::<(), core::convert::Infallible>(())
-                })
-            },
-            Some(100),
-        )
-        .await
-        .map_err(crate::db::storage_error)
+        record_phase_in(&self.federation.db(), self.id, phase).await
     }
+}
+
+/// [`OperationInner::record_phase`] for a caller that holds a database handle rather than an
+/// operation handle: a driver's stream, which outlives the borrow it was created from.
+///
+/// # Errors
+///
+/// [`Storage`](crate::ErrorCode::Storage).
+pub(crate) async fn record_phase_in(
+    db: &fedimint_core::db::Database,
+    id: UpstreamOperationId,
+    phase: u32,
+) -> Result<()> {
+    use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+    db.autocommit(
+        |dbtx, _| {
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(());
+                };
+                if record.phase.is_some_and(|reached| reached >= phase) {
+                    return Ok(());
+                }
+                record.phase = Some(phase);
+                dbtx.insert_entry(&key, &record).await;
+                Ok::<(), core::convert::Infallible>(())
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
+}
+
+/// Replaces the details JSON of one record, for a documented fill-in-later field.
+///
+/// The one legitimate use is a field that goes from absent to present once
+/// ([`OperationDetails`]'s placement rule); the caller passes the whole record re-encoded, and
+/// a record that has gone is not an error, exactly as in [`record_phase_in`].
+///
+/// # Errors
+///
+/// [`Storage`](crate::ErrorCode::Storage).
+pub(crate) async fn write_details_in(
+    db: &fedimint_core::db::Database,
+    id: UpstreamOperationId,
+    details: String,
+) -> Result<()> {
+    use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+    db.autocommit(
+        |dbtx, _| {
+            let details = details.clone();
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(());
+                };
+                if record.details == details {
+                    return Ok(());
+                }
+                record.details = details;
+                dbtx.insert_entry(&key, &record).await;
+                Ok::<(), core::convert::Infallible>(())
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
 }
 
 /// The shared state behind a type-erased operation handle.
@@ -2461,13 +2537,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
-        let any = any_operation(kinds::LN_SEND, "lnv2", READABLE_STATE_SCHEMA).await;
-        assert_eq!(any.kind(), OperationKind::LnSend);
+        let any = any_operation(kinds::ONCHAIN_SEND, "walletv2", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::OnchainSend);
         // `support` is about the record rather than about what this build can observe, so it
         // still says observable; the accessor is where a kind no facade has written a driver for
         // yet answers `None`, in exactly the way a kind mismatch does.
         assert_eq!(any.support(), OperationSupport::Observable);
-        assert!(any.as_ln_send().is_none());
+        assert!(any.as_onchain_send().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2606,6 +2682,9 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
+        // Ecash (T7) and lightning (T8) are real drivers. Every other kind is a record this
+        // build can find, list and label but not observe, which the accessors report as `None`
+        // rather than as a failure.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
@@ -2614,24 +2693,31 @@ mod tests {
             driver_for(kinds::ECASH_RECEIVE),
             Some(ErasedDriver::EcashReceive(_))
         ));
-        assert!(driver_for(kinds::LN_SEND).is_none());
+        assert!(matches!(
+            driver_for(kinds::LN_SEND),
+            Some(ErasedDriver::LnSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::LN_RECEIVE),
+            Some(ErasedDriver::LnReceive(_))
+        ));
+        assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
+        assert!(driver_for(kinds::ONCHAIN_RECEIVE).is_none());
         assert!(driver_for(kinds::RECOVERY).is_none());
         // A tag this build does not know is not a lookup failure either.
         assert!(driver_for("something_else").is_none());
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 2);
-        assert!(
-            backfillers[1]
-                .backfill("probe_module", &serde_json::Value::Null)
+        assert_eq!(backfillers.len(), 3);
+        assert!(backfillers.iter().any(|b| {
+            b.backfill("probe_module", &serde_json::Value::Null, 0)
                 .is_some()
-        );
-        assert!(
-            backfillers[0]
-                .backfill("unknown_module", &serde_json::Value::Null)
+        }));
+        assert!(backfillers.iter().all(|b| {
+            b.backfill("unknown_module", &serde_json::Value::Null, 0)
                 .is_none()
-        );
+        }));
     }
 
     #[test]
@@ -2657,7 +2743,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json)
+            .backfill("mint", &spend_json, 0)
             .expect("claims a SpendOOB entry under the mint module kind");
         assert_eq!(backfilled.kind, kinds::ECASH_SEND);
         let wire: crate::ecash::EcashSendDetailsWire =
@@ -2681,7 +2767,7 @@ mod tests {
             serde_json::to_value(&internal_reissue_meta).expect("serializes");
         assert!(
             backfiller
-                .backfill("mint", &internal_reissue_json)
+                .backfill("mint", &internal_reissue_json, 0)
                 .is_none()
         );
 
@@ -2699,7 +2785,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json)
+            .backfill("mint", &reissue_json, 0)
             .expect("claims a Reissuance entry under the mint module kind when marked");
         assert_eq!(backfilled.kind, kinds::ECASH_RECEIVE);
         let wire: crate::ecash::EcashReceiveDetailsWire =
@@ -2717,7 +2803,11 @@ mod tests {
             }),
         };
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
-        assert!(backfiller.backfill("mintv2", &mintv2_send_json).is_none());
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_send_json, 0)
+                .is_none()
+        );
 
         // mintv2 Send with unparseable notes also returns None
         let unparseable_send = fedimint_mintv2_client::MintOperationMeta::Send {
@@ -2727,7 +2817,7 @@ mod tests {
         let unparseable_send_json = serde_json::to_value(&unparseable_send).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &unparseable_send_json)
+                .backfill("mintv2", &unparseable_send_json, 0)
                 .is_none()
         );
 
@@ -2749,7 +2839,7 @@ mod tests {
         };
         let mintv2_receive_json = serde_json::to_value(&mintv2_receive).expect("serializes");
         let backfilled_v2_receive = backfiller
-            .backfill("mintv2", &mintv2_receive_json)
+            .backfill("mintv2", &mintv2_receive_json, 0)
             .expect("claims a Receive entry under mintv2");
         assert_eq!(backfilled_v2_receive.kind, kinds::ECASH_RECEIVE);
         let wire_recv: crate::ecash::EcashReceiveDetailsWire =
@@ -2774,13 +2864,13 @@ mod tests {
         let mintv2_reissue_json = serde_json::to_value(&mintv2_reissue).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_reissue_json)
+                .backfill("mintv2", &mintv2_reissue_json, 0)
                 .is_none()
         );
 
         // A module kind this backfiller does not own claims nothing, even with a
         // shape it would otherwise recognise.
-        assert!(backfiller.backfill("wallet", &spend_json).is_none());
+        assert!(backfiller.backfill("wallet", &spend_json, 0).is_none());
     }
 
     #[test]
@@ -2807,7 +2897,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json)
+            .backfill("mint", &spend_json, 0)
             .expect("claims SpendOOB");
         let wire: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -2835,7 +2925,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json)
+            .backfill("mint", &reissue_json, 0)
             .expect("claims Reissuance");
         let wire: crate::ecash::EcashReceiveDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -3450,5 +3540,35 @@ mod tests {
             operation.inner.reload().await.expect("record").phase,
             Some(3)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn details_can_be_rewritten_once_a_later_fact_is_known() {
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([9u8; 32]);
+        let operation = federation
+            .create_operation(
+                id,
+                kinds::ECASH_SEND,
+                "mint",
+                &serde_json::json!({"settled_at": null}),
+                Arc::new(ProbeEcashSendDriver) as Arc<dyn Driver<EcashSendState>>,
+            )
+            .await
+            .expect("create");
+
+        write_details_in(&db, id, r#"{"settled_at":7}"#.to_owned())
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            operation.inner().reload().await.expect("reload").details,
+            r#"{"settled_at":7}"#
+        );
+
+        // A record that has gone is not a failure to write.
+        write_details_in(&db, UpstreamOperationId([10u8; 32]), "{}".to_owned())
+            .await
+            .expect("no record is fine");
     }
 }

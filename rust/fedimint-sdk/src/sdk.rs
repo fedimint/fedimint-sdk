@@ -1250,7 +1250,7 @@ impl SdkBuilder {
         // answer even when every federation goes on to quarantine itself.
         let inner = Arc::new(SdkInner {
             db,
-            connectors: crate::modules::connectors().await?,
+            connectors: crate::modules::connectors().await,
             module_inits: crate::modules::module_inits(),
             root_secret: RootSecret::StandardDoubleDerive(
                 Bip39RootSecretStrategy::<12>::to_root_secret(mnemonic.inner()),
@@ -1681,12 +1681,7 @@ impl SdkInner {
         &self,
         invite: &InviteCode,
     ) -> Result<fedimint_core::config::ClientConfig> {
-        let mut builder = Client::builder().await.map_err(|err| {
-            crate::Error::new(
-                crate::ErrorCode::Internal,
-                format!("no client builder: {err}"),
-            )
-        })?;
+        let mut builder = Client::builder().await;
         builder.with_module_inits(self.module_inits.clone());
         let preview = fedimint_core::runtime::timeout(
             CONTACT_TIMEOUT,
@@ -1710,12 +1705,7 @@ impl SdkInner {
 
     /// Opens the client for a federation the storage already holds.
     pub(crate) async fn open_client(&self, id: &config::FederationId) -> Result<ClientHandleArc> {
-        let mut builder = Client::builder().await.map_err(|err| {
-            crate::Error::new(
-                crate::ErrorCode::Internal,
-                format!("no client builder: {err}"),
-            )
-        })?;
+        let mut builder = Client::builder().await;
         builder.with_module_inits(self.module_inits.clone());
         let db = self
             .db
@@ -1743,12 +1733,7 @@ impl SdkInner {
         id: &config::FederationId,
         record: &FederationRecord,
     ) -> Result<ClientHandleArc> {
-        let mut builder = Client::builder().await.map_err(|err| {
-            crate::Error::new(
-                crate::ErrorCode::Internal,
-                format!("no client builder: {err}"),
-            )
-        })?;
+        let mut builder = Client::builder().await;
         builder.with_module_inits(self.module_inits.clone());
         let preview = fedimint_core::runtime::timeout(
             CONTACT_TIMEOUT,

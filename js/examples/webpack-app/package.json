@@ -11,7 +11,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@fedimint/core": "latest"
+    "@fedimint/core": "workspace:*",
+    "@fedimint/transport-web": "workspace:*"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

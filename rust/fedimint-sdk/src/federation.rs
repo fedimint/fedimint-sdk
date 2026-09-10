@@ -428,6 +428,10 @@ pub(crate) struct FederationInner {
     /// Flipped once the federation stops running, so a pending subscriber resolves promptly
     /// instead of waiting on a stream that will never yield again.
     closed: tokio::sync::watch::Sender<bool>,
+    /// Serialises the start of a lightning claim retry per federation: the read of the record,
+    /// the upstream call that starts the retry and the write that records it happen under this
+    /// lock, so two subscribers that see the same rejected claim start exactly one retry.
+    reclaim_starts: tokio::sync::Mutex<()>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -463,6 +467,7 @@ impl FederationInner {
             record: std::sync::RwLock::new(record),
             status: std::sync::RwLock::new(status),
             closed: tokio::sync::watch::Sender::new(!running),
+            reclaim_starts: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -595,6 +600,11 @@ impl FederationInner {
     /// A receiver that fires when this federation stops running.
     pub(crate) fn closed(&self) -> tokio::sync::watch::Receiver<bool> {
         self.closed.subscribe()
+    }
+
+    /// The lock that serialises starting a lightning claim retry for this federation.
+    pub(crate) async fn lock_reclaim_starts(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.reclaim_starts.lock().await
     }
 
     /// `Ok` while this federation is still usable, and
@@ -833,7 +843,7 @@ impl FederationInner {
         let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
         let claimed = crate::operation::backfillers()
             .into_iter()
-            .find_map(|backfiller| backfiller.backfill(&module, &meta));
+            .find_map(|backfiller| backfiller.backfill(&module, &meta, created_at));
         let record = match claimed {
             Some(claimed) => crate::db::OperationRecord {
                 schema_version: crate::operation::READABLE_STATE_SCHEMA,
