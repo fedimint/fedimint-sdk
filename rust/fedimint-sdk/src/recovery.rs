@@ -169,7 +169,10 @@
 
 use crate::{Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk};
 
+mod driver;
 mod wire;
+
+pub(crate) use driver::RecoveryDriver;
 
 impl Sdk {
     /// Joins a federation and restores this seed's wallet in it from the
