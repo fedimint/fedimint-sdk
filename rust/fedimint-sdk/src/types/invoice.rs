@@ -13,7 +13,7 @@ use crate::{Error, ErrorCode};
 /// field. It round-trips through [`Display`](core::fmt::Display) (recovering
 /// the original bolt11 string) and [`FromStr`](core::str::FromStr) with a
 /// validating parse.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Bolt11Invoice {
     invoice: lightning_invoice::Bolt11Invoice,
 }
@@ -88,6 +88,11 @@ impl Bolt11Invoice {
     /// outside this crate can build one.
     pub(crate) fn from_upstream(invoice: lightning_invoice::Bolt11Invoice) -> Self {
         Self { invoice }
+    }
+
+    /// The wrapped invoice, for the lightning facade's route-hint and payee checks.
+    pub(crate) fn inner(&self) -> &lightning_invoice::Bolt11Invoice {
+        &self.invoice
     }
 
     /// The network this invoice's BOLT11 currency names, or `None` for a
@@ -165,6 +170,27 @@ impl core::str::FromStr for Bolt11Invoice {
                 )
             })?;
         Ok(Self { invoice })
+    }
+}
+
+impl PartialEq for Bolt11Invoice {
+    /// Equal when the bolt11 encodings are equal. The in-memory form is not canonical: an
+    /// invoice built by a module and the same invoice parsed back from its string differ in
+    /// fields BOLT11 does not encode (a route hint's HTLC bounds, for instance), while the
+    /// string, which is what a payer receives, is the same.
+    fn eq(&self, other: &Self) -> bool {
+        self.to_string() == other.to_string()
+    }
+}
+
+impl Eq for Bolt11Invoice {}
+
+impl core::hash::Hash for Bolt11Invoice {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: core::hash::Hasher,
+    {
+        self.to_string().hash(state);
     }
 }
 
@@ -309,5 +335,53 @@ mod tests {
                 .expect_err("a malformed invoice is rejected");
             assert_eq!(error.code, crate::ErrorCode::InvalidInput);
         }
+    }
+
+    #[test]
+    fn a_built_invoice_equals_its_parsed_twin() {
+        // A route hint's hop leaves `htlc_minimum_msat` and `htlc_maximum_msat` unset here,
+        // exactly as an issuing module does; BOLT11 does not encode either field, and
+        // `lightning-invoice` fills both in with defaults on parse, so the built invoice and its
+        // parsed twin differ in memory although they encode identically.
+        use std::collections::HashSet;
+
+        use fedimint_core::bitcoin::hashes::{Hash, sha256};
+        use fedimint_core::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use lightning_invoice::{
+            InvoiceBuilder, PaymentSecret, RouteHint, RouteHintHop, RoutingFees,
+        };
+
+        let secp = Secp256k1::new();
+        let private_key = SecretKey::from_slice(&[0x11; 32]).expect("a valid secret key");
+        let hop = RouteHintHop {
+            src_node_id: PublicKey::from_secret_key(&secp, &private_key),
+            short_channel_id: 42,
+            fees: RoutingFees {
+                base_msat: 1,
+                proportional_millionths: 1,
+            },
+            cltv_expiry_delta: 144,
+            htlc_minimum_msat: None,
+            htlc_maximum_msat: None,
+        };
+        let built = InvoiceBuilder::new(Currency::Regtest)
+            .amount_milli_satoshis(1_000)
+            .payment_hash(sha256::Hash::hash(&[0x22; 32]))
+            .payment_secret(PaymentSecret([0x33; 32]))
+            .description("route hint".to_owned())
+            .duration_since_epoch(core::time::Duration::from_secs(1_700_000_000))
+            .min_final_cltv_expiry_delta(144)
+            .private_route(RouteHint(vec![hop]))
+            .build_signed(|hash| secp.sign_ecdsa_recoverable(hash, &private_key))
+            .expect("a valid invoice");
+        let built = Bolt11Invoice::from_upstream(built);
+        let parsed: Bolt11Invoice = built.to_string().parse().expect("the encoding parses back");
+
+        assert_eq!(built, parsed);
+
+        let mut unique = HashSet::new();
+        unique.insert(built);
+        unique.insert(parsed);
+        assert_eq!(unique.len(), 1);
     }
 }
