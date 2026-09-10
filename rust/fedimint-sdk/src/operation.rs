@@ -1501,10 +1501,9 @@ impl Backfiller for EcashBackfiller {
                         .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
                     let (notes_val, fee_msats, net_credit, created_at) =
                         if let Some(meta_obj) = custom_meta.as_object() {
-                            let notes_val = meta_obj
-                                .get("notes_value_msats")
-                                .and_then(|v| v.as_u64())
-                                .or(decoded_amount)?;
+                            let notes_val = decoded_amount.or_else(|| {
+                                meta_obj.get("notes_value_msats").and_then(|v| v.as_u64())
+                            })?;
                             let fee = meta_obj
                                 .get("fee_msats")
                                 .and_then(|v| v.as_u64())

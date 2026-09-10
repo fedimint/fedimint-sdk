@@ -1,5 +1,7 @@
 //! Out-of-band ecash notes.
 
+use core::hash::{Hash, Hasher};
+
 use fedimint_core::encoding::Encodable;
 use fedimint_mint_client::OOBNotes;
 use fedimint_mintv2_client::ECash;
@@ -121,15 +123,15 @@ impl PartialEq for Notes {
 
 impl Eq for Notes {}
 
-impl core::hash::Hash for Notes {
+impl Hash for Notes {
     fn hash<H>(&self, state: &mut H)
     where
-        H: core::hash::Hasher,
+        H: Hasher,
     {
         match &self.notes {
             NotesInner::V1(notes) => {
                 0u8.hash(state);
-                core::hash::Hash::hash(&notes.consensus_encode_to_vec(), state);
+                notes.consensus_encode_to_vec().hash(state);
             }
             NotesInner::V2 { encoded, .. } => {
                 1u8.hash(state);
