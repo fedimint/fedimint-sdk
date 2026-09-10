@@ -347,18 +347,23 @@ pub enum ActivityStatus {
     /// This SDK version cannot interpret how the row turned out.
     ///
     /// Not a sixth outcome, but the absence of a reading, and it is reported
-    /// in two situations:
+    /// in three situations:
     ///
     /// - the row's [`kind`](crate::ActivityItem::kind) is
     ///   [`OperationKind::Unknown`](crate::OperationKind::Unknown), a record
     ///   written by a build that understood a module or an operation this one
-    ///   does not; and
+    ///   does not;
     /// - the kind is one this build knows but the persisted final state is a
     ///   variant its state enum does not have, which a newer build can write
-    ///   because every state enum here is `#[non_exhaustive]`.
+    ///   because every state enum here is `#[non_exhaustive]`; and
+    /// - the kind is one this build knows, no ending has been recorded, and
+    ///   the operation's current state could not be read on this call. Such
+    ///   a row reports [`is_final`](crate::ActivityItem::is_final) as
+    ///   `false`, which says only that no ending is on record, and a later
+    ///   page may read it.
     ///
-    /// In both, the outcome is unreadable while the row itself is perfectly
-    /// real. Guessing is not an option, and neither is
+    /// In all three, the outcome is unreadable while the row itself is
+    /// perfectly real. Guessing is not an option, and neither is
     /// [`Pending`](Self::Pending): see [the section
     /// above](ActivityStatus#an-uninterpretable-row).
     ///

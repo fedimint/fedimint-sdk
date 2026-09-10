@@ -207,8 +207,10 @@ where
                 return Err(err);
             }
             // An upstream state this build's driver cannot decode (fedimint/fedimint#8969 on
-            // the v1 module today) must not make the whole list unreadable: the record still
-            // says what it knows.
+            // the v1 module today) must not make the whole list unreadable, and it is not a
+            // reading either: `Pending` would claim the operation is still running when all
+            // that is known is that no ending was recorded. So the outcome is `Unknown` and
+            // finality is what the record says, which in this branch is "not yet".
             Err(err) => {
                 tracing::warn!(
                     target: "fedimint_sdk",
@@ -216,7 +218,7 @@ where
                     error = %err,
                     "could not refresh this operation's current state",
                 );
-                (ActivityStatus::Pending, false)
+                (ActivityStatus::Unknown, false)
             }
         },
     };
@@ -789,7 +791,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_refresh_that_fails_leaves_the_row_at_what_its_record_says() {
+    async fn a_refresh_that_fails_is_an_unknown_outcome_with_the_recorded_finality() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);
         let federation = FederationInner::detached(db.clone(), true);
         // `Operation::state` reloads the record before calling the driver, so the id it is
@@ -811,8 +813,9 @@ mod tests {
         )
         .await
         .expect("an unrecognised refresh error still yields a row");
-        assert_eq!(item.status, ActivityStatus::Pending);
+        assert_eq!(item.status, ActivityStatus::Unknown);
         assert!(!item.is_final);
+        assert_eq!((item.amount, item.fee, item.direction), (None, None, None));
 
         let err = typed(
             inner.clone(),

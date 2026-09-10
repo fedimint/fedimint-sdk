@@ -856,17 +856,21 @@ async fn activity_lists_what_the_federation_was_used_for() {
 
     assert_eq!(send_row.operation_id, send_id);
     assert_eq!(send_row.kind, OperationKind::LnSend);
-    assert_eq!(send_row.direction, Some(Direction::Outgoing));
-    assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
-    assert_eq!(send_row.fee, Some(fee));
     if devimint.shape == "v1" {
-        // The record has no final state to read (fedimint/fedimint#8969, as above): the row
-        // reports what the record says rather than the outcome the payment actually reached.
-        assert_eq!(send_row.status, ActivityStatus::Pending);
+        // The record has no final state and the current one cannot be read
+        // (fedimint/fedimint#8969, as above): the outcome is unknown, not pending, and an
+        // unknown outcome carries no figures.
+        assert_eq!(send_row.status, ActivityStatus::Unknown);
         assert!(!send_row.is_final);
+        assert_eq!(send_row.direction, None);
+        assert_eq!(send_row.amount, None);
+        assert_eq!(send_row.fee, None);
     } else {
         assert_eq!(send_row.status, ActivityStatus::Success);
         assert!(send_row.is_final);
+        assert_eq!(send_row.direction, Some(Direction::Outgoing));
+        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+        assert_eq!(send_row.fee, Some(fee));
     }
 
     assert_eq!(receive_row.kind, OperationKind::LnReceive);
@@ -918,15 +922,16 @@ async fn activity_lists_what_the_federation_was_used_for() {
     let receive_row = &restarted.items[1];
     assert_eq!(send_row.operation_id, send_id);
     assert_eq!(send_row.kind, OperationKind::LnSend);
-    assert_eq!(send_row.direction, Some(Direction::Outgoing));
-    assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
-    assert_eq!(send_row.fee, Some(fee));
     if devimint.shape == "v1" {
-        assert_eq!(send_row.status, ActivityStatus::Pending);
+        assert_eq!(send_row.status, ActivityStatus::Unknown);
         assert!(!send_row.is_final);
+        assert_eq!(send_row.amount, None);
     } else {
         assert_eq!(send_row.status, ActivityStatus::Success);
         assert!(send_row.is_final);
+        assert_eq!(send_row.direction, Some(Direction::Outgoing));
+        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+        assert_eq!(send_row.fee, Some(fee));
     }
     assert_eq!(receive_row.kind, OperationKind::LnReceive);
     assert_eq!(receive_row.direction, Some(Direction::Incoming));
