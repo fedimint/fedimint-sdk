@@ -156,6 +156,9 @@ pub struct Sdk {
 /// establish that seed. Pass `None` to use the seed the storage already holds,
 /// or, over storage proven empty, to generate and persist a fresh one. The
 /// failure modes are exactly those of [`SdkBuilder::build`].
+///
+/// The flattened form of [`SdkBuilder`], which cannot itself cross the FFI: a
+/// builder hands out `Self` by value, and UniFFI objects cross as `Arc`.
 #[cfg(feature = "uniffi")]
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn create_fedimint_sdk(
@@ -171,12 +174,22 @@ pub async fn create_fedimint_sdk(
     Ok(Arc::new(builder.build().await?))
 }
 
-/// The methods a language binding calls. These are the crate's real methods,
-/// exported as-is: [`Sdk::preview`] and [`Sdk::join`] take an [`InviteCode`]
-/// handle (a UniFFI object a binding builds with [`InviteCode::parse`]), an
-/// error crosses as [`Error`](crate::Error), [`Sdk::export_mnemonic`] hands back
-/// a [`Mnemonic`] handle, and [`Sdk::join`] a [`Federation`] one. The rest of
-/// `Sdk` stays Rust-only for now.
+/// The UniFFI surface, which is these three methods exactly as the rest of the
+/// crate calls them — the attribute exports them, it does not wrap them.
+///
+/// `preview` / `join` take an [`InviteCode`] handle (a UniFFI object a binding
+/// builds with [`InviteCode::parse`]), an error crosses as
+/// [`Error`](crate::Error), and the handles they return are [`Mnemonic`] /
+/// [`Federation`]. The rest of `Sdk` stays Rust-only for now.
+///
+/// `async_runtime = "tokio"` puts a Tokio context around each poll, which
+/// `fedimint-client` needs for its timers and transport. That context has to be
+/// a *multi-threaded* one: the client spawns a long-lived `sm-executor` task,
+/// every database transaction it opens goes through `fedimint-rocksdb`, and
+/// that offloads its blocking calls with `tokio::task::block_in_place`, which
+/// aborts the process on a current-thread runtime. `async-compat`'s fallback
+/// runtime is current-thread by default, so `Cargo.toml` turns on its
+/// `multi-thread` feature — see the note there.
 #[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Sdk {
     /// Returns this instance's seed phrase, for the user to write down.

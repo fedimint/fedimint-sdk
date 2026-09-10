@@ -243,8 +243,7 @@ dependencies = [
 [[package]]
 name = "async-compat"
 version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
+source = "git+https://github.com/MrImmortal09/async-compat?branch=multi-thread-fallback-runtime#8d43ef512283dd2c4dd5153b588af07efdc34e57"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -2386,6 +2385,7 @@ dependencies = [
 name = "fedimint-sdk"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "async-compat",
  "bip39",
  "cc",
  "fd-lock",
