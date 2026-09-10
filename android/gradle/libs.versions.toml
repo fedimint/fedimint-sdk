@@ -1,0 +1,44 @@
+[versions]
+agp = "8.13.2"
+kotlin = "2.0.21"
+coreKtx = "1.13.1"
+junit = "4.13.2"
+junitVersion = "1.2.1"
+espressoCore = "3.6.1"
+# 5.15.0 is the first release whose bundled libjnidispatch.so is 16 KB page
+# aligned (net.java.dev.jna#1647). 5.14.0 trips Android 15's RELRO alignment
+# check on 16 KB devices.
+jna = "5.17.0"
+coroutines = "1.8.1"
+appcompat = "1.7.0"
+material = "1.12.0"
+lifecycle = "2.8.4"
+
+# The Android SDK's own version. Keep in step with
+# rust/fedimint-sdk/Cargo.toml's `version`.
+fedimintSdk = "0.1.0-alpha.1"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+
+# Demo app only.
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+
+# JNA loads libfedimint_sdk.so and marshals across the UniFFI boundary.
+# kotlinx-coroutines is the other dep the generated bindings need, not a
+# convenience: async methods come out as `suspend fun` and the generated code
+# imports kotlinx.coroutines itself. The demo additionally uses `-android`,
+# for Dispatchers.Main.
+jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
