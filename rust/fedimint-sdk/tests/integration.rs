@@ -954,3 +954,277 @@ async fn activity_lists_what_the_federation_was_used_for() {
 
     reopened.shutdown().await.expect("shuts down");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_restores_a_wallet_with_history() {
+    use fedimint_sdk::{
+        ActivityStatus, FederationStatus, LnSendState, OperationKind, RecoveryState,
+    };
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    pin_lnv2_gateway_to_lnd(&devimint);
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+
+    // Instance A joins plainly and funds the wallet that the recovery below will restore.
+    let storage_a = tempfile::tempdir().expect("a temporary directory");
+    let path_a = storage_a.path().to_str().expect("a utf-8 path");
+    let sdk_a = Sdk::builder()
+        .storage(Storage::at(path_a).expect("a valid path"))
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+    let federation_a = sdk_a.join(&invite).await.expect("the federation joins");
+    let id = federation_a.id();
+    let lightning_a = federation_a
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let funded = fund(&lightning_a, 200_000).await;
+    let mnemonic = sdk_a.export_mnemonic();
+
+    assert_eq!(
+        sdk_a.recovery_status(&id).await.expect("readable"),
+        None,
+        "a plainly joined federation has no recovery"
+    );
+    let err = sdk_a
+        .resume_recovery(&id)
+        .await
+        .expect_err("this federation was joined, not recovered");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    sdk_a.shutdown().await.expect("the instance shuts down");
+    // Every handle dropped before the second instance builds, as in
+    // `stored_federation_survives_restart`.
+    drop(lightning_a);
+    drop(federation_a);
+    drop(sdk_a);
+
+    // Instance B holds the same seed, in a fresh directory, and recovers the funded federation.
+    let storage_b = tempfile::tempdir().expect("a temporary directory");
+    let path_b = storage_b.path().to_str().expect("a utf-8 path").to_owned();
+    let sdk_b = Sdk::builder()
+        .storage(Storage::at(&path_b).expect("a valid path"))
+        .mnemonic(mnemonic.clone())
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+
+    let recovery = sdk_b.recover(&invite).await.expect("the recovery starts");
+    assert_eq!(recovery.federation.id(), id);
+    let last = recovery
+        .progress
+        .await_final()
+        .await
+        .expect("the recovery finishes");
+    assert_eq!(last, RecoveryState::Done);
+    assert_eq!(
+        sdk_b.recovery_status(&id).await.expect("readable"),
+        Some(RecoveryState::Done)
+    );
+    assert_eq!(
+        sdk_b.federation_status(&id),
+        Some(FederationStatus::Running)
+    );
+    assert_eq!(
+        recovery.federation.balance().await.expect("balance"),
+        funded
+    );
+
+    // Resuming a completed recovery hands back the same attempt rather than starting a new one.
+    let resumed = sdk_b
+        .resume_recovery(&id)
+        .await
+        .expect("a completed recovery is handed back rather than restarted");
+    assert_eq!(resumed.progress.id(), recovery.progress.id());
+    assert_eq!(
+        resumed.progress.state().await.expect("state"),
+        RecoveryState::Done
+    );
+
+    let err = sdk_b
+        .recover(&invite)
+        .await
+        .expect_err("this instance already holds that federation");
+    assert_eq!(err.code, ErrorCode::AlreadyJoined);
+
+    let history = recovery
+        .federation
+        .activity(None, 10)
+        .await
+        .expect("activity reads");
+    let recovery_row = history
+        .items
+        .iter()
+        .find(|item| item.kind == OperationKind::Recovery)
+        .expect("a recovery row is in the history");
+    assert_eq!(recovery_row.status, ActivityStatus::Success);
+    assert!(recovery_row.is_final);
+    assert_eq!(recovery_row.direction, None);
+    assert_eq!(recovery_row.amount, None);
+    assert_eq!(recovery_row.fee, None);
+
+    // A spend works after recovery: this proves the client swap made the mint usable.
+    let lightning_b = recovery
+        .federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "10000")
+        .expect("the faucet issues an invoice")
+        .trim()
+        .parse()
+        .expect("a bolt11 invoice");
+    let quote = lightning_b.quote(&invoice).await.expect("a quote");
+    let send = lightning_b.send(quote).await.expect("the payment starts");
+    if devimint.shape == "v1" {
+        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
+        // gateway returns, so the SDK cannot decode the success state. The payment itself goes
+        // through; only its observation fails, as in
+        // `lightning_send_pays_an_invoice_from_outside_the_federation`.
+        let err = send.await_final().await.expect_err("fedimint#8969");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("preimage"), "{}", err.message);
+    } else {
+        assert!(matches!(
+            send.await_final().await.expect("settles"),
+            LnSendState::Success { .. }
+        ));
+    }
+    let balance_before_restart = recovery.federation.balance().await.expect("balance");
+
+    // Restart B: every handle dropped before rebuilding on the same storage, as in
+    // `lightning_receive_is_paid_by_the_faucet_and_survives_a_restart`.
+    sdk_b.shutdown().await.expect("the instance shuts down");
+    drop(send);
+    drop(lightning_b);
+    drop(resumed);
+    drop(recovery);
+    drop(sdk_b);
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path_b).expect("a valid path"))
+        .mnemonic(mnemonic)
+        .build()
+        .await
+        .expect("the instance reopens");
+    assert_eq!(
+        reopened.federation_status(&id),
+        Some(FederationStatus::Running)
+    );
+    assert_eq!(
+        reopened.recovery_status(&id).await.expect("readable"),
+        Some(RecoveryState::Done)
+    );
+    let federation = reopened.federation(&id).expect("still there");
+    assert_eq!(
+        federation.balance().await.expect("balance"),
+        balance_before_restart
+    );
+
+    reopened.shutdown().await.expect("the instance shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_locks_the_federation_while_it_runs() {
+    use fedimint_sdk::{Amount, FederationStatus, RecoveryState};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    pin_lnv2_gateway_to_lnd(&devimint);
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+
+    // Instance A joins plainly and funds the wallet that the recovery below will restore,
+    // mirroring `recovery_restores_a_wallet_with_history`.
+    let storage_a = tempfile::tempdir().expect("a temporary directory");
+    let path_a = storage_a.path().to_str().expect("a utf-8 path");
+    let sdk_a = Sdk::builder()
+        .storage(Storage::at(path_a).expect("a valid path"))
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+    let federation_a = sdk_a.join(&invite).await.expect("the federation joins");
+    let id = federation_a.id();
+    let lightning_a = federation_a
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let funded = fund(&lightning_a, 200_000).await;
+    let mnemonic = sdk_a.export_mnemonic();
+    sdk_a.shutdown().await.expect("the instance shuts down");
+    drop(lightning_a);
+    drop(federation_a);
+    drop(sdk_a);
+
+    let storage_b = tempfile::tempdir().expect("a temporary directory");
+    let path_b = storage_b.path().to_str().expect("a utf-8 path");
+    let sdk_b = Sdk::builder()
+        .storage(Storage::at(path_b).expect("a valid path"))
+        .mnemonic(mnemonic)
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+
+    let recovery = sdk_b.recover(&invite).await.expect("the recovery starts");
+    assert_eq!(recovery.federation.id(), id);
+
+    // The rescan on devimint takes only seconds and may already be done by the time `recover`
+    // returns, so the lock is asserted only when it can still be observed here; the end-state
+    // checks below run either way, so this test never passes vacuously on the parts it can
+    // check.
+    if sdk_b.federation_status(&id) == Some(FederationStatus::Recovering) {
+        let lightning = recovery
+            .federation
+            .lightning()
+            .expect("devimint runs a lightning module");
+        let err = lightning
+            .receive(Amount::from_msats(1_000), "locked")
+            .await
+            .expect_err("a recovering federation refuses fund-touching calls");
+        assert_eq!(err.code, ErrorCode::Recovering);
+        recovery
+            .federation
+            .balance()
+            .await
+            .expect("reading a balance is not fund-touching");
+        assert!(
+            sdk_b
+                .federations()
+                .iter()
+                .any(|federation| federation.id() == id),
+            "a recovering federation is still listed as open"
+        );
+    } else {
+        eprintln!("skipping the lock assertion: the rescan finished before recover returned");
+    }
+
+    let last = recovery
+        .progress
+        .await_final()
+        .await
+        .expect("the recovery finishes");
+    assert_eq!(last, RecoveryState::Done);
+    assert_eq!(
+        sdk_b.recovery_status(&id).await.expect("readable"),
+        Some(RecoveryState::Done)
+    );
+    assert_eq!(
+        sdk_b.federation_status(&id),
+        Some(FederationStatus::Running)
+    );
+    assert_eq!(
+        recovery.federation.balance().await.expect("balance"),
+        funded
+    );
+
+    sdk_b.shutdown().await.expect("the instance shuts down");
+}
