@@ -1859,9 +1859,13 @@ impl SdkInner {
         // A federation the application closed on purpose stays closed: later builds must not
         // undo that choice.
         if record.status == StoredStatus::Closed {
-            let config_meta = crate::db::read_config_meta(&self.db, id)
-                .await
-                .unwrap_or_default();
+            let config_meta = match crate::db::read_config_meta(&self.db, id).await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    tracing::error!("Failed to read config metadata for {id} during restore: {e}");
+                    return;
+                }
+            };
             let federation = Arc::new(FederationInner::new(
                 *id,
                 Arc::downgrade(self),
@@ -1876,9 +1880,13 @@ impl SdkInner {
             return;
         }
 
-        let config_meta = crate::db::read_config_meta(&self.db, id)
-            .await
-            .unwrap_or_default();
+        let config_meta = match crate::db::read_config_meta(&self.db, id).await {
+            Ok(meta) => meta,
+            Err(e) => {
+                tracing::error!("Failed to read config metadata for {id} during restore: {e}");
+                return;
+            }
+        };
         let federation = Arc::new(FederationInner::new(
             *id,
             Arc::downgrade(self),

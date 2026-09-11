@@ -431,4 +431,13 @@ mod tests {
         let all_err = meta.all().await.expect_err("should fail");
         assert_eq!(all_err.code, ErrorCode::FederationClosed);
     }
+
+    #[test]
+    fn test_numeric_projection_preserves_large_integers() {
+        let config = BTreeMap::new();
+        // 18446744073709551617 is u64::MAX + 2, triggering f64 parsing without arbitrary_precision
+        let json = r#"{"n":18446744073709551617}"#;
+        let projected = apply_consensus_bytes(&config, json.as_bytes());
+        assert_eq!(projected.get("n").unwrap(), "18446744073709551617");
+    }
 }

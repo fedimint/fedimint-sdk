@@ -73,7 +73,7 @@ bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
 zeroize = "1"
 futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = { version = "1.0.149", features = ["arbitrary_precision"] }
 tracing = "0.1.44"
 # Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the
 # `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata
