@@ -2166,7 +2166,8 @@ mod tests {
         let err = driver
             .subscribe(&federation, id, &past_due)
             .await
-            .expect_err("no client to attempt the reclaim with");
+            .err()
+            .expect("no client to attempt the reclaim with");
         assert_eq!(err.code, ErrorCode::FederationClosed);
 
         // An explicit cancellation request demands a real answer too, even before the deadline:
