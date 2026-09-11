@@ -264,11 +264,36 @@ impl Sdk {
         let client = match self.inner().recover_client(&id, &record).await {
             Ok(client) => client,
             Err(err) => {
-                // A recovery that returned an error must leave nothing behind. Only a crash
-                // leaves the `Joining` row and its recovery record, and only a crash is what it
-                // is for. `finish_erase` drops both.
-                let _ = self.inner().finish_erase(&id).await;
-                self.inner().remove(&id);
+                let namespace = self
+                    .inner()
+                    .db
+                    .with_prefix(crate::db::federation_prefix(&id).to_vec());
+                // Whether the underlying client got as far as writing into the federation's
+                // namespace is what decides between the two outcomes the docs describe. Nothing
+                // written means nothing joined: the row and its recovery record are dropped, as
+                // a failed `Sdk::join` drops its own. Anything written means the join may have
+                // committed, and the docs promise that such a federation is not lost: it stays
+                // `Joining` with its recovery record, is reported `Quarantined` with this error
+                // as its diagnostic, and the next open redoes the recovery under the same
+                // attempt id.
+                let committed = !crate::db::is_empty(&namespace).await.unwrap_or(true);
+                if !committed {
+                    let _ = self.inner().finish_erase(&id).await;
+                    self.inner().remove(&id);
+                    return Err(err);
+                }
+                let federation = Arc::new(FederationInner::new(
+                    id,
+                    Arc::downgrade(self.inner()),
+                    namespace,
+                    record,
+                    FederationStatus::Quarantined {
+                        diagnostic: err.clone().into(),
+                    },
+                    None,
+                ));
+                self.inner().insert(federation.clone());
+                self.inner().announce(&federation);
                 return Err(err);
             }
         };
