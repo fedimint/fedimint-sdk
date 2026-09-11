@@ -438,9 +438,8 @@ impl Sdk {
     /// any other federation, and its balance and activity are reported and
     /// kept up to date, provisionally, as the wallet is reconstructed. What
     /// it refuses is the work that needs a complete wallet: every send and
-    /// receive, and taking a fresh backup, fail with
-    /// [`Recovering`](crate::ErrorCode::Recovering) until the
-    /// reconstruction completes.
+    /// receive fails with [`Recovering`](crate::ErrorCode::Recovering)
+    /// until the reconstruction completes.
     ///
     /// This is *not* the list to render a wallet screen from. Use
     /// [`Sdk::stored_federations`] for that: it is a superset of this list

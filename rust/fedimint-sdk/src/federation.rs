@@ -45,8 +45,8 @@ use crate::{
 /// [`FederationClosed`](crate::ErrorCode::FederationClosed)" applies to the
 /// **fallible** calls: [`balance`](Federation::balance),
 /// [`operation`](Federation::operation),
-/// [`activity`](Federation::activity), [`backup`](Federation::backup), and
-/// every call made through a facade. The rest of this type returns plain
+/// [`activity`](Federation::activity), and every call made through a
+/// facade. The rest of this type returns plain
 /// values and has no way to report a failure, so each has a defined closed
 /// behaviour instead:
 ///
@@ -308,27 +308,6 @@ impl Federation {
         crate::activity::page(&self.inner, cursor, limit).await
     }
 
-    /// Uploads a fresh encrypted backup to the federation.
-    ///
-    /// Backups are what make seed-only restore possible: they let a
-    /// recovering client learn which notes and operations to look for
-    /// instead of rescanning blindly. The SDK also backs up automatically
-    /// after changes that affect recoverability, so this call is for
-    /// applications that want an explicit "back up now" affordance or want
-    /// to be sure a backup exists before some user-visible milestone.
-    ///
-    /// # Errors
-    ///
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
-    /// recovery is incomplete, which is not the same as still running, since
-    /// a recovery that stopped short leaves the lock in place, and
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
-    pub async fn backup(&self) -> Result<()> {
-        unimplemented!()
-    }
-
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
         Federation { inner }
@@ -531,8 +510,8 @@ impl FederationInner {
     ///
     /// Every facade call holds one of these for its whole duration, which is what makes a close or
     /// an erase wait for work already in flight rather than pulling the client out from under it.
-    /// `fund_touching` marks the calls a recovery-locked federation refuses: sends, receives and
-    /// taking a fresh backup, as opposed to reading a balance or a name.
+    /// `fund_touching` marks the calls a recovery-locked federation refuses: sends and receives,
+    /// as opposed to reading a balance or a name.
     pub(crate) async fn client(&self, fund_touching: bool) -> Result<ClientGuard<'_>> {
         if fund_touching && self.status() == FederationStatus::Recovering {
             return Err(crate::Error::new(

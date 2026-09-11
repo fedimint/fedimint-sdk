@@ -1,7 +1,7 @@
 //! Seed-based wallet recovery.
 //!
-//! Recovery restores a wallet from the seed alone: a federation's backup plus a rescan of the
-//! history it references. Its failure mode is silent fund loss if handled wrong, so this
+//! Recovery restores a wallet from the seed alone, by rescanning the federation's history for
+//! what that seed owns. Its failure mode is silent fund loss if handled wrong, so this
 //! module's contract is written to rule that out: a recovery either completes and the wallet
 //! is restored, or it has not completed and the wallet is not spendable. There is no state in
 //! between that is safe to spend from.
@@ -10,8 +10,7 @@
 //!
 //! A federation whose recovery is **incomplete** is locked. Every ecash, lightning and
 //! on-chain send and receive against it fails with
-//! [`Recovering`](crate::ErrorCode::Recovering), as does
-//! [`Federation::backup`](crate::Federation::backup). Wherever else this crate says an action
+//! [`Recovering`](crate::ErrorCode::Recovering). Wherever else this crate says an action
 //! is refused "while a recovery is in progress", this is the lock meant, and this section is
 //! its authoritative definition.
 //!
@@ -167,8 +166,8 @@ mod wire;
 pub(crate) use driver::RecoveryDriver;
 
 impl Sdk {
-    /// Joins a federation and restores this seed's wallet in it from the
-    /// federation's backup plus a rescan.
+    /// Joins a federation and restores this seed's wallet in it by rescanning
+    /// the federation's history.
     ///
     /// Use this instead of [`Sdk::join`] when the instance was built from a mnemonic the user
     /// restored and the federation may already hold funds belonging to that seed. A plain
@@ -368,9 +367,9 @@ impl Sdk {
     /// federation but has no recovery for it, because it was joined with [`Sdk::join`] rather
     /// than [`Sdk::recover`]. Resuming a recovery is a different request from starting the
     /// first one, and this call deliberately does not do the second: turning a plainly
-    /// joined federation into a recovering one would re-derive its client state from a backup
-    /// while local state derived from that same seed already exists, a double-application
-    /// hazard no rescan can be trusted to survive. A wallet that should have been recovered
+    /// joined federation into a recovering one would re-derive its client state from the
+    /// federation's history while local state derived from that same seed already exists, a
+    /// double-application hazard no rescan can be trusted to survive. A wallet that should have been recovered
     /// and was joined plainly instead has to take the erase path in the module documentation.
     ///
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the id names no open
@@ -661,7 +660,7 @@ pub enum RecoveryState {
     /// This is the only state that releases the lock, and the only one for
     /// which [`is_complete`](Self::is_complete) is true. It says the wallet
     /// is restored: everything the seed owned in this federation that a
-    /// backup and a rescan can find has been found.
+    /// rescan can find has been found.
     Done,
     /// Final for this attempt, and the wallet is **not** recovered.
     ///
