@@ -313,15 +313,27 @@ impl Ecash {
     ///
     /// # Automatic reclaim
     ///
-    /// Notes that go unredeemed do not vanish. The SDK schedules an
-    /// automatic reclaim, so a send to someone who never opens the message
-    /// eventually returns to the sender's balance instead of being lost. The
-    /// moment it is scheduled for is persisted as
-    /// [`EcashSendDetails::reclaim_at`], so an application that restarted can
-    /// still say when the notes stop being redeemable. Its outcome is
-    /// reported as an operation state, like any other:
-    /// [`EcashSendState::Canceled`] when the reclaim wins,
+    /// Notes that go unredeemed do not vanish. Past
+    /// [`EcashSendDetails::reclaim_at`] a send to someone who never opens the
+    /// message is reclaimed instead of being lost, so an application that
+    /// restarted can still say when the notes stop being redeemable from that
+    /// field alone. Its outcome is reported as an operation state, like any
+    /// other: [`EcashSendState::Canceled`] when the reclaim wins,
     /// [`EcashSendState::Redeemed`] when the receiver got there first.
+    ///
+    /// The two module generations differ in what drives that reclaim.
+    /// Against a v1 mint it genuinely runs in the background: the deadline is
+    /// upstream's own, and its own executor reclaims unredeemed notes without
+    /// this SDK doing anything further. Against `mintv2`, which offers no
+    /// background job of its own to hook into (its own advice is "to cancel a
+    /// successful ecash send simply receive it yourself"), the reclaim is
+    /// driven by observation instead: the first [`Operation::state`] or
+    /// [`Operation::updates`] call made on the send after the deadline is
+    /// what attempts it and settles the state. An application that never
+    /// looks at a `mintv2` send again after
+    /// handing over the notes will not see it reclaimed on its own; check
+    /// back on it (or await it) past `reclaim_at` to collect an unredeemed
+    /// send.
     ///
     /// # Errors
     ///
@@ -1162,11 +1174,7 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                return Ok(if record.cancel_requested_at.is_some() {
-                    EcashSendState::CancelRequested
-                } else {
-                    EcashSendState::Created
-                });
+                return mintv2_send_state(federation, record).await;
             }
 
             first_state(self.subscribe(federation, id, record).await?).await
@@ -1186,11 +1194,7 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                let state = if record.cancel_requested_at.is_some() {
-                    EcashSendState::CancelRequested
-                } else {
-                    EcashSendState::Created
-                };
+                let state = mintv2_send_state(federation, record).await?;
                 return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
                     as BoxStream<'static, Result<EcashSendState>>);
             }
@@ -1285,6 +1289,90 @@ fn parse_send_state(s: &str) -> Option<EcashSendState> {
         "Redeemed" => Some(EcashSendState::Redeemed),
         _ => None,
     }
+}
+
+/// The true state of a mintv2 send, as far as it can be told at all.
+///
+/// Unlike `wallet`'s v1 mint, mintv2 gives an out-of-band send no state machine and no
+/// subscription: `MintClientModule::send` extracts the notes from the balance synchronously and
+/// returns, with nothing left running upstream to observe. There is also no automatic reclaim on
+/// mintv2's side (its own doc comment on `send` says as much: "To cancel a successful ecash send
+/// simply receive it yourself"). So before this operation's [`EcashSendDetails::reclaim_at`] and
+/// absent an explicit [`request_cancel`](Operation::request_cancel), `Created` is not a guess,
+/// it is the only honest answer: the notes are out and nothing more is knowable yet.
+///
+/// Past that point, this drives the client-side reclaim mintv2 expects the caller to perform:
+/// attempting to receive the very ecash this operation sent. Attempting it is exactly as safe to
+/// repeat as observing it, since `MintClientModule::receive` derives its operation id
+/// deterministically from the ecash and treats a second attempt on the same ecash as the same
+/// operation rather than a second submission.
+///
+/// - The receive lands (`FinalReceiveOperationState::Success`): this reclaim won the race, so the
+///   value is back in the balance — [`EcashSendState::Canceled`].
+/// - `MintClientModule::receive` itself refuses with `InsufficientFunds`, upstream's catch-all
+///   for a transaction that failed to submit: since the only notes this call ever submits are the
+///   ones this exact send extracted, the one realistic reason a federation already holding them
+///   refuses a second presentation is that they were already spent — the receiver won the race
+///   first. Reported as [`EcashSendState::Redeemed`].
+/// - `AlreadyReceived`: this is not the first time this reclaim was attempted (an earlier poll,
+///   or an earlier process that crashed before observing the outcome); the earlier attempt's own
+///   operation, found via the same deterministic id, is awaited instead of starting a second one.
+async fn mintv2_send_state(
+    federation: &crate::federation::FederationInner,
+    record: &crate::db::OperationRecord,
+) -> Result<EcashSendState> {
+    let cancel_requested = record.cancel_requested_at.is_some();
+    let wire: EcashSendDetailsWire = serde_json::from_str(&record.details).map_err(|err| {
+        Error::new(
+            ErrorCode::Internal,
+            format!("could not decode ecash send details: {err}"),
+        )
+    })?;
+    let reclaim_due = crate::db::now_millis() >= wire.reclaim_at_epoch_ms;
+
+    if !cancel_requested && !reclaim_due {
+        return Ok(EcashSendState::Created);
+    }
+
+    // Only reached once a reclaim is actually warranted, so the common case (nobody has asked
+    // to cancel and the deadline has not passed) never touches the client at all.
+    let client = federation.client(false).await?;
+    let notes: Notes = wire.notes.parse()?;
+    let ecash = notes.to_mintv2().ok_or_else(|| {
+        Error::new(
+            ErrorCode::Internal,
+            "a mintv2 send record holds no mintv2 ecash",
+        )
+    })?;
+
+    let mintv2 = client
+        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+        .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+    let reclaim_op_id = fedimint_core::core::OperationId::from_encodable(&ecash);
+    let reclaim_meta = serde_json::json!({ "facade": "ecash_send_reclaim" });
+
+    let outcome = match mintv2.receive(ecash, reclaim_meta).await {
+        Ok(op_id) => mintv2
+            .await_final_receive_operation_state(op_id)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?,
+        Err(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived) => mintv2
+            .await_final_receive_operation_state(reclaim_op_id)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?,
+        // The only realistic reason our own just-extracted notes fail to submit: they were
+        // already spent, which can only mean the receiver got there first.
+        Err(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds) => {
+            return Ok(EcashSendState::Redeemed);
+        }
+        Err(err) => return Err(map_mintv2_receive_error(err)),
+    };
+
+    Ok(match outcome {
+        fedimint_mintv2_client::FinalReceiveOperationState::Success => EcashSendState::Canceled,
+        fedimint_mintv2_client::FinalReceiveOperationState::Rejected => EcashSendState::Redeemed,
+    })
 }
 
 pub(crate) struct EcashReceiveDriver;
@@ -2015,7 +2103,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mintv2_send_driver_reports_created_and_cancel_requested() {
+    async fn mintv2_send_driver_attempts_reclaim_past_the_deadline() {
         use futures::StreamExt as _;
 
         let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
@@ -2023,18 +2111,28 @@ mod tests {
         let id = fedimint_core::core::OperationId([5u8; 32]);
         let driver = EcashSendDriver;
 
+        let not_yet_due = EcashSendDetailsWire {
+            notes: String::new(),
+            requested_amount_msats: 1_000,
+            notes_value_msats: 1_000,
+            fee_msats: 0,
+            total_debited_msats: 1_000,
+            reclaim_at_epoch_ms: u64::MAX,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
         let mut record = crate::db::OperationRecord {
             schema_version: 1,
             kind: crate::operation::kinds::ECASH_SEND.to_owned(),
             module: "mintv2".to_owned(),
             created_at: 1_700_000_000_000,
-            details: "{}".to_owned(),
+            details: serde_json::to_string(&not_yet_due).expect("encode"),
             phase: None,
             cancel_requested_at: None,
             final_state: None,
         };
 
-        // Initially Created
+        // Before the reclaim deadline, with no cancellation asked for, `Created` needs no
+        // client at all: it is the only honest answer at this point, not a guess.
         let state = driver
             .current(&federation, id, &record)
             .await
@@ -2050,24 +2148,37 @@ mod tests {
         );
         assert!(stream.next().await.is_none());
 
-        // When cancel_requested_at is set
+        // Past the deadline, the driver must actually resolve the outcome by attempting the
+        // reclaim upstream, never fall back to replaying `Created` forever. A detached
+        // federation has no client to attempt it with, so this surfaces as an error rather than
+        // a fabricated state.
+        let mut past_due = record.clone();
+        past_due.details = serde_json::to_string(&EcashSendDetailsWire {
+            reclaim_at_epoch_ms: 0,
+            ..not_yet_due.clone()
+        })
+        .expect("encode");
+        let err = driver
+            .current(&federation, id, &past_due)
+            .await
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+        let err = driver
+            .subscribe(&federation, id, &past_due)
+            .await
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+
+        // An explicit cancellation request demands a real answer too, even before the deadline:
+        // it must not keep replaying `CancelRequested` without ever trying to act on it.
         record.cancel_requested_at = Some(1_700_000_001_000);
-        let state = driver
+        let err = driver
             .current(&federation, id, &record)
             .await
-            .expect("current");
-        assert_eq!(state, EcashSendState::CancelRequested);
-        let mut stream = driver
-            .subscribe(&federation, id, &record)
-            .await
-            .expect("subscribe");
-        assert_eq!(
-            stream.next().await.unwrap().unwrap(),
-            EcashSendState::CancelRequested
-        );
-        assert!(stream.next().await.is_none());
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
 
-        // When final_state is set
+        // A persisted final state still short-circuits before any of this, client or no client.
         record.final_state = Some("Redeemed".to_string());
         let state = driver
             .current(&federation, id, &record)

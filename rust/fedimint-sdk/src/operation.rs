@@ -1574,12 +1574,66 @@ impl Backfiller for EcashBackfiller {
             let op_meta: fedimint_mintv2_client::MintOperationMeta =
                 serde_json::from_value(meta.clone()).ok()?;
             return match op_meta {
-                // Mintv2 out-of-band sends do not have an upstream state machine or subscription
-                // to track whether notes are redeemed or reclaimed (in mintv2, a send is an immediate
-                // bearer extraction with no lifecycle polling). Leaving it unclaimed preserves the
-                // entry under the `mintv2` module kind honestly rather than advertising a send
-                // operation stuck in `Created` forever.
-                fedimint_mintv2_client::MintOperationMeta::Send { .. } => None,
+                // Mintv2 out-of-band sends have no upstream state machine or subscription to
+                // observe (in mintv2, a send is an immediate bearer extraction with no lifecycle
+                // polling); `EcashSendDriver` resolves the outcome itself, from this same record,
+                // by attempting the reclaim once past `reclaim_at` (see `mintv2_send_state`). The
+                // notes are already out of the balance by the time this entry exists at all, so a
+                // crash between `mint.send` committing this log entry and the SDK's own
+                // `create_operation` write must not leave them unrecoverable: `ecash` is upstream's
+                // own copy of exactly what was extracted, decodable on its own.
+                fedimint_mintv2_client::MintOperationMeta::Send { ecash, custom_meta } => {
+                    let notes = ecash.parse::<crate::Notes>().ok()?;
+                    let notes_value = notes.value();
+                    let (req_amount, fee_msats, total_msats, reclaim_at, created_at_ms) =
+                        if let Some(meta_obj) = custom_meta.as_object() {
+                            let req = meta_obj
+                                .get("requested_amount_msats")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or_else(|| notes_value.msats());
+                            let fee = meta_obj
+                                .get("fee_msats")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let total = notes_value.msats().saturating_add(fee);
+                            let reclaim = meta_obj
+                                .get("reclaim_at_epoch_ms")
+                                .and_then(|v| v.as_u64())
+                                // No copy of the reclaim deadline: `EcashSendDriver` treats `0` as
+                                // already due, so a rebuilt record is checked immediately rather
+                                // than assumed still pending.
+                                .unwrap_or(0);
+                            let created = meta_obj
+                                .get("created_at_epoch_ms")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(created_at);
+                            (req, fee, total, reclaim, created)
+                        } else {
+                            (
+                                notes_value.msats(),
+                                0u64,
+                                notes_value.msats(),
+                                0,
+                                created_at,
+                            )
+                        };
+                    let wire = crate::ecash::EcashSendDetailsWire {
+                        notes: notes.to_string(),
+                        requested_amount_msats: req_amount,
+                        notes_value_msats: notes_value.msats(),
+                        fee_msats,
+                        total_debited_msats: total_msats,
+                        reclaim_at_epoch_ms: reclaim_at,
+                        created_at_epoch_ms: created_at_ms,
+                    };
+                    let details = serde_json::to_string(&wire).ok()?;
+                    Some(Backfilled {
+                        kind: kinds::ECASH_SEND,
+                        details,
+                        phase: Some(1),
+                        final_state: None,
+                    })
+                }
                 fedimint_mintv2_client::MintOperationMeta::Receive {
                     ecash, custom_meta, ..
                 } => {
@@ -2877,23 +2931,58 @@ mod tests {
         assert_eq!(wire.notes, None);
         assert_eq!(wire.notes_value_msats, 1_000);
 
-        // mintv2 Send is left unclaimed because mintv2 has no send state machine / tracking
+        // mintv2 Send: the notes are already out of the balance by the time this log entry
+        // exists at all, so a crash before the SDK's own record was written must not leave them
+        // unrecoverable. `EcashSendDriver` resolves the actual outcome (redeemed / reclaimed)
+        // itself, from this same rebuilt record, once past `reclaim_at`.
+        let v2_ecash = fedimint_mintv2_client::ECash::new(
+            fedimint_core::config::FederationId::dummy(),
+            vec![],
+        );
+        let v2_ecash_encoded = fedimint_core::base32::encode_prefixed(
+            fedimint_core::base32::FEDIMINT_PREFIX,
+            &v2_ecash,
+        );
         let mintv2_send = fedimint_mintv2_client::MintOperationMeta::Send {
-            ecash: TOKEN.to_string(),
+            ecash: v2_ecash_encoded.clone(),
             custom_meta: serde_json::json!({
                 "requested_amount_msats": 700u64,
-                "notes_value_msats": 1_000u64,
                 "fee_msats": 50u64,
+                "reclaim_at_epoch_ms": 1_700_100_000_000u64,
             }),
         };
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
-        assert!(
-            backfiller
-                .backfill("mintv2", &mintv2_send_json, 0)
-                .is_none()
-        );
+        let backfilled = backfiller
+            .backfill("mintv2", &mintv2_send_json, 9)
+            .expect("claims a Send entry under the mintv2 module kind");
+        assert_eq!(backfilled.kind, kinds::ECASH_SEND);
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes, v2_ecash_encoded);
+        // The copy's requested amount is honoured; the notes' own value (zero, for this empty
+        // fixture) is what `notes_value_msats` reports regardless.
+        assert_eq!(wire.requested_amount_msats, 700);
+        assert_eq!(wire.notes_value_msats, 0);
+        assert_eq!(wire.fee_msats, 50);
+        assert_eq!(wire.reclaim_at_epoch_ms, 1_700_100_000_000);
 
-        // mintv2 Send with unparseable notes also returns None
+        // No copy at all (an entry this SDK did not create): still recovered, honestly, with the
+        // reclaim deadline defaulting to already-due rather than presumed still pending.
+        let mintv2_send_no_copy = fedimint_mintv2_client::MintOperationMeta::Send {
+            ecash: v2_ecash_encoded.clone(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let mintv2_send_no_copy_json =
+            serde_json::to_value(&mintv2_send_no_copy).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mintv2", &mintv2_send_no_copy_json, 9)
+            .expect("claims a Send entry even with no SDK copy");
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.reclaim_at_epoch_ms, 0);
+        assert_eq!(wire.created_at_epoch_ms, 9);
+
+        // mintv2 Send with unparseable notes still returns None: there is nothing to recover.
         let unparseable_send = fedimint_mintv2_client::MintOperationMeta::Send {
             ecash: "not_valid_notes".to_string(),
             custom_meta: serde_json::Value::Null,
