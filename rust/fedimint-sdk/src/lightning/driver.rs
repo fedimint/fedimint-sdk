@@ -1,97 +1,17 @@
 //! The two lightning drivers, the backfiller, and the stream helpers they share.
 
-use core::time::Duration;
 use std::any::Any;
 
 use fedimint_core::core::OperationId;
-use fedimint_core::task::MaybeSend;
 use fedimint_core::util::{BoxFuture, BoxStream};
-use futures::{Stream, StreamExt, future};
 
 use super::{v1, v2, wire};
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Backfiller, Driver};
-use crate::{Error, ErrorCode, LnReceiveState, LnSendState, OperationState, Result};
+use crate::{Error, ErrorCode, LnReceiveState, LnSendState, Result};
 
-/// How long `current` waits for the next replayed state before calling the last one current.
-///
-/// Neither upstream module offers a "current state" read: v1's `subscribe_*` are generators that
-/// re-run from the first state and resolve each already-passed stage immediately, and lnv2's
-/// notifier replays the stored states before streaming new ones. Draining with a short wait per
-/// item is how a point-in-time answer is produced from that.
-const CURRENT_STATE_SETTLE: Duration = Duration::from_millis(500);
-
-/// Ends a stream after its first final state, and on the first error.
-pub(super) fn until_final<S>(
-    stream: impl Stream<Item = Result<S>> + MaybeSend + 'static,
-) -> BoxStream<'static, Result<S>>
-where
-    S: OperationState,
-{
-    Box::pin(stream.scan(false, |done, item| {
-        if *done {
-            return future::ready(None);
-        }
-        *done = match &item {
-            Ok(state) => state.is_final(),
-            Err(_) => true,
-        };
-        future::ready(Some(item))
-    }))
-}
-
-/// A subscription that yields the current state first: the replayed history is drained until it
-/// settles, the last state it produced is yielded, and every state after that is forwarded as it
-/// comes.
-///
-/// If the inner stream ends before producing anything, this ends too, without yielding: that is
-/// not an "empty" current state, it is the absence of one, and `OperationUpdates::next`'s
-/// `current` fallback is what turns it into an answer. If the yielded state is final (or an
-/// error), nothing more is drained for it; the underlying stream is expected to end right after,
-/// per `Driver::subscribe`'s contract, so the next pull simply observes that.
-pub(super) fn settled<S>(stream: BoxStream<'static, Result<S>>) -> BoxStream<'static, Result<S>>
-where
-    S: OperationState,
-{
-    Box::pin(futures::stream::unfold(
-        (stream, false),
-        |(mut stream, started)| async move {
-            if started {
-                return stream.next().await.map(|item| (item, (stream, true)));
-            }
-            // The first item is awaited without a timeout: both generations yield it promptly,
-            // and the engine already races every wait in this call against the federation's
-            // `closed` watch. Every item after that is drained with the same per-item timeout,
-            // stopping at the first final state, the first error, or the first timeout.
-            let mut last = stream.next().await?;
-            while matches!(&last, Ok(state) if !state.is_final()) {
-                match fedimint_core::runtime::timeout(CURRENT_STATE_SETTLE, stream.next()).await {
-                    Ok(Some(item)) => last = item,
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            Some((last, (stream, true)))
-        },
-    ))
-}
-
-/// The first state a stream yields, mapping an ended stream to this operation's "no state" error.
-///
-/// `Driver::subscribe` already returns a stream wrapped in [`settled`], so this drains it once
-/// rather than draining it a second time the way calling [`settled`] again over it would.
-pub(super) async fn first_state<S>(mut stream: BoxStream<'static, Result<S>>) -> Result<S>
-where
-    S: OperationState,
-{
-    match stream.next().await {
-        Some(item) => item,
-        None => Err(Error::new(
-            ErrorCode::Internal,
-            "this operation's subscription yielded no state",
-        )),
-    }
-}
+pub(super) use crate::operation::{first_state, settled, until_final};
 
 /// Observes an outgoing lightning payment of either generation, chosen by the record's module.
 pub(crate) struct LnSendDriver;
@@ -226,7 +146,9 @@ fn unknown_module(module: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use futures::stream;
+    use std::time::Duration;
+
+    use futures::{StreamExt as _, stream};
     use tokio::sync::oneshot;
 
     use super::*;

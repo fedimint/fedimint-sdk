@@ -653,6 +653,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
                 kind: kinds::LN_SEND,
                 details: serde_json::to_string(&wire::LnSendDetailsWire::from(&details)).ok()?,
                 phase: None,
+                final_state: None,
             })
         }
         LightningOperationMeta::Receive(meta) => {
@@ -689,6 +690,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
                 kind: kinds::LN_RECEIVE,
                 details: serde_json::to_string(&wire::LnReceiveDetailsWire::from(&details)).ok()?,
                 phase: None,
+                final_state: None,
             })
         }
         // An lnurl receive is not an operation this SDK creates.

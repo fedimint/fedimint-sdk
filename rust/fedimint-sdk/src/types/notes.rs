@@ -1,7 +1,10 @@
 //! Out-of-band ecash notes.
 
+use core::hash::{Hash, Hasher};
+
 use fedimint_core::encoding::Encodable;
 use fedimint_mint_client::OOBNotes;
+use fedimint_mintv2_client::ECash;
 
 use super::Amount;
 use crate::{Error, ErrorCode};
@@ -29,9 +32,15 @@ use crate::{Error, ErrorCode};
 /// it is what logging, crash reporters and `assert!` failures reach for, and
 /// a struct holding a `Notes` (such as [`EcashSend`](crate::EcashSend))
 /// would otherwise print the token merely by being logged.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Notes {
-    notes: OOBNotes,
+    notes: NotesInner,
+}
+
+#[derive(Clone)]
+enum NotesInner {
+    V1(OOBNotes),
+    V2 { ecash: ECash, encoded: String },
 }
 
 impl Notes {
@@ -42,12 +51,10 @@ impl Notes {
     /// redeemable (they could already have been spent or reclaimed), only
     /// a receive call does that.
     pub fn value(&self) -> Amount {
-        // `total_amount()` and the `notes()` it calls both `.expect()` a `Notes` part.
-        // Infallible for any value this type can hold: the decoder behind `FromStr`
-        // refuses notes lacking one (modules/fedimint-mint-client/src/lib.rs:392-447).
-        // Already millisatoshis upstream
-        // (modules/fedimint-mint-client/src/lib.rs:509-514).
-        Amount::from_msats(self.notes.total_amount().msats)
+        match &self.notes {
+            NotesInner::V1(notes) => Amount::from_msats(notes.total_amount().msats),
+            NotesInner::V2 { ecash, .. } => Amount::from_msats(ecash.amount().msats),
+        }
     }
 
     /// Wraps already-parsed out-of-band ecash notes.
@@ -57,7 +64,16 @@ impl Notes {
     /// [`FromStr`](core::str::FromStr), which is the only way a caller
     /// outside this crate can build one.
     pub(crate) fn from_upstream(notes: OOBNotes) -> Self {
-        Self { notes }
+        Self {
+            notes: NotesInner::V1(notes),
+        }
+    }
+
+    /// Wraps already-decoded mintv2 out-of-band ecash notes.
+    pub(crate) fn from_mintv2(ecash: ECash, encoded: String) -> Self {
+        Self {
+            notes: NotesInner::V2 { ecash, encoded },
+        }
     }
 
     /// The hex prefix of the id of the federation that issued these notes.
@@ -66,23 +82,78 @@ impl Notes {
     /// joined federation with, before it tries to redeem anything. Eight
     /// lowercase hex characters, the upstream `FederationIdPrefix` form.
     pub(crate) fn federation_id_prefix(&self) -> String {
-        // Infallible for any value this type can hold: the decoder behind
-        // `FromStr` refuses notes it cannot derive a federation id from
-        // (modules/fedimint-mint-client/src/lib.rs:277-286, :392-447).
-        self.notes.federation_id_prefix().to_string()
+        match &self.notes {
+            NotesInner::V1(notes) => notes.federation_id_prefix().to_string(),
+            NotesInner::V2 { ecash, .. } => {
+                if let Some(mint) = ecash.mint() {
+                    mint.to_prefix().to_string()
+                } else {
+                    String::new()
+                }
+            }
+        }
+    }
+
+    /// Returns a clone of the underlying upstream `OOBNotes` if this is a v1 token.
+    pub(crate) fn to_upstream(&self) -> Option<OOBNotes> {
+        match &self.notes {
+            NotesInner::V1(notes) => Some(notes.clone()),
+            NotesInner::V2 { .. } => None,
+        }
+    }
+
+    /// Borrows the underlying upstream `OOBNotes` if this is a v1 token.
+    pub(crate) fn as_upstream(&self) -> Option<&OOBNotes> {
+        match &self.notes {
+            NotesInner::V1(notes) => Some(notes),
+            NotesInner::V2 { .. } => None,
+        }
+    }
+
+    /// Returns a clone of the underlying mintv2 `ECash` if this is a v2 token.
+    pub(crate) fn to_mintv2(&self) -> Option<ECash> {
+        match &self.notes {
+            NotesInner::V1(_) => None,
+            NotesInner::V2 { ecash, .. } => Some(ecash.clone()),
+        }
+    }
+
+    /// Borrows the underlying mintv2 `ECash` if this is a v2 token.
+    pub(crate) fn as_mintv2(&self) -> Option<&ECash> {
+        match &self.notes {
+            NotesInner::V1(_) => None,
+            NotesInner::V2 { ecash, .. } => Some(ecash),
+        }
     }
 }
 
-impl core::hash::Hash for Notes {
+impl PartialEq for Notes {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.notes, &other.notes) {
+            (NotesInner::V1(a), NotesInner::V1(b)) => a == b,
+            (NotesInner::V2 { encoded: a, .. }, NotesInner::V2 { encoded: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Notes {}
+
+impl Hash for Notes {
     fn hash<H>(&self, state: &mut H)
     where
-        H: core::hash::Hasher,
+        H: Hasher,
     {
-        // `OOBNotes` is `PartialEq + Eq` but not `Hash` upstream, and this type
-        // is documented as hashable. Hashing the consensus encoding keeps the
-        // "equal values hash equally" law, because upstream's `PartialEq` is a
-        // structural comparison of exactly the parts this encodes.
-        core::hash::Hash::hash(&self.notes.consensus_encode_to_vec(), state);
+        match &self.notes {
+            NotesInner::V1(notes) => {
+                0u8.hash(state);
+                notes.consensus_encode_to_vec().hash(state);
+            }
+            NotesInner::V2 { encoded, .. } => {
+                1u8.hash(state);
+                encoded.hash(state);
+            }
+        }
     }
 }
 
@@ -100,10 +171,10 @@ impl core::fmt::Display for Notes {
     /// the deliberate way to get the value out; see the type-level
     /// documentation for why [`Debug`] is not.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Always URL-safe base64 with padding, whichever of the three accepted
-        // encodings the value was parsed from
-        // (modules/fedimint-mint-client/src/lib.rs:449-452, :482-488).
-        core::fmt::Display::fmt(&self.notes, f)
+        match &self.notes {
+            NotesInner::V1(notes) => core::fmt::Display::fmt(notes, f),
+            NotesInner::V2 { encoded, .. } => f.write_str(encoded),
+        }
     }
 }
 
@@ -114,15 +185,23 @@ impl core::str::FromStr for Notes {
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Upstream strips every whitespace character before decoding, so a
-        // token wrapped across lines parses; no trim is needed here. The
-        // upstream error is dropped rather than reported: this value is the
-        // money, so anything derived from the rejected string could put a
-        // spendable token in a log.
-        let notes = s
-            .parse::<OOBNotes>()
-            .map_err(|_| Error::new(ErrorCode::InvalidInput, "invalid ecash notes"))?;
-        Ok(Self { notes })
+        if let Ok(notes) = s.parse::<OOBNotes>() {
+            return Ok(Self {
+                notes: NotesInner::V1(notes),
+            });
+        }
+        if let Ok(ecash) = fedimint_core::base32::decode_prefixed::<ECash>(
+            fedimint_core::base32::FEDIMINT_PREFIX,
+            s,
+        ) {
+            return Ok(Self {
+                notes: NotesInner::V2 {
+                    ecash,
+                    encoded: s.to_string(),
+                },
+            });
+        }
+        Err(Error::new(ErrorCode::InvalidInput, "invalid ecash notes"))
     }
 }
 
@@ -218,5 +297,31 @@ mod tests {
             // the rejected string.
             assert_eq!(error.message, "invalid ecash notes");
         }
+    }
+
+    #[test]
+    fn v1_notes_accessors() {
+        let notes = TOKEN.parse::<Notes>().expect("a valid ecash token");
+        assert!(notes.as_upstream().is_some());
+        assert!(notes.to_upstream().is_some());
+        assert!(notes.as_mintv2().is_none());
+        assert!(notes.to_mintv2().is_none());
+    }
+
+    #[test]
+    fn mintv2_notes_accessors() {
+        let federation_id = fedimint_core::config::FederationId::dummy();
+        let ecash = fedimint_mintv2_client::ECash::new(federation_id, vec![]);
+        let encoded = "fake-encoded".to_string();
+        let notes = Notes::from_mintv2(ecash, encoded.clone());
+        assert!(notes.as_upstream().is_none());
+        assert!(notes.to_upstream().is_none());
+        assert!(notes.as_mintv2().is_some());
+        assert!(notes.to_mintv2().is_some());
+        assert_eq!(notes.to_string(), encoded);
+        assert_eq!(
+            notes.federation_id_prefix(),
+            federation_id.to_prefix().to_string()
+        );
     }
 }

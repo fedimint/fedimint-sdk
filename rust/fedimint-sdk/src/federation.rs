@@ -145,22 +145,7 @@ impl Federation {
     /// doing and not a storage fault, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self) -> Result<Amount> {
-        // Reading a balance is not fund-touching: a recovery-locked federation's number is
-        // partial and worth showing as progress, and it is the spends that are refused.
-        let client = self.inner.client(false).await?;
-        let balance = client
-            .get_balance_for_unit(AmountUnit::BITCOIN)
-            .await
-            .map_err(|err| {
-                // The one way this fails in practice is a client with no primary module, which
-                // happens when API-version negotiation left every module out. That is not the
-                // caller's doing and not a storage fault.
-                crate::Error::new(
-                    crate::ErrorCode::Internal,
-                    format!("this federation cannot report a balance: {err}"),
-                )
-            })?;
-        Ok(Amount::from_msats(balance.msats))
+        self.inner.balance().await
     }
 
     /// Opens a new, independent subscription to the balance.
@@ -518,6 +503,52 @@ impl FederationInner {
         Ok(ClientGuard(guard))
     }
 
+    /// The ecash balance: the value this instance currently holds as its balance with this federation.
+    ///
+    /// Takes a client guard of its own, so a caller that is already holding one must call
+    /// [`balance_of`] instead; see that function for why.
+    pub(crate) async fn balance(&self) -> Result<Amount> {
+        let client = self.client(false).await?;
+        balance_of(&client).await
+    }
+
+    /// Whether this federation still has an out-of-band ecash send that has not settled.
+    ///
+    /// The erase guard cannot answer this from the client alone. On the v1 mint an unredeemed
+    /// send keeps a state machine alive for as long as the refund is available, so
+    /// `get_active_operations` sees it; mintv2 has no state machine at all — its `send` takes
+    /// the notes out of the balance, writes a log entry and returns — so an outstanding mintv2
+    /// send is invisible there. A wallet that sent its whole balance out of band therefore
+    /// looks, to the client, exactly like an empty one with nothing running, and erasing it
+    /// would throw away the only copy of notes that are still reclaimable.
+    ///
+    /// Answered from the SDK's own records instead, which exist for both generations: an
+    /// `ecash_send` with no `final_state` has not been observed reaching
+    /// [`Canceled`](crate::EcashSendState::Canceled) or
+    /// [`Redeemed`](crate::EcashSendState::Redeemed).
+    ///
+    /// Deliberately refuses on "not known to have settled" rather than "known to be
+    /// reclaimable": a send whose notes the receiver has already redeemed, which nothing has
+    /// observed yet, also blocks the erase. That is the safe direction — the remedy is to
+    /// observe the operation, which settles it — and the alternative would mean guessing about
+    /// bearer notes that may still be live.
+    pub(crate) async fn has_unsettled_ecash_send(&self) -> Result<bool> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+        use futures::StreamExt;
+
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let mut records = dbtx
+            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
+            .await;
+        while let Some((_, record)) = records.next().await {
+            if record.kind == crate::operation::kinds::ECASH_SEND && record.final_state.is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
     pub(crate) fn db(&self) -> Database {
         self.db.clone()
@@ -862,7 +893,7 @@ impl FederationInner {
                 details: claimed.details,
                 phase: claimed.phase,
                 cancel_requested_at: None,
-                final_state: None,
+                final_state: claimed.final_state,
             },
             // Nothing claimed it, so it is recorded under the module that owns it and reads back
             // as a kind this build does not know: real, listable, and honestly not actionable.
@@ -1095,10 +1126,44 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
 // anywhere is degraded rather than fatal, and forgetting one would leak the client and the store's
 // file lock for no reason. `Sdk::shutdown` is still the way to get a clean stop.
 
+/// The spendable balance, read through a client the caller already has.
+///
+/// This exists so that a facade call holding a [`ClientGuard`] never reaches for a second one.
+/// [`FederationInner::client`] takes a read guard on a `tokio::sync::RwLock`, and that lock is
+/// write-preferring: once [`FederationInner::quiesce`] queues its writer, further readers block
+/// behind it. A call that took a read guard, then asked for another one while still holding the
+/// first, would deadlock against a close that arrives between the two — the second read waits on
+/// the queued writer, and the writer waits on the guard the caller is still holding.
+///
+/// Reading the balance is the one place that came up in practice, because
+/// [`FederationInner::balance`] acquires its own guard; callers already inside a guarded section
+/// pass it here instead.
+pub(crate) async fn balance_of(client: &Client) -> Result<Amount> {
+    let balance = client
+        .get_balance_for_unit(AmountUnit::BITCOIN)
+        .await
+        .map_err(|err| {
+            crate::Error::new(
+                crate::ErrorCode::Internal,
+                format!("this federation cannot report a balance: {err}"),
+            )
+        })?;
+    Ok(Amount::from_msats(balance.msats))
+}
+
 /// A read guard over one federation's live client.
 ///
 /// Holding it keeps a close, an erase or a shutdown waiting until the call is done.
 pub(crate) struct ClientGuard<'a>(tokio::sync::RwLockReadGuard<'a, Option<ClientHandleArc>>);
+
+impl<'a> ClientGuard<'a> {
+    pub(crate) fn handle(&self) -> ClientHandleArc {
+        self.0
+            .as_ref()
+            .expect("a client guard is only built while the client is live")
+            .clone()
+    }
+}
 
 impl core::ops::Deref for ClientGuard<'_> {
     type Target = Client;

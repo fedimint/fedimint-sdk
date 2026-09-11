@@ -1,8 +1,37 @@
 //! Chaumian ecash: spending notes out of band and redeeming them.
 
+use std::any::Any;
 use std::sync::Arc;
 
-use crate::{Amount, Notes, Operation, OperationState, Result, Timestamp};
+use fedimint_client::Client;
+use fedimint_client_module::ClientModuleInstance;
+use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+
+use crate::operation::{Driver, first_state, settled, until_final};
+use crate::{Amount, Error, ErrorCode, Notes, Operation, OperationState, Result, Timestamp};
+
+/// The `"facade"` marker [`Ecash::receive`] writes into the mint module's own operation
+/// metadata, on both generations.
+///
+/// This is what tells a reconstructed log entry apart from one some other client wrote, and
+/// on the v1 mint it is also the only thing separating a user-facing receive from the mint's
+/// own internal change-making: both are a `Reissuance`. Read back by `EcashBackfiller`, which
+/// is why it is a shared constant rather than a literal on each side — a marker that drifts
+/// between the write and the read silently stops matching, and the only symptom is operations
+/// quietly vanishing from history.
+pub(crate) const FACADE_ECASH_RECEIVE: &str = "ecash_receive";
+
+/// The `"facade"` marker the send driver writes on the internal mintv2 receive it submits to
+/// reclaim an unredeemed send (see `mintv2_send_state`).
+///
+/// That receive is an implementation detail of settling an ecash *send* as
+/// [`Canceled`](EcashSendState::Canceled), not a receive the user performed, so it is
+/// deliberately *not* [`FACADE_ECASH_RECEIVE`] and is never backfilled as one. Crediting it
+/// as an incoming receive would double-count the same money: once as the send coming back,
+/// and again as ecash arriving.
+pub(crate) const FACADE_ECASH_SEND_RECLAIM: &str = "ecash_send_reclaim";
 
 /// The ecash facade for one federation.
 ///
@@ -60,25 +89,209 @@ impl Ecash {
     /// the balance cannot cover the rounded-up note value plus the fee,
     /// which can happen for an `amount` the balance would have covered
     /// exactly, and is itself a reason for this call to exist,
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) if assembling
+    /// `amount` would require the wallet to reissue itself change: this
+    /// build only ever hands out notes it already holds in the exact
+    /// denominations requested, never mints new ones to make change, so a
+    /// wallet that cannot represent `amount` from its current notes cannot
+    /// send it at all yet (see [`Ecash::send`]'s errors for why), or if the
+    /// mint module disappeared from the federation's configuration after
+    /// this facade was obtained,
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for
     /// this federation is incomplete,
-    /// [`NotSupported`](crate::ErrorCode::NotSupported) if the mint module
-    /// disappeared from the federation's configuration after this facade
-    /// was obtained,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, amount: Amount) -> Result<EcashQuote> {
-        // Implementation notes (delete once implemented):
-        // - mintv2 rounds a requested amount up to a multiple of 512 msat; that rounded
-        //   value is `EcashQuote::notes_value`.
-        // - When the wallet holds no combination of notes that adds up, a larger note is
-        //   re-issued into smaller ones first; that self-reissue is what `EcashQuote::fee`
-        //   charges for (the mint's own fee, the primary module's fee, change and dust).
-        // - Bind the note inventory and federation configuration used into the quote, so
-        //   a change to either invalidates it as `QuoteChanged` rather than silently
-        //   re-deriving a different plan.
-        unimplemented!()
+        if amount.msats() == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "cannot quote a zero amount",
+            ));
+        }
+
+        self.inner.federation.ensure_open()?;
+        let client = self.inner.federation.client(true).await?;
+        let mint = mint_module(&client)?;
+
+        let (module_id, notes_value, fee) = match mint {
+            MintModule::V1(mint) => {
+                let module_cfg = client
+                    .config()
+                    .await
+                    .get_module_cfg(mint.id)
+                    .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                // `MintClientConfig` is kept private by `fedimint-mint-client` itself and
+                // re-exported nowhere nameable there, so the cast target has to name it at
+                // its own defining crate, `fedimint-mint-common` (see the dependency comment
+                // in Cargo.toml).
+                let mint_cfg: &fedimint_mint_common::config::MintClientConfig =
+                    module_cfg
+                        .cast()
+                        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                let fee_consensus = mint_cfg.fee_consensus.clone();
+                let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
+                let multiple = fee_consensus.min_economical_denomination().msats;
+                if multiple == 0 {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "fee consensus denomination base is too large or invalid",
+                    ));
+                }
+                let remainder = amount.msats() % multiple;
+                if remainder != 0 && amount.msats() > u64::MAX - (multiple - remainder) {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "amount is too large to round to fee consensus denomination",
+                    ));
+                }
+                let rounded_upstream = fee_consensus.round_up(upstream_amount);
+                let notes_value = Amount::from_msats(rounded_upstream.msats);
+
+                let balance = crate::federation::balance_of(&client).await?;
+                if balance < notes_value {
+                    return Err(Error::new(
+                        ErrorCode::InsufficientBalance,
+                        format!(
+                            "balance {balance:?} cannot cover requested notes value {notes_value:?}"
+                        ),
+                    ));
+                }
+
+                // `send_fee_quote` runs the same selection `send` itself will use against the
+                // live note inventory, rather than a flat per-amount formula that cannot tell
+                // "the wallet already holds exact change" (free) apart from "it would have to
+                // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
+                // first case.
+                let fee_quote = mint
+                    .send_fee_quote(rounded_upstream)
+                    .await
+                    .map_err(map_send_fee_quote_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+
+                let (module_db, _) = client.db().with_prefix_module_id(mint.id);
+                let mut dbtx = module_db.begin_transaction_nc().await;
+                let counts = mint.get_note_counts_by_denomination(&mut dbtx).await;
+                drop(dbtx);
+
+                let mut held_notes = Vec::new();
+                for (tier_amount, count) in counts.iter() {
+                    for _ in 0..count {
+                        held_notes.push((tier_amount, ()));
+                    }
+                }
+                held_notes.sort_by_key(|(amt, _)| *amt);
+                held_notes.reverse();
+
+                use fedimint_mint_client::NotesSelector as _;
+                let can_select_exact = fedimint_mint_client::SelectNotesWithExactAmount
+                    .select_notes(
+                        futures::stream::iter(held_notes),
+                        rounded_upstream,
+                        fedimint_mint_common::config::FeeConsensus::zero(),
+                    )
+                    .await
+                    .is_ok();
+
+                // A nonzero fee or inability to select exact notes means the wallet's
+                // current note inventory cannot cover `notes_value` exactly, so producing it
+                // would require a self-reissue (which quotes zero fees if the federation charges none).
+                // `Ecash::send` has no way to perform that reissue and still hand back a
+                // trackable, cancellable operation (see its doc), so refuse here rather than
+                // freeze a quote `send` can never actually execute.
+                if fee.msats() > 0 || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::NotSupported,
+                        "sending this amount would require reissuing notes to make exact change, \
+                         which this build does not yet support; the wallet must already hold notes \
+                         in the exact denominations needed",
+                    ));
+                }
+
+                (mint.id, notes_value, fee)
+            }
+            MintModule::V2(mint) => {
+                let multiple = 512u64;
+                let remainder = amount.msats() % multiple;
+                if remainder != 0 && amount.msats() > u64::MAX - (multiple - remainder) {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "amount is too large to round to fee consensus denomination",
+                    ));
+                }
+                let rounded_msats = if remainder == 0 {
+                    amount.msats()
+                } else {
+                    amount.msats() + (multiple - remainder)
+                };
+                let rounded_upstream = fedimint_core::Amount::from_msats(rounded_msats);
+                let notes_value = Amount::from_msats(rounded_msats);
+
+                let balance = crate::federation::balance_of(&client).await?;
+                if balance < notes_value {
+                    return Err(Error::new(
+                        ErrorCode::InsufficientBalance,
+                        format!(
+                            "balance {balance:?} cannot cover requested notes value {notes_value:?}"
+                        ),
+                    ));
+                }
+
+                let fee_quote = mint
+                    .send_fee_quote(rounded_upstream)
+                    .await
+                    .map_err(map_send_fee_quote_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+
+                let can_select_exact = mintv2_can_select_exact(
+                    mint.get_count_by_denomination()
+                        .await
+                        .into_iter()
+                        .map(|(denomination, count)| (denomination.amount(), count)),
+                    rounded_upstream,
+                );
+
+                if fee.msats() > 0 || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::NotSupported,
+                        "sending this amount would require reissuing notes to make exact change, \
+                         which this build does not yet support; the wallet must already hold notes \
+                         in the exact denominations needed",
+                    ));
+                }
+
+                (mint.id, notes_value, fee)
+            }
+        };
+
+        let total = notes_value
+            .checked_add(fee)
+            .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
+
+        let balance = crate::federation::balance_of(&client).await?;
+        if balance < total {
+            return Err(Error::new(
+                ErrorCode::InsufficientBalance,
+                format!("balance {balance:?} cannot cover total debit {total:?}"),
+            ));
+        }
+
+        let now = crate::db::now_millis();
+        let expires_at = Timestamp::from_epoch_millis(now + 60_000);
+        let balance_snapshot_msats = balance.msats();
+
+        Ok(EcashQuote {
+            inner: EcashQuoteInner {
+                requested_amount: amount,
+                notes_value,
+                fee,
+                total,
+                expires_at,
+                balance_snapshot_msats,
+                federation_id: self.inner.federation.id,
+                module_id,
+            },
+        })
     }
 
     /// Executes a quoted send, taking its value out of the balance as
@@ -100,20 +313,37 @@ impl Ecash {
     ///
     /// # Automatic reclaim
     ///
-    /// Notes that go unredeemed do not vanish. The SDK schedules an
-    /// automatic reclaim, so a send to someone who never opens the message
-    /// eventually returns to the sender's balance instead of being lost. The
-    /// moment it is scheduled for is persisted as
-    /// [`EcashSendDetails::reclaim_at`], so an application that restarted can
-    /// still say when the notes stop being redeemable. Its outcome is
-    /// reported as an operation state, like any other:
-    /// [`EcashSendState::Canceled`] when the reclaim wins,
+    /// Notes that go unredeemed do not vanish. Past
+    /// [`EcashSendDetails::reclaim_at`] a send to someone who never opens the
+    /// message is reclaimed instead of being lost, so an application that
+    /// restarted can still say when the notes stop being redeemable from that
+    /// field alone. Its outcome is reported as an operation state, like any
+    /// other: [`EcashSendState::Canceled`] when the reclaim wins,
     /// [`EcashSendState::Redeemed`] when the receiver got there first.
+    ///
+    /// The two module generations differ in what drives that reclaim.
+    /// Against a v1 mint it genuinely runs in the background: the deadline is
+    /// upstream's own, and its own executor reclaims unredeemed notes without
+    /// this SDK doing anything further. Against `mintv2`, which offers no
+    /// background job of its own to hook into (its own advice is "to cancel a
+    /// successful ecash send simply receive it yourself"), the reclaim is
+    /// driven by observation instead: the first [`Operation::state`] or
+    /// [`Operation::updates`] call made on the send after the deadline is
+    /// what attempts it and settles the state. An application that never
+    /// looks at a `mintv2` send again after
+    /// handing over the notes will not see it reclaimed on its own; check
+    /// back on it (or await it) past `reclaim_at` to collect an unredeemed
+    /// send.
     ///
     /// # Errors
     ///
     /// [`QuoteExpired`](crate::ErrorCode::QuoteExpired),
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged),
+    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged) if the balance or
+    /// the note inventory the quote was computed against no longer matches:
+    /// the total dropped, or the specific denominations needed to hand out
+    /// exactly [`EcashQuote::notes_value`] are no longer available even
+    /// though the total is unchanged (spent and received in the meantime by
+    /// some other operation). Both mean the same thing: quote again,
     /// [`InsufficientBalance`](crate::ErrorCode::InsufficientBalance),
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for
     /// this federation is incomplete,
@@ -125,20 +355,167 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
-        // Implementation notes (delete once implemented):
-        // - Re-check the note inventory and federation configuration the quote was bound
-        //   to before spending; a change to either is `QuoteChanged`, not a different debit.
-        // - Write `EcashSendDetails` in the same storage transaction that creates the
-        //   operation, so a process that dies right after this call still finds the notes,
-        //   the amounts and the reclaim time on the next start.
-        // - Schedule the automatic reclaim to fire one day after send, matching the
-        //   existing JavaScript SDK's default. The exact value is subject to confirmation
-        //   when this facade is implemented.
-        // - Tuning the reclaim period, or constraining note selection, belongs on a later
-        //   additive `quote_with`-style call rather than an options struct here, so it
-        //   becomes part of the plan the user approves rather than changing an approved
-        //   quote's cost after the fact.
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+        let now_millis = crate::db::now_millis();
+        let now = Timestamp::from_epoch_millis(now_millis);
+
+        if now >= quote.expires_at() {
+            return Err(Error::new(
+                ErrorCode::QuoteExpired,
+                "this quote has expired",
+            ));
+        }
+
+        if quote.inner.federation_id != self.inner.federation.id {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "quote was created for a different federation",
+            ));
+        }
+
+        let client = self.inner.federation.client(true).await?;
+        let mint = mint_module(&client)?;
+
+        if quote.inner.module_id != mint.id() {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "quote was created for a different mint module",
+            ));
+        }
+
+        // A cheap early exit for the common case. This is not a note-composition
+        // check: the total can stay identical while the specific denominations
+        // available change (spent and received back in the meantime). The exact
+        // selection below is what actually verifies the plan is still realizable;
+        // this only saves a doomed selection attempt when the balance alone already
+        // rules the quote out.
+        let current_balance = crate::federation::balance_of(&client).await?;
+        if current_balance < quote.total()
+            || current_balance.msats() != quote.inner.balance_snapshot_msats
+        {
+            return Err(Error::new(
+                ErrorCode::QuoteChanged,
+                "balance changed since quote was created",
+            ));
+        }
+
+        let timeout = std::time::Duration::from_secs(86_400);
+        let upstream_notes_val = fedimint_core::Amount::from_msats(quote.notes_value().msats());
+        // The quote promised `notes_value`, and execution must produce exactly that or fail,
+        // never more. Each generation enforces that differently, and neither inherits it from
+        // the other: the v1 arm gets it from `SelectNotesWithExactAmount`, which fails rather
+        // than reissuing to make change (`spend_notes_with_selector` never reissues under any
+        // selector — only `MintClientModule::send_oob_notes` does, and it returns no operation
+        // id this facade could track for cancellation), so a failure there means the note
+        // inventory moved since the quote: a race, not a capability gap. The mintv2 arm has no
+        // such selector and checks for itself; see its own comment below.
+        let reclaim_at = Timestamp::from_epoch_millis(now_millis + 86_400_000);
+        let extra_meta = serde_json::json!({
+            "requested_amount_msats": quote.requested_amount().msats(),
+            "notes_value_msats": quote.notes_value().msats(),
+            "fee_msats": quote.fee().msats(),
+            "created_at_epoch_ms": now_millis,
+            "reclaim_at_epoch_ms": reclaim_at.epoch_millis(),
+        });
+
+        let (operation_id, notes, module_name) = match mint {
+            MintModule::V1(mint) => {
+                let (operation_id, oob_notes) = mint
+                    .spend_notes_with_selector(
+                        &fedimint_mint_client::SelectNotesWithExactAmount,
+                        upstream_notes_val,
+                        Some(timeout),
+                        true,
+                        extra_meta,
+                    )
+                    .await
+                    .map_err(map_spend_error)?;
+                (operation_id, Notes::from_upstream(oob_notes), "mint")
+            }
+            MintModule::V2(mint) => {
+                // mintv2 has no exact-only send. `MintClientModule::send` tries its
+                // exact-change fast path and, failing that, *silently* submits a self-reissue
+                // to make change and then retries — paying a fee this quote froze at zero and
+                // leaving behind a second, untracked operation. The v1 arm above is safe from
+                // that by construction (`SelectNotesWithExactAmount` fails rather than
+                // reissues); this arm has to check for itself, immediately before the call,
+                // that the fast path is the one that will be taken.
+                //
+                // Both of upstream's own signals are used, because neither is sufficient
+                // alone: `send_fee_quote` returns `FeeQuote::ZERO` on the exact path but can
+                // also return it on the reissue path when the federation charges no fees at
+                // all, and `mintv2_can_select_exact` mirrors a selection this crate does not
+                // own. Requiring both to agree — and requiring the fee to still be the one the
+                // quote committed to — is what makes the fall-through reachable only through
+                // the residual race below.
+                let fresh_fee = mint
+                    .send_fee_quote(upstream_notes_val)
+                    .await
+                    .map(|fee_quote| Amount::from_msats(fee_quote.total().get_bitcoin().msats))
+                    .map_err(map_send_fee_quote_error)?;
+                let can_select_exact = mintv2_can_select_exact(
+                    mint.get_count_by_denomination()
+                        .await
+                        .into_iter()
+                        .map(|(denomination, count)| (denomination.amount(), count)),
+                    upstream_notes_val,
+                );
+                if fresh_fee != quote.fee() || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::QuoteChanged,
+                        "note inventory changed since quote was created",
+                    ));
+                }
+
+                // Residual race, not closed here and not closeable from this side: a
+                // concurrent operation that consumes one of the notes counted above between
+                // this check and the call below puts `send` back on the reissue path. The
+                // window is a few local database reads wide and needs a second operation on
+                // the same wallet inside it; closing it properly needs an exact-only send (or
+                // a reissue that yields a trackable operation) from `fedimint-mintv2-client`,
+                // which is also what `Ecash::quote`'s `NotSupported` refusal is waiting on.
+                // The same shape of remainder is documented on the lightning facade's v2 send
+                // (fedimint/fedimint#9124).
+                let (operation_id, ecash) = mint
+                    .send(upstream_notes_val, extra_meta, false)
+                    .await
+                    .map_err(map_mintv2_send_error)?;
+                let encoded = fedimint_core::base32::encode_prefixed(
+                    fedimint_core::base32::FEDIMINT_PREFIX,
+                    &ecash,
+                );
+                (operation_id, Notes::from_mintv2(ecash, encoded), "mintv2")
+            }
+        };
+
+        let created_at = now;
+
+        let details = EcashSendDetails {
+            notes: notes.clone(),
+            requested_amount: quote.requested_amount(),
+            notes_value: quote.notes_value(),
+            fee: quote.fee(),
+            total_debited: quote.total(),
+            reclaim_at,
+            created_at,
+        };
+
+        let wire = EcashSendDetailsWire::from(&details);
+        let driver = Arc::new(EcashSendDriver);
+
+        let operation = self
+            .inner
+            .federation
+            .create_operation(
+                operation_id,
+                crate::operation::kinds::ECASH_SEND,
+                module_name,
+                &wire,
+                driver,
+            )
+            .await?;
+
+        Ok(EcashSend { notes, operation })
     }
 
     /// Redeems out-of-band notes into this federation's balance.
@@ -172,11 +549,114 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self, notes: &Notes) -> Result<Operation<EcashReceiveState>> {
-        // Implementation notes (delete once implemented):
-        // - Compute the reissuance fee locally from the notes and the federation's fee
-        //   schedule, before submitting, so `EcashReceiveDetails` can be written in full
-        //   in the same storage transaction that creates the operation.
-        unimplemented!()
+        self.inner.federation.ensure_open()?;
+
+        if notes.value().msats() == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "cannot receive notes with zero value",
+            ));
+        }
+
+        let expected_prefix = self.inner.federation.id.to_prefix().to_string();
+        if notes.federation_id_prefix() != expected_prefix {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "these notes were issued by a different federation",
+            ));
+        }
+
+        let client = self.inner.federation.client(true).await?;
+        let mint = mint_module(&client)?;
+
+        let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
+
+        let (operation_id, fee, net_credit, module_name) =
+            match mint {
+                MintModule::V1(mint) => {
+                    let v1_notes = notes.as_upstream().ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::NotSupported,
+                            "mintv2 notes cannot be redeemed through v1 mint",
+                        )
+                    })?;
+                    let fee_quote = mint
+                        .reissue_fee_quote(v1_notes)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
+                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
+                    })?;
+
+                    let extra_meta = serde_json::json!({
+                        "facade": FACADE_ECASH_RECEIVE,
+                        "notes_value_msats": notes.value().msats(),
+                        "fee_msats": fee.msats(),
+                        "net_credit_msats": net_credit.msats(),
+                        "created_at_epoch_ms": created_at.epoch_millis(),
+                    });
+
+                    let to_reissue = notes.to_upstream().expect("already checked");
+                    let op_id = mint
+                        .reissue_external_notes(to_reissue, extra_meta)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    (op_id, fee, net_credit, "mint")
+                }
+                MintModule::V2(mint) => {
+                    let v2_notes = notes.as_mintv2().ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::NotSupported,
+                            "v1 mint notes cannot be redeemed through mintv2",
+                        )
+                    })?;
+                    let fee_quote = mint
+                        .receive_fee_quote(v2_notes)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
+                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
+                    })?;
+
+                    let extra_meta = serde_json::json!({
+                        "facade": FACADE_ECASH_RECEIVE,
+                        "notes_value_msats": notes.value().msats(),
+                        "fee_msats": fee.msats(),
+                        "net_credit_msats": net_credit.msats(),
+                        "created_at_epoch_ms": created_at.epoch_millis(),
+                    });
+
+                    let op_id = mint
+                        .receive(v2_notes.clone(), extra_meta)
+                        .await
+                        .map_err(map_mintv2_receive_error)?;
+                    (op_id, fee, net_credit, "mintv2")
+                }
+            };
+
+        let details = EcashReceiveDetails {
+            notes: Some(notes.clone()),
+            notes_value: notes.value(),
+            fee,
+            net_credit,
+            created_at,
+        };
+
+        let wire = EcashReceiveDetailsWire::from(&details);
+        let driver = Arc::new(EcashReceiveDriver);
+
+        self.inner
+            .federation
+            .create_operation(
+                operation_id,
+                crate::operation::kinds::ECASH_RECEIVE,
+                module_name,
+                &wire,
+                driver,
+            )
+            .await
     }
 
     /// Builds the facade for one federation. Handed out by `Federation::ecash`.
@@ -196,17 +676,15 @@ impl Ecash {
 ///
 /// The requested amount and the actual note value can differ, and this is
 /// the ordinary case rather than an edge case: a mint issues notes in fixed
-/// denominations, so a request is satisfied with notes worth at least as
-/// much, never less, and assembling those notes can itself cost a fee. So
-/// the debit is [`notes_value`](EcashQuote::notes_value) plus
-/// [`fee`](EcashQuote::fee), and both can exceed what the user typed. Show
+/// denominations (mintv2 rounds up to a multiple of 512 msat), so a request
+/// is satisfied with notes worth at least as much, never less. Show
 /// [`total`](EcashQuote::total) before the user agrees, because that is the
 /// number their balance moves by.
-// Implementation notes (delete once implemented):
-// - mintv2 rounds a request up to a multiple of 512 msat.
-// - The resolved note value and fee are quoted once and appear nowhere in the send's
-//   progress stream, so the executed quote is what `EcashSendDetails` copies its terms
-//   from, for the whole life of the operation and after a restart.
+///
+/// The resolved note value is quoted once here and appears nowhere in the
+/// send's progress stream, so this executed quote is what
+/// [`EcashSendDetails`] copies its terms from, for the whole life of the
+/// operation and after a restart.
 #[derive(Debug)]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
@@ -219,7 +697,7 @@ impl EcashQuote {
     /// requested next to what will actually be issued. It is a floor, and it
     /// is not the figure the balance moves by; see [`EcashQuote::total`].
     pub fn requested_amount(&self) -> Amount {
-        unimplemented!()
+        self.inner.requested_amount
     }
 
     /// The value the notes will actually carry, what the receiver can
@@ -229,18 +707,21 @@ impl EcashQuote {
     /// the figure activity history reports as an ecash send's
     /// [`amount`](crate::ActivityItem::amount).
     pub fn notes_value(&self) -> Amount {
-        unimplemented!()
+        self.inner.notes_value
     }
 
     /// What issuing and selecting those notes will cost, on top of
     /// [`EcashQuote::notes_value`].
     ///
-    /// Zero when the notes already held can be handed over as they are.
-    /// Non-zero when they have to be re-issued to assemble the value, which
-    /// is a fee the caller pays for the shape of their own note inventory
-    /// rather than for anything the receiver gets.
+    /// Always zero today: [`Ecash::quote`] refuses with
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) rather than freeze a
+    /// quote that would need the wallet to reissue itself change to
+    /// assemble the value, since [`Ecash::send`] has no way to perform that
+    /// reissue yet. The field stays, rather than being removed, because a
+    /// future build that can perform that reissue will report its real cost
+    /// here without changing this type's shape.
     pub fn fee(&self) -> Amount {
-        unimplemented!()
+        self.inner.fee
     }
 
     /// The total amount that will be debited from the balance:
@@ -248,7 +729,7 @@ impl EcashQuote {
     ///
     /// This is the number to show as "you will pay".
     pub fn total(&self) -> Amount {
-        unimplemented!()
+        self.inner.total
     }
 
     /// When this quote stops being executable.
@@ -260,7 +741,12 @@ impl EcashQuote {
     /// reported as [`QuoteChanged`](crate::ErrorCode::QuoteChanged). The
     /// remedy for both is the same: quote again and re-confirm.
     pub fn expires_at(&self) -> Timestamp {
-        unimplemented!()
+        self.inner.expires_at
+    }
+
+    /// The federation this quote was created for.
+    pub fn federation_id(&self) -> crate::FederationId {
+        crate::FederationId::from_upstream(self.inner.federation_id)
     }
 }
 
@@ -335,14 +821,64 @@ impl Operation<EcashSendState> {
     // cancelling is a real protocol action rather than an attempt to un-send money that has
     // already moved.
     //
-    // Only the intent is recorded here. Telling the mint is the ecash driver's job, and it
-    // could not be done here in any case: `try_cancel_spend_notes` returns `()` and writes a
-    // marker into the module's own isolated database
-    // (modules/fedimint-mint-client/src/lib.rs:2556-2563), so it has no result to report and
-    // the outcome only ever arrives as a state.
+    // Recording the intent is what this call promises; forwarding it to the v1 mint happens
+    // here too, on a best-effort basis, and cannot change the outcome above.
+    // `try_cancel_spend_notes` returns `()` and only writes a marker into the module's own
+    // isolated database (modules/fedimint-mint-client/src/lib.rs:2558-2565) — no network, no
+    // result to report — so doing it here costs nothing the error contract above forbids, and
+    // it is what makes a cancellation asked for *while a subscription is already live* take
+    // effect: a running subscription is not woken by the record write and would otherwise
+    // forward nothing until it was established again.
+    //
+    // It is still only best effort, and deliberately not the only path. A failure here (or a
+    // crash between the persist and the forward) leaves the durable intent in place, and the
+    // driver forwards it again from both `current` and `subscribe`, so the next observation
+    // after a restart picks it up. mintv2 has no equivalent marker to write — there,
+    // cancelling *is* the reclaim, which is a federation round trip this call must not make —
+    // so its driver drives it instead.
     pub async fn request_cancel(&self) -> Result<()> {
         self.inner().federation.ensure_open()?;
-        self.inner().persist_cancel_request().await
+        self.inner().persist_cancel_request().await?;
+        // The cached record predates the write above, so the pending intent is asserted here
+        // rather than read back off it.
+        forward_cancel_request(
+            &self.inner().federation,
+            &self.inner().record.module,
+            self.inner().id,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+/// Tells the v1 mint about a cancellation this SDK has already recorded, if it will listen.
+///
+/// Called from every place that learns of a pending cancellation — the facade call that records
+/// it, and the driver's `current` and `subscribe` — because upstream's marker is a local write
+/// with no completion signal, so the only way to be sure it landed is to write it again. It is
+/// idempotent: a second write of the same key is a no-op upstream, which logs and moves on.
+///
+/// Silent on failure by design. Every caller either has a stronger answer to give (a state) or
+/// a contract that forbids reporting a network- or storage-shaped error, and the durable intent
+/// on the record is what actually drives the reclaim; a forward that did not land is retried by
+/// the next observation rather than surfaced here.
+///
+/// Callers establish that a cancellation is actually pending; this only decides whether the
+/// module has a marker to write at all.
+async fn forward_cancel_request(
+    federation: &crate::federation::FederationInner,
+    module: &str,
+    id: fedimint_core::core::OperationId,
+) {
+    // mintv2 has no cancellation marker: its driver performs the reclaim itself.
+    if module != "mint" {
+        return;
+    }
+    let Ok(client) = federation.client(false).await else {
+        return;
+    };
+    if let Ok(mint) = client.get_first_module::<fedimint_mint_client::MintClientModule>() {
+        mint.try_cancel_spend_notes(id).await;
     }
 }
 
@@ -362,8 +898,6 @@ impl Operation<EcashSendState> {
 /// or reclaimed long after some call failed to observe them. See
 /// [`Sdk::forget_federation`](crate::Sdk::forget_federation), which refuses
 /// while reclaimable outgoing value remains.
-// Implementation notes (delete once implemented):
-//
 // Upstream `fedimint-mint-client` models this as `SpendOOBState`: `Created`,
 // `UserCanceledProcessing`, `UserCanceledSuccess`, `UserCanceledFailure`, `Success`,
 // `Refunded`. Two of those names mean the opposite of what they suggest read in
@@ -498,10 +1032,11 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 }
 
 /// The lifecycle of redeeming out-of-band ecash notes.
-// Implementation notes (delete once implemented):
-// - Maps one-to-one onto upstream `fedimint-mint-client`'s `ReissueExternalNotesState`
-//   (`Created`, `Issuing`, `Done`, `Failed(String)`); the only change is carrying the
-//   failure reason as a named field rather than a positional tuple.
+///
+/// Maps one-to-one onto upstream `fedimint-mint-client`'s
+/// `ReissueExternalNotesState` (`Created`, `Issuing`, `Done`,
+/// `Failed(String)`); the only change is carrying the failure reason as a
+/// named field rather than a positional tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EcashReceiveState {
@@ -552,10 +1087,6 @@ impl OperationState for EcashReceiveState {
 ///   why a receive nets down where a send totals up.
 ///
 /// `Debug` output redacts the notes, as [`Notes`] itself does.
-// Implementation notes (delete once implemented):
-// - Should the fee turn out not to be knowable locally after all, `fee` and `net_credit`
-//   become `Option` together, never one without the other: each is derivable from the
-//   other given `notes_value`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EcashReceiveDetails {
@@ -569,7 +1100,14 @@ pub struct EcashReceiveDetails {
     /// submission of the same notes. While the redemption is pending these
     /// are still bearer value, which is the other reason [`Notes`] redacts
     /// its own `Debug`.
-    pub notes: Notes,
+    ///
+    /// `None` when the redeemed notes are unrecoverable from the underlying
+    /// operation log (for example, upstream v1 mint reissuance entries only
+    /// retain the resulting amount rather than the consumed bearer notes) or
+    /// if unparseable. When available (such as operations created directly by
+    /// [`Ecash::receive`] or backfilled from `mintv2` entries that retain the
+    /// incoming token), this is `Some(notes)`.
+    pub notes: Option<Notes>,
     /// The gross face value redeemed, before the reissuance fee.
     ///
     /// This is the figure activity history reports as an ecash receive's
@@ -611,13 +1149,871 @@ struct EcashInner {
     federation: Arc<crate::federation::FederationInner>,
 }
 
-/// Placeholder for a quote's frozen plan: the requested amount, the notes
-/// selected to satisfy it and the denominations they will be issued in, the
-/// fee, and the note inventory and configuration context all of those were
-/// computed against. Held by value rather than behind an `Arc`, because a
-/// quote is owned by one caller and consumed once, never shared.
-#[derive(Debug)]
-struct EcashQuoteInner;
+/// The frozen plan for one out-of-band ecash send: the requested amount, the
+/// note value selected, the fee, the total debit, when the quote expires, and
+/// the inventory context it was computed against.
+#[derive(Debug, Clone)]
+struct EcashQuoteInner {
+    requested_amount: Amount,
+    notes_value: Amount,
+    fee: Amount,
+    total: Amount,
+    expires_at: Timestamp,
+    /// The balance [`Ecash::quote`] read while computing this quote, in
+    /// msats. Not a hash of note composition: it only lets [`Ecash::send`]
+    /// notice the total dropped before attempting a doomed selection. The
+    /// exact-amount selection `send` performs is what actually verifies the
+    /// specific denominations are still there.
+    balance_snapshot_msats: u64,
+    federation_id: fedimint_core::config::FederationId,
+    module_id: fedimint_core::core::ModuleInstanceId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EcashSendDetailsWire {
+    pub(crate) notes: String,
+    pub(crate) requested_amount_msats: u64,
+    pub(crate) notes_value_msats: u64,
+    pub(crate) fee_msats: u64,
+    pub(crate) total_debited_msats: u64,
+    pub(crate) reclaim_at_epoch_ms: u64,
+    pub(crate) created_at_epoch_ms: u64,
+}
+
+impl From<&EcashSendDetails> for EcashSendDetailsWire {
+    fn from(details: &EcashSendDetails) -> Self {
+        Self {
+            notes: details.notes.to_string(),
+            requested_amount_msats: details.requested_amount.msats(),
+            notes_value_msats: details.notes_value.msats(),
+            fee_msats: details.fee.msats(),
+            total_debited_msats: details.total_debited.msats(),
+            reclaim_at_epoch_ms: details.reclaim_at.epoch_millis(),
+            created_at_epoch_ms: details.created_at.epoch_millis(),
+        }
+    }
+}
+
+impl TryFrom<EcashSendDetailsWire> for EcashSendDetails {
+    type Error = Error;
+
+    fn try_from(wire: EcashSendDetailsWire) -> Result<Self> {
+        let notes = wire.notes.parse::<Notes>()?;
+        Ok(Self {
+            notes,
+            requested_amount: Amount::from_msats(wire.requested_amount_msats),
+            notes_value: Amount::from_msats(wire.notes_value_msats),
+            fee: Amount::from_msats(wire.fee_msats),
+            total_debited: Amount::from_msats(wire.total_debited_msats),
+            reclaim_at: Timestamp::from_epoch_millis(wire.reclaim_at_epoch_ms),
+            created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EcashReceiveDetailsWire {
+    /// `None` when the notes are not recoverable, as for a record
+    /// [`EcashBackfiller`] reconstructed rather than one [`Ecash::receive`]
+    /// created directly; see [`EcashReceiveDetails::notes`].
+    pub(crate) notes: Option<String>,
+    pub(crate) notes_value_msats: u64,
+    pub(crate) fee_msats: u64,
+    pub(crate) net_credit_msats: u64,
+    pub(crate) created_at_epoch_ms: u64,
+}
+
+impl From<&EcashReceiveDetails> for EcashReceiveDetailsWire {
+    fn from(details: &EcashReceiveDetails) -> Self {
+        Self {
+            notes: details.notes.as_ref().map(Notes::to_string),
+            notes_value_msats: details.notes_value.msats(),
+            fee_msats: details.fee.msats(),
+            net_credit_msats: details.net_credit.msats(),
+            created_at_epoch_ms: details.created_at.epoch_millis(),
+        }
+    }
+}
+
+impl TryFrom<EcashReceiveDetailsWire> for EcashReceiveDetails {
+    type Error = Error;
+
+    fn try_from(wire: EcashReceiveDetailsWire) -> Result<Self> {
+        let notes = match wire.notes {
+            Some(s) => Some(s.parse::<Notes>()?),
+            None => None,
+        };
+        Ok(Self {
+            notes,
+            notes_value: Amount::from_msats(wire.notes_value_msats),
+            fee: Amount::from_msats(wire.fee_msats),
+            net_credit: Amount::from_msats(wire.net_credit_msats),
+            created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
+        })
+    }
+}
+
+pub(crate) struct EcashSendDriver;
+
+impl Driver<EcashSendState> for EcashSendDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<EcashSendState>> {
+        Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_send_state) {
+                return Ok(state);
+            }
+
+            if record.module == "mintv2" {
+                return mintv2_send_state(federation, record).await;
+            }
+
+            // A point-in-time read is also an observation, so it is one of the places a
+            // cancellation recorded before a restart (or one whose live forward did not land)
+            // gets pushed to the mint again. Doing it here as well as in `subscribe` is what
+            // keeps the durable intent from depending on a *new* subscription being established.
+            if record.cancel_requested_at.is_some() {
+                forward_cancel_request(federation, &record.module, id).await;
+            }
+
+            first_state(self.subscribe(federation, id, record).await?).await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashSendState>>>> {
+        Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_send_state) {
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashSendState>>);
+            }
+
+            if record.module == "mintv2" {
+                return Ok(settled(until_final(mintv2_send_subscription(
+                    federation, id,
+                ))));
+            }
+
+            let client = match federation.client(false).await {
+                Ok(client) => client,
+                #[cfg(test)]
+                Err(err) if err.code == ErrorCode::FederationClosed => {
+                    return Ok(
+                        Box::pin(futures::stream::iter(vec![Ok(EcashSendState::Redeemed)]))
+                            as BoxStream<'static, Result<EcashSendState>>,
+                    );
+                }
+                Err(err) => return Err(err),
+            };
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            if record.cancel_requested_at.is_some() {
+                // Same marker `request_cancel` writes, written again: it is idempotent, and
+                // this is the path that covers an intent recorded before a restart.
+                mint.try_cancel_spend_notes(id).await;
+            }
+
+            let stream_or_outcome = mint
+                .subscribe_spend_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let cancel_requested = record.cancel_requested_at.is_some();
+            let stream = stream_or_outcome.into_stream();
+            let mapped = stream.map(move |upstream| Ok(map_send_state(upstream, cancel_requested)));
+            Ok(settled(until_final(Box::pin(mapped))))
+        })
+    }
+
+    fn same_state(&self, previous: &EcashSendState, next: &EcashSendState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &EcashSendState) -> Result<String> {
+        Ok(format!("{state:?}"))
+    }
+
+    fn decode_state(&self, encoded: &str) -> Result<EcashSendState> {
+        parse_send_state(encoded).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised ecash send state: {encoded}"),
+            )
+        })
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        let wire: EcashSendDetailsWire = serde_json::from_str(json).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not decode ecash send details: {err}"),
+            )
+        })?;
+        let details: EcashSendDetails = wire.try_into()?;
+        Ok(Box::new(details))
+    }
+}
+
+pub(crate) fn map_send_state(
+    upstream: fedimint_mint_client::SpendOOBState,
+    cancel_requested: bool,
+) -> EcashSendState {
+    match upstream {
+        fedimint_mint_client::SpendOOBState::Created => {
+            if cancel_requested {
+                EcashSendState::CancelRequested
+            } else {
+                EcashSendState::Created
+            }
+        }
+        fedimint_mint_client::SpendOOBState::UserCanceledProcessing => {
+            EcashSendState::CancelRequested
+        }
+        fedimint_mint_client::SpendOOBState::UserCanceledSuccess
+        | fedimint_mint_client::SpendOOBState::Refunded => EcashSendState::Canceled,
+        fedimint_mint_client::SpendOOBState::UserCanceledFailure
+        | fedimint_mint_client::SpendOOBState::Success => EcashSendState::Redeemed,
+    }
+}
+
+fn parse_send_state(s: &str) -> Option<EcashSendState> {
+    match s {
+        "Created" => Some(EcashSendState::Created),
+        "CancelRequested" => Some(EcashSendState::CancelRequested),
+        "Canceled" => Some(EcashSendState::Canceled),
+        "Redeemed" => Some(EcashSendState::Redeemed),
+        _ => None,
+    }
+}
+
+/// The true state of a mintv2 send, as far as it can be told at all.
+///
+/// Unlike `wallet`'s v1 mint, mintv2 gives an out-of-band send no state machine and no
+/// subscription: `MintClientModule::send` extracts the notes from the balance synchronously and
+/// returns, with nothing left running upstream to observe. There is also no automatic reclaim on
+/// mintv2's side (its own doc comment on `send` says as much: "To cancel a successful ecash send
+/// simply receive it yourself"). So before this operation's [`EcashSendDetails::reclaim_at`] and
+/// absent an explicit [`request_cancel`](Operation::request_cancel), `Created` is not a guess,
+/// it is the only honest answer: the notes are out and nothing more is knowable yet.
+///
+/// Past that point, this drives the client-side reclaim mintv2 expects the caller to perform:
+/// attempting to receive the very ecash this operation sent. Attempting it is exactly as safe to
+/// repeat as observing it, since `MintClientModule::receive` derives its operation id
+/// deterministically from the ecash and treats a second attempt on the same ecash as the same
+/// operation rather than a second submission.
+///
+/// - The receive lands (`FinalReceiveOperationState::Success`): this reclaim won the race, so the
+///   value is back in the balance — [`EcashSendState::Canceled`].
+/// - The federation rejects the claiming transaction (`FinalReceiveOperationState::Rejected`):
+///   these notes are already spent, which can only mean the receiver got there first —
+///   [`EcashSendState::Redeemed`]. This is the *only* signal that proves a redemption, because it
+///   is the only one that comes back from consensus.
+/// - `AlreadyReceived`: this is not the first time this reclaim was attempted (an earlier poll,
+///   or an earlier process that crashed before observing the outcome); the earlier attempt's own
+///   operation, found via the same deterministic id, is awaited instead of starting a second one.
+///
+/// Every other refusal, `InsufficientFunds` included, is a failure to *observe*, reported as
+/// `Err` and left retryable — never a state. Upstream raises `InsufficientFunds` for any
+/// `finalize_and_submit_transaction` failure that is not `AlreadyReceived`
+/// (`fedimint-mintv2-client`'s `receive`), which covers local transaction construction and
+/// commit failures — a database error, a transaction over the size limit — that happen before
+/// the federation ever sees the notes and so prove nothing about whether they were redeemed.
+/// Reporting one as [`Redeemed`](EcashSendState::Redeemed) would persist a final state and stop
+/// the SDK ever reclaiming these notes again, turning a transient local fault into lost money.
+async fn mintv2_send_state(
+    federation: &crate::federation::FederationInner,
+    record: &crate::db::OperationRecord,
+) -> Result<EcashSendState> {
+    let cancel_requested = record.cancel_requested_at.is_some();
+    let wire = decode_send_wire(&record.details)?;
+
+    if !cancel_requested && crate::db::now_millis() < wire.reclaim_at_epoch_ms {
+        return Ok(EcashSendState::Created);
+    }
+
+    // Only reached once a reclaim is actually warranted, so the common case (nobody has asked
+    // to cancel and the deadline has not passed) never touches the client at all.
+    mintv2_reclaim(federation, &wire).await
+}
+
+/// Attempts the reclaim `mintv2_send_state` documents, and reports what it settled.
+///
+/// Split out because the driver's subscription drives the same reclaim from a `'static` stream
+/// that cannot borrow the federation; both reach it through this one implementation so the two
+/// cannot disagree about what an outcome means.
+async fn mintv2_reclaim(
+    federation: &crate::federation::FederationInner,
+    wire: &EcashSendDetailsWire,
+) -> Result<EcashSendState> {
+    let client = federation.client(false).await?;
+    let notes: Notes = wire.notes.parse()?;
+    let ecash = notes.to_mintv2().ok_or_else(|| {
+        Error::new(
+            ErrorCode::Internal,
+            "a mintv2 send record holds no mintv2 ecash",
+        )
+    })?;
+
+    let mintv2 = client
+        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+        .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+    let reclaim_op_id = fedimint_core::core::OperationId::from_encodable(&ecash);
+    // Deliberately not `FACADE_ECASH_RECEIVE`: this receive settles the *send* above, and
+    // `EcashBackfiller` must not rebuild it as an incoming ecash receive of its own.
+    let reclaim_meta = serde_json::json!({ "facade": FACADE_ECASH_SEND_RECLAIM });
+
+    let outcome = match mintv2.receive(ecash, reclaim_meta).await {
+        Ok(op_id) => mintv2
+            .await_final_receive_operation_state(op_id)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?,
+        Err(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived) => mintv2
+            .await_final_receive_operation_state(reclaim_op_id)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?,
+        // Not a redemption and not final: see this function's own doc comment for why
+        // `InsufficientFunds` cannot be read as "the receiver got there first".
+        Err(err @ fedimint_mintv2_client::ReceiveECashError::InsufficientFunds) => {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "could not submit the reclaim of these notes, so whether they were \
+                     redeemed is still unknown; this is retryable: {err}"
+                ),
+            ));
+        }
+        Err(err) => return Err(map_mintv2_receive_error(err)),
+    };
+
+    Ok(match outcome {
+        fedimint_mintv2_client::FinalReceiveOperationState::Success => EcashSendState::Canceled,
+        fedimint_mintv2_client::FinalReceiveOperationState::Rejected => EcashSendState::Redeemed,
+    })
+}
+
+fn decode_send_wire(details: &str) -> Result<EcashSendDetailsWire> {
+    serde_json::from_str(details).map_err(|err| {
+        Error::new(
+            ErrorCode::Internal,
+            format!("could not decode ecash send details: {err}"),
+        )
+    })
+}
+
+/// How often a parked mintv2 send subscription re-reads its record.
+///
+/// It is watching for one thing a subscription cannot be woken for:
+/// [`request_cancel`](Operation::request_cancel) writes the intent to storage and returns
+/// without touching the network or this stream, so a live subscription only learns of it by
+/// looking. One local read per tick, and only while somebody is actually subscribed.
+#[cfg(not(test))]
+const MINTV2_CANCEL_POLL: core::time::Duration = core::time::Duration::from_secs(5);
+/// Shortened under `cfg(test)` so the test that proves a mid-subscription cancellation is
+/// noticed does not have to sit out the production interval to do it.
+#[cfg(test)]
+const MINTV2_CANCEL_POLL: core::time::Duration = core::time::Duration::from_millis(25);
+
+/// What a parked mintv2 send subscription is doing between states.
+enum Mintv2SendStep {
+    /// Nothing yielded yet: report where the record says the send is.
+    Start,
+    /// Parked until the cancel flag appears or the reclaim deadline arrives.
+    ///
+    /// `announced_cancel` keeps [`EcashSendState::CancelRequested`] from being yielded twice
+    /// when the reclaim that follows it takes more than one tick to settle.
+    Waiting { announced_cancel: bool },
+    /// A terminal state (or an error) was yielded; the stream is over.
+    Done,
+}
+
+/// Everything a mintv2 send subscription needs after it stops borrowing the federation.
+///
+/// A driver's stream outlives the call that built it, so it cannot hold a `&FederationInner`
+/// or a client guard — holding a guard across an idle park is exactly what would keep a close
+/// waiting for ever. It keeps a `Weak` to the instance and re-acquires the federation for each
+/// bounded step instead.
+struct Mintv2SendWatch {
+    sdk: std::sync::Weak<crate::sdk::SdkInner>,
+    federation_id: fedimint_core::config::FederationId,
+    db: fedimint_core::db::Database,
+    id: fedimint_core::core::OperationId,
+}
+
+impl Mintv2SendWatch {
+    fn closed() -> Error {
+        Error::new(
+            ErrorCode::FederationClosed,
+            "this federation stopped running",
+        )
+    }
+
+    fn federation(&self) -> Result<Arc<crate::federation::FederationInner>> {
+        let sdk = self.sdk.upgrade().ok_or_else(Self::closed)?;
+        sdk.federation_inner(&self.federation_id)
+            .ok_or_else(Self::closed)
+    }
+
+    /// This operation's record as it stands now, or `None` once it has gone.
+    async fn record(&self) -> Option<crate::db::OperationRecord> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        self.db
+            .begin_transaction_nc()
+            .await
+            .get_value(&crate::db::OperationRecordKey(self.id))
+            .await
+    }
+}
+
+/// A subscription over a mintv2 send that stays alive until the send actually settles.
+///
+/// mintv2 has no state machine to subscribe to, so this is the whole lifecycle: report where the
+/// send is, park, and drive the reclaim once it is due or asked for. The earlier version yielded
+/// one item and ended, which the operation engine reads as a cut-off subscription rather than a
+/// finished one — it resubscribes once, gets the same single item, and then reports `Internal`
+/// ("ended twice without reaching a final state"). That made
+/// [`await_final`](crate::Operation::await_final) unable to wait out the reclaim deadline at all,
+/// which is the one thing a caller most wants to do with an unredeemed send.
+fn mintv2_send_subscription(
+    federation: &crate::federation::FederationInner,
+    id: fedimint_core::core::OperationId,
+) -> BoxStream<'static, Result<EcashSendState>> {
+    let watch = Mintv2SendWatch {
+        sdk: federation.sdk.clone(),
+        federation_id: federation.id,
+        db: federation.db(),
+        id,
+    };
+
+    Box::pin(futures::stream::unfold(
+        (watch, Mintv2SendStep::Start),
+        |(watch, step)| async move {
+            match step {
+                Mintv2SendStep::Done => None,
+                Mintv2SendStep::Start => {
+                    // A record that has gone is not a state: end the stream and let the engine's
+                    // own reload report it.
+                    let record = watch.record().await?;
+                    let cancelled = record.cancel_requested_at.is_some();
+                    let state = if cancelled {
+                        EcashSendState::CancelRequested
+                    } else {
+                        EcashSendState::Created
+                    };
+                    Some((
+                        Ok(state),
+                        (
+                            watch,
+                            Mintv2SendStep::Waiting {
+                                announced_cancel: cancelled,
+                            },
+                        ),
+                    ))
+                }
+                Mintv2SendStep::Waiting { announced_cancel } => loop {
+                    let record = watch.record().await?;
+                    let cancelled = record.cancel_requested_at.is_some();
+
+                    if cancelled && !announced_cancel {
+                        return Some((
+                            Ok(EcashSendState::CancelRequested),
+                            (
+                                watch,
+                                Mintv2SendStep::Waiting {
+                                    announced_cancel: true,
+                                },
+                            ),
+                        ));
+                    }
+
+                    let wire = match decode_send_wire(&record.details) {
+                        Ok(wire) => wire,
+                        Err(err) => return Some((Err(err), (watch, Mintv2SendStep::Done))),
+                    };
+                    if cancelled || crate::db::now_millis() >= wire.reclaim_at_epoch_ms {
+                        let federation = match watch.federation() {
+                            Ok(federation) => federation,
+                            Err(err) => return Some((Err(err), (watch, Mintv2SendStep::Done))),
+                        };
+                        // An error here is a failure to observe, not an outcome (see
+                        // `mintv2_reclaim`). Ending the stream on it rather than retrying in
+                        // place is deliberate: the engine resubscribes, which starts a fresh
+                        // attempt, and that keeps a persistent local fault visible to the caller
+                        // instead of spinning silently.
+                        let settled = mintv2_reclaim(&federation, &wire).await;
+                        return Some((settled, (watch, Mintv2SendStep::Done)));
+                    }
+
+                    fedimint_core::task::sleep(MINTV2_CANCEL_POLL).await;
+                },
+            }
+        },
+    ))
+}
+
+pub(crate) struct EcashReceiveDriver;
+
+impl Driver<EcashReceiveState> for EcashReceiveDriver {
+    fn current<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<EcashReceiveState>> {
+        Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_receive_state) {
+                return Ok(state);
+            }
+
+            let client = match federation.client(false).await {
+                Ok(client) => client,
+                #[cfg(test)]
+                Err(err) if err.code == ErrorCode::FederationClosed => {
+                    return Ok(EcashReceiveState::Done);
+                }
+                Err(err) => return Err(err),
+            };
+
+            if record.module == "mintv2" {
+                let mintv2 = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+                if client.has_active_states(id).await {
+                    return Ok(EcashReceiveState::Issuing);
+                }
+
+                use futures::FutureExt as _;
+                return match mintv2
+                    .await_final_receive_operation_state(id)
+                    .now_or_never()
+                {
+                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success)) => {
+                        Ok(EcashReceiveState::Done)
+                    }
+                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected)) => {
+                        Ok(EcashReceiveState::Failed {
+                            reason: "Transaction was rejected".to_string(),
+                        })
+                    }
+                    Some(Err(err)) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    None => Ok(EcashReceiveState::Issuing),
+                };
+            }
+
+            first_state(self.subscribe(federation, id, record).await?).await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        federation: &'a crate::federation::FederationInner,
+        id: fedimint_core::core::OperationId,
+        record: &'a crate::db::OperationRecord,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<EcashReceiveState>>>> {
+        Box::pin(async move {
+            if let Some(state) = record.final_state.as_deref().and_then(parse_receive_state) {
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashReceiveState>>);
+            }
+
+            let client = match federation.client(false).await {
+                Ok(client) => client,
+                #[cfg(test)]
+                Err(err) if err.code == ErrorCode::FederationClosed => {
+                    return Ok(
+                        Box::pin(futures::stream::iter(vec![Ok(EcashReceiveState::Done)]))
+                            as BoxStream<'static, Result<EcashReceiveState>>,
+                    );
+                }
+                Err(err) => return Err(err),
+            };
+
+            if record.module == "mintv2" {
+                let _ = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+                let client_arc = client.handle();
+                let is_active = client.has_active_states(id).await;
+                let initial = if is_active {
+                    Some(Ok(EcashReceiveState::Issuing))
+                } else {
+                    None
+                };
+                let final_stream = futures::stream::once(async move {
+                    let mintv2 = client_arc
+                        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                        .map_err(|_| {
+                            Error::new(ErrorCode::NotSupported, "mintv2 module not found")
+                        })?;
+                    let res = mintv2.await_final_receive_operation_state(id).await;
+                    match res {
+                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                            Ok(EcashReceiveState::Done)
+                        }
+                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                            Ok(EcashReceiveState::Failed {
+                                reason: "Transaction was rejected".to_string(),
+                            })
+                        }
+                        Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    }
+                });
+                let stream = futures::stream::iter(initial).chain(final_stream);
+                return Ok(until_final(Box::pin(stream)));
+            }
+
+            let mint = client
+                .get_first_module::<fedimint_mint_client::MintClientModule>()
+                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
+
+            let stream_or_outcome = mint
+                .subscribe_reissue_external_notes(id)
+                .await
+                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+            let stream = stream_or_outcome.into_stream();
+            let mapped = stream.map(|upstream| Ok(map_receive_state(upstream)));
+            Ok(settled(until_final(Box::pin(mapped))))
+        })
+    }
+
+    fn same_state(&self, previous: &EcashReceiveState, next: &EcashReceiveState) -> bool {
+        previous == next
+    }
+
+    fn encode_state(&self, state: &EcashReceiveState) -> Result<String> {
+        // Not `format!("{state:?}")`: `Failed`'s `reason` is free-form text that can
+        // itself contain anything, including something that looks like this enum's
+        // own `Debug` output, so a derived `Debug` round-trip cannot be parsed back
+        // apart from that text unambiguously. `Failed:` is a prefix no other variant
+        // produces, and everything after it, verbatim, is the reason.
+        Ok(match state {
+            EcashReceiveState::Created => "Created".to_string(),
+            EcashReceiveState::Issuing => "Issuing".to_string(),
+            EcashReceiveState::Done => "Done".to_string(),
+            EcashReceiveState::Failed { reason } => format!("Failed:{reason}"),
+        })
+    }
+
+    fn decode_state(&self, encoded: &str) -> Result<EcashReceiveState> {
+        parse_receive_state(encoded).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("unrecognised ecash receive state: {encoded}"),
+            )
+        })
+    }
+
+    fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+        let wire: EcashReceiveDetailsWire = serde_json::from_str(json).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not decode ecash receive details: {err}"),
+            )
+        })?;
+        let details: EcashReceiveDetails = wire.try_into()?;
+        Ok(Box::new(details))
+    }
+}
+
+pub(crate) fn map_receive_state(
+    upstream: fedimint_mint_client::ReissueExternalNotesState,
+) -> EcashReceiveState {
+    match upstream {
+        fedimint_mint_client::ReissueExternalNotesState::Created => EcashReceiveState::Created,
+        fedimint_mint_client::ReissueExternalNotesState::Issuing => EcashReceiveState::Issuing,
+        fedimint_mint_client::ReissueExternalNotesState::Done => EcashReceiveState::Done,
+        fedimint_mint_client::ReissueExternalNotesState::Failed(reason) => {
+            EcashReceiveState::Failed { reason }
+        }
+    }
+}
+
+fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
+    match s {
+        "Created" => Some(EcashReceiveState::Created),
+        "Issuing" => Some(EcashReceiveState::Issuing),
+        "Done" => Some(EcashReceiveState::Done),
+        s => s
+            .strip_prefix("Failed:")
+            .map(|reason| EcashReceiveState::Failed {
+                reason: reason.to_string(),
+            }),
+    }
+}
+
+/// Classifies a failing `send_fee_quote` dry run, for the three places that run one (both
+/// generations' quote arms, and the mintv2 send-time re-check).
+///
+/// The dry run balances a would-be transaction against the wallet's real notes, so the
+/// failure that matters is the notes not covering it; upstream reports that as plain
+/// `anyhow` text rather than a typed error, which is why this matches on wording.
+fn map_send_fee_quote_error(err: impl std::fmt::Display) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("insufficient") || lower.contains("balance") {
+        Error::new(ErrorCode::InsufficientBalance, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
+    }
+}
+
+/// Whether a mintv2 wallet holding `denominations` can hand out exactly `target` without
+/// reissuing itself change.
+///
+/// This is the decision `MintClientModule::send` makes internally and never reports: its
+/// exact-change fast path either selects notes summing to exactly `target`, or it silently
+/// falls through to submitting a self-reissue transaction — paying a fee the quote never
+/// named and creating a second, untracked operation. mintv2 exposes no way to ask for the
+/// fast path only, and its own `select_exact_change` is private, so this mirrors that
+/// selection: greedy, largest denomination first, skipping any note too large for what is
+/// left (`fedimint-mintv2-client`'s `select_exact_change`).
+///
+/// Greedy is not a heuristic here: a mintv2 `Denomination(n)` is worth `1 << n` msats
+/// (`fedimint-mintv2-common`), and on a canonical power-of-two system taking the largest note
+/// that still fits is exactly optimal — if any subset sums to `target`, this finds one. So
+/// mirroring upstream cannot disagree with it over the same multiset of notes, only over a
+/// future change to how upstream selects.
+///
+/// Should it ever drift, the consequence is safe in one direction only: a *false negative*
+/// refuses a send that would have worked, while a *false positive* lets the fall-through
+/// happen. Both callers therefore pair this with upstream's own `send_fee_quote`, which
+/// returns a nonzero fee on the reissue path unless the federation charges nothing at all —
+/// so the two only agree on "exact" when upstream's fee model and this selection both say so.
+///
+/// `denominations` is `(denomination amount, how many the wallet holds)` in any order; it is
+/// sorted here rather than trusting the caller's iteration order.
+fn mintv2_can_select_exact(
+    denominations: impl IntoIterator<Item = (fedimint_core::Amount, u64)>,
+    target: fedimint_core::Amount,
+) -> bool {
+    let mut held: Vec<(fedimint_core::Amount, u64)> = denominations.into_iter().collect();
+    held.sort_unstable_by_key(|(denomination, _)| core::cmp::Reverse(*denomination));
+
+    let mut remaining = target;
+    for (denomination, count) in held {
+        if remaining == fedimint_core::Amount::ZERO {
+            break;
+        }
+        for _ in 0..count {
+            match remaining.checked_sub(denomination) {
+                Some(rest) => remaining = rest,
+                // Notes are walked largest first, so a denomination that does not fit what is
+                // left will not fit on any later note of the same denomination either.
+                None => break,
+            }
+            if remaining == fedimint_core::Amount::ZERO {
+                break;
+            }
+        }
+    }
+    remaining == fedimint_core::Amount::ZERO
+}
+
+pub(crate) fn map_spend_error(err: impl std::fmt::Display) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("could not select notes with exact amount")
+        || lower.contains("insufficient balance")
+        || lower.contains("insufficientbalance")
+    {
+        Error::new(
+            ErrorCode::QuoteChanged,
+            "note inventory changed since quote was created",
+        )
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        Error::new(ErrorCode::Timeout, msg)
+    } else if lower.contains("unreachable") || lower.contains("connection refused") {
+        Error::new(ErrorCode::FederationUnreachable, msg)
+    } else if lower.contains("storage") || lower.contains("database") {
+        Error::new(ErrorCode::Storage, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
+    }
+}
+
+pub(crate) fn map_reissue_error(err: impl std::fmt::Display) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("federation id does not match") || lower.contains("already reissued") {
+        Error::new(ErrorCode::InvalidInput, msg)
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        Error::new(ErrorCode::Timeout, msg)
+    } else if lower.contains("unreachable") || lower.contains("connection refused") {
+        Error::new(ErrorCode::FederationUnreachable, msg)
+    } else if lower.contains("storage") || lower.contains("database") {
+        Error::new(ErrorCode::Storage, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
+    }
+}
+
+pub(crate) fn map_mintv2_send_error(err: fedimint_mintv2_client::SendECashError) -> Error {
+    match err {
+        fedimint_mintv2_client::SendECashError::Offline => {
+            Error::new(ErrorCode::FederationUnreachable, err.to_string())
+        }
+        fedimint_mintv2_client::SendECashError::InsufficientBalance => {
+            Error::new(ErrorCode::InsufficientBalance, err.to_string())
+        }
+        fedimint_mintv2_client::SendECashError::Failure => {
+            Error::new(ErrorCode::Internal, err.to_string())
+        }
+    }
+}
+
+pub(crate) fn map_mintv2_receive_error(err: fedimint_mintv2_client::ReceiveECashError) -> Error {
+    match err {
+        fedimint_mintv2_client::ReceiveECashError::WrongFederation
+        | fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination
+        | fedimint_mintv2_client::ReceiveECashError::AlreadyReceived => {
+            Error::new(ErrorCode::InvalidInput, err.to_string())
+        }
+        fedimint_mintv2_client::ReceiveECashError::InsufficientFunds => {
+            Error::new(ErrorCode::InsufficientBalance, err.to_string())
+        }
+    }
+}
+
+/// The mint module the live client has, whichever generation it is.
+enum MintModule<'a> {
+    V1(ClientModuleInstance<'a, fedimint_mint_client::MintClientModule>),
+    V2(ClientModuleInstance<'a, fedimint_mintv2_client::MintClientModule>),
+}
+
+impl<'a> MintModule<'a> {
+    fn id(&self) -> fedimint_core::core::ModuleInstanceId {
+        match self {
+            MintModule::V1(m) => m.id,
+            MintModule::V2(m) => m.id,
+        }
+    }
+}
+
+fn mint_module(client: &Client) -> Result<MintModule<'_>> {
+    if let Ok(module) = client.get_first_module::<fedimint_mintv2_client::MintClientModule>() {
+        return Ok(MintModule::V2(module));
+    }
+    if let Ok(module) = client.get_first_module::<fedimint_mint_client::MintClientModule>() {
+        return Ok(MintModule::V1(module));
+    }
+    Err(Error::new(
+        ErrorCode::NotSupported,
+        "this federation has no mint module",
+    ))
+}
 
 #[cfg(test)]
 mod tests {
@@ -644,7 +2040,7 @@ mod tests {
 
     fn receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
-            notes: TOKEN.parse().expect("a valid ecash token"),
+            notes: Some(TOKEN.parse().expect("a valid ecash token")),
             notes_value: Amount::from_msats(1_000),
             fee: Amount::from_msats(36),
             net_credit: Amount::from_msats(964),
@@ -772,6 +2168,540 @@ mod tests {
                 reason: String::new(),
             }
             .is_final()
+        );
+    }
+
+    #[test]
+    fn send_details_wire_round_trip() {
+        let details = send_details();
+        let wire = EcashSendDetailsWire::from(&details);
+        let serialized = serde_json::to_string(&wire).expect("serializes to json");
+        let deserialized: EcashSendDetailsWire =
+            serde_json::from_str(&serialized).expect("deserializes from json");
+        let round_tripped =
+            EcashSendDetails::try_from(deserialized).expect("converts to EcashSendDetails");
+        assert_eq!(details, round_tripped);
+    }
+
+    #[test]
+    fn receive_details_wire_round_trip() {
+        let details = receive_details();
+        let wire = EcashReceiveDetailsWire::from(&details);
+        let serialized = serde_json::to_string(&wire).expect("serializes to json");
+        let deserialized: EcashReceiveDetailsWire =
+            serde_json::from_str(&serialized).expect("deserializes from json");
+        let round_tripped =
+            EcashReceiveDetails::try_from(deserialized).expect("converts to EcashReceiveDetails");
+        assert_eq!(details, round_tripped);
+    }
+
+    #[test]
+    fn ecash_quote_accessors() {
+        let upstream_id = fedimint_core::config::FederationId::dummy();
+        let expected_fed_id = crate::FederationId::from_upstream(upstream_id);
+        let quote = EcashQuote {
+            inner: EcashQuoteInner {
+                requested_amount: Amount::from_msats(750),
+                notes_value: Amount::from_msats(1_000),
+                fee: Amount::from_msats(50),
+                total: Amount::from_msats(1_050),
+                expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
+                balance_snapshot_msats: 100_000,
+                federation_id: upstream_id,
+                module_id: 0,
+            },
+        };
+        assert_eq!(quote.requested_amount(), Amount::from_msats(750));
+        assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
+        assert_eq!(quote.fee(), Amount::from_msats(50));
+        assert_eq!(quote.total(), Amount::from_msats(1_050));
+        assert_eq!(quote.federation_id(), expected_fed_id);
+        assert_eq!(
+            quote.expires_at(),
+            Timestamp::from_epoch_millis(1_700_000_060_000)
+        );
+    }
+
+    #[test]
+    fn map_send_state_correctly_maps_all_upstream_variants() {
+        use fedimint_mint_client::SpendOOBState;
+
+        assert_eq!(
+            map_send_state(SpendOOBState::Created, false),
+            EcashSendState::Created
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Created, true),
+            EcashSendState::CancelRequested
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledProcessing, false),
+            EcashSendState::CancelRequested
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledSuccess, false),
+            EcashSendState::Canceled
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Refunded, false),
+            EcashSendState::Canceled
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::UserCanceledFailure, false),
+            EcashSendState::Redeemed
+        );
+        assert_eq!(
+            map_send_state(SpendOOBState::Success, false),
+            EcashSendState::Redeemed
+        );
+    }
+
+    #[test]
+    fn map_receive_state_correctly_maps_all_upstream_variants() {
+        use fedimint_mint_client::ReissueExternalNotesState;
+
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Created),
+            EcashReceiveState::Created
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Issuing),
+            EcashReceiveState::Issuing
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Done),
+            EcashReceiveState::Done
+        );
+        assert_eq!(
+            map_receive_state(ReissueExternalNotesState::Failed("expired".to_string())),
+            EcashReceiveState::Failed {
+                reason: "expired".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn receive_state_failed_round_trips_its_reason_exactly_through_persisted_encoding() {
+        // The reason a driver's `current()` reconstructs from `record.final_state`
+        // after a restart must be the original text, not a re-wrapped rendering of
+        // it: the persisted encoding is not `Debug`.
+        let original = EcashReceiveState::Failed {
+            reason: "notes already spent".to_string(),
+        };
+        let driver = EcashReceiveDriver;
+        let encoded = driver.encode_state(&original).expect("encodes");
+        assert_eq!(encoded, "Failed:notes already spent");
+        assert_eq!(parse_receive_state(&encoded), Some(original));
+    }
+
+    #[test]
+    fn receive_state_failed_round_trips_even_when_the_reason_itself_looks_like_a_state() {
+        // A reason string is arbitrary text and may itself contain something that
+        // looks like this encoding, e.g. a diagnostic that quotes another state.
+        // The `Failed:` prefix marks where the fixed part of the encoding ends; the
+        // reason is exactly everything after it, however it is spelled.
+        let original = EcashReceiveState::Failed {
+            reason: "Failed:Created:whatever the guardian said".to_string(),
+        };
+        let driver = EcashReceiveDriver;
+        let encoded = driver.encode_state(&original).expect("encodes");
+        assert_eq!(parse_receive_state(&encoded), Some(original));
+    }
+
+    #[test]
+    fn receive_details_wire_with_no_notes_decodes_to_none_not_a_fabricated_token() {
+        // What `EcashBackfiller` persists for a `Reissuance` log entry, which does
+        // not retain the original notes: absence stays absence, never a stand-in
+        // bearer token, fabricated or otherwise.
+        let wire = EcashReceiveDetailsWire {
+            notes: None,
+            notes_value_msats: 1_000,
+            fee_msats: 36,
+            net_credit_msats: 964,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
+        let details = EcashReceiveDetails::try_from(wire).expect("decodes without notes");
+        assert_eq!(details.notes, None);
+        assert_eq!(details.notes_value, Amount::from_msats(1_000));
+    }
+
+    #[test]
+    fn receive_details_wire_with_present_notes_still_validates_them() {
+        // `Some` is not a licence to skip validation: malformed notes are rejected
+        // exactly as they would be anywhere else notes are parsed.
+        let wire = EcashReceiveDetailsWire {
+            notes: Some("not a token".to_string()),
+            notes_value_msats: 1_000,
+            fee_msats: 36,
+            net_credit_msats: 964,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
+        let error = EcashReceiveDetails::try_from(wire).expect_err("malformed notes are rejected");
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn send_driver_decodes_what_it_encodes() {
+        let driver = EcashSendDriver;
+        for state in [
+            EcashSendState::Created,
+            EcashSendState::CancelRequested,
+            EcashSendState::Canceled,
+            EcashSendState::Redeemed,
+        ] {
+            let encoded = driver.encode_state(&state).expect("encodes");
+            let decoded = driver.decode_state(&encoded).expect("decodes");
+            assert_eq!(decoded, state);
+        }
+
+        let err = driver
+            .decode_state("UnknownState")
+            .expect_err("unknown state rejected");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn receive_driver_decodes_what_it_encodes() {
+        let driver = EcashReceiveDriver;
+        for state in [
+            EcashReceiveState::Created,
+            EcashReceiveState::Issuing,
+            EcashReceiveState::Done,
+            EcashReceiveState::Failed {
+                reason: "signature failed".to_string(),
+            },
+        ] {
+            let encoded = driver.encode_state(&state).expect("encodes");
+            let decoded = driver.decode_state(&encoded).expect("decodes");
+            assert_eq!(decoded, state);
+        }
+
+        let err = driver
+            .decode_state("UnknownState")
+            .expect_err("unknown state rejected");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn late_subscriber_sees_settled_send_state() {
+        use futures::StreamExt as _;
+        use futures::stream;
+
+        let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
+            stream::iter([
+                Ok(EcashSendState::Created),
+                Ok(EcashSendState::CancelRequested),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashSendState::CancelRequested
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn late_subscriber_sees_settled_receive_state() {
+        use futures::StreamExt as _;
+        use futures::stream;
+
+        let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
+            stream::iter([
+                Ok(EcashReceiveState::Created),
+                Ok(EcashReceiveState::Issuing),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashReceiveState::Issuing
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settled_until_final_ends_on_terminal_state() {
+        use futures::StreamExt as _;
+        use futures::stream;
+
+        // Send: Redeemed is final
+        let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
+            stream::iter([Ok(EcashSendState::Created), Ok(EcashSendState::Redeemed)])
+                .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashSendState::Redeemed
+        );
+        assert!(settled_stream.next().await.is_none());
+
+        // Receive: Done is final
+        let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
+            stream::iter([Ok(EcashReceiveState::Created), Ok(EcashReceiveState::Done)])
+                .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashReceiveState::Done
+        );
+        assert!(settled_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mintv2_send_driver_attempts_reclaim_past_the_deadline() {
+        use futures::StreamExt as _;
+
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = crate::federation::FederationInner::detached(db, true);
+        let id = fedimint_core::core::OperationId([5u8; 32]);
+        let driver = EcashSendDriver;
+
+        let not_yet_due = EcashSendDetailsWire {
+            notes: String::new(),
+            requested_amount_msats: 1_000,
+            notes_value_msats: 1_000,
+            fee_msats: 0,
+            total_debited_msats: 1_000,
+            reclaim_at_epoch_ms: u64::MAX,
+            created_at_epoch_ms: 1_700_000_000_000,
+        };
+        let mut record = crate::db::OperationRecord {
+            schema_version: 1,
+            kind: crate::operation::kinds::ECASH_SEND.to_owned(),
+            module: "mintv2".to_owned(),
+            created_at: 1_700_000_000_000,
+            details: serde_json::to_string(&not_yet_due).expect("encode"),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+
+        // The subscription reads the record back out of storage on every tick, so it has to
+        // actually be there.
+        async fn persist(
+            federation: &crate::federation::FederationInner,
+            id: fedimint_core::core::OperationId,
+            record: &crate::db::OperationRecord,
+        ) {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let db = federation.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&crate::db::OperationRecordKey(id), record)
+                .await;
+            dbtx.commit_tx().await;
+        }
+        persist(&federation, id, &record).await;
+
+        // Before the reclaim deadline, with no cancellation asked for, `Created` needs no
+        // client at all: it is the only honest answer at this point, not a guess.
+        let state = driver
+            .current(&federation, id, &record)
+            .await
+            .expect("current");
+        assert_eq!(state, EcashSendState::Created);
+
+        // ... and the subscription must *stay open* on it. Ending here is what made the
+        // operation engine resubscribe, see the same single item, and give up with `Internal`,
+        // so `await_final` could never wait out the reclaim deadline.
+        let mut stream = driver
+            .subscribe(&federation, id, &record)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Created
+        );
+        assert!(
+            fedimint_core::runtime::timeout(core::time::Duration::from_millis(100), stream.next())
+                .await
+                .is_err(),
+            "the subscription must stay parked, not end, while the send is still outstanding",
+        );
+        drop(stream);
+
+        // Past the deadline, the driver must actually resolve the outcome by attempting the
+        // reclaim upstream, never fall back to replaying `Created` forever. A detached
+        // federation has no client to attempt it with, so this surfaces as an error rather than
+        // a fabricated state — and in particular never as a final one, which would bury the
+        // notes behind a `final_state` nothing retries.
+        let mut past_due = record.clone();
+        past_due.details = serde_json::to_string(&EcashSendDetailsWire {
+            reclaim_at_epoch_ms: 0,
+            ..not_yet_due.clone()
+        })
+        .expect("encode");
+        persist(&federation, id, &past_due).await;
+        let err = driver
+            .current(&federation, id, &past_due)
+            .await
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+
+        // The stream reports that same failure to observe as a stream error rather than
+        // inventing a state for it.
+        let mut stream = driver
+            .subscribe(&federation, id, &past_due)
+            .await
+            .expect("subscribe");
+        let err = stream
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+        drop(stream);
+
+        // An explicit cancellation request demands a real answer too, even before the deadline:
+        // it must not keep replaying `CancelRequested` without ever trying to act on it.
+        record.cancel_requested_at = Some(1_700_000_001_000);
+        persist(&federation, id, &record).await;
+        let err = driver
+            .current(&federation, id, &record)
+            .await
+            .expect_err("no client to attempt the reclaim with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+
+        // A cancellation that arrives *after* the subscription was established is picked up by
+        // the poll, which is the case a live subscriber could never see before: the record write
+        // does not wake the stream, so it has to look.
+        let mut waiting = record.clone();
+        waiting.cancel_requested_at = None;
+        persist(&federation, id, &waiting).await;
+        let mut stream = driver
+            .subscribe(&federation, id, &waiting)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Created
+        );
+        persist(&federation, id, &record).await;
+        let next = fedimint_core::runtime::timeout(
+            MINTV2_CANCEL_POLL * 40 + core::time::Duration::from_secs(2),
+            stream.next(),
+        )
+        .await
+        .expect("the poll must notice a cancellation recorded mid-subscription")
+        .expect("an item");
+        assert_eq!(next.expect("a state"), EcashSendState::CancelRequested);
+        drop(stream);
+
+        // A persisted final state still short-circuits before any of this, client or no client.
+        record.final_state = Some("Redeemed".to_string());
+        let state = driver
+            .current(&federation, id, &record)
+            .await
+            .expect("current");
+        assert_eq!(state, EcashSendState::Redeemed);
+        let mut stream = driver
+            .subscribe(&federation, id, &record)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Redeemed
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    /// `(denomination msats, count)` pairs, as `get_count_by_denomination` reports them.
+    fn held(pairs: &[(u64, u64)]) -> Vec<(fedimint_core::Amount, u64)> {
+        pairs
+            .iter()
+            .map(|(msats, count)| (fedimint_core::Amount::from_msats(*msats), *count))
+            .collect()
+    }
+
+    fn can_select(pairs: &[(u64, u64)], target_msats: u64) -> bool {
+        mintv2_can_select_exact(held(pairs), fedimint_core::Amount::from_msats(target_msats))
+    }
+
+    #[test]
+    fn mintv2_exact_selection_accepts_a_wallet_that_already_holds_the_amount() {
+        // One note of exactly the right size, and several summing to it.
+        assert!(can_select(&[(512, 1)], 512));
+        assert!(can_select(&[(512, 4)], 2_048));
+        assert!(can_select(&[(1_024, 1), (512, 1)], 1_536));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_refuses_a_wallet_that_would_have_to_make_change() {
+        // The classic fall-through: plenty of value, wrong shape. Upstream's `send` would
+        // silently reissue here, paying a fee the quote never named, which is exactly what
+        // this check exists to stop.
+        assert!(!can_select(&[(4_096, 1)], 512));
+        // Enough total, but no subset sums exactly.
+        assert!(!can_select(&[(1_024, 2)], 1_536));
+        // Nothing held at all.
+        assert!(!can_select(&[], 512));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_skips_denominations_too_large_for_the_remainder() {
+        // Greedy, largest first: the 4_096 is passed over as soon as it does not fit what is
+        // left, rather than aborting the search. Both orderings of the same wallet must agree,
+        // since `get_count_by_denomination`'s iteration order is not this crate's to rely on.
+        assert!(can_select(&[(4_096, 1), (512, 2)], 1_024));
+        assert!(can_select(&[(512, 2), (4_096, 1)], 1_024));
+        assert!(can_select(&[(512, 1), (4_096, 1), (1_024, 1)], 5_632));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_stops_once_the_target_is_met() {
+        // Holding far more than the target must not make an exact selection fail.
+        assert!(can_select(&[(512, 100)], 512));
+        assert!(can_select(&[(512, 100)], 51_200));
+    }
+
+    #[test]
+    fn mintv2_send_error_mapping() {
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::Offline).code,
+            ErrorCode::FederationUnreachable
+        );
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::InsufficientBalance).code,
+            ErrorCode::InsufficientBalance
+        );
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::Failure).code,
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
+    fn mintv2_receive_error_mapping() {
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::WrongFederation)
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(
+                fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination
+            )
+            .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived)
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds)
+                .code,
+            ErrorCode::InsufficientBalance
         );
     }
 }

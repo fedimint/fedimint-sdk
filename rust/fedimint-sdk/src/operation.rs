@@ -21,6 +21,7 @@
 //! an operation back up, because a subscription yields the current state and
 //! never replays the ones before it.
 
+use core::time::Duration;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use std::sync::Arc;
 use fedimint_core::core::OperationId as UpstreamOperationId;
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt as _;
 
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
@@ -1344,6 +1346,88 @@ where
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>>;
 }
 
+/// How long `current` waits for the next replayed state before calling the last one current.
+///
+/// Upstream `subscribe_*` are generators that re-run from the first state and resolve each
+/// already-passed stage immediately. Draining with a short wait per item is how a point-in-time
+/// answer is produced from that.
+pub(crate) const CURRENT_STATE_SETTLE: Duration = Duration::from_millis(500);
+
+/// Ends a stream after its first final state, and on the first error.
+pub(crate) fn until_final<S>(
+    stream: impl futures::Stream<Item = Result<S>> + MaybeSend + 'static,
+) -> BoxStream<'static, Result<S>>
+where
+    S: OperationState,
+{
+    Box::pin(futures::stream::unfold(
+        (Box::pin(stream), false),
+        |(mut stream, done)| async move {
+            if done {
+                return None;
+            }
+            let item = stream.next().await?;
+            let is_done = match &item {
+                Ok(state) => state.is_final(),
+                Err(_) => true,
+            };
+            Some((item, (stream, is_done)))
+        },
+    ))
+}
+
+/// A subscription that yields the current state first: the replayed history is drained until it
+/// settles, the last state it produced is yielded, and every state after that is forwarded as it
+/// comes.
+///
+/// If the inner stream ends before producing anything, this ends too, without yielding: that is
+/// not an "empty" current state, it is the absence of one, and `OperationUpdates::next`'s
+/// `current` fallback is what turns it into an answer. If the yielded state is final (or an
+/// error), nothing more is drained for it; the underlying stream is expected to end right after,
+/// per `Driver::subscribe`'s contract, so the next pull simply observes that.
+pub(crate) fn settled<S>(stream: BoxStream<'static, Result<S>>) -> BoxStream<'static, Result<S>>
+where
+    S: OperationState,
+{
+    Box::pin(futures::stream::unfold(
+        (stream, false),
+        |(mut stream, started)| async move {
+            if started {
+                return stream.next().await.map(|item| (item, (stream, true)));
+            }
+            // The first item is awaited without a timeout: both generations yield it promptly,
+            // and the engine already races every wait in this call against the federation's
+            // `closed` watch. Every item after that is drained with the same per-item timeout,
+            // stopping at the first final state, the first error, or the first timeout.
+            let mut last = stream.next().await?;
+            while matches!(&last, Ok(state) if !state.is_final()) {
+                match fedimint_core::runtime::timeout(CURRENT_STATE_SETTLE, stream.next()).await {
+                    Ok(Some(item)) => last = item,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            Some((last, (stream, true)))
+        },
+    ))
+}
+
+/// The first state a stream yields, mapping an ended stream to this operation's "no state" error.
+///
+/// `Driver::subscribe` already returns a stream wrapped in [`settled`], so this drains it once
+/// rather than draining it a second time the way calling [`settled`] again over it would.
+pub(crate) async fn first_state<S>(mut stream: BoxStream<'static, Result<S>>) -> Result<S>
+where
+    S: OperationState,
+{
+    match stream.next().await {
+        Some(item) => item,
+        None => Err(Error::new(
+            ErrorCode::Internal,
+            "this operation's subscription yielded no state",
+        )),
+    }
+}
+
 /// Rebuilds an SDK operation record from the client's own operation log entry.
 ///
 /// The operation log is authoritative and the SDK's record is a decoration over it, so a crash
@@ -1374,6 +1458,8 @@ pub(crate) struct Backfilled {
     pub(crate) details: String,
     /// The phase the entry proves was reached, if the meta says.
     pub(crate) phase: Option<u32>,
+    /// The final state if known at backfill time.
+    pub(crate) final_state: Option<String>,
 }
 
 /// A driver for one of the seven kinds, with its state type recovered by matching.
@@ -1418,18 +1504,16 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
         // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash in T7, on-chain in T9, recovery in T12. Until an arm is filled in this
-        // build cannot observe that kind, which is a real answer rather than a gap: the record
-        // is still found, still listed, and still says what it is.
-        //
-        // The probe stands in for the ecash-send driver so that the type-erased accessors are
-        // exercised end to end before any facade exists; T7 replaces the pair of arms below with
-        // a single unconditional one.
-        #[cfg(test)]
-        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(ProbeEcashSendDriver))),
-        #[cfg(not(test))]
-        kinds::ECASH_SEND => None,
-        kinds::ECASH_RECEIVE => None,
+        // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
+        // kind: ecash in T7, lightning in T8, on-chain in T9, recovery in T12. Until an arm is
+        // filled in this build cannot observe that kind, which is a real answer rather than a gap:
+        // the record is still found, still listed, and still says what it is.
+        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
+            crate::ecash::EcashSendDriver,
+        ))),
+        kinds::ECASH_RECEIVE => Some(ErasedDriver::EcashReceive(Arc::new(
+            crate::ecash::EcashReceiveDriver,
+        ))),
         kinds::LN_SEND => Some(ErasedDriver::LnSend(Arc::new(
             crate::lightning::LnSendDriver,
         ))),
@@ -1451,15 +1535,294 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
-    // One entry per facade that owns a module kind: lightning here, ecash in T7, on-chain in T9.
+    // One entry per facade that owns a module kind: ecash in T7, lightning in T8, on-chain in T9.
     // The probe entry is the engine's own fixture and exists only in a test build.
     #[cfg(test)]
     return vec![
+        Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
         Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
         Arc::new(crate::lightning::LnBackfiller),
     ];
     #[cfg(not(test))]
-    vec![Arc::new(crate::lightning::LnBackfiller)]
+    vec![
+        Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
+        Arc::new(crate::lightning::LnBackfiller),
+    ]
+}
+
+/// A backfiller that reconstructs ecash operations from upstream mint operation logs.
+///
+/// Reconstructed, not observed: this runs from the module's own persisted log entry
+/// alone, with no live federation connection and no fee-consensus lookup available to
+/// it (see [`Backfiller::backfill`]'s signature). When the creating facade persisted
+/// terms into `extra_meta` / `custom_meta`, those terms (`requested_amount`, `fee`,
+/// `net_credit`, timestamps) are restored; otherwise, unrecorded terms fall back to
+/// honest placeholders (e.g. zero fee, the operation log's created_at timestamp).
+///
+/// # Not every mint log entry is a user's operation
+///
+/// A mint module logs its own internal work in the same log, in the same shapes: the v1
+/// mint's change-making is a `Reissuance`, exactly like a user receive, and the send
+/// driver's reclaim of an unredeemed mintv2 send is a `Receive`, exactly like a user
+/// receive. Both are recognised only by the `"facade"` marker this crate writes
+/// (`FACADE_ECASH_RECEIVE`), and an entry without it is left unclaimed rather than
+/// guessed at — reconciliation then records it as an opaque internal operation, which
+/// reports no amount and no direction, instead of inventing an activity row for money
+/// that is already accounted for elsewhere.
+///
+/// [`Ecash::send`]: crate::ecash::Ecash::send
+/// [`Ecash::receive`]: crate::ecash::Ecash::receive
+pub(crate) struct EcashBackfiller;
+
+impl Backfiller for EcashBackfiller {
+    fn backfill(
+        &self,
+        module_kind: &str,
+        meta: &serde_json::Value,
+        created_at: u64,
+    ) -> Option<Backfilled> {
+        if module_kind == "mintv2" {
+            let op_meta: fedimint_mintv2_client::MintOperationMeta =
+                serde_json::from_value(meta.clone()).ok()?;
+            return match op_meta {
+                // Mintv2 out-of-band sends have no upstream state machine or subscription to
+                // observe (in mintv2, a send is an immediate bearer extraction with no lifecycle
+                // polling); `EcashSendDriver` resolves the outcome itself, from this same record,
+                // by attempting the reclaim once past `reclaim_at` (see `mintv2_send_state`). The
+                // notes are already out of the balance by the time this entry exists at all, so a
+                // crash between `mint.send` committing this log entry and the SDK's own
+                // `create_operation` write must not leave them unrecoverable: `ecash` is upstream's
+                // own copy of exactly what was extracted, decodable on its own.
+                fedimint_mintv2_client::MintOperationMeta::Send { ecash, custom_meta } => {
+                    let notes = ecash.parse::<crate::Notes>().ok()?;
+                    let notes_value = notes.value();
+                    let (req_amount, fee_msats, total_msats, reclaim_at, created_at_ms) =
+                        if let Some(meta_obj) = custom_meta.as_object() {
+                            let req = meta_obj
+                                .get("requested_amount_msats")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or_else(|| notes_value.msats());
+                            let fee = meta_obj
+                                .get("fee_msats")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let total = notes_value.msats().saturating_add(fee);
+                            let reclaim = meta_obj
+                                .get("reclaim_at_epoch_ms")
+                                .and_then(|v| v.as_u64())
+                                // No copy of the reclaim deadline: `EcashSendDriver` treats `0` as
+                                // already due, so a rebuilt record is checked immediately rather
+                                // than assumed still pending.
+                                .unwrap_or(0);
+                            let created = meta_obj
+                                .get("created_at_epoch_ms")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(created_at);
+                            (req, fee, total, reclaim, created)
+                        } else {
+                            (
+                                notes_value.msats(),
+                                0u64,
+                                notes_value.msats(),
+                                0,
+                                created_at,
+                            )
+                        };
+                    let wire = crate::ecash::EcashSendDetailsWire {
+                        notes: notes.to_string(),
+                        requested_amount_msats: req_amount,
+                        notes_value_msats: notes_value.msats(),
+                        fee_msats,
+                        total_debited_msats: total_msats,
+                        reclaim_at_epoch_ms: reclaim_at,
+                        created_at_epoch_ms: created_at_ms,
+                    };
+                    let details = serde_json::to_string(&wire).ok()?;
+                    Some(Backfilled {
+                        kind: kinds::ECASH_SEND,
+                        details,
+                        phase: Some(1),
+                        final_state: None,
+                    })
+                }
+                fedimint_mintv2_client::MintOperationMeta::Receive {
+                    ecash, custom_meta, ..
+                } => {
+                    // Only a receive this facade created is a user-facing incoming receive.
+                    // The send driver submits a mintv2 receive of its own to reclaim an
+                    // unredeemed send (`ecash::mintv2_send_state`), marked
+                    // `FACADE_ECASH_SEND_RECLAIM`; rebuilding that as an `ECASH_RECEIVE` would
+                    // put the same money in history twice — once as the send returning, and
+                    // again as ecash arriving — so it is left unclaimed and reconciliation
+                    // records it as the opaque internal operation it is.
+                    //
+                    // Gating on the marker rather than merely excluding the reclaim one is
+                    // deliberate: it fails closed. The cost is that a mintv2 receive some
+                    // *other* client performed against this wallet is no longer rebuilt as an
+                    // activity row, which is a display gap and never a lost operation — the
+                    // log entry itself is untouched, and the money it credited is in the
+                    // balance either way.
+                    let meta_obj = custom_meta.as_object()?;
+                    if meta_obj.get("facade").and_then(|facade| facade.as_str())
+                        != Some(crate::ecash::FACADE_ECASH_RECEIVE)
+                    {
+                        return None;
+                    }
+
+                    let decoded_ecash = fedimint_core::base32::decode_prefixed::<
+                        fedimint_mintv2_client::ECash,
+                    >(
+                        fedimint_core::base32::FEDIMINT_PREFIX, &ecash
+                    )
+                    .ok();
+                    let parsed_notes = ecash.parse::<crate::Notes>().ok().or_else(|| {
+                        decoded_ecash
+                            .as_ref()
+                            .map(|e| crate::Notes::from_mintv2(e.clone(), ecash.clone()))
+                    });
+                    let decoded_amount = decoded_ecash
+                        .as_ref()
+                        .map(|e| e.amount().msats)
+                        .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
+                    let notes_val = decoded_amount
+                        .or_else(|| meta_obj.get("notes_value_msats").and_then(|v| v.as_u64()))?;
+                    let fee_msats = meta_obj
+                        .get("fee_msats")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let net_credit = meta_obj
+                        .get("net_credit_msats")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_else(|| notes_val.saturating_sub(fee_msats));
+                    let created_at_ms = meta_obj
+                        .get("created_at_epoch_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(created_at);
+                    let wire = crate::ecash::EcashReceiveDetailsWire {
+                        notes: parsed_notes.map(|n| n.to_string()),
+                        notes_value_msats: notes_val,
+                        fee_msats,
+                        net_credit_msats: net_credit,
+                        created_at_epoch_ms: created_at_ms,
+                    };
+                    let details = serde_json::to_string(&wire).ok()?;
+                    Some(Backfilled {
+                        kind: kinds::ECASH_RECEIVE,
+                        details,
+                        phase: Some(1),
+                        final_state: None,
+                    })
+                }
+                fedimint_mintv2_client::MintOperationMeta::Reissue { .. } => None,
+            };
+        }
+
+        if module_kind != "mint" {
+            return None;
+        }
+
+        let op_meta: fedimint_mint_client::MintOperationMeta =
+            serde_json::from_value(meta.clone()).ok()?;
+        match op_meta.variant {
+            fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount,
+                oob_notes,
+                ..
+            } => {
+                let notes = crate::Notes::from_upstream(oob_notes);
+                let notes_value = notes.value();
+                let (req_amount, fee_msats, total_msats, reclaim_at, created_at_ms) =
+                    if let Some(meta_obj) = op_meta.extra_meta.as_object() {
+                        let req = meta_obj
+                            .get("requested_amount_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(requested_amount.msats);
+                        let fee = meta_obj
+                            .get("fee_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let total = notes_value.msats().saturating_add(fee);
+                        let reclaim = meta_obj
+                            .get("reclaim_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let created = meta_obj
+                            .get("created_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(created_at);
+                        (req, fee, total, reclaim, created)
+                    } else {
+                        (
+                            requested_amount.msats,
+                            0u64,
+                            notes_value.msats(),
+                            0,
+                            created_at,
+                        )
+                    };
+                let wire = crate::ecash::EcashSendDetailsWire {
+                    notes: notes.to_string(),
+                    requested_amount_msats: req_amount,
+                    notes_value_msats: notes_value.msats(),
+                    fee_msats,
+                    total_debited_msats: total_msats,
+                    reclaim_at_epoch_ms: reclaim_at,
+                    created_at_epoch_ms: created_at_ms,
+                };
+                let details = serde_json::to_string(&wire).ok()?;
+                Some(Backfilled {
+                    kind: kinds::ECASH_SEND,
+                    details,
+                    phase: Some(1),
+                    final_state: None,
+                })
+            }
+            fedimint_mint_client::MintOperationMetaVariant::Reissuance { .. } => {
+                let is_ecash_receive = op_meta
+                    .extra_meta
+                    .as_object()
+                    .and_then(|obj| obj.get("facade"))
+                    .and_then(|v| v.as_str())
+                    == Some(crate::ecash::FACADE_ECASH_RECEIVE);
+                if !is_ecash_receive {
+                    return None;
+                }
+                let notes_value_msats = op_meta.amount.msats;
+                let (fee_msats, net_credit, created_at_ms) =
+                    if let Some(meta_obj) = op_meta.extra_meta.as_object() {
+                        let fee = meta_obj
+                            .get("fee_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let net = meta_obj
+                            .get("net_credit_msats")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_else(|| notes_value_msats.saturating_sub(fee));
+                        let created = meta_obj
+                            .get("created_at_epoch_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(created_at);
+                        (fee, net, created)
+                    } else {
+                        (0u64, notes_value_msats, created_at)
+                    };
+                let wire = crate::ecash::EcashReceiveDetailsWire {
+                    notes: None,
+                    notes_value_msats,
+                    fee_msats,
+                    net_credit_msats: net_credit,
+                    created_at_epoch_ms: created_at_ms,
+                };
+                let details = serde_json::to_string(&wire).ok()?;
+                Some(Backfilled {
+                    kind: kinds::ECASH_RECEIVE,
+                    details,
+                    phase: Some(1),
+                    final_state: None,
+                })
+            }
+        }
+    }
 }
 
 /// A driver for a real kind, so the type-erased accessors can be exercised end to end.
@@ -1546,6 +1909,7 @@ impl Backfiller for ProbeBackfiller {
             kind: kinds::ECASH_SEND,
             details: meta.to_string(),
             phase: Some(1),
+            final_state: None,
         })
     }
 }
@@ -2480,12 +2844,16 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // The probe fixture stands in for the ecash-send driver T7 writes; the two lightning
-        // arms are real. Every other kind is a record this build can find, list and label but
-        // not observe, which the accessors report as `None` rather than as a failure.
+        // Ecash (T7) and lightning (T8) are real drivers. Every other kind is a record this
+        // build can find, list and label but not observe, which the accessors report as `None`
+        // rather than as a failure.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::ECASH_RECEIVE),
+            Some(ErasedDriver::EcashReceive(_))
         ));
         assert!(matches!(
             driver_for(kinds::LN_SEND),
@@ -2496,22 +2864,305 @@ mod tests {
             Some(ErasedDriver::LnReceive(_))
         ));
         assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
+        assert!(driver_for(kinds::ONCHAIN_RECEIVE).is_none());
         assert!(driver_for(kinds::RECOVERY).is_none());
         // A tag this build does not know is not a lookup failure either.
         assert!(driver_for("something_else").is_none());
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 2);
+        assert_eq!(backfillers.len(), 3);
         assert!(backfillers.iter().any(|b| {
             b.backfill("probe_module", &serde_json::Value::Null, 0)
                 .is_some()
         }));
+        assert!(backfillers.iter().all(|b| {
+            b.backfill("unknown_module", &serde_json::Value::Null, 0)
+                .is_none()
+        }));
+    }
+
+    #[test]
+    fn ecash_backfiller_reconstructs_spend_oob_and_reissuance_entries() {
+        // Real `SpendOOB`/`Reissuance` meta, not a stand-in shape: this is what
+        // `EcashBackfiller` actually has to parse off the upstream mint module's own
+        // operation log, so the test builds the same upstream type and serializes it
+        // the same way, rather than hand-writing JSON that could drift from it.
+        const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
+        let oob_notes: fedimint_mint_client::OOBNotes = TOKEN.parse().expect("a valid ecash token");
+        let requested_amount = fedimint_core::Amount::from_msats(750);
+
+        let spend_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount,
+                oob_notes: oob_notes.clone(),
+                no_timeout: false,
+            },
+            amount: oob_notes.total_amount(),
+            extra_meta: serde_json::Value::Null,
+        };
+        let spend_json = serde_json::to_value(&spend_meta).expect("serializes");
+
+        let backfiller = EcashBackfiller;
+        let backfilled = backfiller
+            .backfill("mint", &spend_json, 0)
+            .expect("claims a SpendOOB entry under the mint module kind");
+        assert_eq!(backfilled.kind, kinds::ECASH_SEND);
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes, oob_notes.to_string());
+        assert_eq!(wire.requested_amount_msats, 750);
+        assert_eq!(wire.notes_value_msats, oob_notes.total_amount().msats);
+
+        // Internal mint self-reissuances without facade marker are ignored to
+        // avoid misclassifying change-making as user receive operations.
+        let internal_reissue_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::Reissuance {
+                legacy_out_point: None,
+                txid: None,
+                out_point_indices: vec![0],
+            },
+            amount: fedimint_core::Amount::from_msats(1_000),
+            extra_meta: serde_json::Value::Null,
+        };
+        let internal_reissue_json =
+            serde_json::to_value(&internal_reissue_meta).expect("serializes");
         assert!(
-            backfillers
-                .iter()
-                .all(|b| b.backfill("mint", &serde_json::Value::Null, 0).is_none())
+            backfiller
+                .backfill("mint", &internal_reissue_json, 0)
+                .is_none()
         );
+
+        // Legitimate v1 receive marked with facade marker
+        let reissue_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::Reissuance {
+                legacy_out_point: None,
+                txid: None,
+                out_point_indices: vec![0],
+            },
+            amount: fedimint_core::Amount::from_msats(1_000),
+            extra_meta: serde_json::json!({
+                "facade": "ecash_receive",
+            }),
+        };
+        let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mint", &reissue_json, 0)
+            .expect("claims a Reissuance entry under the mint module kind when marked");
+        assert_eq!(backfilled.kind, kinds::ECASH_RECEIVE);
+        let wire: crate::ecash::EcashReceiveDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes, None);
+        assert_eq!(wire.notes_value_msats, 1_000);
+
+        // mintv2 Send: the notes are already out of the balance by the time this log entry
+        // exists at all, so a crash before the SDK's own record was written must not leave them
+        // unrecoverable. `EcashSendDriver` resolves the actual outcome (redeemed / reclaimed)
+        // itself, from this same rebuilt record, once past `reclaim_at`.
+        let v2_ecash = fedimint_mintv2_client::ECash::new(
+            fedimint_core::config::FederationId::dummy(),
+            vec![],
+        );
+        let v2_ecash_encoded = fedimint_core::base32::encode_prefixed(
+            fedimint_core::base32::FEDIMINT_PREFIX,
+            &v2_ecash,
+        );
+        let mintv2_send = fedimint_mintv2_client::MintOperationMeta::Send {
+            ecash: v2_ecash_encoded.clone(),
+            custom_meta: serde_json::json!({
+                "requested_amount_msats": 700u64,
+                "fee_msats": 50u64,
+                "reclaim_at_epoch_ms": 1_700_100_000_000u64,
+            }),
+        };
+        let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mintv2", &mintv2_send_json, 9)
+            .expect("claims a Send entry under the mintv2 module kind");
+        assert_eq!(backfilled.kind, kinds::ECASH_SEND);
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes, v2_ecash_encoded);
+        // The copy's requested amount is honoured; the notes' own value (zero, for this empty
+        // fixture) is what `notes_value_msats` reports regardless.
+        assert_eq!(wire.requested_amount_msats, 700);
+        assert_eq!(wire.notes_value_msats, 0);
+        assert_eq!(wire.fee_msats, 50);
+        assert_eq!(wire.reclaim_at_epoch_ms, 1_700_100_000_000);
+
+        // No copy at all (an entry this SDK did not create): still recovered, honestly, with the
+        // reclaim deadline defaulting to already-due rather than presumed still pending.
+        let mintv2_send_no_copy = fedimint_mintv2_client::MintOperationMeta::Send {
+            ecash: v2_ecash_encoded.clone(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let mintv2_send_no_copy_json =
+            serde_json::to_value(&mintv2_send_no_copy).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mintv2", &mintv2_send_no_copy_json, 9)
+            .expect("claims a Send entry even with no SDK copy");
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.reclaim_at_epoch_ms, 0);
+        assert_eq!(wire.created_at_epoch_ms, 9);
+
+        // mintv2 Send with unparseable notes still returns None: there is nothing to recover.
+        let unparseable_send = fedimint_mintv2_client::MintOperationMeta::Send {
+            ecash: "not_valid_notes".to_string(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let unparseable_send_json = serde_json::to_value(&unparseable_send).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &unparseable_send_json, 0)
+                .is_none()
+        );
+
+        // mintv2 Receive
+        let txid: fedimint_core::TransactionId =
+            "0000000000000000000000000000000000000000000000000000000000000000"
+                .parse()
+                .expect("valid txid");
+        let outpoint_range =
+            fedimint_core::OutPointRange::new_single(txid, 0).expect("valid range");
+        let mintv2_receive = fedimint_mintv2_client::MintOperationMeta::Receive {
+            change_outpoint_range: outpoint_range,
+            ecash: "dummy_receive_notes".to_string(),
+            custom_meta: serde_json::json!({
+                "facade": crate::ecash::FACADE_ECASH_RECEIVE,
+                "notes_value_msats": 2_000u64,
+                "fee_msats": 100u64,
+                "net_credit_msats": 1_900u64,
+            }),
+        };
+        let mintv2_receive_json = serde_json::to_value(&mintv2_receive).expect("serializes");
+        let backfilled_v2_receive = backfiller
+            .backfill("mintv2", &mintv2_receive_json, 0)
+            .expect("claims a Receive entry under mintv2");
+        assert_eq!(backfilled_v2_receive.kind, kinds::ECASH_RECEIVE);
+        let wire_recv: crate::ecash::EcashReceiveDetailsWire =
+            serde_json::from_str(&backfilled_v2_receive.details).expect("valid wire json");
+        // Non-v1 ecash strings stay None so decode_details does not fail on them
+        assert_eq!(wire_recv.notes, None);
+        assert_eq!(wire_recv.notes_value_msats, 2_000);
+        assert_eq!(wire_recv.fee_msats, 100);
+        assert_eq!(wire_recv.net_credit_msats, 1_900);
+        let details: crate::ecash::EcashReceiveDetails = wire_recv
+            .try_into()
+            .expect("decodes cleanly with notes = None");
+        assert_eq!(details.notes, None);
+        assert_eq!(details.notes_value.msats(), 2_000);
+
+        // The send driver's own reclaim submits a real mintv2 Receive. It settles an
+        // ECASH_SEND as Canceled and is not an incoming receive, so it must never be rebuilt
+        // as one: doing so would report the same money twice in history.
+        let mintv2_reclaim = fedimint_mintv2_client::MintOperationMeta::Receive {
+            change_outpoint_range: outpoint_range,
+            ecash: "dummy_receive_notes".to_string(),
+            custom_meta: serde_json::json!({
+                "facade": crate::ecash::FACADE_ECASH_SEND_RECLAIM,
+            }),
+        };
+        let mintv2_reclaim_json = serde_json::to_value(&mintv2_reclaim).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_reclaim_json, 0)
+                .is_none(),
+            "an internal send-reclaim receive must not become a user-facing ecash receive",
+        );
+
+        // Same for a Receive carrying no facade marker at all: this facade did not create it,
+        // so it is left unclaimed rather than guessed at.
+        let mintv2_unmarked = fedimint_mintv2_client::MintOperationMeta::Receive {
+            change_outpoint_range: outpoint_range,
+            ecash: "dummy_receive_notes".to_string(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let mintv2_unmarked_json = serde_json::to_value(&mintv2_unmarked).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_unmarked_json, 0)
+                .is_none()
+        );
+
+        // mintv2 internal Reissue is ignored
+        let mintv2_reissue = fedimint_mintv2_client::MintOperationMeta::Reissue {
+            change_outpoint_range: outpoint_range,
+            amount: fedimint_core::Amount::from_msats(500),
+            custom_meta: serde_json::Value::Null,
+        };
+        let mintv2_reissue_json = serde_json::to_value(&mintv2_reissue).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_reissue_json, 0)
+                .is_none()
+        );
+
+        // A module kind this backfiller does not own claims nothing, even with a
+        // shape it would otherwise recognise.
+        assert!(backfiller.backfill("wallet", &spend_json, 0).is_none());
+    }
+
+    #[test]
+    fn ecash_backfiller_restores_quote_terms_and_receive_details_from_extra_meta() {
+        const TOKEN: &str = "AgEEKioqKgBVAf0D6AGl3T66ytG8SL2HGO7VqNodaPkTI77yhIrE-i5vju1xDzF4_UrvBHzCNOaxEnCG8zzECLOYGHgdlSFHU2DeayBfMyjkkKbZnV4lU6RVMgfIvQ==";
+        let oob_notes: fedimint_mint_client::OOBNotes = TOKEN.parse().expect("a valid ecash token");
+
+        let spend_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::SpendOOB {
+                requested_amount: fedimint_core::Amount::from_msats(1_000),
+                oob_notes: oob_notes.clone(),
+                no_timeout: false,
+            },
+            amount: oob_notes.total_amount(),
+            extra_meta: serde_json::json!({
+                "requested_amount_msats": 700u64,
+                "notes_value_msats": 1_000u64,
+                "fee_msats": 50u64,
+                "created_at_epoch_ms": 1_700_000_000_000u64,
+                "reclaim_at_epoch_ms": 1_700_086_400_000u64,
+            }),
+        };
+        let spend_json = serde_json::to_value(&spend_meta).expect("serializes");
+
+        let backfiller = EcashBackfiller;
+        let backfilled = backfiller
+            .backfill("mint", &spend_json, 0)
+            .expect("claims SpendOOB");
+        let wire: crate::ecash::EcashSendDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.requested_amount_msats, 700);
+        assert_eq!(wire.notes_value_msats, 1_000);
+        assert_eq!(wire.fee_msats, 50);
+        assert_eq!(wire.total_debited_msats, 1_050);
+        assert_eq!(wire.created_at_epoch_ms, 1_700_000_000_000);
+        assert_eq!(wire.reclaim_at_epoch_ms, 1_700_086_400_000);
+
+        let reissue_meta = fedimint_mint_client::MintOperationMeta {
+            variant: fedimint_mint_client::MintOperationMetaVariant::Reissuance {
+                legacy_out_point: None,
+                txid: None,
+                out_point_indices: vec![0],
+            },
+            amount: fedimint_core::Amount::from_msats(1_000),
+            extra_meta: serde_json::json!({
+                "facade": "ecash_receive",
+                "notes_value_msats": 1_000u64,
+                "fee_msats": 25u64,
+                "net_credit_msats": 975u64,
+                "created_at_epoch_ms": 1_700_000_000_000u64,
+            }),
+        };
+        let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
+        let backfilled = backfiller
+            .backfill("mint", &reissue_json, 0)
+            .expect("claims Reissuance");
+        let wire: crate::ecash::EcashReceiveDetailsWire =
+            serde_json::from_str(&backfilled.details).expect("valid wire json");
+        assert_eq!(wire.notes_value_msats, 1_000);
+        assert_eq!(wire.fee_msats, 25);
+        assert_eq!(wire.net_credit_msats, 975);
+        assert_eq!(wire.created_at_epoch_ms, 1_700_000_000_000);
     }
 
     /// A driver whose one subscription is fed by hand, for the timing the scripted driver

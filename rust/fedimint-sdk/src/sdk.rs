@@ -972,13 +972,26 @@ impl Sdk {
                 ));
             }
             // Out-of-band ecash a receiver has not redeemed and this instance could still
-            // reclaim shows up here too: upstream keeps a state machine alive for exactly as
-            // long as the refund is still available.
+            // reclaim shows up here on the v1 mint: upstream keeps a state machine alive for
+            // exactly as long as the refund is still available.
             if !client.get_active_operations().await.is_empty() {
                 self.persist_closed(&federation).await?;
                 return Err(crate::Error::new(
                     crate::ErrorCode::PendingOperations,
                     "this federation still has operations that have not finished",
+                ));
+            }
+            // ... but on mintv2 it does not, because a mintv2 send leaves no state machine
+            // behind. Both of the guards above would pass for a wallet that sent its entire
+            // balance out of band and is still holding the only copy of reclaimable notes: the
+            // balance really is zero and the client really has nothing running. The SDK's own
+            // records are what still know about it; see `has_unsettled_ecash_send`.
+            if federation.has_unsettled_ecash_send().await? {
+                self.persist_closed(&federation).await?;
+                return Err(crate::Error::new(
+                    crate::ErrorCode::PendingOperations,
+                    "this federation still has out-of-band ecash that has not been redeemed \
+                     or reclaimed",
                 ));
             }
         }
