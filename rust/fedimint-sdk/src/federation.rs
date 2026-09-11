@@ -1,5 +1,6 @@
 //! A joined federation, and the capability facades hanging off it.
 
+use std::future::Future;
 use std::sync::{Arc, Weak};
 
 use fedimint_client::{Client, ClientHandleArc};
@@ -10,7 +11,7 @@ use fedimint_core::module::AmountUnit;
 use futures::StreamExt;
 
 use crate::db::{FederationRecord, StoredStatus};
-use crate::operation::{Driver, Operation, OperationInner, OperationState};
+use crate::operation::{Driver, Operation, OperationInner, OperationState, kinds};
 use crate::sdk::SdkInner;
 use crate::{
     ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
@@ -44,8 +45,8 @@ use crate::{
 /// [`FederationClosed`](crate::ErrorCode::FederationClosed)" applies to the
 /// **fallible** calls: [`balance`](Federation::balance),
 /// [`operation`](Federation::operation),
-/// [`activity`](Federation::activity), [`backup`](Federation::backup), and
-/// every call made through a facade. The rest of this type returns plain
+/// [`activity`](Federation::activity), and every call made through a
+/// facade. The rest of this type returns plain
 /// values and has no way to report a failure, so each has a defined closed
 /// behaviour instead:
 ///
@@ -148,18 +149,27 @@ impl Federation {
         // Reading a balance is not fund-touching: a recovery-locked federation's number is
         // partial and worth showing as progress, and it is the spends that are refused.
         let client = self.inner.client(false).await?;
-        let balance = client
-            .get_balance_for_unit(AmountUnit::BITCOIN)
-            .await
-            .map_err(|err| {
+        let balance = match client.get_balance_for_unit(AmountUnit::BITCOIN).await {
+            Ok(balance) => balance,
+            // A v1 mint recovers as `RecoveryMode::Unusable` and is left out of the client's
+            // module registry until the client is opened again after the rescan
+            // (`fedimint-client/src/client/builder.rs:951`), so a recovering federation of that
+            // generation has no balance source at all yet. What has been recovered *so far* into
+            // something spendable is then exactly nothing, which is the provisional figure the
+            // docs promise; the swap that ends the recovery brings the real one.
+            Err(_) if self.inner.status() == FederationStatus::Recovering => {
+                return Ok(Amount::from_msats(0));
+            }
+            Err(err) => {
                 // The one way this fails in practice is a client with no primary module, which
                 // happens when API-version negotiation left every module out. That is not the
                 // caller's doing and not a storage fault.
-                crate::Error::new(
+                return Err(crate::Error::new(
                     crate::ErrorCode::Internal,
                     format!("this federation cannot report a balance: {err}"),
-                )
-            })?;
+                ));
+            }
+        };
         Ok(Amount::from_msats(balance.msats))
     }
 
@@ -179,6 +189,7 @@ impl Federation {
                 federation: self.inner.clone(),
                 cursor: tokio::sync::Mutex::new(BalanceCursor {
                     stream: None,
+                    recovery_changed: None,
                     last: None,
                 }),
             }),
@@ -298,27 +309,6 @@ impl Federation {
         crate::activity::page(&self.inner, cursor, limit).await
     }
 
-    /// Uploads a fresh encrypted backup to the federation.
-    ///
-    /// Backups are what make seed-only restore possible: they let a
-    /// recovering client learn which notes and operations to look for
-    /// instead of rescanning blindly. The SDK also backs up automatically
-    /// after changes that affect recoverability, so this call is for
-    /// applications that want an explicit "back up now" affordance or want
-    /// to be sure a backup exists before some user-visible milestone.
-    ///
-    /// # Errors
-    ///
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
-    /// recovery is incomplete, which is not the same as still running, since
-    /// a recovery that stopped short leaves the lock in place, and
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
-    pub async fn backup(&self) -> Result<()> {
-        unimplemented!()
-    }
-
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
         Federation { inner }
@@ -386,34 +376,69 @@ impl BalanceUpdates {
             }
 
             if cursor.stream.is_none() {
+                // Taken before the read below, so a recovery that ends between the read and the
+                // wait on it is not missed. It outlives the stream established here for the same
+                // reason: a recovery's swap retires the client that stream reads from.
+                let mut recovery_changed = self.inner.federation.recovery_changed();
                 let client = self.inner.federation.client(false).await?;
                 // Upstream's balance stream never yields and never ends when a client has no
                 // primary module, so a read has to prove there is one before a caller is handed
                 // something that could hang for the life of the process.
-                let initial = client
-                    .get_balance_for_unit(AmountUnit::BITCOIN)
-                    .await
-                    .map_err(|err| {
-                        crate::Error::new(
+                match client.get_balance_for_unit(AmountUnit::BITCOIN).await {
+                    Ok(_) => {}
+                    // No balance source yet because a v1 mint is still recovering (see
+                    // `Federation::balance`): the provisional figure is zero, handed out once,
+                    // and the next change is the recovery ending and swapping a usable client in.
+                    Err(_) if self.inner.federation.status() == FederationStatus::Recovering => {
+                        drop(client);
+                        let zero = Amount::from_msats(0);
+                        if cursor.last != Some(zero) {
+                            cursor.last = Some(zero);
+                            return Ok(zero);
+                        }
+                        tokio::select! {
+                            _ = recovery_changed.changed() => {}
+                            _ = closed.changed() => {}
+                        }
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(crate::Error::new(
                             crate::ErrorCode::Internal,
                             format!("this federation cannot report a balance: {err}"),
-                        )
-                    })?;
-                let _ = initial;
+                        ));
+                    }
+                }
                 cursor.stream = Some(client.subscribe_balance_changes(AmountUnit::BITCOIN).await);
+                cursor.recovery_changed = Some(recovery_changed);
             }
 
+            let cursor = &mut *cursor;
             let stream = cursor
                 .stream
                 .as_mut()
                 .expect("the stream was just established");
+            let recovery_changed = cursor
+                .recovery_changed
+                .as_mut()
+                .expect("taken with the stream");
             let next = tokio::select! {
                 next = stream.next() => next,
                 _ = closed.changed() => continue,
+                // A recovery ending swaps the client, and with it the module this stream reads
+                // from: a stream over the retired client never yields again.
+                _ = recovery_changed.changed() => {
+                    cursor.stream = None;
+                    continue;
+                }
             };
             let Some(balance) = next else {
-                // The stream only ends when the client behind it is gone, which from a caller's
-                // point of view is the federation no longer running.
+                // The stream only ends when the client behind it is gone: with the federation
+                // still running, that is a swap, and the successor is subscribed to instead.
+                if !*closed.borrow() {
+                    cursor.stream = None;
+                    continue;
+                }
                 return Err(crate::Error::new(
                     crate::ErrorCode::FederationClosed,
                     "this federation is not running",
@@ -452,6 +477,9 @@ pub(crate) struct FederationInner {
     /// Flipped once the federation stops running, so a pending subscriber resolves promptly
     /// instead of waiting on a stream that will never yield again.
     closed: tokio::sync::watch::Sender<bool>,
+    /// Bumped whenever a recovery attempt's recorded state changes, so a subscriber to the
+    /// attempt wakes up without polling.
+    recovery_changed: tokio::sync::watch::Sender<u64>,
     /// Serialises the start of a lightning claim retry per federation: the read of the record,
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
@@ -491,6 +519,7 @@ impl FederationInner {
             record: std::sync::RwLock::new(record),
             status: std::sync::RwLock::new(status),
             closed: tokio::sync::watch::Sender::new(!running),
+            recovery_changed: tokio::sync::watch::Sender::new(0),
             reclaim_starts: tokio::sync::Mutex::new(()),
         }
     }
@@ -499,8 +528,8 @@ impl FederationInner {
     ///
     /// Every facade call holds one of these for its whole duration, which is what makes a close or
     /// an erase wait for work already in flight rather than pulling the client out from under it.
-    /// `fund_touching` marks the calls a recovery-locked federation refuses: sends, receives and
-    /// taking a fresh backup, as opposed to reading a balance or a name.
+    /// `fund_touching` marks the calls a recovery-locked federation refuses: sends and receives,
+    /// as opposed to reading a balance or a name.
     pub(crate) async fn client(&self, fund_touching: bool) -> Result<ClientGuard<'_>> {
         if fund_touching && self.status() == FederationStatus::Recovering {
             return Err(crate::Error::new(
@@ -597,6 +626,57 @@ impl FederationInner {
         shutdown_client(client).await
     }
 
+    /// Swaps the live client for a freshly opened one, under the client write lock.
+    ///
+    /// The old client is taken out and shut down before `open` is even called: two clients open
+    /// over the same database at once is exactly what the storage lock exists to prevent, so the
+    /// old one has to be gone before the new one can be asked for. A failure shutting the old one
+    /// down is logged and does not stop the swap, because refusing to open the replacement over a
+    /// client that is already on its way out would help nobody.
+    ///
+    /// `closed` is left untouched throughout: unlike [`quiesce`](Self::quiesce), this is not the
+    /// federation shutting down, and every handle to it stays live for the duration. On `Err`
+    /// from `open`, the lock is released with no client installed, which reads exactly like any
+    /// other reason there is currently no client; the caller decides what status that leaves the
+    /// federation in.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), without calling `open`, when no
+    /// client is in place: the federation was closed, quarantined or erased first, and a swap
+    /// must not undo that. Otherwise whatever `open` returns.
+    pub(crate) async fn replace_client<F, Fut>(&self, open: F) -> Result<()>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<ClientHandleArc>>,
+    {
+        let mut guard = self.client.write().await;
+        // No client in place means the federation was closed, quarantined or erased while the
+        // caller was deciding to swap: opening a fresh client now would resurrect it behind
+        // the lifecycle's back, so the swap is refused and the caller leaves the status alone.
+        let Some(old) = guard.take() else {
+            return Err(crate::Error::new(
+                crate::ErrorCode::FederationClosed,
+                "this federation is closed",
+            ));
+        };
+        // Told to stop before the consuming shutdown is attempted, as `quiesce` does: a stray
+        // handle to the old client makes that shutdown fail, and without this the old client
+        // would keep running until the stray handle went.
+        old.task_group().shutdown();
+        if let Err(err) = shutdown_client(old).await {
+            tracing::warn!(
+                target: "fedimint_sdk",
+                federation = %self.id,
+                error = %err,
+                "could not cleanly shut down the client being replaced",
+            );
+        }
+        let fresh = open().await?;
+        *guard = Some(fresh);
+        Ok(())
+    }
+
     /// The raw read side of the client lock, for tests that need to hold it the way a facade
     /// call does without a live client behind it.
     #[cfg(test)]
@@ -609,6 +689,16 @@ impl FederationInner {
     /// A receiver that fires when this federation stops running.
     pub(crate) fn closed(&self) -> tokio::sync::watch::Receiver<bool> {
         self.closed.subscribe()
+    }
+
+    /// A receiver that fires whenever a recovery attempt's recorded state changes.
+    pub(crate) fn recovery_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.recovery_changed.subscribe()
+    }
+
+    /// Wakes every subscriber to [`FederationInner::recovery_changed`].
+    pub(crate) fn bump_recovery(&self) {
+        self.recovery_changed.send_modify(|n| *n += 1);
     }
 
     /// The lock that serialises starting a lightning claim retry for this federation.
@@ -707,6 +797,24 @@ impl FederationInner {
             }),
             driver,
         ))
+    }
+
+    /// Records a recovery attempt's operation, in the fixed shape every attempt is written in.
+    ///
+    /// Called before the federation's client exists, by whichever of `Sdk::recover`,
+    /// `Sdk::resume_recovery` or the pre-open repair minted this attempt, so it needs no client
+    /// and no [`ensure_open`](Self::ensure_open). An existing record for `attempt` is kept as
+    /// is: `overwrite_placeholder: false` never replaces one, and this attempt's record is never
+    /// the placeholder shape `write_record` would offer up for replacement anyway.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage) if the record cannot be committed.
+    pub(crate) async fn record_recovery_attempt(
+        &self,
+        attempt: fedimint_core::core::OperationId,
+    ) -> crate::Result<()> {
+        record_recovery_attempt_in(&self.db(), attempt).await
     }
 
     /// Looks one operation up by id, rebuilding its record from the client's own log if a crash
@@ -936,53 +1044,7 @@ impl FederationInner {
         record: crate::db::OperationRecord,
         overwrite_placeholder: bool,
     ) -> crate::Result<crate::db::OperationRecord> {
-        let db = self.db();
-        db.autocommit(
-            |dbtx, _| {
-                let record = record.clone();
-                Box::pin(async move {
-                    let key = crate::db::OperationRecordKey(id);
-                    if let Some(existing) = dbtx.get_value(&key).await {
-                        if !(overwrite_placeholder && is_unclaimed_placeholder(&existing)) {
-                            return Ok::<_, core::convert::Infallible>(existing);
-                        }
-                        // The rebuilt placeholder says nothing the stored one did not already
-                        // say: writing it again would touch storage for no observable
-                        // difference. This is what keeps reconciliation's steady-state pass over
-                        // a module no backfiller has learned to place a pure read, rather than a
-                        // rewrite of the same two rows on every federation open.
-                        if existing == record {
-                            return Ok::<_, core::convert::Infallible>(existing);
-                        }
-                        // Being replaced: its index entry is only still correct if the new
-                        // record keeps the same creation time. A backfill recomputes `created_at`
-                        // from the client's own chronological log, which need not agree with
-                        // whatever an earlier write guessed or was given, and leaving the old
-                        // entry behind would leak it under a key nothing will ever look up again.
-                        if existing.created_at != record.created_at {
-                            dbtx.remove_entry(&crate::db::OperationIndexKey {
-                                created_at: existing.created_at,
-                                id,
-                            })
-                            .await;
-                        }
-                    }
-                    dbtx.insert_entry(&key, &record).await;
-                    dbtx.insert_entry(
-                        &crate::db::OperationIndexKey {
-                            created_at: record.created_at,
-                            id,
-                        },
-                        &(),
-                    )
-                    .await;
-                    Ok::<_, core::convert::Infallible>(record)
-                })
-            },
-            Some(100),
-        )
-        .await
-        .map_err(crate::db::storage_error)
+        write_record_in(&self.db(), id, record, overwrite_placeholder).await
     }
 
     /// A federation handle with no client behind it, for the operation engine's own tests.
@@ -1038,17 +1100,112 @@ impl FederationInner {
     }
 }
 
+/// [`FederationInner::write_record`] for a caller that holds the federation's namespace database
+/// rather than the federation itself: the reopen path, which writes a recovery attempt's record
+/// into a namespace it has just wiped and redone, before the federation's shared state exists.
+pub(crate) async fn write_record_in(
+    db: &Database,
+    id: fedimint_core::core::OperationId,
+    record: crate::db::OperationRecord,
+    overwrite_placeholder: bool,
+) -> crate::Result<crate::db::OperationRecord> {
+    db.autocommit(
+        |dbtx, _| {
+            let record = record.clone();
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                if let Some(existing) = dbtx.get_value(&key).await {
+                    if !(overwrite_placeholder && is_unclaimed_placeholder(&existing)) {
+                        return Ok::<_, core::convert::Infallible>(existing);
+                    }
+                    // The rebuilt placeholder says nothing the stored one did not already
+                    // say: writing it again would touch storage for no observable
+                    // difference. This is what keeps reconciliation's steady-state pass over
+                    // a module no backfiller has learned to place a pure read, rather than a
+                    // rewrite of the same two rows on every federation open.
+                    if existing == record {
+                        return Ok::<_, core::convert::Infallible>(existing);
+                    }
+                    // Being replaced: its index entry is only still correct if the new
+                    // record keeps the same creation time. A backfill recomputes `created_at`
+                    // from the client's own chronological log, which need not agree with
+                    // whatever an earlier write guessed or was given, and leaving the old
+                    // entry behind would leak it under a key nothing will ever look up again.
+                    if existing.created_at != record.created_at {
+                        dbtx.remove_entry(&crate::db::OperationIndexKey {
+                            created_at: existing.created_at,
+                            id,
+                        })
+                        .await;
+                    }
+                }
+                dbtx.insert_entry(&key, &record).await;
+                dbtx.insert_entry(
+                    &crate::db::OperationIndexKey {
+                        created_at: record.created_at,
+                        id,
+                    },
+                    &(),
+                )
+                .await;
+                Ok::<_, core::convert::Infallible>(record)
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
+}
+
+/// [`FederationInner::record_recovery_attempt`] over a namespace database, for the same caller.
+pub(crate) async fn record_recovery_attempt_in(
+    db: &Database,
+    attempt: fedimint_core::core::OperationId,
+) -> crate::Result<()> {
+    let record = crate::db::OperationRecord {
+        schema_version: crate::operation::READABLE_STATE_SCHEMA,
+        kind: kinds::RECOVERY.to_owned(),
+        module: String::new(),
+        created_at: crate::db::now_millis(),
+        details: "{}".to_owned(),
+        phase: None,
+        cancel_requested_at: None,
+        final_state: None,
+    };
+    write_record_in(db, attempt, record, false)
+        .await
+        .map(|_| ())
+}
+
 /// Shuts a client down, waiting for its workers.
 ///
-/// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. If a caller is
-/// still holding a clone, the best that can be done is to stop the executor and let the eventual
-/// drop clean up, which upstream also logs about.
-pub(crate) async fn shutdown_client(client: ClientHandleArc) -> Result<()> {
-    let Some(handle) = Arc::into_inner(client) else {
-        return Err(crate::Error::new(
-            crate::ErrorCode::Internal,
-            "the federation's client is still in use elsewhere",
-        ));
+/// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
+/// still held is waited for, briefly; if it does not go, the best that can be done is to leave the
+/// executor stopped and let the eventual drop clean up, which upstream also logs about.
+pub(crate) async fn shutdown_client(mut client: ClientHandleArc) -> Result<()> {
+    // A stray clone is normally on its way out already: the recovery watcher drops its clone
+    // the moment the federation's `closed` watch flips, which every caller of this function
+    // has done before calling it, but that drop runs on another task and may not have been
+    // scheduled yet. Waiting a bounded moment for it turns that race into a clean shutdown.
+    const STRAY_REFERENCE_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+    const STRAY_REFERENCE_ATTEMPTS: usize = 100;
+
+    let mut attempts = 0;
+    let handle = loop {
+        match Arc::try_unwrap(client) {
+            Ok(handle) => break handle,
+            Err(still_shared) => {
+                attempts += 1;
+                if attempts >= STRAY_REFERENCE_ATTEMPTS {
+                    return Err(crate::Error::new(
+                        crate::ErrorCode::Internal,
+                        "the federation's client is still in use elsewhere",
+                    ));
+                }
+                client = still_shared;
+                fedimint_core::runtime::sleep(STRAY_REFERENCE_WAIT).await;
+            }
+        }
     };
     handle.shutdown().await;
     Ok(())
@@ -1099,6 +1256,17 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
 ///
 /// Holding it keeps a close, an erase or a shutdown waiting until the call is done.
 pub(crate) struct ClientGuard<'a>(tokio::sync::RwLockReadGuard<'a, Option<ClientHandleArc>>);
+
+impl ClientGuard<'_> {
+    /// A clone of the client behind this guard, for a task that must outlive the guard itself
+    /// (the recovery watcher, which drops its guard and then blocks on the client alone).
+    pub(crate) fn handle(&self) -> ClientHandleArc {
+        self.0
+            .as_ref()
+            .expect("a client guard is only built while the client is live")
+            .clone()
+    }
+}
 
 impl core::ops::Deref for ClientGuard<'_> {
     type Target = Client;
@@ -1156,6 +1324,9 @@ struct BalanceCursor {
     /// on. Upstream's own stream hangs forever when a client has no primary module, so it is only
     /// opened after a balance read has proved there is one.
     stream: Option<fedimint_core::util::BoxStream<'static, fedimint_core::Amount>>,
+    /// Subscribed just before `stream` was, so the recovery swap that retires the client behind
+    /// it is seen and the stream re-established over the successor.
+    recovery_changed: Option<tokio::sync::watch::Receiver<u64>>,
     /// The last value handed out, so a repeat is not delivered as a change.
     last: Option<Amount>,
 }
@@ -1175,10 +1346,10 @@ mod tests {
     use fedimint_core::util::SafeUrl;
 
     use crate::db::{
-        FederationRecord, OperationRecordKey, StoredCapabilities, StoredNetwork, StoredStatus,
-        federation_namespace, in_memory_root,
+        FederationRecord, OperationRecord, OperationRecordKey, StoredCapabilities, StoredNetwork,
+        StoredStatus, federation_namespace, in_memory_root,
     };
-    use crate::operation::kinds;
+    use crate::operation::{READABLE_STATE_SCHEMA, kinds};
     use crate::{ErrorCode, FederationStatus};
 
     use super::*;
@@ -1881,6 +2052,101 @@ mod tests {
         assert_eq!(
             dbtx.get_value(&OperationRecordKey(id)).await.as_ref(),
             Some(&created)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recording_an_attempt_writes_a_running_record_once() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let attempt = UpstreamOperationId([6u8; 32]);
+
+        federation
+            .record_recovery_attempt(attempt)
+            .await
+            .expect("record");
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        let record = dbtx
+            .get_value(&OperationRecordKey(attempt))
+            .await
+            .expect("the attempt's record was written");
+        assert_eq!(record.kind, kinds::RECOVERY);
+        assert_eq!(record.module, "");
+        assert_eq!(record.details, "{}");
+        assert_eq!(record.schema_version, READABLE_STATE_SCHEMA);
+        assert_eq!(record.final_state, None);
+        let indexed: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&crate::db::OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        assert_eq!(indexed, vec![(record.created_at, attempt)]);
+        drop(dbtx);
+
+        // A driver observed the rescan finish and recorded it, which a second call must not
+        // undo: `record_recovery_attempt` only ever gets the attempt started, never rewrites it.
+        let mut dbtx = db.begin_transaction().await;
+        let finished = OperationRecord {
+            final_state: Some("\"Done\"".to_owned()),
+            ..record.clone()
+        };
+        dbtx.insert_entry(&OperationRecordKey(attempt), &finished)
+            .await;
+        dbtx.commit_tx().await;
+
+        federation
+            .record_recovery_attempt(attempt)
+            .await
+            .expect("record again");
+
+        let mut dbtx = db.begin_transaction_nc().await;
+        assert_eq!(
+            dbtx.get_value(&OperationRecordKey(attempt)).await,
+            Some(finished)
+        );
+        let indexed_after: Vec<_> = dbtx
+            .find_by_prefix_sorted_descending(&crate::db::OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| (key.created_at, key.id))
+            .collect()
+            .await;
+        assert_eq!(indexed_after, vec![(record.created_at, attempt)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bumping_recovery_wakes_a_subscriber() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let mut updates = federation.recovery_changed();
+
+        federation.bump_recovery();
+
+        updates.changed().await.expect("the sender is still alive");
+        assert_eq!(*updates.borrow(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_swap_is_refused_when_no_client_is_in_place() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        // A detached federation has no client, exactly as one that was closed or erased.
+        let federation = FederationInner::detached(db, true);
+        let opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = opened.clone();
+
+        let err = federation
+            .replace_client(|| async move {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(crate::Error::new(ErrorCode::Internal, "never reached"))
+            })
+            .await
+            .expect_err("no client to replace");
+
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+        assert!(
+            !opened.load(std::sync::atomic::Ordering::SeqCst),
+            "the swap must not open a client on a federation that has none"
         );
     }
 }
