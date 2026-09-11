@@ -276,7 +276,12 @@ impl Sdk {
                 // `Joining` with its recovery record, is reported `Quarantined` with this error
                 // as its diagnostic, and the next open redoes the recovery under the same
                 // attempt id.
-                let committed = !crate::db::is_empty(&namespace).await.unwrap_or(true);
+                // An inconclusive read counts as committed: erasing is the destructive answer, and
+                // it is only right when the namespace is known to be empty.
+                let committed = crate::db::is_empty(&namespace)
+                    .await
+                    .map(|empty| !empty)
+                    .unwrap_or(true);
                 if !committed {
                     let _ = self.inner().finish_erase(&id).await;
                     self.inner().remove(&id);

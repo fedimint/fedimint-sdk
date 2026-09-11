@@ -1978,7 +1978,21 @@ impl SdkInner {
         let (client, opened) = if record.status == StoredStatus::Joining {
             crate::db::wipe_federation(&self.db, id).await?;
             let client = match crate::db::read_recovery(&self.db, id).await? {
-                Some(_) => self.recover_client(id, record).await?,
+                Some(recovery) => {
+                    let client = self.recover_client(id, record).await?;
+                    // The wipe above took the attempt's operation record with it, if a reopen
+                    // had written one before calling here; it is written again now, into the
+                    // namespace the client has just committed to, so the attempt the root record
+                    // names stays observable and resumable.
+                    crate::federation::record_recovery_attempt_in(
+                        &self
+                            .db
+                            .with_prefix(crate::db::federation_prefix(id).to_vec()),
+                        recovery.attempt,
+                    )
+                    .await?;
+                    client
+                }
                 None => self.join_client(id, record).await?,
             };
             let mut opened = record.clone();

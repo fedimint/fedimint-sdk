@@ -387,6 +387,27 @@ async fn fund(lightning: &fedimint_sdk::Lightning, msats: u64) -> fedimint_sdk::
         .net_credit
 }
 
+/// Waits until the federation's balance reads `expected`, through the balance stream, and
+/// panics with the last figure seen if it has not within a minute.
+///
+/// A recovered wallet's notes are re-signed by state machines that resume on the client the
+/// recovery's end swaps in, so the balance can land a moment after the recovery reads `Done`.
+async fn balance_settles_at(federation: &fedimint_sdk::Federation, expected: fedimint_sdk::Amount) {
+    let mut updates = federation.balance_updates();
+    let mut last = None;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let next = tokio::time::timeout(remaining, updates.next()).await;
+        match next {
+            Ok(Ok(balance)) if balance == expected => return,
+            Ok(Ok(balance)) => last = Some(balance),
+            Ok(Err(err)) => panic!("the balance stream failed: {err:?}"),
+            Err(_) => panic!("the balance did not reach {expected:?}; last seen {last:?}"),
+        }
+    }
+}
+
 /// On the lnv2 shape, leaves the LND gateway as the guardian's only lnv2 gateway, once per test
 /// process.
 ///
@@ -1032,10 +1053,7 @@ async fn recovery_restores_a_wallet_with_history() {
         sdk_b.federation_status(&id),
         Some(FederationStatus::Running)
     );
-    assert_eq!(
-        recovery.federation.balance().await.expect("balance"),
-        funded
-    );
+    balance_settles_at(&recovery.federation, funded).await;
 
     // Resuming a completed recovery hands back the same attempt rather than starting a new one.
     let resumed = sdk_b
@@ -1221,10 +1239,7 @@ async fn recovery_locks_the_federation_while_it_runs() {
         sdk_b.federation_status(&id),
         Some(FederationStatus::Running)
     );
-    assert_eq!(
-        recovery.federation.balance().await.expect("balance"),
-        funded
-    );
+    balance_settles_at(&recovery.federation, funded).await;
 
     sdk_b.shutdown().await.expect("the instance shuts down");
 }
