@@ -8,6 +8,7 @@
 //! side is the only place that knows the format.
 
 use fedimint_core::bitcoin;
+use fedimint_core::bitcoin::hashes::{Hash, sha256};
 use fedimint_core::config;
 use fedimint_core::secp256k1::PublicKey;
 
@@ -71,6 +72,15 @@ impl core::str::FromStr for FederationId {
         Ok(Self { id })
     }
 }
+
+// Crosses a UniFFI boundary as its canonical string, the same form
+// `Display`/`FromStr` use, so a binding carries it as a plain `String` and the
+// validating parse stays here. Behind the `uniffi` feature.
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(FederationId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<FederationId>().map_err(Into::into),
+});
 
 /// Identifies one operation (a send, a receive, a recovery, ...) within a
 /// federation.
@@ -261,30 +271,55 @@ impl core::str::FromStr for Txid {
 /// the other ids in this module, purely so it can be stored and reloaded
 /// (e.g. to resume paging after an app restart) without a bespoke
 /// serialization path.
-// Unlike the other ids in this module, this one still wraps an opaque string rather than
-// an upstream type, since there is no activity facade yet to define what a cursor
-// actually addresses. Replace the field with whatever that facade needs once it lands.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cursor {
-    token: String,
+    /// The federation whose index this position is in.
+    federation: FederationId,
+    /// `OperationRecord::created_at` of the last row of the page this cursor followed.
+    created_at: u64,
+    /// The last row's operation, which breaks ties on `created_at`.
+    id: OperationId,
 }
 
 impl Cursor {
-    /// Wraps an already-validated cursor token.
-    ///
-    /// Crate-internal: this performs no validation of its own, so it is not
-    /// part of the public API. Validation belongs in
-    /// [`FromStr`](core::str::FromStr), which is the only way a caller
-    /// outside this crate can build one.
-    pub(crate) fn from_raw(raw: String) -> Self {
-        Self { token: raw }
+    /// The position after one row, for the page that follows it.
+    pub(crate) fn new(federation: FederationId, created_at: u64, id: OperationId) -> Cursor {
+        Self {
+            federation,
+            created_at,
+            id,
+        }
+    }
+
+    /// The federation that issued this cursor.
+    pub(crate) fn federation(&self) -> &FederationId {
+        &self.federation
+    }
+
+    /// The creation time of the row this cursor follows, in milliseconds since the epoch.
+    pub(crate) fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// The operation this cursor follows.
+    pub(crate) fn id(&self) -> &OperationId {
+        &self.id
     }
 }
 
+// One version byte, the federation id (32 bytes), `created_at` as big-endian `u64` (8 bytes),
+// and the operation id (32 bytes).
+const CURSOR_VERSION: u8 = 1;
+const CURSOR_LEN: usize = 1 + 32 + 8 + 32;
+
 impl core::fmt::Display for Cursor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let _ = &self.token;
-        unimplemented!()
+        let mut bytes = [0u8; CURSOR_LEN];
+        bytes[0] = CURSOR_VERSION;
+        bytes[1..33].copy_from_slice(&self.federation.inner().0.to_byte_array());
+        bytes[33..41].copy_from_slice(&self.created_at.to_be_bytes());
+        bytes[41..73].copy_from_slice(&self.id.upstream().0);
+        write!(f, "{}", fedimint_core::hex::encode(bytes))
     }
 }
 
@@ -295,8 +330,31 @@ impl core::str::FromStr for Cursor {
     /// `Display` impl. Returns
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
-        unimplemented!()
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // The format is opaque to callers, so every way it can be wrong (bad hex, the wrong
+        // length, an unrecognised version) collapses to the same message: which byte was wrong
+        // is not something a caller can act on.
+        let invalid = || Error::new(ErrorCode::InvalidInput, "not a cursor this SDK issued");
+        let bytes = fedimint_core::hex::decode(s).map_err(|_| invalid())?;
+        let bytes: [u8; CURSOR_LEN] = bytes.try_into().map_err(|_| invalid())?;
+        if bytes[0] != CURSOR_VERSION {
+            return Err(invalid());
+        }
+
+        let mut federation_bytes = [0u8; 32];
+        federation_bytes.copy_from_slice(&bytes[1..33]);
+        let mut created_at_bytes = [0u8; 8];
+        created_at_bytes.copy_from_slice(&bytes[33..41]);
+        let mut id_bytes = [0u8; 32];
+        id_bytes.copy_from_slice(&bytes[41..73]);
+
+        Ok(Self {
+            federation: FederationId::from_upstream(config::FederationId(
+                sha256::Hash::from_byte_array(federation_bytes),
+            )),
+            created_at: u64::from_be_bytes(created_at_bytes),
+            id: OperationId::from_upstream(fedimint_core::core::OperationId(id_bytes)),
+        })
     }
 }
 
@@ -432,5 +490,91 @@ mod tests {
         assert_eq!(printed.len(), 64);
         assert!(!printed.contains('_'));
         assert_eq!(printed.parse::<OperationId>().expect("re-parses"), id);
+    }
+
+    #[test]
+    fn a_cursor_round_trips_through_display_and_from_str() {
+        let federation = FEDERATION_ID
+            .parse::<FederationId>()
+            .expect("a valid federation id");
+        let id = ZEROS.parse::<OperationId>().expect("a valid operation id");
+        let cursor = Cursor::new(federation.clone(), 1_700_000_000_000, id.clone());
+
+        let printed = cursor.to_string();
+        let parsed = printed.parse::<Cursor>().expect("round-trips");
+
+        assert_eq!(parsed, cursor);
+        assert_eq!(parsed.federation(), &federation);
+        assert_eq!(parsed.created_at(), 1_700_000_000_000);
+        assert_eq!(parsed.id(), &id);
+    }
+
+    #[test]
+    fn a_cursor_renders_as_opaque_lowercase_hex() {
+        let federation = FEDERATION_ID
+            .parse::<FederationId>()
+            .expect("a valid federation id");
+        let id = ZEROS.parse::<OperationId>().expect("a valid operation id");
+        let cursor = Cursor::new(federation, 0, id.clone());
+
+        let printed = cursor.to_string();
+        assert_eq!(printed.len(), 146);
+        assert!(
+            printed
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+        assert_ne!(printed, id.to_string());
+    }
+
+    #[test]
+    fn a_cursor_from_a_different_version_is_refused() {
+        let federation = FEDERATION_ID
+            .parse::<FederationId>()
+            .expect("a valid federation id");
+        let id = ZEROS.parse::<OperationId>().expect("a valid operation id");
+        let cursor = Cursor::new(federation, 0, id);
+
+        let mut printed = cursor.to_string();
+        // Flip the version byte (the first hex pair) to one this SDK never writes.
+        let flipped = !CURSOR_VERSION;
+        printed.replace_range(0..2, &format!("{flipped:02x}"));
+
+        assert_eq!(
+            printed.parse::<Cursor>().expect_err("wrong version").code,
+            crate::ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_padded_cursor_is_refused() {
+        let federation = FEDERATION_ID
+            .parse::<FederationId>()
+            .expect("a valid federation id");
+        let id = ZEROS.parse::<OperationId>().expect("a valid operation id");
+        let cursor = Cursor::new(federation, 0, id);
+        let printed = cursor.to_string();
+
+        let truncated = &printed[..printed.len() - 2];
+        assert_eq!(
+            truncated.parse::<Cursor>().expect_err("too short").code,
+            crate::ErrorCode::InvalidInput
+        );
+
+        let padded = format!("{printed}aa");
+        assert_eq!(
+            padded.parse::<Cursor>().expect_err("too long").code,
+            crate::ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_hex_is_refused() {
+        for rejected in ["", "zz", "not a cursor"] {
+            assert_eq!(
+                rejected.parse::<Cursor>().expect_err("rejected").code,
+                crate::ErrorCode::InvalidInput
+            );
+        }
     }
 }

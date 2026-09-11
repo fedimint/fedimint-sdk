@@ -19,3 +19,7 @@ flake.lock
 js/react-native/react-native-bindings
 js/examples/expo-app
 js/examples/react-native
+
+# uniffi-bindgen
+rust/uniffi-bindgen/release
+rust/uniffi-bindgen/target

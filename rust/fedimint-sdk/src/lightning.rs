@@ -1051,6 +1051,63 @@ pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
 }
 
+/// Realistic lightning records for other modules' tests, so a test elsewhere does not have to
+/// hand-assemble one.
+//
+// At file scope rather than inside `mod tests`, because a `mod tests` is private to its own
+// file and the page walk's own tests (`src/activity/page.rs`) need these too.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::wire::{LnReceiveDetailsWire, LnSendDetailsWire};
+    use crate::{Amount, LightningRoute, LnReceiveDetails, LnSendDetails, Timestamp};
+
+    /// A real regtest invoice for 100 000 msat, the same literal `lightning/wire.rs`'s own
+    /// tests use.
+    const INVOICE: &str = "lnbcrt1u1pj48ugqdq2vdhkven9v5pp5g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zqsp5242424242424242424242424242424242424242424242424242s9qrsgqcqzys2reg4wsryjt5w8z33ugydecgfmgyvtttwa7e0yzlm803z203j9hqspa4lr6m09cd808xkw9uh4sxc8wf3w6k0gaf5zrqm7zhcxug0vqqpdkpja";
+    /// A real compressed secp256k1 public key, from that crate's own test suite.
+    const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
+
+    /// A send of 100 000 msat with a 1 000 msat fee, routed through a gateway.
+    pub(crate) fn send_details() -> LnSendDetails {
+        LnSendDetails {
+            invoice: INVOICE.parse().expect("a valid regtest invoice"),
+            invoice_amount: Amount::from_msats(100_000),
+            fee: Amount::from_msats(1_000),
+            total: Amount::from_msats(101_000),
+            route: LightningRoute::Gateway {
+                gateway_id: GATEWAY_ID.parse().expect("a valid gateway id"),
+            },
+            created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
+        }
+    }
+
+    /// A receive of the same invoice with a 500 msat fee, crediting 99 500 msat.
+    pub(crate) fn receive_details() -> LnReceiveDetails {
+        LnReceiveDetails {
+            invoice: INVOICE.parse().expect("a valid regtest invoice"),
+            description: "coffee".to_owned(),
+            requested_amount: Amount::from_msats(100_000),
+            invoice_amount: Amount::from_msats(100_000),
+            fee: Amount::from_msats(500),
+            net_credit: Amount::from_msats(99_500),
+            gateway_id: Some(GATEWAY_ID.parse().expect("a valid gateway id")),
+            expires_at: Timestamp::from_epoch_millis(1_700_003_600_000),
+            created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
+        }
+    }
+
+    /// [`send_details`], as it is actually persisted: through the wire type, the same JSON a
+    /// real send record's `details` field holds.
+    pub(crate) fn send_details_json(details: &LnSendDetails) -> String {
+        serde_json::to_string(&LnSendDetailsWire::from(details)).expect("a well-formed record")
+    }
+
+    /// [`receive_details`], as it is actually persisted.
+    pub(crate) fn receive_details_json(details: &LnReceiveDetails) -> String {
+        serde_json::to_string(&LnReceiveDetailsWire::from(details)).expect("a well-formed record")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

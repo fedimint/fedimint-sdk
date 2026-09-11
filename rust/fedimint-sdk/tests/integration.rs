@@ -805,3 +805,152 @@ async fn lightning_send_refuses_a_quote_used_twice() {
     }
     sdk.shutdown().await.expect("shuts down");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activity_lists_what_the_federation_was_used_for() {
+    use fedimint_sdk::{ActivityStatus, Amount, Cursor, Direction, OperationKind};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    pin_lnv2_gateway_to_lnd(&devimint);
+    let (_storage, path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+
+    let empty = federation.activity(None, 10).await.expect("an empty page");
+    assert!(empty.items.is_empty());
+    assert!(empty.next.is_none());
+
+    let funded = fund(&lightning, 200_000).await;
+
+    let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "50000")
+        .expect("the faucet issues an invoice")
+        .trim()
+        .parse()
+        .expect("a bolt11 invoice");
+    let quote = lightning.quote(&invoice).await.expect("a quote");
+    let fee = quote.fee();
+    let send = lightning.send(quote).await.expect("the payment starts");
+    let send_id = send.id();
+
+    if devimint.shape == "v1" {
+        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
+        // gateway returns, so the SDK cannot decode the success state. The payment itself goes
+        // through; only its observation fails.
+        let err = send.await_final().await.expect_err("fedimint#8969");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("preimage"), "{}", err.message);
+    } else {
+        send.await_final().await.expect("settles");
+    }
+
+    let history = federation.activity(None, 10).await.expect("both rows");
+    assert_eq!(history.items.len(), 2);
+    assert!(history.next.is_none());
+    let send_row = &history.items[0];
+    let receive_row = &history.items[1];
+
+    assert_eq!(send_row.operation_id, send_id);
+    assert_eq!(send_row.kind, OperationKind::LnSend);
+    if devimint.shape == "v1" {
+        // The record has no final state and the current one cannot be read
+        // (fedimint/fedimint#8969, as above): the outcome is unknown, not pending, and an
+        // unknown outcome carries no figures.
+        assert_eq!(send_row.status, ActivityStatus::Unknown);
+        assert!(!send_row.is_final);
+        assert_eq!(send_row.direction, None);
+        assert_eq!(send_row.amount, None);
+        assert_eq!(send_row.fee, None);
+    } else {
+        assert_eq!(send_row.status, ActivityStatus::Success);
+        assert!(send_row.is_final);
+        assert_eq!(send_row.direction, Some(Direction::Outgoing));
+        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+        assert_eq!(send_row.fee, Some(fee));
+    }
+
+    assert_eq!(receive_row.kind, OperationKind::LnReceive);
+    assert_eq!(receive_row.direction, Some(Direction::Incoming));
+    assert_eq!(receive_row.amount, Some(Amount::from_msats(200_000)));
+    assert_eq!(
+        receive_row.fee,
+        Amount::from_msats(200_000).checked_sub(funded)
+    );
+    assert_eq!(receive_row.status, ActivityStatus::Success);
+    assert!(receive_row.is_final);
+    assert!(send_row.time >= receive_row.time);
+
+    // Paging: one row per page, the send first, then the receive with no cursor left after it.
+    let page_one = federation.activity(None, 1).await.expect("first page");
+    assert_eq!(page_one.items.len(), 1);
+    assert_eq!(page_one.items[0].operation_id, send_id);
+    let cursor = page_one.next.expect("the receive row remains");
+    let round_tripped: Cursor = cursor.to_string().parse().expect("the cursor round-trips");
+    let page_two = federation
+        .activity(Some(round_tripped), 1)
+        .await
+        .expect("second page");
+    assert_eq!(page_two.items.len(), 1);
+    assert_eq!(page_two.items[0].kind, OperationKind::LnReceive);
+    assert!(page_two.next.is_none());
+
+    // Restart, every handle dropped first, as in
+    // `lightning_receive_is_paid_by_the_faucet_and_survives_a_restart`.
+    let federation_id = federation.id();
+    sdk.shutdown().await.expect("shuts down");
+    drop(send);
+    drop(lightning);
+    drop(federation);
+    drop(sdk);
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("reopens");
+    let federation = reopened.federation(&federation_id).expect("still there");
+
+    // The same two rows in the same order, with the same figures and buckets. `await_final`
+    // above already persisted the send's final state before the first `activity` call, so both
+    // that read and this one come off the record rather than a fresh one through the driver.
+    let restarted = federation.activity(None, 10).await.expect("both rows");
+    assert_eq!(restarted.items.len(), 2);
+    let send_row = &restarted.items[0];
+    let receive_row = &restarted.items[1];
+    assert_eq!(send_row.operation_id, send_id);
+    assert_eq!(send_row.kind, OperationKind::LnSend);
+    if devimint.shape == "v1" {
+        assert_eq!(send_row.status, ActivityStatus::Unknown);
+        assert!(!send_row.is_final);
+        assert_eq!(send_row.amount, None);
+    } else {
+        assert_eq!(send_row.status, ActivityStatus::Success);
+        assert!(send_row.is_final);
+        assert_eq!(send_row.direction, Some(Direction::Outgoing));
+        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+        assert_eq!(send_row.fee, Some(fee));
+    }
+    assert_eq!(receive_row.kind, OperationKind::LnReceive);
+    assert_eq!(receive_row.direction, Some(Direction::Incoming));
+    assert_eq!(receive_row.amount, Some(Amount::from_msats(200_000)));
+    assert_eq!(
+        receive_row.fee,
+        Amount::from_msats(200_000).checked_sub(funded)
+    );
+    assert_eq!(receive_row.status, ActivityStatus::Success);
+    assert!(receive_row.is_final);
+
+    assert_eq!(
+        federation
+            .activity(None, 0)
+            .await
+            .expect_err("zero is not a valid limit")
+            .code,
+        ErrorCode::InvalidInput
+    );
+
+    reopened.shutdown().await.expect("shuts down");
+}

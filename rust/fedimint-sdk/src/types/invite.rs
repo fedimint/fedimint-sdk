@@ -1,6 +1,8 @@
 //! Federation invite codes and join previews.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "uniffi")]
+use std::collections::HashMap;
 
 use fedimint_core::invite_code;
 
@@ -32,12 +34,31 @@ use crate::{Error, ErrorCode};
 /// what logging, crash reporters and `assert!` failures reach for, and any
 /// struct holding an `InviteCode` would otherwise print it merely by being
 /// logged.
+// Crosses a UniFFI boundary as an opaque object, not a bare `String`: an invite
+// code is a bearer credential (it can embed an `api_secret`), which is why its
+// `Debug` is redacted. As an object a binding parses it once into a handle, gets
+// [`federation_id`](InviteCode::federation_id) without a network round trip, and
+// renders it deliberately through `display()` rather than being handed a string
+// it can log by accident. Behind the `uniffi` feature.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct InviteCode {
     code: invite_code::InviteCode,
 }
 
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl InviteCode {
+    /// Parses and validates an invite code from its canonical string form.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value.
+    /// The rejected string is never echoed back: it may carry an `api_secret`.
+    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    pub fn parse(code: String) -> crate::Result<InviteCode> {
+        code.parse()
+    }
+
     /// The id of the federation this code invites to.
     ///
     /// Read from the code itself, which encodes it: no network round trip,
@@ -62,6 +83,17 @@ impl InviteCode {
         FederationId::from_upstream(self.code.federation_id())
     }
 
+    /// The invite code in its canonical `fed1…` bech32m string, for showing the
+    /// user, putting in a QR code, or sharing so someone else can join.
+    ///
+    /// This is the deliberate way to render the value; see the type-level
+    /// documentation for why [`Debug`] is not.
+    pub fn display(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl InviteCode {
     /// Wraps an already-parsed invite code.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not
@@ -136,6 +168,10 @@ impl core::str::FromStr for InviteCode {
 /// releases, so construct it only through the SDK and match it only with a
 /// `..` pattern or by field access, never by exhaustive destructuring.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Crosses a UniFFI boundary as a plain record. Every field is FFI-safe:
+// `FederationId` is a custom string type, `Network` a plain enum, and `meta` is
+// bridged below. Not additive for a generated binding; regenerate with the SDK.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct FederationPreview {
     /// The federation's identifier.
@@ -165,6 +201,21 @@ pub struct FederationPreview {
     /// arbitrary string keys as defined by the federation's configuration.
     pub meta: BTreeMap<String, String>,
 }
+
+// `BTreeMap` has no UniFFI converter (unlike `HashMap`), and `custom_type!`
+// needs a bare identifier, so the `meta` field's shape is bridged to its
+// `HashMap` equivalent through an alias. `remote` because the target type is
+// `std`'s. The map's contents are unchanged; a binding's map type is
+// insertion-ordered regardless. Mirrors `fedimint-core`'s own `MetaMap`.
+#[cfg(feature = "uniffi")]
+type MetaMap = BTreeMap<String, String>;
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(MetaMap, HashMap<String, String>, {
+    remote,
+    lower: |m| m.into_iter().collect(),
+    try_lift: |h| Ok(h.into_iter().collect()),
+});
 
 #[cfg(test)]
 mod tests {
