@@ -1976,7 +1976,7 @@ impl SdkInner {
         let capabilities: StoredCapabilities = crate::modules::capabilities_of(&kinds).into();
         let network: StoredNetwork =
             crate::modules::network_of(&self.module_inits, &config)?.into();
-        let name = config.global.federation_name();
+        let name = config.global.federation_name().map(|s| s.to_owned());
 
         let current_meta = crate::db::read_config_meta(&self.db, id).await?;
         let new_meta = config.global.meta.clone();

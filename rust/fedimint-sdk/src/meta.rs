@@ -373,8 +373,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn public_api_get_and_all_return_federation_closed_error() {
+        use crate::FederationStatus;
         use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
-        use crate::federation::{FederationInner, FederationStatus};
+        use crate::federation::FederationInner;
         use fedimint_core::PeerId;
         use fedimint_core::config::FederationId;
         use fedimint_core::util::SafeUrl;
