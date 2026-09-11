@@ -12,6 +12,27 @@ use serde::{Deserialize, Serialize};
 use crate::operation::{Driver, first_state, settled, until_final};
 use crate::{Amount, Error, ErrorCode, Notes, Operation, OperationState, Result, Timestamp};
 
+/// The `"facade"` marker [`Ecash::receive`] writes into the mint module's own operation
+/// metadata, on both generations.
+///
+/// This is what tells a reconstructed log entry apart from one some other client wrote, and
+/// on the v1 mint it is also the only thing separating a user-facing receive from the mint's
+/// own internal change-making: both are a `Reissuance`. Read back by `EcashBackfiller`, which
+/// is why it is a shared constant rather than a literal on each side — a marker that drifts
+/// between the write and the read silently stops matching, and the only symptom is operations
+/// quietly vanishing from history.
+pub(crate) const FACADE_ECASH_RECEIVE: &str = "ecash_receive";
+
+/// The `"facade"` marker the send driver writes on the internal mintv2 receive it submits to
+/// reclaim an unredeemed send (see `mintv2_send_state`).
+///
+/// That receive is an implementation detail of settling an ecash *send* as
+/// [`Canceled`](EcashSendState::Canceled), not a receive the user performed, so it is
+/// deliberately *not* [`FACADE_ECASH_RECEIVE`] and is never backfilled as one. Crediting it
+/// as an incoming receive would double-count the same money: once as the send coming back,
+/// and again as ecash arriving.
+pub(crate) const FACADE_ECASH_SEND_RECLAIM: &str = "ecash_send_reclaim";
+
 /// The ecash facade for one federation.
 ///
 /// Obtained from [`Federation::ecash`](crate::Federation::ecash), which
@@ -142,15 +163,10 @@ impl Ecash {
                 // "the wallet already holds exact change" (free) apart from "it would have to
                 // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
                 // first case.
-                let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
-                    let msg = err.to_string();
-                    let lower = msg.to_lowercase();
-                    if lower.contains("insufficient") || lower.contains("balance") {
-                        Error::new(ErrorCode::InsufficientBalance, msg)
-                    } else {
-                        Error::new(ErrorCode::Internal, msg)
-                    }
-                })?;
+                let fee_quote = mint
+                    .send_fee_quote(rounded_upstream)
+                    .await
+                    .map_err(map_send_fee_quote_error)?;
                 let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
 
                 let (module_db, _) = client.db().with_prefix_module_id(mint.id);
@@ -221,35 +237,19 @@ impl Ecash {
                     ));
                 }
 
-                let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
-                    let msg = err.to_string();
-                    let lower = msg.to_lowercase();
-                    if lower.contains("insufficient") || lower.contains("balance") {
-                        Error::new(ErrorCode::InsufficientBalance, msg)
-                    } else {
-                        Error::new(ErrorCode::Internal, msg)
-                    }
-                })?;
+                let fee_quote = mint
+                    .send_fee_quote(rounded_upstream)
+                    .await
+                    .map_err(map_send_fee_quote_error)?;
                 let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
 
-                let counts = mint.get_count_by_denomination().await;
-                let mut remaining = rounded_upstream;
-                let mut can_select_exact = false;
-                for (denom, count) in counts.iter().rev() {
-                    let denom_amt = denom.amount();
-                    for _ in 0..*count {
-                        if let Some(rem) = remaining.checked_sub(denom_amt) {
-                            remaining = rem;
-                            if remaining == fedimint_core::Amount::ZERO {
-                                can_select_exact = true;
-                                break;
-                            }
-                        }
-                    }
-                    if can_select_exact {
-                        break;
-                    }
-                }
+                let can_select_exact = mintv2_can_select_exact(
+                    mint.get_count_by_denomination()
+                        .await
+                        .into_iter()
+                        .map(|(denomination, count)| (denomination.amount(), count)),
+                    rounded_upstream,
+                );
 
                 if fee.msats() > 0 || !can_select_exact {
                     return Err(Error::new(
@@ -401,13 +401,14 @@ impl Ecash {
 
         let timeout = std::time::Duration::from_secs(86_400);
         let upstream_notes_val = fedimint_core::Amount::from_msats(quote.notes_value().msats());
-        // Exact selection: the quote promised `notes_value`, and this must produce
-        // exactly that or fail, never more. `spend_notes_with_selector` never itself
-        // reissues to make change regardless of selector (only
-        // `MintClientModule::send_oob_notes` does that, and it returns no operation
-        // id this facade could track for cancellation), so `quote` already refused to
-        // freeze a plan needing one; a failure to select exactly `notes_value` here
-        // means the note inventory changed since then; a race, not a capability gap.
+        // The quote promised `notes_value`, and execution must produce exactly that or fail,
+        // never more. Each generation enforces that differently, and neither inherits it from
+        // the other: the v1 arm gets it from `SelectNotesWithExactAmount`, which fails rather
+        // than reissuing to make change (`spend_notes_with_selector` never reissues under any
+        // selector — only `MintClientModule::send_oob_notes` does, and it returns no operation
+        // id this facade could track for cancellation), so a failure there means the note
+        // inventory moved since the quote: a race, not a capability gap. The mintv2 arm has no
+        // such selector and checks for itself; see its own comment below.
         let reclaim_at = Timestamp::from_epoch_millis(now_millis + 86_400_000);
         let extra_meta = serde_json::json!({
             "requested_amount_msats": quote.requested_amount().msats(),
@@ -432,6 +433,49 @@ impl Ecash {
                 (operation_id, Notes::from_upstream(oob_notes), "mint")
             }
             MintModule::V2(mint) => {
+                // mintv2 has no exact-only send. `MintClientModule::send` tries its
+                // exact-change fast path and, failing that, *silently* submits a self-reissue
+                // to make change and then retries — paying a fee this quote froze at zero and
+                // leaving behind a second, untracked operation. The v1 arm above is safe from
+                // that by construction (`SelectNotesWithExactAmount` fails rather than
+                // reissues); this arm has to check for itself, immediately before the call,
+                // that the fast path is the one that will be taken.
+                //
+                // Both of upstream's own signals are used, because neither is sufficient
+                // alone: `send_fee_quote` returns `FeeQuote::ZERO` on the exact path but can
+                // also return it on the reissue path when the federation charges no fees at
+                // all, and `mintv2_can_select_exact` mirrors a selection this crate does not
+                // own. Requiring both to agree — and requiring the fee to still be the one the
+                // quote committed to — is what makes the fall-through reachable only through
+                // the residual race below.
+                let fresh_fee = mint
+                    .send_fee_quote(upstream_notes_val)
+                    .await
+                    .map(|fee_quote| Amount::from_msats(fee_quote.total().get_bitcoin().msats))
+                    .map_err(map_send_fee_quote_error)?;
+                let can_select_exact = mintv2_can_select_exact(
+                    mint.get_count_by_denomination()
+                        .await
+                        .into_iter()
+                        .map(|(denomination, count)| (denomination.amount(), count)),
+                    upstream_notes_val,
+                );
+                if fresh_fee != quote.fee() || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::QuoteChanged,
+                        "note inventory changed since quote was created",
+                    ));
+                }
+
+                // Residual race, not closed here and not closeable from this side: a
+                // concurrent operation that consumes one of the notes counted above between
+                // this check and the call below puts `send` back on the reissue path. The
+                // window is a few local database reads wide and needs a second operation on
+                // the same wallet inside it; closing it properly needs an exact-only send (or
+                // a reissue that yields a trackable operation) from `fedimint-mintv2-client`,
+                // which is also what `Ecash::quote`'s `NotSupported` refusal is waiting on.
+                // The same shape of remainder is documented on the lightning facade's v2 send
+                // (fedimint/fedimint#9124).
                 let (operation_id, ecash) = mint
                     .send(upstream_notes_val, extra_meta, false)
                     .await
@@ -546,7 +590,7 @@ impl Ecash {
                     })?;
 
                     let extra_meta = serde_json::json!({
-                        "facade": "ecash_receive",
+                        "facade": FACADE_ECASH_RECEIVE,
                         "notes_value_msats": notes.value().msats(),
                         "fee_msats": fee.msats(),
                         "net_credit_msats": net_credit.msats(),
@@ -577,7 +621,7 @@ impl Ecash {
                     })?;
 
                     let extra_meta = serde_json::json!({
-                        "facade": "ecash_receive",
+                        "facade": FACADE_ECASH_RECEIVE,
                         "notes_value_msats": notes.value().msats(),
                         "fee_msats": fee.msats(),
                         "net_credit_msats": net_credit.msats(),
@@ -1350,7 +1394,9 @@ async fn mintv2_send_state(
         .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
     let reclaim_op_id = fedimint_core::core::OperationId::from_encodable(&ecash);
-    let reclaim_meta = serde_json::json!({ "facade": "ecash_send_reclaim" });
+    // Deliberately not `FACADE_ECASH_RECEIVE`: this receive settles the *send* above, and
+    // `EcashBackfiller` must not rebuild it as an incoming ecash receive of its own.
+    let reclaim_meta = serde_json::json!({ "facade": FACADE_ECASH_SEND_RECLAIM });
 
     let outcome = match mintv2.receive(ecash, reclaim_meta).await {
         Ok(op_id) => mintv2
@@ -1566,6 +1612,74 @@ fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
                 reason: reason.to_string(),
             }),
     }
+}
+
+/// Classifies a failing `send_fee_quote` dry run, for the three places that run one (both
+/// generations' quote arms, and the mintv2 send-time re-check).
+///
+/// The dry run balances a would-be transaction against the wallet's real notes, so the
+/// failure that matters is the notes not covering it; upstream reports that as plain
+/// `anyhow` text rather than a typed error, which is why this matches on wording.
+fn map_send_fee_quote_error(err: impl std::fmt::Display) -> Error {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("insufficient") || lower.contains("balance") {
+        Error::new(ErrorCode::InsufficientBalance, msg)
+    } else {
+        Error::new(ErrorCode::Internal, msg)
+    }
+}
+
+/// Whether a mintv2 wallet holding `denominations` can hand out exactly `target` without
+/// reissuing itself change.
+///
+/// This is the decision `MintClientModule::send` makes internally and never reports: its
+/// exact-change fast path either selects notes summing to exactly `target`, or it silently
+/// falls through to submitting a self-reissue transaction — paying a fee the quote never
+/// named and creating a second, untracked operation. mintv2 exposes no way to ask for the
+/// fast path only, and its own `select_exact_change` is private, so this mirrors that
+/// selection: greedy, largest denomination first, skipping any note too large for what is
+/// left (`fedimint-mintv2-client`'s `select_exact_change`).
+///
+/// Greedy is not a heuristic here: a mintv2 `Denomination(n)` is worth `1 << n` msats
+/// (`fedimint-mintv2-common`), and on a canonical power-of-two system taking the largest note
+/// that still fits is exactly optimal — if any subset sums to `target`, this finds one. So
+/// mirroring upstream cannot disagree with it over the same multiset of notes, only over a
+/// future change to how upstream selects.
+///
+/// Should it ever drift, the consequence is safe in one direction only: a *false negative*
+/// refuses a send that would have worked, while a *false positive* lets the fall-through
+/// happen. Both callers therefore pair this with upstream's own `send_fee_quote`, which
+/// returns a nonzero fee on the reissue path unless the federation charges nothing at all —
+/// so the two only agree on "exact" when upstream's fee model and this selection both say so.
+///
+/// `denominations` is `(denomination amount, how many the wallet holds)` in any order; it is
+/// sorted here rather than trusting the caller's iteration order.
+fn mintv2_can_select_exact(
+    denominations: impl IntoIterator<Item = (fedimint_core::Amount, u64)>,
+    target: fedimint_core::Amount,
+) -> bool {
+    let mut held: Vec<(fedimint_core::Amount, u64)> = denominations.into_iter().collect();
+    held.sort_unstable_by_key(|(denomination, _)| core::cmp::Reverse(*denomination));
+
+    let mut remaining = target;
+    for (denomination, count) in held {
+        if remaining == fedimint_core::Amount::ZERO {
+            break;
+        }
+        for _ in 0..count {
+            match remaining.checked_sub(denomination) {
+                Some(rest) => remaining = rest,
+                // Notes are walked largest first, so a denomination that does not fit what is
+                // left will not fit on any later note of the same denomination either.
+                None => break,
+            }
+            if remaining == fedimint_core::Amount::ZERO {
+                break;
+            }
+        }
+    }
+    remaining == fedimint_core::Amount::ZERO
 }
 
 pub(crate) fn map_spend_error(err: impl std::fmt::Display) -> Error {
@@ -2195,6 +2309,55 @@ mod tests {
             EcashSendState::Redeemed
         );
         assert!(stream.next().await.is_none());
+    }
+
+    /// `(denomination msats, count)` pairs, as `get_count_by_denomination` reports them.
+    fn held(pairs: &[(u64, u64)]) -> Vec<(fedimint_core::Amount, u64)> {
+        pairs
+            .iter()
+            .map(|(msats, count)| (fedimint_core::Amount::from_msats(*msats), *count))
+            .collect()
+    }
+
+    fn can_select(pairs: &[(u64, u64)], target_msats: u64) -> bool {
+        mintv2_can_select_exact(held(pairs), fedimint_core::Amount::from_msats(target_msats))
+    }
+
+    #[test]
+    fn mintv2_exact_selection_accepts_a_wallet_that_already_holds_the_amount() {
+        // One note of exactly the right size, and several summing to it.
+        assert!(can_select(&[(512, 1)], 512));
+        assert!(can_select(&[(512, 4)], 2_048));
+        assert!(can_select(&[(1_024, 1), (512, 1)], 1_536));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_refuses_a_wallet_that_would_have_to_make_change() {
+        // The classic fall-through: plenty of value, wrong shape. Upstream's `send` would
+        // silently reissue here, paying a fee the quote never named, which is exactly what
+        // this check exists to stop.
+        assert!(!can_select(&[(4_096, 1)], 512));
+        // Enough total, but no subset sums exactly.
+        assert!(!can_select(&[(1_024, 2)], 1_536));
+        // Nothing held at all.
+        assert!(!can_select(&[], 512));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_skips_denominations_too_large_for_the_remainder() {
+        // Greedy, largest first: the 4_096 is passed over as soon as it does not fit what is
+        // left, rather than aborting the search. Both orderings of the same wallet must agree,
+        // since `get_count_by_denomination`'s iteration order is not this crate's to rely on.
+        assert!(can_select(&[(4_096, 1), (512, 2)], 1_024));
+        assert!(can_select(&[(512, 2), (4_096, 1)], 1_024));
+        assert!(can_select(&[(512, 1), (4_096, 1), (1_024, 1)], 5_632));
+    }
+
+    #[test]
+    fn mintv2_exact_selection_stops_once_the_target_is_met() {
+        // Holding far more than the target must not make an exact selection fail.
+        assert!(can_select(&[(512, 100)], 512));
+        assert!(can_select(&[(512, 100)], 51_200));
     }
 
     #[test]

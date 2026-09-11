@@ -1559,6 +1559,17 @@ pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
 /// `net_credit`, timestamps) are restored; otherwise, unrecorded terms fall back to
 /// honest placeholders (e.g. zero fee, the operation log's created_at timestamp).
 ///
+/// # Not every mint log entry is a user's operation
+///
+/// A mint module logs its own internal work in the same log, in the same shapes: the v1
+/// mint's change-making is a `Reissuance`, exactly like a user receive, and the send
+/// driver's reclaim of an unredeemed mintv2 send is a `Receive`, exactly like a user
+/// receive. Both are recognised only by the `"facade"` marker this crate writes
+/// (`FACADE_ECASH_RECEIVE`), and an entry without it is left unclaimed rather than
+/// guessed at — reconciliation then records it as an opaque internal operation, which
+/// reports no amount and no direction, instead of inventing an activity row for money
+/// that is already accounted for elsewhere.
+///
 /// [`Ecash::send`]: crate::ecash::Ecash::send
 /// [`Ecash::receive`]: crate::ecash::Ecash::receive
 pub(crate) struct EcashBackfiller;
@@ -1637,6 +1648,27 @@ impl Backfiller for EcashBackfiller {
                 fedimint_mintv2_client::MintOperationMeta::Receive {
                     ecash, custom_meta, ..
                 } => {
+                    // Only a receive this facade created is a user-facing incoming receive.
+                    // The send driver submits a mintv2 receive of its own to reclaim an
+                    // unredeemed send (`ecash::mintv2_send_state`), marked
+                    // `FACADE_ECASH_SEND_RECLAIM`; rebuilding that as an `ECASH_RECEIVE` would
+                    // put the same money in history twice — once as the send returning, and
+                    // again as ecash arriving — so it is left unclaimed and reconciliation
+                    // records it as the opaque internal operation it is.
+                    //
+                    // Gating on the marker rather than merely excluding the reclaim one is
+                    // deliberate: it fails closed. The cost is that a mintv2 receive some
+                    // *other* client performed against this wallet is no longer rebuilt as an
+                    // activity row, which is a display gap and never a lost operation — the
+                    // log entry itself is untouched, and the money it credited is in the
+                    // balance either way.
+                    let meta_obj = custom_meta.as_object()?;
+                    if meta_obj.get("facade").and_then(|facade| facade.as_str())
+                        != Some(crate::ecash::FACADE_ECASH_RECEIVE)
+                    {
+                        return None;
+                    }
+
                     let decoded_ecash = fedimint_core::base32::decode_prefixed::<
                         fedimint_mintv2_client::ECash,
                     >(
@@ -1652,28 +1684,20 @@ impl Backfiller for EcashBackfiller {
                         .as_ref()
                         .map(|e| e.amount().msats)
                         .or_else(|| parsed_notes.as_ref().map(|n| n.value().msats()));
-                    let (notes_val, fee_msats, net_credit, created_at_ms) =
-                        if let Some(meta_obj) = custom_meta.as_object() {
-                            let notes_val = decoded_amount.or_else(|| {
-                                meta_obj.get("notes_value_msats").and_then(|v| v.as_u64())
-                            })?;
-                            let fee = meta_obj
-                                .get("fee_msats")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let net = meta_obj
-                                .get("net_credit_msats")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or_else(|| notes_val.saturating_sub(fee));
-                            let created = meta_obj
-                                .get("created_at_epoch_ms")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(created_at);
-                            (notes_val, fee, net, created)
-                        } else {
-                            let notes_val = decoded_amount?;
-                            (notes_val, 0u64, notes_val, created_at)
-                        };
+                    let notes_val = decoded_amount
+                        .or_else(|| meta_obj.get("notes_value_msats").and_then(|v| v.as_u64()))?;
+                    let fee_msats = meta_obj
+                        .get("fee_msats")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let net_credit = meta_obj
+                        .get("net_credit_msats")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_else(|| notes_val.saturating_sub(fee_msats));
+                    let created_at_ms = meta_obj
+                        .get("created_at_epoch_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(created_at);
                     let wire = crate::ecash::EcashReceiveDetailsWire {
                         notes: parsed_notes.map(|n| n.to_string()),
                         notes_value_msats: notes_val,
@@ -1759,7 +1783,7 @@ impl Backfiller for EcashBackfiller {
                     .as_object()
                     .and_then(|obj| obj.get("facade"))
                     .and_then(|v| v.as_str())
-                    == Some("ecash_receive");
+                    == Some(crate::ecash::FACADE_ECASH_RECEIVE);
                 if !is_ecash_receive {
                     return None;
                 }
@@ -3005,6 +3029,7 @@ mod tests {
             change_outpoint_range: outpoint_range,
             ecash: "dummy_receive_notes".to_string(),
             custom_meta: serde_json::json!({
+                "facade": crate::ecash::FACADE_ECASH_RECEIVE,
                 "notes_value_msats": 2_000u64,
                 "fee_msats": 100u64,
                 "net_credit_msats": 1_900u64,
@@ -3027,6 +3052,38 @@ mod tests {
             .expect("decodes cleanly with notes = None");
         assert_eq!(details.notes, None);
         assert_eq!(details.notes_value.msats(), 2_000);
+
+        // The send driver's own reclaim submits a real mintv2 Receive. It settles an
+        // ECASH_SEND as Canceled and is not an incoming receive, so it must never be rebuilt
+        // as one: doing so would report the same money twice in history.
+        let mintv2_reclaim = fedimint_mintv2_client::MintOperationMeta::Receive {
+            change_outpoint_range: outpoint_range,
+            ecash: "dummy_receive_notes".to_string(),
+            custom_meta: serde_json::json!({
+                "facade": crate::ecash::FACADE_ECASH_SEND_RECLAIM,
+            }),
+        };
+        let mintv2_reclaim_json = serde_json::to_value(&mintv2_reclaim).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_reclaim_json, 0)
+                .is_none(),
+            "an internal send-reclaim receive must not become a user-facing ecash receive",
+        );
+
+        // Same for a Receive carrying no facade marker at all: this facade did not create it,
+        // so it is left unclaimed rather than guessed at.
+        let mintv2_unmarked = fedimint_mintv2_client::MintOperationMeta::Receive {
+            change_outpoint_range: outpoint_range,
+            ecash: "dummy_receive_notes".to_string(),
+            custom_meta: serde_json::Value::Null,
+        };
+        let mintv2_unmarked_json = serde_json::to_value(&mintv2_unmarked).expect("serializes");
+        assert!(
+            backfiller
+                .backfill("mintv2", &mintv2_unmarked_json, 0)
+                .is_none()
+        );
 
         // mintv2 internal Reissue is ignored
         let mintv2_reissue = fedimint_mintv2_client::MintOperationMeta::Reissue {
