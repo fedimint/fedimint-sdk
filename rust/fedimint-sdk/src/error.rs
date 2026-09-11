@@ -46,6 +46,13 @@ use crate::{Amount, Network, Timestamp};
 /// a plain Swift, Kotlin, or TypeScript enum. No addition ever removes or repurposes `code`,
 /// `details`, or `message`.
 #[derive(Debug, Clone)]
+// UniFFI carries `Error` across the boundary as an opaque *error interface*: it
+// already implements `core::error::Error` + `Display`, so `#[uniffi::export]`
+// methods that return `crate::Result<T>` throw it directly. Foreign code reads
+// `code()` / `reason()` (below) rather than the fields, which stay `pub` for
+// in-crate use and are invisible over FFI. The Kotlin backend maps the name to
+// `Exception` (it does that to every `*Error`); a binding imports it aliased.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 #[non_exhaustive]
 pub struct Error {
     /// Stable, machine-readable failure category. Safe to match on, and the
@@ -204,6 +211,25 @@ impl core::fmt::Display for Error {
 }
 
 impl core::error::Error for Error {}
+
+/// FFI accessors for the opaque error interface. Foreign callers cannot read
+/// the struct fields off the handle, so these mirror them: `code()` is the
+/// stable value to branch on, `reason()` is the human-readable message.
+/// `reason` rather than `message` so it does not collide with the message
+/// property every foreign exception base class already has.
+#[cfg(feature = "uniffi")]
+#[uniffi::export]
+impl Error {
+    /// The stable [`ErrorCode`] for this failure.
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+
+    /// The human-readable message. Never parse it; branch on [`code`](Self::code).
+    pub fn reason(&self) -> String {
+        self.message.clone()
+    }
+}
 
 /// A failure described as a **value to read** rather than an error to raise: a
 /// stable [`ErrorCode`], a human-readable message, and the same optional
@@ -1242,6 +1268,10 @@ impl ModuleGeneration {
 /// wire format itself, because there the payload is length-delimited opaque
 /// bytes; see [`RawErrorDetails`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// A fieldless enum, so UniFFI maps it onto a plain Kotlin/Swift enum. Foreign
+// decoders do not tolerate a variant added since they were generated (see the
+// prose above), which is why the binding is regenerated with the crate.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum ErrorCode {
     /// The input could not be parsed or was structurally invalid, a

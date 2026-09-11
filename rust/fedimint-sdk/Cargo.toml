@@ -8,6 +8,31 @@ description = "High-level Fedimint client SDK: one ergonomic API over fedimint-c
 repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
+[lib]
+# `cdylib` is the shared library a mobile host loads, and the file
+# uniffi-bindgen reads its metadata back out of to generate Kotlin/Swift;
+# `staticlib` is the iOS/XCFramework form; `lib` is the ordinary Rust rlib.
+#
+# Cargo has no per-target crate-type, so these are built on every target. Only
+# `cargo build` pays for the extra links — `check`, `clippy`, `test` and `doc`
+# do not — which is where nearly all of this crate's CI time goes.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+# `uniffi/tokio` is what makes `#[uniffi::export(async_runtime = "tokio")]`
+# available; it pulls in `async-compat`, whose fallback runtime wraps every
+# exported async fn. `async-compat/multi-thread` then makes that fallback a
+# multi-threaded scheduler — see the `async-compat` entry below for why the
+# crate does not work without it.
+#
+# Never combine this with `--target wasm32-unknown-unknown`, including via
+# `--all-features`: `uniffi/tokio` needs tokio's `net` feature, which tokio's
+# own wasm feature-compat check hard-rejects with a `compile_error!`. This is
+# why the feature stays off by default rather than living in a separate
+# `fedimint-sdk-ffi` crate — see rust/uniffi-bindgen/DECISION.md for the
+# tradeoff this was weighed against.
+uniffi = ["dep:uniffi", "uniffi/tokio", "async-compat/multi-thread"]
+
 [dependencies]
 # The SDK tracks fedimint `master`, not a published release. Every fedimint
 # crate below is a git dependency pinned to one revision, and that revision
@@ -49,6 +74,29 @@ futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.149"
 tracing = "0.1.44"
+# Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the
+# `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata
+# this version bakes into the built `.so`, so a mismatch fails codegen. Behind
+# the `uniffi` feature, which also turns on its `tokio` feature — see there.
+uniffi = { version = "0.32.0", optional = true }
+
+# Never named in the source: it is here only so the `uniffi` feature can turn on
+# its `multi-thread` feature, which cargo unifies onto the copy `uniffi_core`
+# depends on.
+#
+# UniFFI polls an exported async fn on whichever foreign thread drives the call,
+# inside an `async_compat::Compat` that enters a process-wide fallback runtime.
+# That fallback is current-thread by default, so anything the future *spawns* —
+# for fedimint, the client's `sm-executor` task — lands on a current-thread
+# scheduler, and the first `fedimint-rocksdb` transaction there aborts the
+# process on `tokio::task::block_in_place`. The feature makes the fallback
+# multi-threaded, which is the whole reason the exported methods need no
+# runtime plumbing of their own.
+#
+# Pinned exactly: `multi-thread` first exists in 0.2.6, and this whole
+# arrangement is temporary — it goes away with the pending uniffi change, at
+# which point the dependency can be dropped rather than bumped.
+async-compat = { version = "=0.2.6", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
@@ -56,7 +104,18 @@ tracing = "0.1.44"
 # contention rather than block. See src/storage.rs.
 fd-lock = "4"
 fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
-tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+tokio = { version = "1.48.0", features = [
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "macros",
+    "time",
+    # `net` + `io-util` give the runtime an IO driver to enable: fedimint-client's
+    # transport runs on it, including under the UniFFI surface, where the runtime
+    # is `async-compat`'s (see the `async-compat` entry above).
+    "net",
+    "io-util",
+] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
@@ -78,6 +137,31 @@ web-sys = { version = "0.3.83", features = [
     "WorkerGlobalScope",
     "WorkerNavigator",
 ] }
+
+[build-dependencies]
+# Only ever invoked on Android, to compile sdallocx_stub.c; see build.rs.
+cc = "1"
+
+# Tuned for the artifact this crate ships as on mobile: the `cdylib` goes
+# inside an application's APK or IPA, where every megabyte is one the user
+# downloads. Without these the Android library is ~82 MB per ABI; with them,
+# ~61 MB — and AGP cannot strip it further, because the NDK's strip is not
+# where it looks for it in the nix shell.
+#
+# `panic = "abort"` is also a correctness setting, not only a size one: the
+# UniFFI response path must not unwind across the FFI boundary, which is the
+# no-panic discipline the implementation notes in `src/lib.rs` spell out. Cargo
+# ignores it for the test and bench profiles, so `cargo test --release` is
+# unaffected.
+#
+# Profiles only apply when a package is the build root, so nothing here reaches
+# a crate that depends on fedimint-sdk.
+[profile.release]
+opt-level = 'z'     # Optimize for size.
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = "3.20.0"

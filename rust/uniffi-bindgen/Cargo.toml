@@ -1,0 +1,29 @@
+[package]
+name = "fedimint-uniffi-bindgen"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "MIT"
+authors = ["The Fedimint Developers"]
+description = "Host-side uniffi-bindgen runner for fedimint-sdk"
+repository = "https://github.com/fedimint/fedimint-sdk"
+publish = false
+
+# A crate of its own, rather than a `[[bin]]` inside fedimint-sdk, and
+# the reason is not tidiness. Cargo makes every `[dependencies]` entry
+# available to every target in a package, so a bin living next to that lib
+# would compile the whole fedimint tree *for the host* just to run a code
+# generator. That is slow everywhere and broken on macOS, where the host build
+# reaches iroh's `netwatch`, whose BSD backend does not compile against the
+# `socket2` this graph resolves. Android builds never touch that path.
+#
+# Here the only dependency is uniffi itself, so this builds in seconds on any
+# host and the generator stays available wherever the .so can be built.
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+# Must match the uniffi that fedimint-sdk links under its `uniffi` feature,
+# because this reads the metadata that version baked into the built .so.
+uniffi = { version = "0.32.0", features = ["cli"] }

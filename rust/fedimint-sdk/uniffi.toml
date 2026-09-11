@@ -1,0 +1,10 @@
+# Loaded automatically by uniffi-bindgen. `package_name` is the Kotlin package
+# the generated bindings land in; `cdylib_name` is the shared library they
+# load at runtime and must match `[lib] name` (the crate name, underscored).
+[bindings.kotlin]
+package_name = "org.fedimint.sdk"
+cdylib_name = "fedimint_sdk"
+
+[bindings.swift]
+module_name = "FedimintSdk"
+cdylib_name = "fedimint_sdk"

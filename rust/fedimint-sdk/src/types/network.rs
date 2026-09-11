@@ -22,6 +22,9 @@ use fedimint_core::bitcoin;
 /// mapping it to an unknown case. A binding is expected to be regenerated
 /// alongside the SDK it talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// A fieldless enum, so UniFFI maps it onto a plain Kotlin/Swift enum. Not
+// additive for a generated binding (see the note above); regenerate with the SDK.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum Network {
     /// Bitcoin mainnet.
