@@ -184,7 +184,7 @@ pub(crate) fn watch(
 }
 
 /// The completion rule from the plan's fixed decisions.
-async fn complete(
+pub(crate) async fn complete(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
     attempt: UpstreamOperationId,
@@ -254,7 +254,10 @@ async fn record_attempt_failed(
 /// Mints a brand new attempt: the root record naming it, then its operation record, in that
 /// order, so a crash between the two reads back as `PreOpen::RecordMissing` next time rather
 /// than as an attempt the root record does not name.
-async fn new_attempt(sdk: &SdkInner, federation: &FederationInner) -> Result<UpstreamOperationId> {
+pub(crate) async fn new_attempt(
+    sdk: &SdkInner,
+    federation: &FederationInner,
+) -> Result<UpstreamOperationId> {
     let attempt = UpstreamOperationId::new_random();
     crate::db::write_recovery(&sdk.db, &federation.id, &RecoveryRecord { attempt }).await?;
     federation.record_recovery_attempt(attempt).await?;

@@ -344,14 +344,6 @@ impl Sdk {
     /// persisted or a committed erase for the same id cannot be finished
     /// first.
     pub async fn join(&self, invite: &InviteCode) -> Result<Federation> {
-        // Implementation note (delete once `Sdk::recover` persists a recovery intent):
-        // - `Sdk::recover` persists its intent to recover, and the operation id of the first
-        //   attempt, before asking the client to join, so a failure between those writes can
-        //   leave a recovery intent for a federation that never actually joined. This call
-        //   must discard such a leftover intent in the same transaction that records the plain
-        //   join, unless the client's own durable state corroborates that a recovery was
-        //   committed. This matters because the erase path bypasses the balance guard for
-        //   recovery-locked federations.
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let id = invite.inner().federation_id();
@@ -1318,12 +1310,12 @@ impl SdkBuilder {
                 Bip39RootSecretStrategy::<12>::to_root_secret(mnemonic.inner()),
             ),
             location,
+            lifecycle: tokio::sync::Mutex::new(()),
             mnemonic,
             federations: std::sync::RwLock::new(BTreeMap::new()),
             status_tx: tokio::sync::broadcast::Sender::new(STATUS_CAPACITY),
             shutdown_tx: tokio::sync::watch::Sender::new(false),
             lock: std::sync::Mutex::new(lock),
-            lifecycle: tokio::sync::Mutex::new(()),
         });
 
         // Steps 3 and 4: finish committed erases, then reopen everything else. They run
@@ -1630,6 +1622,17 @@ pub(crate) struct SdkInner {
     /// Exactly the string the caller gave `Storage::at` or `Storage::in_browser`, for the error
     /// details that name a location.
     pub(crate) location: String,
+    /// Serializes `join`, `recover`, `resume_recovery`, `close_federation`,
+    /// `reopen_federation`, `forget_federation` and `shutdown` against each other,
+    /// instance-wide, for the whole body of each call.
+    ///
+    /// Without it, two concurrent `join`s of the same invite both pass the `AlreadyJoined` check
+    /// before either has written a row, and both end up writing into one federation namespace;
+    /// two concurrent `reopen_federation`s of the same id both open a client over that same
+    /// namespace. Taken first, before any other lock or the client's own `RwLock`, so a lifecycle
+    /// call never waits on this mutex while holding something a concurrent lifecycle call would
+    /// need.
+    pub(crate) lifecycle: tokio::sync::Mutex<()>,
     /// Held for the instance's lifetime so `export_mnemonic` needs no storage read and keeps
     /// working after shutdown.
     mnemonic: Mnemonic,
@@ -1641,16 +1644,6 @@ pub(crate) struct SdkInner {
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// The single-opener claim, released by `shutdown` or by dropping the last handle.
     lock: std::sync::Mutex<Option<StorageLock>>,
-    /// Serializes `join`, `close_federation`, `reopen_federation`, `forget_federation` and
-    /// `shutdown` against each other, instance-wide, for the whole body of each call.
-    ///
-    /// Without it, two concurrent `join`s of the same invite both pass the `AlreadyJoined` check
-    /// before either has written a row, and both end up writing into one federation namespace;
-    /// two concurrent `reopen_federation`s of the same id both open a client over that same
-    /// namespace. Taken first, before any other lock or the client's own `RwLock`, so a lifecycle
-    /// call never waits on this mutex while holding something a concurrent lifecycle call would
-    /// need.
-    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl core::fmt::Debug for SdkInner {
