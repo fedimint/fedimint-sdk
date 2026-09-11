@@ -188,6 +188,7 @@ impl Sdk {
     /// # A failed call may still have joined
     ///
     /// An `Err` from this call does not certify that nothing happened: a
+    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout) or [`Storage`](crate::ErrorCode::Storage) can
     /// arrive after the federation is already joined and already committed to recovering.
     ///
@@ -379,11 +380,10 @@ impl Sdk {
     /// closed federation back, recovery record and all, and this call then works on it:
     /// re-joining is neither needed nor accepted.
     ///
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) and
-    /// [`Timeout`](crate::ErrorCode::Timeout) when the guardians cannot be reached to fetch
-    /// the backup a new attempt starts from, and [`Storage`](crate::ErrorCode::Storage) if
-    /// the attempt cannot be recorded durably. None of these releases the lock or unwinds the
-    /// recovery record. An error raised while retrying a *stopped* attempt on an open
+    /// [`Storage`](crate::ErrorCode::Storage) if the attempt cannot be recorded durably or the
+    /// client cannot be reopened over the federation's local state, which is all a new attempt
+    /// needs: no guardian is contacted to start one. This does not release the lock or unwind
+    /// the recovery record. An error raised while retrying a *stopped* attempt on an open
     /// federation can leave the federation with no live handle, in which case it transitions
     /// to [`Quarantined`](crate::FederationStatus::Quarantined) carrying the error as its
     /// diagnostic, this call reports
@@ -427,11 +427,11 @@ impl Sdk {
             // here, exactly as the watcher would, rather than trusted and handed back to watch.
             engine::AttemptOnFile::None | engine::AttemptOnFile::Running => {
                 let client = federation.client(false).await?.handle();
-                if client.has_pending_recoveries() {
-                    // Idempotent: repairs the crash window where the record is missing, and is
-                    // a harmless rewrite of the same record otherwise.
-                    federation.record_recovery_attempt(record.attempt).await?;
-                } else {
+                // Idempotent: repairs the crash window where the record is missing, and is a
+                // harmless rewrite of the same record otherwise. Done before either branch so
+                // that a completion finds a record to mark done.
+                federation.record_recovery_attempt(record.attempt).await?;
+                if !client.has_pending_recoveries() {
                     engine::complete(self.inner(), &federation, record.attempt).await;
                 }
                 record.attempt

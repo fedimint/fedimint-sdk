@@ -221,6 +221,19 @@ pub(crate) async fn complete(
     sdk.announce(federation);
 }
 
+/// Mints a brand new attempt: the root record naming it, then its operation record, in that
+/// order, so a crash between the two reads back as `PreOpen::RecordMissing` next time rather
+/// than as an attempt the root record does not name.
+pub(crate) async fn new_attempt(
+    sdk: &SdkInner,
+    federation: &FederationInner,
+) -> Result<UpstreamOperationId> {
+    let attempt = UpstreamOperationId::new_random();
+    crate::db::write_recovery(&sdk.db, &federation.id, &RecoveryRecord { attempt }).await?;
+    federation.record_recovery_attempt(attempt).await?;
+    Ok(attempt)
+}
+
 /// Records that an attempt stopped, for the reason the watcher observed. Status is untouched:
 /// the federation stays `Recovering`, and a later open or `resume_recovery` decides what to do
 /// about the attempt from here.
@@ -249,19 +262,6 @@ async fn record_attempt_failed(
             "could not record a failed recovery attempt",
         ),
     }
-}
-
-/// Mints a brand new attempt: the root record naming it, then its operation record, in that
-/// order, so a crash between the two reads back as `PreOpen::RecordMissing` next time rather
-/// than as an attempt the root record does not name.
-pub(crate) async fn new_attempt(
-    sdk: &SdkInner,
-    federation: &FederationInner,
-) -> Result<UpstreamOperationId> {
-    let attempt = UpstreamOperationId::new_random();
-    crate::db::write_recovery(&sdk.db, &federation.id, &RecoveryRecord { attempt }).await?;
-    federation.record_recovery_attempt(attempt).await?;
-    Ok(attempt)
 }
 
 /// The attempt's own operation record, straight from the federation's namespace.
