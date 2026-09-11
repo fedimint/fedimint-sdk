@@ -1,6 +1,6 @@
 # Overview
 
-The `@fedimint/core` package provides a javascript interface for running a fedimint client in the browser.
+The `@fedimint/core` package provides a multi-platform TypeScript and JavaScript interface for running Fedimint clients in web browsers and mobile applications.
 
 <div class="tip custom-block" style="padding-top: 8px">
 
@@ -8,30 +8,42 @@ Just want to try it out? Skip to the [Quickstart](./getting-started).
 
 </div>
 
-The `@fedimint/core` package contains a robust, fault-tolerant fedimint client via a [wasm](https://webassembly.org/) module that runs in a web worker. This wasm module is compiled from the rust-based [fedimint client](https://github.com/fedimint/fedimint/tree/master/fedimint-client-wasm).
+`@fedimint/core` provides high-level wallet services, state management, and lifecycle coordination on top of the underlying Rust-based [fedimint client](https://github.com/fedimint/fedimint). It communicates with the Rust engine through platform-specific transport adapters:
 
-Applications configure the platform integration through a `WalletDirector` and
-obtain a `FedimintWallet` by calling `director.createWallet()`. The wallet is not
-constructed directly. This keeps transport initialization in the director while
-the returned wallet focuses on opening or joining a federation and providing
-wallet services.
+1. **Browser WebAssembly (`@fedimint/transport-web`)**: Runs the `fedimint-client-wasm` engine lazily inside a dedicated Web Worker, persisting data using Origin Private File System (OPFS) or IndexedDB.
+2. **Native Mobile FFI (`@fedimint/react-native`)**: Connects React Native and Expo applications to native Rust binaries compiled via in-tree `fedimint-client-uniffi` (supporting iOS `.xcframework` and Android `.aar`).
+
+Applications configure the platform integration through a `WalletDirector` and obtain a `FedimintWallet` by calling `director.createWallet()`. The wallet is not constructed directly. This keeps transport initialization in the director while the returned wallet focuses on opening or joining a federation and providing domain services.
 
 ## Key Features:
 
-- 🚀 **WebAssembly-powered Client**: Exposes the robust, fault-tolerant fedimint-client (built in Rust) via WebAssembly. Lazy-Loads within a web worker for performance.
+- 🚀 **Multi-Platform Execution**: Run natively in iOS & Android apps via UniFFI FFI bindings, or in web browsers via WebAssembly.
+- 💰 **Ecash Payments**: First-class support for joining federations, out-of-band ecash note reissue, and note spending.
+- ⚡ **Zero-Setup Lightning**: Send and receive instant Lightning Network payments via federation Lightning gateways.
+- 🛠️ **Robust State Management**: Handles asynchronous persistence, database locking, and background balance streams across web and mobile.
+- 🤫 **Privacy by Default**: Chaumian blinded token mints ensure sender and recipient financial privacy.
+- ⚙️ **Framework Agnostic**: Core TypeScript library compatible with vanilla JS, React, Next.js, React Native, and Expo.
 
-- 💰 **Ecash Payments**: Includes support for joining federations, sending/receiving ecash, and managing balances.
+## Architecture at a Glance
 
-- ⚡ **Lightning Payments**: Ships with zero-setup Lightning Network payments.
-
-- 🛠️ **State Management**: Handles the complex state management and storage challenges for browser wallets.
-
-- 🤫 **Privacy Included**: Offers a privacy-centric wallet by default.
-
-- ⚙️ **Framework Agnostic**: Designed as a "core" library compatible with vanilla JavaScript, laying the groundwork for future framework-specific packages.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       @fedimint/core                        │
+│            (WalletDirector & FedimintWallet)                │
+└──────────────┬───────────────────────────────┬──────────────┘
+               │                               │
+               ▼ (WasmWorkerTransport)         ▼ (ReactNativeTransport)
+┌─────────────────────────────┐ ┌─────────────────────────────┐
+│  @fedimint/transport-web    │ │   @fedimint/react-native    │
+│    (Browser Web Worker)     │ │  (UniFFI Native Bindings)   │
+└──────────────┬──────────────┘ └──────────────┬──────────────┘
+               ▼                               ▼
+┌─────────────────────────────┐ ┌─────────────────────────────┐
+│    fedimint-client-wasm     │ │   fedimint-client-uniffi    │
+│     (WebAssembly / OPFS)    │ │   (iOS XCFramework / AAR)   │
+└─────────────────────────────┘ └─────────────────────────────┘
+```
 
 ## Mission
 
-Our goal is to provide the **best possible developer experience** for building with bitcoin, lowering the barrier to entry for creating safe, robust, privacy-centric applications.
-
-Looking ahead, we plan to expand this SDK with framework-specific libraries, starting with [React](https://react.dev/).
+Our goal is to provide the **best possible developer experience** for building with bitcoin and ecash, lowering the barrier to entry for creating safe, robust, privacy-centric applications across web and mobile platforms.

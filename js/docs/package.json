@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "docs:dev": "vitepress dev",
-    "docs:build": "vitepress build",
-    "docs:preview": "vitepress preview"
+    "build": "vitepress build",
+    "dev": "vitepress dev",
+    "preview": "vitepress preview"
   },
   "devDependencies": {
     "@fedimint/core": "workspace:*",
