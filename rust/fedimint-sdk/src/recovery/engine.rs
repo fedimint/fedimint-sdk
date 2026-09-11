@@ -203,18 +203,30 @@ pub(crate) fn watch(
     });
 }
 
-/// The watcher's completion: [`finish`] under the lifecycle mutex.
+/// The watcher's completion: [`finish`] under the lifecycle mutex, unless the attempt has
+/// already been concluded by the time the mutex is held.
 ///
 /// Taken because the swap and the status that follows it are a lifecycle transition, and a
 /// `close_federation` or `forget_federation` interleaved between the two would have its
 /// `Closed` overwritten with `Running` on a federation whose client had just been taken away.
 /// The mutex is taken before anything else, as every lifecycle call takes it.
+///
+/// The attempt is re-read once the mutex is held: a `resume_recovery` that held it while the
+/// rescan ended has already seen nothing pending and completed the attempt itself, and a second
+/// swap would retire the usable client it just installed for nothing, with a failed reopen
+/// quarantining a federation that had recovered.
 pub(crate) async fn complete(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
     attempt: UpstreamOperationId,
 ) {
     let _lifecycle = sdk.lifecycle.lock().await;
+    if read_attempt_record(federation, attempt)
+        .await
+        .is_some_and(|record| record.final_state.is_some())
+    {
+        return;
+    }
     finish(sdk, federation, attempt).await;
 }
 
@@ -545,6 +557,35 @@ mod tests {
                 .expect("decode"),
             RecoveryState::Done
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_concluded_attempt_is_not_completed_a_second_time() {
+        let sdk = detached_sdk().await;
+        let federation = detached_federation(&sdk.inner().db);
+        let attempt = UpstreamOperationId([9u8; 32]);
+        crate::db::write_recovery(&sdk.inner().db, &federation.id, &RecoveryRecord { attempt })
+            .await
+            .expect("write the root record");
+        // What the watcher finds when `resume_recovery` held the lifecycle mutex while the
+        // rescan ended and completed the attempt first.
+        plant_operation_record(
+            &federation,
+            attempt,
+            Some(wire::encode_state(&RecoveryState::Done).expect("encode")),
+        )
+        .await;
+        let observed = federation.recovery_changed();
+
+        complete(sdk.inner(), &federation, attempt).await;
+
+        // A completion writes the ending and wakes the attempt's subscribers; a skipped one
+        // does neither.
+        assert!(
+            !observed.has_changed().expect("the sender is alive"),
+            "a second completion must leave the concluded attempt alone"
+        );
+        assert_eq!(federation.status(), FederationStatus::Running);
     }
 
     #[tokio::test(flavor = "multi_thread")]

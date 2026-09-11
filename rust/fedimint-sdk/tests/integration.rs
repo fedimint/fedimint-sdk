@@ -1071,7 +1071,11 @@ async fn recovery_restores_a_wallet_with_history() {
         sdk_b.federation_status(&id),
         Some(FederationStatus::Running)
     );
-    settles_at(&mut updates, funded).await;
+    // The stream reports changes only, so a provisional reading that was already the funded
+    // figure (a rescan that ended before the subscription) is not waited for a second time.
+    if provisional != funded {
+        settles_at(&mut updates, funded).await;
+    }
 
     // Resuming a completed recovery hands back the same attempt rather than starting a new one.
     let resumed = sdk_b
