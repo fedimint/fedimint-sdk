@@ -220,26 +220,28 @@ fn apply_consensus_bytes(
     consensus_bytes: &[u8],
 ) -> BTreeMap<String, String> {
     let mut merged = config.clone();
-    if let Ok(json_str) = std::str::from_utf8(consensus_bytes) {
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json_str) {
-            for (key, value) in map {
-                match value {
-                    serde_json::Value::String(s) => {
-                        merged.insert(key, s);
-                    }
-                    serde_json::Value::Number(n) => {
-                        merged.insert(key, n.to_string());
-                    }
-                    serde_json::Value::Bool(b) => {
-                        merged.insert(key, b.to_string());
-                    }
-                    serde_json::Value::Null => {
-                        merged.insert(key, "null".to_owned());
-                    }
-                    // Object and Array are skipped, not projected to empty.
-                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {}
-                }
+    let Ok(json_str) = std::str::from_utf8(consensus_bytes) else {
+        return merged;
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json_str) else {
+        return merged;
+    };
+    for (key, value) in map {
+        match value {
+            serde_json::Value::String(s) => {
+                merged.insert(key, s);
             }
+            serde_json::Value::Number(n) => {
+                merged.insert(key, n.to_string());
+            }
+            serde_json::Value::Bool(b) => {
+                merged.insert(key, b.to_string());
+            }
+            serde_json::Value::Null => {
+                merged.insert(key, "null".to_owned());
+            }
+            // Object and Array are skipped, not projected to empty.
+            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {}
         }
     }
     merged
