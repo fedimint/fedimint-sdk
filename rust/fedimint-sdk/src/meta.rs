@@ -2,8 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::Result;
+use crate::{Error, ErrorCode, Result};
+
+/// How long `get`/`all`/`consensus_metadata` wait for the consensus data
+/// before returning a timeout error.
+const CONSENSUS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The metadata facade for one federation.
 ///
@@ -107,11 +112,11 @@ impl Meta {
     /// # Errors
     ///
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage), and
+    /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn get(&self, key: &str) -> Result<Option<String>> {
-        unimplemented!()
+        let merged = self.merged_view().await?;
+        Ok(merged.get(key).cloned())
     }
 
     /// The whole merged view.
@@ -136,7 +141,7 @@ impl Meta {
     ///
     /// The same as [`Meta::get`].
     pub async fn all(&self) -> Result<BTreeMap<String, String>> {
-        unimplemented!()
+        self.merged_view().await
     }
 
     /// The raw configuration metadata, exactly as the federation's
@@ -146,7 +151,7 @@ impl Meta {
     /// already holds locally, so there is nothing to fetch and nothing to
     /// fail. No consensus values are merged in.
     pub fn config_metadata(&self) -> BTreeMap<String, String> {
-        unimplemented!()
+        self.inner.federation.config_meta()
     }
 
     /// The raw consensus metadata, or `None` if this federation has no meta
@@ -166,7 +171,29 @@ impl Meta {
     ///
     /// The same as [`Meta::get`].
     pub async fn consensus_metadata(&self) -> Result<Option<ConsensusMetadata>> {
-        unimplemented!()
+        let client = self.inner.federation.client(false).await?;
+        let Ok(module) = client.get_first_module::<fedimint_meta_client::MetaClientModule>() else {
+            return Ok(None);
+        };
+
+        let result = fedimint_core::runtime::timeout(
+            CONSENSUS_FETCH_TIMEOUT,
+            module.get_consensus_value(fedimint_meta_common::DEFAULT_META_KEY),
+        )
+        .await
+        .map_err(|_| Error::new(ErrorCode::Timeout, "consensus metadata fetch timed out"))?;
+
+        let maybe_mcv = result.map_err(|err| {
+            Error::new(
+                ErrorCode::FederationUnreachable,
+                format!("failed to fetch consensus metadata: {err}"),
+            )
+        })?;
+
+        Ok(maybe_mcv.map(|mcv| ConsensusMetadata {
+            revision: mcv.revision,
+            value: mcv.value.as_slice().to_vec(),
+        }))
     }
 
     /// Builds the facade for one federation. Handed out by `Federation::meta`.
@@ -175,6 +202,47 @@ impl Meta {
             inner: Arc::new(MetaInner { federation }),
         }
     }
+
+    async fn merged_view(&self) -> Result<BTreeMap<String, String>> {
+        let consensus = self.consensus_metadata().await;
+        let config = self.inner.federation.config_meta();
+
+        match consensus {
+            Ok(Some(mcv)) => Ok(apply_consensus_bytes(&config, &mcv.value)),
+            Ok(None) => Ok(config),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+fn apply_consensus_bytes(
+    config: &BTreeMap<String, String>,
+    consensus_bytes: &[u8],
+) -> BTreeMap<String, String> {
+    let mut merged = config.clone();
+    if let Ok(json_str) = std::str::from_utf8(consensus_bytes) {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json_str) {
+            for (key, value) in &map {
+                match value {
+                    serde_json::Value::String(s) => {
+                        merged.insert(key.clone(), s.clone());
+                    }
+                    serde_json::Value::Number(n) => {
+                        merged.insert(key.clone(), n.to_string());
+                    }
+                    serde_json::Value::Bool(b) => {
+                        merged.insert(key.clone(), b.to_string());
+                    }
+                    serde_json::Value::Null => {
+                        merged.insert(key.clone(), "null".to_owned());
+                    }
+                    // Object and Array are skipped, not projected to empty.
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {}
+                }
+            }
+        }
+    }
+    merged
 }
 
 /// A revision of a federation's consensus metadata.
@@ -213,4 +281,93 @@ pub struct ConsensusMetadata {
 #[derive(Debug)]
 struct MetaInner {
     federation: Arc<crate::federation::FederationInner>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn apply_consensus_bytes_maps_types_and_prioritizes_consensus() {
+        let mut config = BTreeMap::new();
+        config.insert("only_config".to_owned(), "c1".to_owned());
+        config.insert("overlap".to_owned(), "c2".to_owned());
+
+        let payload = json!({
+            "overlap": "m1",
+            "only_consensus": "m2",
+            "num": 42,
+            "bool": true,
+            "null": null,
+            "obj": {"a": 1},
+            "arr": [1, 2]
+        })
+        .to_string();
+
+        let merged = apply_consensus_bytes(&config, payload.as_bytes());
+
+        assert_eq!(merged.len(), 6);
+        assert_eq!(merged.get("only_config"), Some(&"c1".to_owned()));
+        assert_eq!(merged.get("overlap"), Some(&"m1".to_owned())); // consensus wins
+        assert_eq!(merged.get("only_consensus"), Some(&"m2".to_owned()));
+        assert_eq!(merged.get("num"), Some(&"42".to_owned()));
+        assert_eq!(merged.get("bool"), Some(&"true".to_owned()));
+        assert_eq!(merged.get("null"), Some(&"null".to_owned()));
+        assert!(!merged.contains_key("obj"));
+        assert!(!merged.contains_key("arr"));
+    }
+
+    #[test]
+    fn apply_consensus_bytes_handles_invalid_utf8_by_returning_config() {
+        let mut config = BTreeMap::new();
+        config.insert("c1".to_owned(), "v1".to_owned());
+
+        let invalid_utf8 = vec![0xff, 0xff, 0xff];
+        let merged = apply_consensus_bytes(&config, &invalid_utf8);
+        assert_eq!(merged, config);
+    }
+
+    #[test]
+    fn apply_consensus_bytes_handles_non_json_by_returning_config() {
+        let mut config = BTreeMap::new();
+        config.insert("c1".to_owned(), "v1".to_owned());
+
+        let invalid_json = b"not valid json";
+        let merged = apply_consensus_bytes(&config, invalid_json);
+        assert_eq!(merged, config);
+    }
+
+    #[test]
+    fn apply_consensus_bytes_handles_non_object_json_by_returning_config() {
+        let mut config = BTreeMap::new();
+        config.insert("c1".to_owned(), "v1".to_owned());
+
+        for payload in [
+            b"[]".as_slice(),
+            b"\"string\"".as_slice(),
+            b"123".as_slice(),
+            b"true".as_slice(),
+            b"null".as_slice(),
+        ] {
+            let merged = apply_consensus_bytes(&config, payload);
+            assert_eq!(merged, config);
+        }
+    }
+
+    #[test]
+    fn apply_consensus_bytes_preserves_config_when_key_skipped() {
+        let mut config = BTreeMap::new();
+        config.insert("server".to_owned(), "https://example.com".to_owned());
+
+        // Nested object violates Rule 4 and should be skipped under Rule 5.
+        let payload = br#"{"server": {"host": "example.com"}}"#;
+
+        let merged = apply_consensus_bytes(&config, payload);
+
+        assert_eq!(
+            merged.get("server"),
+            Some(&"https://example.com".to_owned())
+        );
+    }
 }

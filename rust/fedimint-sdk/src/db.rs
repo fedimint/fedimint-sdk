@@ -17,6 +17,8 @@
 //! decode failure, and this crate reports storage trouble as `ErrorCode::Storage` rather than
 //! taking the host application down with it.
 
+use std::collections::BTreeMap;
+
 use fedimint_core::config::FederationId;
 use fedimint_core::db::{
     Committable, Database, DatabaseKey, DatabaseKeyPrefix, DatabaseRecord, DatabaseTransaction,
@@ -57,6 +59,8 @@ pub(crate) enum SdkDbPrefix {
     Seed = 0x01,
     /// One row per federation the storage remembers, in any state.
     Federation = 0x02,
+    /// Configuration metadata for a federation, stored separately to not break schema.
+    ConfigMeta = 0x03,
 }
 
 /// The key of the single seed record.
@@ -276,12 +280,39 @@ impl core::fmt::Debug for FederationRecord {
     }
 }
 
+/// The key of one federation's configuration metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
+pub(crate) struct ConfigMetaKey(pub(crate) FederationId);
+
+/// Query prefix for every [`ConfigMetaKey`].
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct ConfigMetaKeyPrefix;
+
+/// Configuration metadata for one federation.
+#[derive(Clone, PartialEq, Eq, Encodable, Decodable)]
+pub(crate) struct ConfigMetaRecord(pub(crate) BTreeMap<String, String>);
+
+impl core::fmt::Debug for ConfigMetaRecord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ConfigMetaRecord")
+            .field("meta", &self.0)
+            .finish()
+    }
+}
+
 impl_db_record!(
     key = FederationKey,
     value = FederationRecord,
     db_prefix = SdkDbPrefix::Federation,
 );
 impl_db_lookup!(key = FederationKey, query_prefix = FederationKeyPrefix);
+
+impl_db_record!(
+    key = ConfigMetaKey,
+    value = ConfigMetaRecord,
+    db_prefix = SdkDbPrefix::ConfigMeta,
+);
+impl_db_lookup!(key = ConfigMetaKey, query_prefix = ConfigMetaKeyPrefix);
 
 /// Reads one record, reporting a backend or decode failure instead of panicking.
 ///
@@ -381,11 +412,49 @@ pub(crate) async fn write_federation(
     commit(dbtx).await
 }
 
+/// Writes both the registry row and the config metadata for `id` atomically.
+pub(crate) async fn write_federation_with_meta(
+    db: &Database,
+    id: &FederationId,
+    record: &FederationRecord,
+    meta: BTreeMap<String, String>,
+) -> Result<()> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction().await;
+    write(&mut dbtx, &FederationKey(*id), record).await?;
+    write(&mut dbtx, &ConfigMetaKey(*id), &ConfigMetaRecord(meta)).await?;
+    commit(dbtx).await
+}
+
 /// Removes the registry row for `id`. The last step of an erase.
 pub(crate) async fn remove_federation(db: &Database, id: &FederationId) -> Result<()> {
     let sdk_db = db.with_prefix(sdk_prefix().to_vec());
     let mut dbtx = sdk_db.begin_transaction().await;
     remove(&mut dbtx, &FederationKey(*id)).await?;
+    remove(&mut dbtx, &ConfigMetaKey(*id)).await?;
+    commit(dbtx).await
+}
+
+/// Reads the config metadata for `id`.
+pub(crate) async fn read_config_meta(
+    db: &Database,
+    id: &FederationId,
+) -> Result<BTreeMap<String, String>> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction_nc().await;
+    let record = read(&mut dbtx, &ConfigMetaKey(*id)).await?;
+    Ok(record.map(|r| r.0).unwrap_or_default())
+}
+
+/// Writes the config metadata for `id`.
+pub(crate) async fn write_config_meta(
+    db: &Database,
+    id: &FederationId,
+    meta: BTreeMap<String, String>,
+) -> Result<()> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction().await;
+    write(&mut dbtx, &ConfigMetaKey(*id), &ConfigMetaRecord(meta)).await?;
     commit(dbtx).await
 }
 
@@ -814,6 +883,40 @@ mod tests {
         remove_federation(&db, &id).await.expect("remove");
         assert_eq!(read_federation(&db, &id).await.expect("read"), None);
         assert!(list_federations(&db).await.expect("list").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn config_meta_records_round_trip_and_cleanup() {
+        let db = db();
+        let id = FederationId::dummy();
+
+        let mut meta = BTreeMap::new();
+        meta.insert("key1".to_owned(), "value1".to_owned());
+        meta.insert("key2".to_owned(), "value2".to_owned());
+
+        // write_federation_with_meta writes both keys
+        write_federation_with_meta(&db, &id, &record(id), meta.clone())
+            .await
+            .expect("write with meta");
+
+        let read_meta = read_config_meta(&db, &id).await.expect("read meta");
+        assert_eq!(read_meta, meta);
+
+        // Update meta
+        meta.insert("key3".to_owned(), "value3".to_owned());
+        write_config_meta(&db, &id, meta.clone())
+            .await
+            .expect("write meta");
+        assert_eq!(read_config_meta(&db, &id).await.expect("read meta"), meta);
+
+        // remove_federation removes both federation record and config meta
+        remove_federation(&db, &id).await.expect("remove");
+
+        let read_meta_after_remove = read_config_meta(&db, &id).await.expect("read meta");
+        assert!(
+            read_meta_after_remove.is_empty(),
+            "Meta should be empty after removal"
+        );
     }
 
     #[test]

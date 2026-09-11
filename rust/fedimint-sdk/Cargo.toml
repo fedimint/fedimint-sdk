@@ -57,6 +57,7 @@ fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab1
 fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+fedimint-meta-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
