@@ -307,6 +307,9 @@ impl Sdk {
         joined.status = StoredStatus::Open;
         crate::db::write_federation(&self.inner().db, &id, &joined).await?;
 
+        // Locked from the first moment it can be found: facade calls do not take the lifecycle
+        // mutex, so a federation published as `Running` with its rescan still going would accept
+        // a send or a receive until `after_open` below corrected it.
         let federation = Arc::new(FederationInner::new(
             id,
             Arc::downgrade(self.inner()),
@@ -314,13 +317,33 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&id).to_vec()),
             joined,
-            FederationStatus::Running,
+            FederationStatus::Recovering,
             Some(client.clone()),
         ));
+        // Written before the federation is published, so a failure here has nothing live to
+        // leave behind: the client is stopped and the federation surfaces as `Quarantined`,
+        // the outcome the docs describe for an error after the join has committed. The root
+        // record already names the attempt, so the reopen that brings it back writes this
+        // record under the same id and resumes the rescan.
+        if let Err(err) = federation.record_recovery_attempt(attempt).await {
+            drop(client);
+            if let Err(stop) = federation.stop().await {
+                tracing::warn!(
+                    target: "fedimint_sdk",
+                    federation = %federation.id,
+                    error = %stop,
+                    "could not cleanly shut down the client of a recovery that failed to start",
+                );
+            }
+            federation.set_status(FederationStatus::Quarantined {
+                diagnostic: err.clone().into(),
+            });
+            self.inner().insert(federation.clone());
+            self.inner().announce(&federation);
+            return Err(err);
+        }
         self.inner().insert(federation.clone());
-        federation.record_recovery_attempt(attempt).await?;
-        let status = engine::after_open(self.inner(), &federation, &client, Some(attempt)).await;
-        federation.set_status(status);
+        engine::after_open(self.inner(), &federation, client, Some(attempt)).await;
         crate::federation::reconcile_on_open(&federation).await;
         self.inner().announce(&federation);
         Ok(Recovery {
@@ -425,13 +448,15 @@ impl Sdk {
             // record's word: a current attempt whose rescan is not actually live is completed
             // here, exactly as the watcher would, rather than trusted and handed back to watch.
             engine::AttemptOnFile::None | engine::AttemptOnFile::Running => {
-                let client = federation.client(false).await?.handle();
                 // Idempotent: repairs the crash window where the record is missing, and is a
                 // harmless rewrite of the same record otherwise. Done before either branch so
                 // that a completion finds a record to mark done.
                 federation.record_recovery_attempt(record.attempt).await?;
-                if !client.has_pending_recoveries() {
-                    engine::complete(self.inner(), &federation, record.attempt).await;
+                // The guard is a temporary, gone before the completion below: its swap needs
+                // the last handle to the client it retires.
+                let pending = federation.client(false).await?.has_pending_recoveries();
+                if !pending {
+                    engine::finish(self.inner(), &federation, record.attempt).await;
                 }
                 record.attempt
             }
@@ -461,14 +486,8 @@ impl Sdk {
                     }
                     Ok(()) => {
                         let client = federation.client(false).await?.handle();
-                        let status = engine::after_open(
-                            self.inner(),
-                            &federation,
-                            &client,
-                            Some(new_attempt),
-                        )
-                        .await;
-                        federation.set_status(status);
+                        engine::after_open(self.inner(), &federation, client, Some(new_attempt))
+                            .await;
                         self.inner().announce(&federation);
                     }
                 }

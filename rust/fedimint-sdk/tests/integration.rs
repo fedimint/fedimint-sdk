@@ -387,13 +387,19 @@ async fn fund(lightning: &fedimint_sdk::Lightning, msats: u64) -> fedimint_sdk::
         .net_credit
 }
 
-/// Waits until the federation's balance reads `expected`, through the balance stream, and
+/// Waits until the federation's balance reads `expected`, through a fresh balance stream, and
 /// panics with the last figure seen if it has not within a minute.
 ///
 /// A recovered wallet's notes are re-signed by state machines that resume on the client the
 /// recovery's end swaps in, so the balance can land a moment after the recovery reads `Done`.
 async fn balance_settles_at(federation: &fedimint_sdk::Federation, expected: fedimint_sdk::Amount) {
     let mut updates = federation.balance_updates();
+    settles_at(&mut updates, expected).await;
+}
+
+/// Waits on an existing balance stream until it yields `expected`, and panics with the last
+/// figure seen if it has not within a minute.
+async fn settles_at(updates: &mut fedimint_sdk::BalanceUpdates, expected: fedimint_sdk::Amount) {
     let mut last = None;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -1039,6 +1045,18 @@ async fn recovery_restores_a_wallet_with_history() {
 
     let recovery = sdk_b.recover(&invite).await.expect("the recovery starts");
     assert_eq!(recovery.federation.id(), id);
+    // Subscribed while the rescan is still running, when the timing allows, and kept for the
+    // rest of the test: the recovery's end retires the client this subscription was opened on,
+    // and the subscription has to follow it to the successor rather than end or go quiet.
+    let mut updates = recovery.federation.balance_updates();
+    let provisional = updates
+        .next()
+        .await
+        .expect("a balance is readable during recovery");
+    assert!(
+        provisional <= funded,
+        "a provisional balance never exceeds the funded one"
+    );
     let last = recovery
         .progress
         .await_final()
@@ -1053,7 +1071,7 @@ async fn recovery_restores_a_wallet_with_history() {
         sdk_b.federation_status(&id),
         Some(FederationStatus::Running)
     );
-    balance_settles_at(&recovery.federation, funded).await;
+    settles_at(&mut updates, funded).await;
 
     // Resuming a completed recovery hands back the same attempt rather than starting a new one.
     let resumed = sdk_b
@@ -1114,6 +1132,16 @@ async fn recovery_restores_a_wallet_with_history() {
             LnSendState::Success { .. }
         ));
     }
+    // The subscription opened during recovery is the one that reports the payment.
+    let paid = tokio::time::timeout(std::time::Duration::from_secs(60), updates.next())
+        .await
+        .expect("the balance moves within a minute of the payment")
+        .expect("the balance stream is still live after the recovery");
+    assert!(
+        paid < funded,
+        "the payment lowered the balance: {paid:?} < {funded:?}"
+    );
+    drop(updates);
     let balance_before_restart = recovery.federation.balance().await.expect("balance");
 
     // Restart B: every handle dropped before rebuilding on the same storage, as in

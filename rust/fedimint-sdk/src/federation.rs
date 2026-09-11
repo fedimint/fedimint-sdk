@@ -189,6 +189,7 @@ impl Federation {
                 federation: self.inner.clone(),
                 cursor: tokio::sync::Mutex::new(BalanceCursor {
                     stream: None,
+                    recovery_changed: None,
                     last: None,
                 }),
             }),
@@ -376,7 +377,8 @@ impl BalanceUpdates {
 
             if cursor.stream.is_none() {
                 // Taken before the read below, so a recovery that ends between the read and the
-                // wait on it is not missed.
+                // wait on it is not missed. It outlives the stream established here for the same
+                // reason: a recovery's swap retires the client that stream reads from.
                 let mut recovery_changed = self.inner.federation.recovery_changed();
                 let client = self.inner.federation.client(false).await?;
                 // Upstream's balance stream never yields and never ends when a client has no
@@ -408,19 +410,35 @@ impl BalanceUpdates {
                     }
                 }
                 cursor.stream = Some(client.subscribe_balance_changes(AmountUnit::BITCOIN).await);
+                cursor.recovery_changed = Some(recovery_changed);
             }
 
+            let cursor = &mut *cursor;
             let stream = cursor
                 .stream
                 .as_mut()
                 .expect("the stream was just established");
+            let recovery_changed = cursor
+                .recovery_changed
+                .as_mut()
+                .expect("taken with the stream");
             let next = tokio::select! {
                 next = stream.next() => next,
                 _ = closed.changed() => continue,
+                // A recovery ending swaps the client, and with it the module this stream reads
+                // from: a stream over the retired client never yields again.
+                _ = recovery_changed.changed() => {
+                    cursor.stream = None;
+                    continue;
+                }
             };
             let Some(balance) = next else {
-                // The stream only ends when the client behind it is gone, which from a caller's
-                // point of view is the federation no longer running.
+                // The stream only ends when the client behind it is gone: with the federation
+                // still running, that is a swap, and the successor is subscribed to instead.
+                if !*closed.borrow() {
+                    cursor.stream = None;
+                    continue;
+                }
                 return Err(crate::Error::new(
                     crate::ErrorCode::FederationClosed,
                     "this federation is not running",
@@ -1306,6 +1324,9 @@ struct BalanceCursor {
     /// on. Upstream's own stream hangs forever when a client has no primary module, so it is only
     /// opened after a balance read has proved there is one.
     stream: Option<fedimint_core::util::BoxStream<'static, fedimint_core::Amount>>,
+    /// Subscribed just before `stream` was, so the recovery swap that retires the client behind
+    /// it is seen and the stream re-established over the successor.
+    recovery_changed: Option<tokio::sync::watch::Receiver<u64>>,
     /// The last value handed out, so a repeat is not delivered as a change.
     last: Option<Amount>,
 }

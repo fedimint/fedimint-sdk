@@ -101,20 +101,40 @@ pub(crate) async fn prepare_open(
     }
 }
 
-/// Reconciles the attempt with what the freshly opened client says, sets the status, and starts
-/// the watcher when the rescan is still running. `attempt` is `prepare_open`'s answer.
+/// Reconciles the attempt with what the freshly opened client says, publishes the status that
+/// follows, and starts the watcher when the rescan is still running. `attempt` is
+/// `prepare_open`'s answer.
+///
+/// `client` is the caller's last handle to the client, taken by value so that a swap made here
+/// finds nothing else holding it. The status is set here, and set before the watcher spawns,
+/// because the watcher's own close-watch reads it: a federation still marked closed from its
+/// construction would end the watch before the rescan had started.
+///
+/// Like [`finish`], this runs under the lifecycle mutex, or inside the build before any handle
+/// exists to contend for it.
 pub(crate) async fn after_open(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
-    client: &ClientHandleArc,
+    client: ClientHandleArc,
     attempt: Option<UpstreamOperationId>,
-) -> FederationStatus {
+) {
     let Some(attempt) = attempt else {
-        return FederationStatus::Running;
+        federation.set_status(FederationStatus::Running);
+        return;
     };
     if client.has_pending_recoveries() {
-        watch(sdk.clone(), federation.clone(), client.clone(), attempt);
-        return FederationStatus::Recovering;
+        federation.set_status(FederationStatus::Recovering);
+        watch(sdk.clone(), federation.clone(), client, attempt);
+        return;
+    }
+    // A rescan that ended between the client's construction and here reports nothing pending,
+    // but a module it held back for the duration (a v1 mint) is still out of the registry
+    // until the next build: the same swap the watcher would have made is made now.
+    let usable = client.all_modules_usable();
+    drop(client);
+    if !usable {
+        finish(sdk, federation, attempt).await;
+        return;
     }
     // The client's own durable state already corroborates completion. If the attempt's record
     // has not caught up yet (the crash window between the client's own commit and this SDK's
@@ -134,7 +154,7 @@ pub(crate) async fn after_open(
             ),
         }
     }
-    FederationStatus::Running
+    federation.set_status(FederationStatus::Running);
 }
 
 /// One task per recovering federation: blocks until the client's rescan ends, then records
@@ -183,8 +203,28 @@ pub(crate) fn watch(
     });
 }
 
-/// The completion rule from the plan's fixed decisions.
+/// The watcher's completion: [`finish`] under the lifecycle mutex.
+///
+/// Taken because the swap and the status that follows it are a lifecycle transition, and a
+/// `close_federation` or `forget_federation` interleaved between the two would have its
+/// `Closed` overwritten with `Running` on a federation whose client had just been taken away.
+/// The mutex is taken before anything else, as every lifecycle call takes it.
 pub(crate) async fn complete(
+    sdk: &Arc<SdkInner>,
+    federation: &Arc<FederationInner>,
+    attempt: UpstreamOperationId,
+) {
+    let _lifecycle = sdk.lifecycle.lock().await;
+    finish(sdk, federation, attempt).await;
+}
+
+/// The completion rule from the plan's fixed decisions: swap in a usable client, record the
+/// attempt done, publish the status.
+///
+/// The caller holds the lifecycle mutex, or is the build, which runs before any handle exists
+/// to take it. Either way nothing can close, erase or reopen the federation between the swap
+/// and the status.
+pub(crate) async fn finish(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
     attempt: UpstreamOperationId,
@@ -479,6 +519,32 @@ mod tests {
             .expect("prepare")
             .expect("an attempt to open under");
         assert_eq!(prepared, attempt);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn completing_a_closed_federation_records_the_ending_but_leaves_its_status_alone() {
+        let sdk = detached_sdk().await;
+        // Closed, with no client: what the watcher finds when a close won the race against
+        // the rescan's end.
+        let federation =
+            FederationInner::detached(federation_namespace(&sdk.inner().db, [1u8; 32]), false);
+        let attempt = UpstreamOperationId([8u8; 32]);
+        crate::db::write_recovery(&sdk.inner().db, &federation.id, &RecoveryRecord { attempt })
+            .await
+            .expect("write the root record");
+        plant_operation_record(&federation, attempt, None).await;
+
+        complete(sdk.inner(), &federation, attempt).await;
+
+        assert_eq!(federation.status(), FederationStatus::Closed);
+        let record = read_attempt_record(&federation, attempt)
+            .await
+            .expect("the record survives");
+        assert_eq!(
+            wire::decode_state(&record.final_state.expect("the rescan's end is recorded"))
+                .expect("decode"),
+            RecoveryState::Done
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

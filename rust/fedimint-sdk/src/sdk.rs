@@ -700,8 +700,14 @@ impl Sdk {
         // `closed` watch flipped when it was stopped — and stays that way for as long as anyone
         // holds it.
         //
-        // Built with a provisional `Running` status: `after_open` below, run once this value
-        // exists for its watcher to hold a clone of, decides the real one.
+        // Built already locked when it has a recovery to resume: facade calls do not take the
+        // lifecycle mutex, so nothing may find this federation `Running` before `after_open`
+        // below, run once this value exists for its watcher to hold, has decided the status.
+        let provisional = if attempt.is_some() {
+            FederationStatus::Recovering
+        } else {
+            FederationStatus::Running
+        };
         let federation = Arc::new(FederationInner::new(
             upstream,
             Arc::downgrade(&self.inner),
@@ -709,13 +715,11 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&upstream).to_vec()),
             opened,
-            FederationStatus::Running,
+            provisional,
             Some(client.clone()),
         ));
         self.inner.insert(federation.clone());
-        let status =
-            crate::recovery::engine::after_open(&self.inner, &federation, &client, attempt).await;
-        federation.set_status(status);
+        crate::recovery::engine::after_open(&self.inner, &federation, client, attempt).await;
         crate::federation::reconcile_on_open(&federation).await;
         self.inner.announce(&federation);
         Ok(Federation::new(federation))
@@ -1934,7 +1938,7 @@ impl SdkInner {
         // A recovery record's pre-open repair runs against records alone, before `start` invokes
         // the underlying open, and its own failure quarantines exactly as a failed `start` does:
         // both are folded into the one `?`-chain below.
-        let outcome: Result<FederationStatus> = async {
+        let outcome: Result<()> = async {
             let attempt = crate::recovery::engine::prepare_open(self, &federation).await?;
             let (client, revalidated) = self.start(id, &record).await?;
             // Set before `install`/`announce`, so a refresh `start` made against the client's
@@ -1943,13 +1947,18 @@ impl SdkInner {
             // `record`.
             federation.set_record(revalidated);
             federation.install(client.clone()).await;
-            Ok(crate::recovery::engine::after_open(self, &federation, &client, attempt).await)
+            // Sets the status, `Recovering` or `Running`, and does so before its watcher can
+            // run: the federation was built closed, and the watcher's close-watch would
+            // otherwise end it at once.
+            crate::recovery::engine::after_open(self, &federation, client, attempt).await;
+            Ok(())
         }
         .await;
-        let status = outcome.unwrap_or_else(|err| FederationStatus::Quarantined {
-            diagnostic: err.into(),
-        });
-        federation.set_status(status);
+        if let Err(err) = outcome {
+            federation.set_status(FederationStatus::Quarantined {
+                diagnostic: err.into(),
+            });
+        }
         crate::federation::reconcile_on_open(&federation).await;
         self.announce(&federation);
     }
