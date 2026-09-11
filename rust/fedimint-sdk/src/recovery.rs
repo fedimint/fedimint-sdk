@@ -170,6 +170,7 @@
 use crate::{Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk};
 
 mod driver;
+pub(crate) mod engine;
 mod wire;
 
 pub(crate) use driver::RecoveryDriver;
