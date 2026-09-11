@@ -615,25 +615,38 @@ impl FederationInner {
     /// from `open`, the lock is released with no client installed, which reads exactly like any
     /// other reason there is currently no client; the caller decides what status that leaves the
     /// federation in.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), without calling `open`, when no
+    /// client is in place: the federation was closed, quarantined or erased first, and a swap
+    /// must not undo that. Otherwise whatever `open` returns.
     pub(crate) async fn replace_client<F, Fut>(&self, open: F) -> Result<()>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<ClientHandleArc>>,
     {
         let mut guard = self.client.write().await;
-        if let Some(old) = guard.take() {
-            // Told to stop before the consuming shutdown is attempted, as `quiesce` does: a
-            // stray handle to the old client (a watcher's clone, say) makes that shutdown fail,
-            // and without this the old client would keep running until the stray handle went.
-            old.task_group().shutdown();
-            if let Err(err) = shutdown_client(old).await {
-                tracing::warn!(
-                    target: "fedimint_sdk",
-                    federation = %self.id,
-                    error = %err,
-                    "could not cleanly shut down the client being replaced",
-                );
-            }
+        // No client in place means the federation was closed, quarantined or erased while the
+        // caller was deciding to swap: opening a fresh client now would resurrect it behind
+        // the lifecycle's back, so the swap is refused and the caller leaves the status alone.
+        let Some(old) = guard.take() else {
+            return Err(crate::Error::new(
+                crate::ErrorCode::FederationClosed,
+                "this federation is closed",
+            ));
+        };
+        // Told to stop before the consuming shutdown is attempted, as `quiesce` does: a stray
+        // handle to the old client makes that shutdown fail, and without this the old client
+        // would keep running until the stray handle went.
+        old.task_group().shutdown();
+        if let Err(err) = shutdown_client(old).await {
+            tracing::warn!(
+                target: "fedimint_sdk",
+                federation = %self.id,
+                error = %err,
+                "could not cleanly shut down the client being replaced",
+            );
         }
         let fresh = open().await?;
         *guard = Some(fresh);
@@ -1121,15 +1134,33 @@ impl FederationInner {
 
 /// Shuts a client down, waiting for its workers.
 ///
-/// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. If a caller is
-/// still holding a clone, the best that can be done is to stop the executor and let the eventual
-/// drop clean up, which upstream also logs about.
-pub(crate) async fn shutdown_client(client: ClientHandleArc) -> Result<()> {
-    let Some(handle) = Arc::into_inner(client) else {
-        return Err(crate::Error::new(
-            crate::ErrorCode::Internal,
-            "the federation's client is still in use elsewhere",
-        ));
+/// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
+/// still held is waited for, briefly; if it does not go, the best that can be done is to leave the
+/// executor stopped and let the eventual drop clean up, which upstream also logs about.
+pub(crate) async fn shutdown_client(mut client: ClientHandleArc) -> Result<()> {
+    // A stray clone is normally on its way out already: the recovery watcher drops its clone
+    // the moment the federation's `closed` watch flips, which every caller of this function
+    // has done before calling it, but that drop runs on another task and may not have been
+    // scheduled yet. Waiting a bounded moment for it turns that race into a clean shutdown.
+    const STRAY_REFERENCE_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+    const STRAY_REFERENCE_ATTEMPTS: usize = 100;
+
+    let mut attempts = 0;
+    let handle = loop {
+        match Arc::try_unwrap(client) {
+            Ok(handle) => break handle,
+            Err(still_shared) => {
+                attempts += 1;
+                if attempts >= STRAY_REFERENCE_ATTEMPTS {
+                    return Err(crate::Error::new(
+                        crate::ErrorCode::Internal,
+                        "the federation's client is still in use elsewhere",
+                    ));
+                }
+                client = still_shared;
+                fedimint_core::runtime::sleep(STRAY_REFERENCE_WAIT).await;
+            }
+        }
     };
     handle.shutdown().await;
     Ok(())
@@ -2046,5 +2077,28 @@ mod tests {
 
         updates.changed().await.expect("the sender is still alive");
         assert_eq!(*updates.borrow(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_swap_is_refused_when_no_client_is_in_place() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        // A detached federation has no client, exactly as one that was closed or erased.
+        let federation = FederationInner::detached(db, true);
+        let opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = opened.clone();
+
+        let err = federation
+            .replace_client(|| async move {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(crate::Error::new(ErrorCode::Internal, "never reached"))
+            })
+            .await
+            .expect_err("no client to replace");
+
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+        assert!(
+            !opened.load(std::sync::atomic::Ordering::SeqCst),
+            "the swap must not open a client on a federation that has none"
+        );
     }
 }

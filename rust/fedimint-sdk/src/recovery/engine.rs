@@ -146,7 +146,20 @@ pub(crate) fn watch(
     attempt: UpstreamOperationId,
 ) {
     fedimint_core::task::spawn("sdk-recovery-watch", async move {
-        let outcome = client.wait_for_all_recoveries().await;
+        // The wait ends either with the rescan's outcome or with the federation closing,
+        // whichever comes first. The second matters because the client's own status channel
+        // need not close when the federation does (a coordinator whose module gave up parks
+        // for ever), and a close has to get this task's clone of the client back promptly:
+        // `shutdown_client` needs the last reference.
+        let mut closed = federation.closed();
+        let outcome = {
+            let wait = std::pin::pin!(client.wait_for_all_recoveries());
+            let close = std::pin::pin!(closed.wait_for(|closed| *closed));
+            match futures::future::select(wait, close).await {
+                futures::future::Either::Left((outcome, _)) => outcome,
+                futures::future::Either::Right(_) => Err(RecoveryError::ClientStopped),
+            }
+        };
         drop(client);
         match outcome {
             Ok(()) => complete(&sdk, &federation, attempt).await,
@@ -198,6 +211,9 @@ async fn complete(
     federation.bump_recovery();
     match opened {
         Ok(()) => federation.set_status(FederationStatus::Running),
+        // The federation was closed, quarantined or erased while the rescan was finishing;
+        // the swap was refused, and whatever closed it owns the status now.
+        Err(err) if err.code == crate::ErrorCode::FederationClosed => return,
         Err(err) => federation.set_status(FederationStatus::Quarantined {
             diagnostic: err.into(),
         }),
