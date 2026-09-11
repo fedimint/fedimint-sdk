@@ -104,9 +104,10 @@ impl Ecash {
                 // re-exported nowhere nameable there, so the cast target has to name it at
                 // its own defining crate, `fedimint-mint-common` (see the dependency comment
                 // in Cargo.toml).
-                let mint_cfg: &fedimint_mint_common::config::MintClientConfig = module_cfg
-                    .cast()
-                    .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                let mint_cfg: &fedimint_mint_common::config::MintClientConfig =
+                    module_cfg
+                        .cast()
+                        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
                 let fee_consensus = mint_cfg.fee_consensus.clone();
                 let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
                 let multiple = fee_consensus.min_economical_denomination().msats;
@@ -130,7 +131,9 @@ impl Ecash {
                 if balance < notes_value {
                     return Err(Error::new(
                         ErrorCode::InsufficientBalance,
-                        format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
+                        format!(
+                            "balance {balance:?} cannot cover requested notes value {notes_value:?}"
+                        ),
                     ));
                 }
 
@@ -212,7 +215,9 @@ impl Ecash {
                 if balance < notes_value {
                     return Err(Error::new(
                         ErrorCode::InsufficientBalance,
-                        format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
+                        format!(
+                            "balance {balance:?} cannot cover requested notes value {notes_value:?}"
+                        ),
                     ));
                 }
 
@@ -287,7 +292,6 @@ impl Ecash {
                 module_id,
             },
         })
-
     }
 
     /// Executes a quoted send, taking its value out of the balance as
@@ -511,71 +515,70 @@ impl Ecash {
 
         let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
 
-        let (operation_id, fee, net_credit, module_name) = match mint {
-            MintModule::V1(mint) => {
-                let v1_notes = notes.as_upstream().ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::NotSupported,
-                        "mintv2 notes cannot be redeemed through v1 mint",
-                    )
-                })?;
-                let fee_quote = mint
-                    .reissue_fee_quote(v1_notes)
-                    .await
-                    .map_err(map_reissue_error)?;
-                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
-                let net_credit = notes
-                    .value()
-                    .checked_sub(fee)
-                    .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+        let (operation_id, fee, net_credit, module_name) =
+            match mint {
+                MintModule::V1(mint) => {
+                    let v1_notes = notes.as_upstream().ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::NotSupported,
+                            "mintv2 notes cannot be redeemed through v1 mint",
+                        )
+                    })?;
+                    let fee_quote = mint
+                        .reissue_fee_quote(v1_notes)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
+                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
+                    })?;
 
-                let extra_meta = serde_json::json!({
-                    "facade": "ecash_receive",
-                    "notes_value_msats": notes.value().msats(),
-                    "fee_msats": fee.msats(),
-                    "net_credit_msats": net_credit.msats(),
-                    "created_at_epoch_ms": created_at.epoch_millis(),
-                });
+                    let extra_meta = serde_json::json!({
+                        "facade": "ecash_receive",
+                        "notes_value_msats": notes.value().msats(),
+                        "fee_msats": fee.msats(),
+                        "net_credit_msats": net_credit.msats(),
+                        "created_at_epoch_ms": created_at.epoch_millis(),
+                    });
 
-                let to_reissue = notes.to_upstream().expect("already checked");
-                let op_id = mint
-                    .reissue_external_notes(to_reissue, extra_meta)
-                    .await
-                    .map_err(map_reissue_error)?;
-                (op_id, fee, net_credit, "mint")
-            }
-            MintModule::V2(mint) => {
-                let v2_notes = notes.as_mintv2().ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::NotSupported,
-                        "v1 mint notes cannot be redeemed through mintv2",
-                    )
-                })?;
-                let fee_quote = mint
-                    .receive_fee_quote(v2_notes)
-                    .await
-                    .map_err(map_reissue_error)?;
-                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
-                let net_credit = notes
-                    .value()
-                    .checked_sub(fee)
-                    .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+                    let to_reissue = notes.to_upstream().expect("already checked");
+                    let op_id = mint
+                        .reissue_external_notes(to_reissue, extra_meta)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    (op_id, fee, net_credit, "mint")
+                }
+                MintModule::V2(mint) => {
+                    let v2_notes = notes.as_mintv2().ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::NotSupported,
+                            "v1 mint notes cannot be redeemed through mintv2",
+                        )
+                    })?;
+                    let fee_quote = mint
+                        .receive_fee_quote(v2_notes)
+                        .await
+                        .map_err(map_reissue_error)?;
+                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
+                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
+                    })?;
 
-                let extra_meta = serde_json::json!({
-                    "facade": "ecash_receive",
-                    "notes_value_msats": notes.value().msats(),
-                    "fee_msats": fee.msats(),
-                    "net_credit_msats": net_credit.msats(),
-                    "created_at_epoch_ms": created_at.epoch_millis(),
-                });
+                    let extra_meta = serde_json::json!({
+                        "facade": "ecash_receive",
+                        "notes_value_msats": notes.value().msats(),
+                        "fee_msats": fee.msats(),
+                        "net_credit_msats": net_credit.msats(),
+                        "created_at_epoch_ms": created_at.epoch_millis(),
+                    });
 
-                let op_id = mint
-                    .receive(v2_notes.clone(), extra_meta)
-                    .await
-                    .map_err(map_mintv2_receive_error)?;
-                (op_id, fee, net_credit, "mintv2")
-            }
-        };
+                    let op_id = mint
+                        .receive(v2_notes.clone(), extra_meta)
+                        .await
+                        .map_err(map_mintv2_receive_error)?;
+                    (op_id, fee, net_credit, "mintv2")
+                }
+            };
 
         let details = EcashReceiveDetails {
             notes: Some(notes.clone()),
@@ -1939,8 +1942,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn late_subscriber_sees_settled_send_state() {
-        use futures::stream;
         use futures::StreamExt as _;
+        use futures::stream;
 
         let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
             stream::iter([
@@ -1960,8 +1963,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn late_subscriber_sees_settled_receive_state() {
-        use futures::stream;
         use futures::StreamExt as _;
+        use futures::stream;
 
         let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
             stream::iter([
@@ -1981,16 +1984,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn settled_until_final_ends_on_terminal_state() {
-        use futures::stream;
         use futures::StreamExt as _;
+        use futures::stream;
 
         // Send: Redeemed is final
         let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
-            stream::iter([
-                Ok(EcashSendState::Created),
-                Ok(EcashSendState::Redeemed),
-            ])
-            .chain(stream::pending()),
+            stream::iter([Ok(EcashSendState::Created), Ok(EcashSendState::Redeemed)])
+                .chain(stream::pending()),
         );
         let mut settled_stream = settled(until_final(stream));
         let first = settled_stream.next().await;
@@ -2002,11 +2002,8 @@ mod tests {
 
         // Receive: Done is final
         let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
-            stream::iter([
-                Ok(EcashReceiveState::Created),
-                Ok(EcashReceiveState::Done),
-            ])
-            .chain(stream::pending()),
+            stream::iter([Ok(EcashReceiveState::Created), Ok(EcashReceiveState::Done)])
+                .chain(stream::pending()),
         );
         let mut settled_stream = settled(until_final(stream));
         let first = settled_stream.next().await;
@@ -2038,26 +2035,53 @@ mod tests {
         };
 
         // Initially Created
-        let state = driver.current(&federation, id, &record).await.expect("current");
+        let state = driver
+            .current(&federation, id, &record)
+            .await
+            .expect("current");
         assert_eq!(state, EcashSendState::Created);
-        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
-        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::Created);
+        let mut stream = driver
+            .subscribe(&federation, id, &record)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Created
+        );
         assert!(stream.next().await.is_none());
 
         // When cancel_requested_at is set
         record.cancel_requested_at = Some(1_700_000_001_000);
-        let state = driver.current(&federation, id, &record).await.expect("current");
+        let state = driver
+            .current(&federation, id, &record)
+            .await
+            .expect("current");
         assert_eq!(state, EcashSendState::CancelRequested);
-        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
-        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::CancelRequested);
+        let mut stream = driver
+            .subscribe(&federation, id, &record)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::CancelRequested
+        );
         assert!(stream.next().await.is_none());
 
         // When final_state is set
         record.final_state = Some("Redeemed".to_string());
-        let state = driver.current(&federation, id, &record).await.expect("current");
+        let state = driver
+            .current(&federation, id, &record)
+            .await
+            .expect("current");
         assert_eq!(state, EcashSendState::Redeemed);
-        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
-        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::Redeemed);
+        let mut stream = driver
+            .subscribe(&federation, id, &record)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Redeemed
+        );
         assert!(stream.next().await.is_none());
     }
 
@@ -2080,19 +2104,25 @@ mod tests {
     #[test]
     fn mintv2_receive_error_mapping() {
         assert_eq!(
-            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::WrongFederation).code,
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::WrongFederation)
+                .code,
             ErrorCode::InvalidInput
         );
         assert_eq!(
-            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination).code,
+            map_mintv2_receive_error(
+                fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination
+            )
+            .code,
             ErrorCode::InvalidInput
         );
         assert_eq!(
-            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived).code,
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived)
+                .code,
             ErrorCode::InvalidInput
         );
         assert_eq!(
-            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds).code,
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds)
+                .code,
             ErrorCode::InsufficientBalance
         );
     }

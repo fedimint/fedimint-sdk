@@ -13,7 +13,6 @@ use crate::{Error, ErrorCode, LnReceiveState, LnSendState, Result};
 
 pub(super) use crate::operation::{first_state, settled, until_final};
 
-
 /// Observes an outgoing lightning payment of either generation, chosen by the record's module.
 pub(crate) struct LnSendDriver;
 
