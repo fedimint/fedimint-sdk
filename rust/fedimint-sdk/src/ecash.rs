@@ -148,7 +148,7 @@ impl Ecash {
                 let rounded_upstream = fee_consensus.round_up(upstream_amount);
                 let notes_value = Amount::from_msats(rounded_upstream.msats);
 
-                let balance = self.inner.federation.balance().await?;
+                let balance = crate::federation::balance_of(&client).await?;
                 if balance < notes_value {
                     return Err(Error::new(
                         ErrorCode::InsufficientBalance,
@@ -227,7 +227,7 @@ impl Ecash {
                 let rounded_upstream = fedimint_core::Amount::from_msats(rounded_msats);
                 let notes_value = Amount::from_msats(rounded_msats);
 
-                let balance = self.inner.federation.balance().await?;
+                let balance = crate::federation::balance_of(&client).await?;
                 if balance < notes_value {
                     return Err(Error::new(
                         ErrorCode::InsufficientBalance,
@@ -268,7 +268,7 @@ impl Ecash {
             .checked_add(fee)
             .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
 
-        let balance = self.inner.federation.balance().await?;
+        let balance = crate::federation::balance_of(&client).await?;
         if balance < total {
             return Err(Error::new(
                 ErrorCode::InsufficientBalance,
@@ -389,7 +389,7 @@ impl Ecash {
         // selection below is what actually verifies the plan is still realizable;
         // this only saves a doomed selection attempt when the balance alone already
         // rules the quote out.
-        let current_balance = self.inner.federation.balance().await?;
+        let current_balance = crate::federation::balance_of(&client).await?;
         if current_balance < quote.total()
             || current_balance.msats() != quote.inner.balance_snapshot_msats
         {
@@ -821,14 +821,64 @@ impl Operation<EcashSendState> {
     // cancelling is a real protocol action rather than an attempt to un-send money that has
     // already moved.
     //
-    // Only the intent is recorded here. Telling the mint is the ecash driver's job, and it
-    // could not be done here in any case: `try_cancel_spend_notes` returns `()` and writes a
-    // marker into the module's own isolated database
-    // (modules/fedimint-mint-client/src/lib.rs:2556-2563), so it has no result to report and
-    // the outcome only ever arrives as a state.
+    // Recording the intent is what this call promises; forwarding it to the v1 mint happens
+    // here too, on a best-effort basis, and cannot change the outcome above.
+    // `try_cancel_spend_notes` returns `()` and only writes a marker into the module's own
+    // isolated database (modules/fedimint-mint-client/src/lib.rs:2558-2565) — no network, no
+    // result to report — so doing it here costs nothing the error contract above forbids, and
+    // it is what makes a cancellation asked for *while a subscription is already live* take
+    // effect: a running subscription is not woken by the record write and would otherwise
+    // forward nothing until it was established again.
+    //
+    // It is still only best effort, and deliberately not the only path. A failure here (or a
+    // crash between the persist and the forward) leaves the durable intent in place, and the
+    // driver forwards it again from both `current` and `subscribe`, so the next observation
+    // after a restart picks it up. mintv2 has no equivalent marker to write — there,
+    // cancelling *is* the reclaim, which is a federation round trip this call must not make —
+    // so its driver drives it instead.
     pub async fn request_cancel(&self) -> Result<()> {
         self.inner().federation.ensure_open()?;
-        self.inner().persist_cancel_request().await
+        self.inner().persist_cancel_request().await?;
+        // The cached record predates the write above, so the pending intent is asserted here
+        // rather than read back off it.
+        forward_cancel_request(
+            &self.inner().federation,
+            &self.inner().record.module,
+            self.inner().id,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+/// Tells the v1 mint about a cancellation this SDK has already recorded, if it will listen.
+///
+/// Called from every place that learns of a pending cancellation — the facade call that records
+/// it, and the driver's `current` and `subscribe` — because upstream's marker is a local write
+/// with no completion signal, so the only way to be sure it landed is to write it again. It is
+/// idempotent: a second write of the same key is a no-op upstream, which logs and moves on.
+///
+/// Silent on failure by design. Every caller either has a stronger answer to give (a state) or
+/// a contract that forbids reporting a network- or storage-shaped error, and the durable intent
+/// on the record is what actually drives the reclaim; a forward that did not land is retried by
+/// the next observation rather than surfaced here.
+///
+/// Callers establish that a cancellation is actually pending; this only decides whether the
+/// module has a marker to write at all.
+async fn forward_cancel_request(
+    federation: &crate::federation::FederationInner,
+    module: &str,
+    id: fedimint_core::core::OperationId,
+) {
+    // mintv2 has no cancellation marker: its driver performs the reclaim itself.
+    if module != "mint" {
+        return;
+    }
+    let Ok(client) = federation.client(false).await else {
+        return;
+    };
+    if let Ok(mint) = client.get_first_module::<fedimint_mint_client::MintClientModule>() {
+        mint.try_cancel_spend_notes(id).await;
     }
 }
 
@@ -1221,6 +1271,14 @@ impl Driver<EcashSendState> for EcashSendDriver {
                 return mintv2_send_state(federation, record).await;
             }
 
+            // A point-in-time read is also an observation, so it is one of the places a
+            // cancellation recorded before a restart (or one whose live forward did not land)
+            // gets pushed to the mint again. Doing it here as well as in `subscribe` is what
+            // keeps the durable intent from depending on a *new* subscription being established.
+            if record.cancel_requested_at.is_some() {
+                forward_cancel_request(federation, &record.module, id).await;
+            }
+
             first_state(self.subscribe(federation, id, record).await?).await
         })
     }
@@ -1238,9 +1296,9 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                let state = mintv2_send_state(federation, record).await?;
-                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
-                    as BoxStream<'static, Result<EcashSendState>>);
+                return Ok(settled(until_final(mintv2_send_subscription(
+                    federation, id,
+                ))));
             }
 
             let client = match federation.client(false).await {
@@ -1259,6 +1317,8 @@ impl Driver<EcashSendState> for EcashSendDriver {
                 .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
 
             if record.cancel_requested_at.is_some() {
+                // Same marker `request_cancel` writes, written again: it is idempotent, and
+                // this is the path that covers an intent recorded before a restart.
                 mint.try_cancel_spend_notes(id).await;
             }
 
@@ -1353,33 +1413,47 @@ fn parse_send_state(s: &str) -> Option<EcashSendState> {
 ///
 /// - The receive lands (`FinalReceiveOperationState::Success`): this reclaim won the race, so the
 ///   value is back in the balance — [`EcashSendState::Canceled`].
-/// - `MintClientModule::receive` itself refuses with `InsufficientFunds`, upstream's catch-all
-///   for a transaction that failed to submit: since the only notes this call ever submits are the
-///   ones this exact send extracted, the one realistic reason a federation already holding them
-///   refuses a second presentation is that they were already spent — the receiver won the race
-///   first. Reported as [`EcashSendState::Redeemed`].
+/// - The federation rejects the claiming transaction (`FinalReceiveOperationState::Rejected`):
+///   these notes are already spent, which can only mean the receiver got there first —
+///   [`EcashSendState::Redeemed`]. This is the *only* signal that proves a redemption, because it
+///   is the only one that comes back from consensus.
 /// - `AlreadyReceived`: this is not the first time this reclaim was attempted (an earlier poll,
 ///   or an earlier process that crashed before observing the outcome); the earlier attempt's own
 ///   operation, found via the same deterministic id, is awaited instead of starting a second one.
+///
+/// Every other refusal, `InsufficientFunds` included, is a failure to *observe*, reported as
+/// `Err` and left retryable — never a state. Upstream raises `InsufficientFunds` for any
+/// `finalize_and_submit_transaction` failure that is not `AlreadyReceived`
+/// (`fedimint-mintv2-client`'s `receive`), which covers local transaction construction and
+/// commit failures — a database error, a transaction over the size limit — that happen before
+/// the federation ever sees the notes and so prove nothing about whether they were redeemed.
+/// Reporting one as [`Redeemed`](EcashSendState::Redeemed) would persist a final state and stop
+/// the SDK ever reclaiming these notes again, turning a transient local fault into lost money.
 async fn mintv2_send_state(
     federation: &crate::federation::FederationInner,
     record: &crate::db::OperationRecord,
 ) -> Result<EcashSendState> {
     let cancel_requested = record.cancel_requested_at.is_some();
-    let wire: EcashSendDetailsWire = serde_json::from_str(&record.details).map_err(|err| {
-        Error::new(
-            ErrorCode::Internal,
-            format!("could not decode ecash send details: {err}"),
-        )
-    })?;
-    let reclaim_due = crate::db::now_millis() >= wire.reclaim_at_epoch_ms;
+    let wire = decode_send_wire(&record.details)?;
 
-    if !cancel_requested && !reclaim_due {
+    if !cancel_requested && crate::db::now_millis() < wire.reclaim_at_epoch_ms {
         return Ok(EcashSendState::Created);
     }
 
     // Only reached once a reclaim is actually warranted, so the common case (nobody has asked
     // to cancel and the deadline has not passed) never touches the client at all.
+    mintv2_reclaim(federation, &wire).await
+}
+
+/// Attempts the reclaim `mintv2_send_state` documents, and reports what it settled.
+///
+/// Split out because the driver's subscription drives the same reclaim from a `'static` stream
+/// that cannot borrow the federation; both reach it through this one implementation so the two
+/// cannot disagree about what an outcome means.
+async fn mintv2_reclaim(
+    federation: &crate::federation::FederationInner,
+    wire: &EcashSendDetailsWire,
+) -> Result<EcashSendState> {
     let client = federation.client(false).await?;
     let notes: Notes = wire.notes.parse()?;
     let ecash = notes.to_mintv2().ok_or_else(|| {
@@ -1407,10 +1481,16 @@ async fn mintv2_send_state(
             .await_final_receive_operation_state(reclaim_op_id)
             .await
             .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?,
-        // The only realistic reason our own just-extracted notes fail to submit: they were
-        // already spent, which can only mean the receiver got there first.
-        Err(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds) => {
-            return Ok(EcashSendState::Redeemed);
+        // Not a redemption and not final: see this function's own doc comment for why
+        // `InsufficientFunds` cannot be read as "the receiver got there first".
+        Err(err @ fedimint_mintv2_client::ReceiveECashError::InsufficientFunds) => {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "could not submit the reclaim of these notes, so whether they were \
+                     redeemed is still unknown; this is retryable: {err}"
+                ),
+            ));
         }
         Err(err) => return Err(map_mintv2_receive_error(err)),
     };
@@ -1419,6 +1499,166 @@ async fn mintv2_send_state(
         fedimint_mintv2_client::FinalReceiveOperationState::Success => EcashSendState::Canceled,
         fedimint_mintv2_client::FinalReceiveOperationState::Rejected => EcashSendState::Redeemed,
     })
+}
+
+fn decode_send_wire(details: &str) -> Result<EcashSendDetailsWire> {
+    serde_json::from_str(details).map_err(|err| {
+        Error::new(
+            ErrorCode::Internal,
+            format!("could not decode ecash send details: {err}"),
+        )
+    })
+}
+
+/// How often a parked mintv2 send subscription re-reads its record.
+///
+/// It is watching for one thing a subscription cannot be woken for:
+/// [`request_cancel`](Operation::request_cancel) writes the intent to storage and returns
+/// without touching the network or this stream, so a live subscription only learns of it by
+/// looking. One local read per tick, and only while somebody is actually subscribed.
+#[cfg(not(test))]
+const MINTV2_CANCEL_POLL: core::time::Duration = core::time::Duration::from_secs(5);
+/// Shortened under `cfg(test)` so the test that proves a mid-subscription cancellation is
+/// noticed does not have to sit out the production interval to do it.
+#[cfg(test)]
+const MINTV2_CANCEL_POLL: core::time::Duration = core::time::Duration::from_millis(25);
+
+/// What a parked mintv2 send subscription is doing between states.
+enum Mintv2SendStep {
+    /// Nothing yielded yet: report where the record says the send is.
+    Start,
+    /// Parked until the cancel flag appears or the reclaim deadline arrives.
+    ///
+    /// `announced_cancel` keeps [`EcashSendState::CancelRequested`] from being yielded twice
+    /// when the reclaim that follows it takes more than one tick to settle.
+    Waiting { announced_cancel: bool },
+    /// A terminal state (or an error) was yielded; the stream is over.
+    Done,
+}
+
+/// Everything a mintv2 send subscription needs after it stops borrowing the federation.
+///
+/// A driver's stream outlives the call that built it, so it cannot hold a `&FederationInner`
+/// or a client guard — holding a guard across an idle park is exactly what would keep a close
+/// waiting for ever. It keeps a `Weak` to the instance and re-acquires the federation for each
+/// bounded step instead.
+struct Mintv2SendWatch {
+    sdk: std::sync::Weak<crate::sdk::SdkInner>,
+    federation_id: fedimint_core::config::FederationId,
+    db: fedimint_core::db::Database,
+    id: fedimint_core::core::OperationId,
+}
+
+impl Mintv2SendWatch {
+    fn closed() -> Error {
+        Error::new(
+            ErrorCode::FederationClosed,
+            "this federation stopped running",
+        )
+    }
+
+    fn federation(&self) -> Result<Arc<crate::federation::FederationInner>> {
+        let sdk = self.sdk.upgrade().ok_or_else(Self::closed)?;
+        sdk.federation_inner(&self.federation_id)
+            .ok_or_else(Self::closed)
+    }
+
+    /// This operation's record as it stands now, or `None` once it has gone.
+    async fn record(&self) -> Option<crate::db::OperationRecord> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+        self.db
+            .begin_transaction_nc()
+            .await
+            .get_value(&crate::db::OperationRecordKey(self.id))
+            .await
+    }
+}
+
+/// A subscription over a mintv2 send that stays alive until the send actually settles.
+///
+/// mintv2 has no state machine to subscribe to, so this is the whole lifecycle: report where the
+/// send is, park, and drive the reclaim once it is due or asked for. The earlier version yielded
+/// one item and ended, which the operation engine reads as a cut-off subscription rather than a
+/// finished one — it resubscribes once, gets the same single item, and then reports `Internal`
+/// ("ended twice without reaching a final state"). That made
+/// [`await_final`](crate::Operation::await_final) unable to wait out the reclaim deadline at all,
+/// which is the one thing a caller most wants to do with an unredeemed send.
+fn mintv2_send_subscription(
+    federation: &crate::federation::FederationInner,
+    id: fedimint_core::core::OperationId,
+) -> BoxStream<'static, Result<EcashSendState>> {
+    let watch = Mintv2SendWatch {
+        sdk: federation.sdk.clone(),
+        federation_id: federation.id,
+        db: federation.db(),
+        id,
+    };
+
+    Box::pin(futures::stream::unfold(
+        (watch, Mintv2SendStep::Start),
+        |(watch, step)| async move {
+            match step {
+                Mintv2SendStep::Done => None,
+                Mintv2SendStep::Start => {
+                    // A record that has gone is not a state: end the stream and let the engine's
+                    // own reload report it.
+                    let record = watch.record().await?;
+                    let cancelled = record.cancel_requested_at.is_some();
+                    let state = if cancelled {
+                        EcashSendState::CancelRequested
+                    } else {
+                        EcashSendState::Created
+                    };
+                    Some((
+                        Ok(state),
+                        (
+                            watch,
+                            Mintv2SendStep::Waiting {
+                                announced_cancel: cancelled,
+                            },
+                        ),
+                    ))
+                }
+                Mintv2SendStep::Waiting { announced_cancel } => loop {
+                    let record = watch.record().await?;
+                    let cancelled = record.cancel_requested_at.is_some();
+
+                    if cancelled && !announced_cancel {
+                        return Some((
+                            Ok(EcashSendState::CancelRequested),
+                            (
+                                watch,
+                                Mintv2SendStep::Waiting {
+                                    announced_cancel: true,
+                                },
+                            ),
+                        ));
+                    }
+
+                    let wire = match decode_send_wire(&record.details) {
+                        Ok(wire) => wire,
+                        Err(err) => return Some((Err(err), (watch, Mintv2SendStep::Done))),
+                    };
+                    if cancelled || crate::db::now_millis() >= wire.reclaim_at_epoch_ms {
+                        let federation = match watch.federation() {
+                            Ok(federation) => federation,
+                            Err(err) => return Some((Err(err), (watch, Mintv2SendStep::Done))),
+                        };
+                        // An error here is a failure to observe, not an outcome (see
+                        // `mintv2_reclaim`). Ending the stream on it rather than retrying in
+                        // place is deliberate: the engine resubscribes, which starts a fresh
+                        // attempt, and that keeps a persistent local fault visible to the caller
+                        // instead of spinning silently.
+                        let settled = mintv2_reclaim(&federation, &wire).await;
+                        return Some((settled, (watch, Mintv2SendStep::Done)));
+                    }
+
+                    fedimint_core::task::sleep(MINTV2_CANCEL_POLL).await;
+                },
+            }
+        },
+    ))
 }
 
 pub(crate) struct EcashReceiveDriver;
@@ -2245,6 +2485,23 @@ mod tests {
             final_state: None,
         };
 
+        // The subscription reads the record back out of storage on every tick, so it has to
+        // actually be there.
+        async fn persist(
+            federation: &crate::federation::FederationInner,
+            id: fedimint_core::core::OperationId,
+            record: &crate::db::OperationRecord,
+        ) {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let db = federation.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&crate::db::OperationRecordKey(id), record)
+                .await;
+            dbtx.commit_tx().await;
+        }
+        persist(&federation, id, &record).await;
+
         // Before the reclaim deadline, with no cancellation asked for, `Created` needs no
         // client at all: it is the only honest answer at this point, not a guess.
         let state = driver
@@ -2252,6 +2509,10 @@ mod tests {
             .await
             .expect("current");
         assert_eq!(state, EcashSendState::Created);
+
+        // ... and the subscription must *stay open* on it. Ending here is what made the
+        // operation engine resubscribe, see the same single item, and give up with `Internal`,
+        // so `await_final` could never wait out the reclaim deadline.
         let mut stream = driver
             .subscribe(&federation, id, &record)
             .await
@@ -2260,38 +2521,80 @@ mod tests {
             stream.next().await.unwrap().unwrap(),
             EcashSendState::Created
         );
-        assert!(stream.next().await.is_none());
+        assert!(
+            fedimint_core::runtime::timeout(core::time::Duration::from_millis(100), stream.next())
+                .await
+                .is_err(),
+            "the subscription must stay parked, not end, while the send is still outstanding",
+        );
+        drop(stream);
 
         // Past the deadline, the driver must actually resolve the outcome by attempting the
         // reclaim upstream, never fall back to replaying `Created` forever. A detached
         // federation has no client to attempt it with, so this surfaces as an error rather than
-        // a fabricated state.
+        // a fabricated state — and in particular never as a final one, which would bury the
+        // notes behind a `final_state` nothing retries.
         let mut past_due = record.clone();
         past_due.details = serde_json::to_string(&EcashSendDetailsWire {
             reclaim_at_epoch_ms: 0,
             ..not_yet_due.clone()
         })
         .expect("encode");
+        persist(&federation, id, &past_due).await;
         let err = driver
             .current(&federation, id, &past_due)
             .await
             .expect_err("no client to attempt the reclaim with");
         assert_eq!(err.code, ErrorCode::FederationClosed);
-        let err = driver
+
+        // The stream reports that same failure to observe as a stream error rather than
+        // inventing a state for it.
+        let mut stream = driver
             .subscribe(&federation, id, &past_due)
             .await
-            .err()
-            .expect("no client to attempt the reclaim with");
+            .expect("subscribe");
+        let err = stream
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("no client to attempt the reclaim with");
         assert_eq!(err.code, ErrorCode::FederationClosed);
+        drop(stream);
 
         // An explicit cancellation request demands a real answer too, even before the deadline:
         // it must not keep replaying `CancelRequested` without ever trying to act on it.
         record.cancel_requested_at = Some(1_700_000_001_000);
+        persist(&federation, id, &record).await;
         let err = driver
             .current(&federation, id, &record)
             .await
             .expect_err("no client to attempt the reclaim with");
         assert_eq!(err.code, ErrorCode::FederationClosed);
+
+        // A cancellation that arrives *after* the subscription was established is picked up by
+        // the poll, which is the case a live subscriber could never see before: the record write
+        // does not wake the stream, so it has to look.
+        let mut waiting = record.clone();
+        waiting.cancel_requested_at = None;
+        persist(&federation, id, &waiting).await;
+        let mut stream = driver
+            .subscribe(&federation, id, &waiting)
+            .await
+            .expect("subscribe");
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            EcashSendState::Created
+        );
+        persist(&federation, id, &record).await;
+        let next = fedimint_core::runtime::timeout(
+            MINTV2_CANCEL_POLL * 40 + core::time::Duration::from_secs(2),
+            stream.next(),
+        )
+        .await
+        .expect("the poll must notice a cancellation recorded mid-subscription")
+        .expect("an item");
+        assert_eq!(next.expect("a state"), EcashSendState::CancelRequested);
+        drop(stream);
 
         // A persisted final state still short-circuits before any of this, client or no client.
         record.final_state = Some("Redeemed".to_string());
