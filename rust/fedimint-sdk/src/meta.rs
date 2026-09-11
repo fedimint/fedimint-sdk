@@ -222,19 +222,19 @@ fn apply_consensus_bytes(
     let mut merged = config.clone();
     if let Ok(json_str) = std::str::from_utf8(consensus_bytes) {
         if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json_str) {
-            for (key, value) in &map {
+            for (key, value) in map {
                 match value {
                     serde_json::Value::String(s) => {
-                        merged.insert(key.clone(), s.clone());
+                        merged.insert(key, s);
                     }
                     serde_json::Value::Number(n) => {
-                        merged.insert(key.clone(), n.to_string());
+                        merged.insert(key, n.to_string());
                     }
                     serde_json::Value::Bool(b) => {
-                        merged.insert(key.clone(), b.to_string());
+                        merged.insert(key, b.to_string());
                     }
                     serde_json::Value::Null => {
-                        merged.insert(key.clone(), "null".to_owned());
+                        merged.insert(key, "null".to_owned());
                     }
                     // Object and Array are skipped, not projected to empty.
                     serde_json::Value::Object(_) | serde_json::Value::Array(_) => {}
@@ -369,5 +369,63 @@ mod tests {
             merged.get("server"),
             Some(&"https://example.com".to_owned())
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_api_get_and_all_return_federation_closed_error() {
+        use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
+        use crate::federation::{FederationInner, FederationStatus};
+        use fedimint_core::PeerId;
+        use fedimint_core::config::FederationId;
+        use fedimint_core::util::SafeUrl;
+        use std::sync::{Arc, Weak};
+
+        let id = FederationId::dummy();
+        let capabilities = StoredCapabilities {
+            ecash: true,
+            lightning: true,
+            onchain: true,
+        };
+        let record = FederationRecord {
+            invite: fedimint_core::invite_code::InviteCode::new(
+                SafeUrl::parse("wss://guardian.example:5000").expect("a valid url"),
+                PeerId::from(0),
+                id,
+                None,
+            ),
+            network: StoredNetwork::Regtest,
+            status: StoredStatus::Closed,
+            capabilities,
+            generation: Some(1),
+            name: Some("Test Federation".to_owned()),
+        };
+
+        let root = crate::db::in_memory_root();
+        let mut initial_config_meta = BTreeMap::new();
+        initial_config_meta.insert("name".to_owned(), "Config Name".to_owned());
+        let federation_inner = Arc::new(FederationInner::new(
+            id,
+            Weak::new(),
+            root.with_prefix(crate::db::federation_prefix(&id).to_vec()),
+            record,
+            initial_config_meta.clone(),
+            FederationStatus::Closed,
+            None,
+        ));
+
+        let meta = Meta::new(federation_inner);
+
+        // config_metadata remains synchronous and infallible even if the federation is closed
+        assert_eq!(meta.config_metadata(), initial_config_meta);
+
+        // consensus_metadata, get, and all return FederationClosed error
+        let consensus_err = meta.consensus_metadata().await.expect_err("should fail");
+        assert_eq!(consensus_err.code, ErrorCode::FederationClosed);
+
+        let get_err = meta.get("any_key").await.expect_err("should fail");
+        assert_eq!(get_err.code, ErrorCode::FederationClosed);
+
+        let all_err = meta.all().await.expect_err("should fail");
+        assert_eq!(all_err.code, ErrorCode::FederationClosed);
     }
 }
