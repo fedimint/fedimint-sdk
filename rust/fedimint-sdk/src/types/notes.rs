@@ -109,6 +109,22 @@ impl Notes {
             NotesInner::V2 { .. } => None,
         }
     }
+
+    /// Returns a clone of the underlying mintv2 `ECash` if this is a v2 token.
+    pub(crate) fn to_mintv2(&self) -> Option<ECash> {
+        match &self.notes {
+            NotesInner::V1(_) => None,
+            NotesInner::V2 { ecash, .. } => Some(ecash.clone()),
+        }
+    }
+
+    /// Borrows the underlying mintv2 `ECash` if this is a v2 token.
+    pub(crate) fn as_mintv2(&self) -> Option<&ECash> {
+        match &self.notes {
+            NotesInner::V1(_) => None,
+            NotesInner::V2 { ecash, .. } => Some(ecash),
+        }
+    }
 }
 
 impl PartialEq for Notes {
@@ -281,5 +297,31 @@ mod tests {
             // the rejected string.
             assert_eq!(error.message, "invalid ecash notes");
         }
+    }
+
+    #[test]
+    fn v1_notes_accessors() {
+        let notes = TOKEN.parse::<Notes>().expect("a valid ecash token");
+        assert!(notes.as_upstream().is_some());
+        assert!(notes.to_upstream().is_some());
+        assert!(notes.as_mintv2().is_none());
+        assert!(notes.to_mintv2().is_none());
+    }
+
+    #[test]
+    fn mintv2_notes_accessors() {
+        let federation_id = fedimint_core::config::FederationId::dummy();
+        let ecash = fedimint_mintv2_client::ECash::new(federation_id, vec![]);
+        let encoded = "fake-encoded".to_string();
+        let notes = Notes::from_mintv2(ecash, encoded.clone());
+        assert!(notes.as_upstream().is_none());
+        assert!(notes.to_upstream().is_none());
+        assert!(notes.as_mintv2().is_some());
+        assert!(notes.to_mintv2().is_some());
+        assert_eq!(notes.to_string(), encoded);
+        assert_eq!(
+            notes.federation_id_prefix(),
+            federation_id.to_prefix().to_string()
+        );
     }
 }

@@ -3,11 +3,13 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use fedimint_client::Client;
+use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::util::{BoxFuture, BoxStream};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::operation::Driver;
+use crate::operation::{Driver, first_state, settled, until_final};
 use crate::{Amount, Error, ErrorCode, Notes, Operation, OperationState, Result, Timestamp};
 
 /// The ecash facade for one federation.
@@ -89,113 +91,179 @@ impl Ecash {
 
         self.inner.federation.ensure_open()?;
         let client = self.inner.federation.client(true).await?;
-        let mint = client
-            .get_first_module::<fedimint_mint_client::MintClientModule>()
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::NotSupported,
-                    "this federation has no mint module",
-                )
-            })?;
+        let mint = mint_module(&client)?;
 
-        let module_cfg = client
-            .config()
-            .await
-            .get_module_cfg(mint.id)
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-        // `MintClientConfig` is kept private by `fedimint-mint-client` itself and
-        // re-exported nowhere nameable there, so the cast target has to name it at
-        // its own defining crate, `fedimint-mint-common` (see the dependency comment
-        // in Cargo.toml).
-        let mint_cfg: &fedimint_mint_common::config::MintClientConfig = module_cfg
-            .cast()
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-        let fee_consensus = mint_cfg.fee_consensus.clone();
-        let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
-        let multiple = fee_consensus.min_economical_denomination().msats;
-        if multiple == 0 {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                "fee consensus denomination base is too large or invalid",
-            ));
-        }
-        let remainder = amount.msats() % multiple;
-        if remainder != 0 && amount.msats() > u64::MAX - (multiple - remainder) {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                "amount is too large to round to fee consensus denomination",
-            ));
-        }
-        let rounded_upstream = fee_consensus.round_up(upstream_amount);
-        let notes_value = Amount::from_msats(rounded_upstream.msats);
+        let (module_id, notes_value, fee) = match mint {
+            MintModule::V1(mint) => {
+                let module_cfg = client
+                    .config()
+                    .await
+                    .get_module_cfg(mint.id)
+                    .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                // `MintClientConfig` is kept private by `fedimint-mint-client` itself and
+                // re-exported nowhere nameable there, so the cast target has to name it at
+                // its own defining crate, `fedimint-mint-common` (see the dependency comment
+                // in Cargo.toml).
+                let mint_cfg: &fedimint_mint_common::config::MintClientConfig = module_cfg
+                    .cast()
+                    .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                let fee_consensus = mint_cfg.fee_consensus.clone();
+                let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
+                let multiple = fee_consensus.min_economical_denomination().msats;
+                if multiple == 0 {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "fee consensus denomination base is too large or invalid",
+                    ));
+                }
+                let remainder = amount.msats() % multiple;
+                if remainder != 0 && amount.msats() > u64::MAX - (multiple - remainder) {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "amount is too large to round to fee consensus denomination",
+                    ));
+                }
+                let rounded_upstream = fee_consensus.round_up(upstream_amount);
+                let notes_value = Amount::from_msats(rounded_upstream.msats);
 
-        let balance = self.inner.federation.balance().await?;
-        if balance < notes_value {
-            return Err(Error::new(
-                ErrorCode::InsufficientBalance,
-                format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
-            ));
-        }
+                let balance = self.inner.federation.balance().await?;
+                if balance < notes_value {
+                    return Err(Error::new(
+                        ErrorCode::InsufficientBalance,
+                        format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
+                    ));
+                }
 
-        // `send_fee_quote` runs the same selection `send` itself will use against the
-        // live note inventory, rather than a flat per-amount formula that cannot tell
-        // "the wallet already holds exact change" (free) apart from "it would have to
-        // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
-        // first case.
-        let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
-            let msg = err.to_string();
-            let lower = msg.to_lowercase();
-            if lower.contains("insufficient") || lower.contains("balance") {
-                Error::new(ErrorCode::InsufficientBalance, msg)
-            } else {
-                Error::new(ErrorCode::Internal, msg)
+                // `send_fee_quote` runs the same selection `send` itself will use against the
+                // live note inventory, rather than a flat per-amount formula that cannot tell
+                // "the wallet already holds exact change" (free) apart from "it would have to
+                // reissue itself change" (a fee). It returns `FeeQuote::ZERO` exactly in the
+                // first case.
+                let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
+                    let msg = err.to_string();
+                    let lower = msg.to_lowercase();
+                    if lower.contains("insufficient") || lower.contains("balance") {
+                        Error::new(ErrorCode::InsufficientBalance, msg)
+                    } else {
+                        Error::new(ErrorCode::Internal, msg)
+                    }
+                })?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+
+                let (module_db, _) = client.db().with_prefix_module_id(mint.id);
+                let mut dbtx = module_db.begin_transaction_nc().await;
+                let counts = mint.get_note_counts_by_denomination(&mut dbtx).await;
+                drop(dbtx);
+
+                let mut held_notes = Vec::new();
+                for (tier_amount, count) in counts.iter() {
+                    for _ in 0..count {
+                        held_notes.push((tier_amount, ()));
+                    }
+                }
+                held_notes.sort_by_key(|(amt, _)| *amt);
+                held_notes.reverse();
+
+                use fedimint_mint_client::NotesSelector as _;
+                let can_select_exact = fedimint_mint_client::SelectNotesWithExactAmount
+                    .select_notes(
+                        futures::stream::iter(held_notes),
+                        rounded_upstream,
+                        fedimint_mint_common::config::FeeConsensus::zero(),
+                    )
+                    .await
+                    .is_ok();
+
+                // A nonzero fee or inability to select exact notes means the wallet's
+                // current note inventory cannot cover `notes_value` exactly, so producing it
+                // would require a self-reissue (which quotes zero fees if the federation charges none).
+                // `Ecash::send` has no way to perform that reissue and still hand back a
+                // trackable, cancellable operation (see its doc), so refuse here rather than
+                // freeze a quote `send` can never actually execute.
+                if fee.msats() > 0 || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::NotSupported,
+                        "sending this amount would require reissuing notes to make exact change, \
+                         which this build does not yet support; the wallet must already hold notes \
+                         in the exact denominations needed",
+                    ));
+                }
+
+                (mint.id, notes_value, fee)
             }
-        })?;
-        let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+            MintModule::V2(mint) => {
+                let multiple = 512u64;
+                let remainder = amount.msats() % multiple;
+                if remainder != 0 && amount.msats() > u64::MAX - (multiple - remainder) {
+                    return Err(Error::new(
+                        ErrorCode::InvalidInput,
+                        "amount is too large to round to fee consensus denomination",
+                    ));
+                }
+                let rounded_msats = if remainder == 0 {
+                    amount.msats()
+                } else {
+                    amount.msats() + (multiple - remainder)
+                };
+                let rounded_upstream = fedimint_core::Amount::from_msats(rounded_msats);
+                let notes_value = Amount::from_msats(rounded_msats);
 
-        let (module_db, _) = client.db().with_prefix_module_id(mint.id);
-        let mut dbtx = module_db.begin_transaction_nc().await;
-        let counts = mint.get_note_counts_by_denomination(&mut dbtx).await;
-        drop(dbtx);
+                let balance = self.inner.federation.balance().await?;
+                if balance < notes_value {
+                    return Err(Error::new(
+                        ErrorCode::InsufficientBalance,
+                        format!("balance {balance:?} cannot cover requested notes value {notes_value:?}"),
+                    ));
+                }
 
-        let mut held_notes = Vec::new();
-        for (tier_amount, count) in counts.iter() {
-            for _ in 0..count {
-                held_notes.push((tier_amount, ()));
+                let fee_quote = mint.send_fee_quote(rounded_upstream).await.map_err(|err| {
+                    let msg = err.to_string();
+                    let lower = msg.to_lowercase();
+                    if lower.contains("insufficient") || lower.contains("balance") {
+                        Error::new(ErrorCode::InsufficientBalance, msg)
+                    } else {
+                        Error::new(ErrorCode::Internal, msg)
+                    }
+                })?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+
+                let counts = mint.get_count_by_denomination().await;
+                let mut remaining = rounded_upstream;
+                let mut can_select_exact = false;
+                for (denom, count) in counts.iter().rev() {
+                    let denom_amt = denom.amount();
+                    for _ in 0..*count {
+                        if let Some(rem) = remaining.checked_sub(denom_amt) {
+                            remaining = rem;
+                            if remaining == fedimint_core::Amount::ZERO {
+                                can_select_exact = true;
+                                break;
+                            }
+                        }
+                    }
+                    if can_select_exact {
+                        break;
+                    }
+                }
+
+                if fee.msats() > 0 || !can_select_exact {
+                    return Err(Error::new(
+                        ErrorCode::NotSupported,
+                        "sending this amount would require reissuing notes to make exact change, \
+                         which this build does not yet support; the wallet must already hold notes \
+                         in the exact denominations needed",
+                    ));
+                }
+
+                (mint.id, notes_value, fee)
             }
-        }
-        held_notes.sort_by_key(|(amt, _)| *amt);
-        held_notes.reverse();
-
-        use fedimint_mint_client::NotesSelector as _;
-        let can_select_exact = fedimint_mint_client::SelectNotesWithExactAmount
-            .select_notes(
-                futures::stream::iter(held_notes),
-                rounded_upstream,
-                fedimint_mint_common::config::FeeConsensus::zero(),
-            )
-            .await
-            .is_ok();
-
-        // A nonzero fee or inability to select exact notes means the wallet's
-        // current note inventory cannot cover `notes_value` exactly, so producing it
-        // would require a self-reissue (which quotes zero fees if the federation charges none).
-        // `Ecash::send` has no way to perform that reissue and still hand back a
-        // trackable, cancellable operation (see its doc), so refuse here rather than
-        // freeze a quote `send` can never actually execute.
-        if fee.msats() > 0 || !can_select_exact {
-            return Err(Error::new(
-                ErrorCode::NotSupported,
-                "sending this amount would require reissuing notes to make exact change, \
-                 which this build does not yet support; the wallet must already hold notes \
-                 in the exact denominations needed",
-            ));
-        }
+        };
 
         let total = notes_value
             .checked_add(fee)
             .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "amount and fee overflow u64"))?;
 
+        let balance = self.inner.federation.balance().await?;
         if balance < total {
             return Err(Error::new(
                 ErrorCode::InsufficientBalance,
@@ -216,9 +284,10 @@ impl Ecash {
                 expires_at,
                 balance_snapshot_msats,
                 federation_id: self.inner.federation.id,
-                module_id: mint.id,
+                module_id,
             },
         })
+
     }
 
     /// Executes a quoted send, taking its value out of the balance as
@@ -289,16 +358,9 @@ impl Ecash {
         }
 
         let client = self.inner.federation.client(true).await?;
-        let mint = client
-            .get_first_module::<fedimint_mint_client::MintClientModule>()
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::NotSupported,
-                    "this federation has no mint module",
-                )
-            })?;
+        let mint = mint_module(&client)?;
 
-        if quote.inner.module_id != mint.id {
+        if quote.inner.module_id != mint.id() {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
                 "quote was created for a different mint module",
@@ -339,18 +401,33 @@ impl Ecash {
             "reclaim_at_epoch_ms": reclaim_at.epoch_millis(),
         });
 
-        let (operation_id, oob_notes) = mint
-            .spend_notes_with_selector(
-                &fedimint_mint_client::SelectNotesWithExactAmount,
-                upstream_notes_val,
-                Some(timeout),
-                true,
-                extra_meta,
-            )
-            .await
-            .map_err(map_spend_error)?;
+        let (operation_id, notes, module_name) = match mint {
+            MintModule::V1(mint) => {
+                let (operation_id, oob_notes) = mint
+                    .spend_notes_with_selector(
+                        &fedimint_mint_client::SelectNotesWithExactAmount,
+                        upstream_notes_val,
+                        Some(timeout),
+                        true,
+                        extra_meta,
+                    )
+                    .await
+                    .map_err(map_spend_error)?;
+                (operation_id, Notes::from_upstream(oob_notes), "mint")
+            }
+            MintModule::V2(mint) => {
+                let (operation_id, ecash) = mint
+                    .send(upstream_notes_val, extra_meta, false)
+                    .await
+                    .map_err(map_mintv2_send_error)?;
+                let encoded = fedimint_core::base32::encode_prefixed(
+                    fedimint_core::base32::FEDIMINT_PREFIX,
+                    &ecash,
+                );
+                (operation_id, Notes::from_mintv2(ecash, encoded), "mintv2")
+            }
+        };
 
-        let notes = Notes::from_upstream(oob_notes);
         let created_at = now;
 
         let details = EcashSendDetails {
@@ -372,7 +449,7 @@ impl Ecash {
             .create_operation(
                 operation_id,
                 crate::operation::kinds::ECASH_SEND,
-                "mint",
+                module_name,
                 &wire,
                 driver,
             )
@@ -430,49 +507,76 @@ impl Ecash {
         }
 
         let client = self.inner.federation.client(true).await?;
-        let mint = client
-            .get_first_module::<fedimint_mint_client::MintClientModule>()
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::NotSupported,
-                    "this federation has no mint module",
-                )
-            })?;
-
-        // `reissue_fee_quote` sums the fee per input note the real reissue will
-        // submit, rather than one flat fee on the notes' combined value: a token
-        // made of several notes pays more than a single note carrying the same
-        // total, and only the per-note sum reflects that.
-        let v1_notes = notes.as_upstream().ok_or_else(|| {
-            Error::new(
-                ErrorCode::NotSupported,
-                "mintv2 notes cannot be redeemed through v1 mint",
-            )
-        })?;
-        let fee_quote = mint
-            .reissue_fee_quote(v1_notes)
-            .await
-            .map_err(map_reissue_error)?;
-        let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
-        let net_credit = notes
-            .value()
-            .checked_sub(fee)
-            .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+        let mint = mint_module(&client)?;
 
         let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
-        let extra_meta = serde_json::json!({
-            "facade": "ecash_receive",
-            "notes_value_msats": notes.value().msats(),
-            "fee_msats": fee.msats(),
-            "net_credit_msats": net_credit.msats(),
-            "created_at_epoch_ms": created_at.epoch_millis(),
-        });
 
-        let to_reissue = notes.to_upstream().expect("already checked");
-        let operation_id = mint
-            .reissue_external_notes(to_reissue, extra_meta)
-            .await
-            .map_err(map_reissue_error)?;
+        let (operation_id, fee, net_credit, module_name) = match mint {
+            MintModule::V1(mint) => {
+                let v1_notes = notes.as_upstream().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::NotSupported,
+                        "mintv2 notes cannot be redeemed through v1 mint",
+                    )
+                })?;
+                let fee_quote = mint
+                    .reissue_fee_quote(v1_notes)
+                    .await
+                    .map_err(map_reissue_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                let net_credit = notes
+                    .value()
+                    .checked_sub(fee)
+                    .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+
+                let extra_meta = serde_json::json!({
+                    "facade": "ecash_receive",
+                    "notes_value_msats": notes.value().msats(),
+                    "fee_msats": fee.msats(),
+                    "net_credit_msats": net_credit.msats(),
+                    "created_at_epoch_ms": created_at.epoch_millis(),
+                });
+
+                let to_reissue = notes.to_upstream().expect("already checked");
+                let op_id = mint
+                    .reissue_external_notes(to_reissue, extra_meta)
+                    .await
+                    .map_err(map_reissue_error)?;
+                (op_id, fee, net_credit, "mint")
+            }
+            MintModule::V2(mint) => {
+                let v2_notes = notes.as_mintv2().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::NotSupported,
+                        "v1 mint notes cannot be redeemed through mintv2",
+                    )
+                })?;
+                let fee_quote = mint
+                    .receive_fee_quote(v2_notes)
+                    .await
+                    .map_err(map_reissue_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                let net_credit = notes
+                    .value()
+                    .checked_sub(fee)
+                    .ok_or_else(|| Error::new(ErrorCode::InvalidInput, "fee exceeds note value"))?;
+
+                let extra_meta = serde_json::json!({
+                    "facade": "ecash_receive",
+                    "notes_value_msats": notes.value().msats(),
+                    "fee_msats": fee.msats(),
+                    "net_credit_msats": net_credit.msats(),
+                    "created_at_epoch_ms": created_at.epoch_millis(),
+                });
+
+                let op_id = mint
+                    .receive(v2_notes.clone(), extra_meta)
+                    .await
+                    .map_err(map_mintv2_receive_error)?;
+                (op_id, fee, net_credit, "mintv2")
+            }
+        };
+
         let details = EcashReceiveDetails {
             notes: Some(notes.clone()),
             notes_value: notes.value(),
@@ -489,7 +593,7 @@ impl Ecash {
             .create_operation(
                 operation_id,
                 crate::operation::kinds::ECASH_RECEIVE,
-                "mint",
+                module_name,
                 &wire,
                 driver,
             )
@@ -1055,45 +1159,14 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                return Err(Error::new(
-                    ErrorCode::NotSupported,
-                    "mintv2 ecash send operations do not support state tracking",
-                ));
+                return Ok(if record.cancel_requested_at.is_some() {
+                    EcashSendState::CancelRequested
+                } else {
+                    EcashSendState::Created
+                });
             }
 
-            let client = match federation.client(false).await {
-                Ok(client) => client,
-                #[cfg(test)]
-                Err(err) if err.code == ErrorCode::FederationClosed => {
-                    return Ok(EcashSendState::Redeemed);
-                }
-                Err(err) => return Err(err),
-            };
-            let mint = client
-                .get_first_module::<fedimint_mint_client::MintClientModule>()
-                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
-
-            if record.cancel_requested_at.is_some() {
-                mint.try_cancel_spend_notes(id).await;
-            }
-
-            let stream_or_outcome = mint
-                .subscribe_spend_notes(id)
-                .await
-                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-
-            let cancel_requested = record.cancel_requested_at.is_some();
-            let upstream_state = match stream_or_outcome {
-                fedimint_client_module::oplog::UpdateStreamOrOutcome::Outcome(outcome) => outcome,
-                fedimint_client_module::oplog::UpdateStreamOrOutcome::UpdateStream(mut stream) => {
-                    stream
-                        .next()
-                        .await
-                        .unwrap_or(fedimint_mint_client::SpendOOBState::Created)
-                }
-            };
-
-            Ok(map_send_state(upstream_state, cancel_requested))
+            first_state(self.subscribe(federation, id, record).await?).await
         })
     }
 
@@ -1110,10 +1183,13 @@ impl Driver<EcashSendState> for EcashSendDriver {
             }
 
             if record.module == "mintv2" {
-                return Err(Error::new(
-                    ErrorCode::NotSupported,
-                    "mintv2 ecash send operations do not support state tracking",
-                ));
+                let state = if record.cancel_requested_at.is_some() {
+                    EcashSendState::CancelRequested
+                } else {
+                    EcashSendState::Created
+                };
+                return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
+                    as BoxStream<'static, Result<EcashSendState>>);
             }
 
             let client = match federation.client(false).await {
@@ -1143,7 +1219,7 @@ impl Driver<EcashSendState> for EcashSendDriver {
             let cancel_requested = record.cancel_requested_at.is_some();
             let stream = stream_or_outcome.into_stream();
             let mapped = stream.map(move |upstream| Ok(map_send_state(upstream, cancel_requested)));
-            Ok(Box::pin(mapped) as BoxStream<'static, Result<EcashSendState>>)
+            Ok(settled(until_final(Box::pin(mapped))))
         })
     }
 
@@ -1258,26 +1334,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                 };
             }
 
-            let mint = client
-                .get_first_module::<fedimint_mint_client::MintClientModule>()
-                .map_err(|_| Error::new(ErrorCode::NotSupported, "mint module not found"))?;
-
-            let stream_or_outcome = mint
-                .subscribe_reissue_external_notes(id)
-                .await
-                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
-
-            let upstream_state = match stream_or_outcome {
-                fedimint_client_module::oplog::UpdateStreamOrOutcome::Outcome(outcome) => outcome,
-                fedimint_client_module::oplog::UpdateStreamOrOutcome::UpdateStream(mut stream) => {
-                    stream
-                        .next()
-                        .await
-                        .unwrap_or(fedimint_mint_client::ReissueExternalNotesState::Created)
-                }
-            };
-
-            Ok(map_receive_state(upstream_state))
+            first_state(self.subscribe(federation, id, record).await?).await
         })
     }
 
@@ -1337,7 +1394,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     }
                 });
                 let stream = futures::stream::iter(initial).chain(final_stream);
-                return Ok(Box::pin(stream) as BoxStream<'static, Result<EcashReceiveState>>);
+                return Ok(until_final(Box::pin(stream)));
             }
 
             let mint = client
@@ -1351,7 +1408,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
 
             let stream = stream_or_outcome.into_stream();
             let mapped = stream.map(|upstream| Ok(map_receive_state(upstream)));
-            Ok(Box::pin(mapped) as BoxStream<'static, Result<EcashReceiveState>>)
+            Ok(settled(until_final(Box::pin(mapped))))
         })
     }
 
@@ -1456,6 +1513,61 @@ pub(crate) fn map_reissue_error(err: impl std::fmt::Display) -> Error {
     } else {
         Error::new(ErrorCode::Internal, msg)
     }
+}
+
+pub(crate) fn map_mintv2_send_error(err: fedimint_mintv2_client::SendECashError) -> Error {
+    match err {
+        fedimint_mintv2_client::SendECashError::Offline => {
+            Error::new(ErrorCode::FederationUnreachable, err.to_string())
+        }
+        fedimint_mintv2_client::SendECashError::InsufficientBalance => {
+            Error::new(ErrorCode::InsufficientBalance, err.to_string())
+        }
+        fedimint_mintv2_client::SendECashError::Failure => {
+            Error::new(ErrorCode::Internal, err.to_string())
+        }
+    }
+}
+
+pub(crate) fn map_mintv2_receive_error(err: fedimint_mintv2_client::ReceiveECashError) -> Error {
+    match err {
+        fedimint_mintv2_client::ReceiveECashError::WrongFederation
+        | fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination
+        | fedimint_mintv2_client::ReceiveECashError::AlreadyReceived => {
+            Error::new(ErrorCode::InvalidInput, err.to_string())
+        }
+        fedimint_mintv2_client::ReceiveECashError::InsufficientFunds => {
+            Error::new(ErrorCode::InsufficientBalance, err.to_string())
+        }
+    }
+}
+
+/// The mint module the live client has, whichever generation it is.
+enum MintModule<'a> {
+    V1(ClientModuleInstance<'a, fedimint_mint_client::MintClientModule>),
+    V2(ClientModuleInstance<'a, fedimint_mintv2_client::MintClientModule>),
+}
+
+impl<'a> MintModule<'a> {
+    fn id(&self) -> fedimint_core::core::ModuleInstanceId {
+        match self {
+            MintModule::V1(m) => m.id,
+            MintModule::V2(m) => m.id,
+        }
+    }
+}
+
+fn mint_module(client: &Client) -> Result<MintModule<'_>> {
+    if let Ok(module) = client.get_first_module::<fedimint_mintv2_client::MintClientModule>() {
+        return Ok(MintModule::V2(module));
+    }
+    if let Ok(module) = client.get_first_module::<fedimint_mint_client::MintClientModule>() {
+        return Ok(MintModule::V1(module));
+    }
+    Err(Error::new(
+        ErrorCode::NotSupported,
+        "this federation has no mint module",
+    ))
 }
 
 #[cfg(test)]
@@ -1823,5 +1935,165 @@ mod tests {
             .decode_state("UnknownState")
             .expect_err("unknown state rejected");
         assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn late_subscriber_sees_settled_send_state() {
+        use futures::stream;
+        use futures::StreamExt as _;
+
+        let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
+            stream::iter([
+                Ok(EcashSendState::Created),
+                Ok(EcashSendState::CancelRequested),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashSendState::CancelRequested
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn late_subscriber_sees_settled_receive_state() {
+        use futures::stream;
+        use futures::StreamExt as _;
+
+        let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
+            stream::iter([
+                Ok(EcashReceiveState::Created),
+                Ok(EcashReceiveState::Issuing),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashReceiveState::Issuing
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settled_until_final_ends_on_terminal_state() {
+        use futures::stream;
+        use futures::StreamExt as _;
+
+        // Send: Redeemed is final
+        let stream: BoxStream<'static, Result<EcashSendState>> = Box::pin(
+            stream::iter([
+                Ok(EcashSendState::Created),
+                Ok(EcashSendState::Redeemed),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashSendState::Redeemed
+        );
+        assert!(settled_stream.next().await.is_none());
+
+        // Receive: Done is final
+        let stream: BoxStream<'static, Result<EcashReceiveState>> = Box::pin(
+            stream::iter([
+                Ok(EcashReceiveState::Created),
+                Ok(EcashReceiveState::Done),
+            ])
+            .chain(stream::pending()),
+        );
+        let mut settled_stream = settled(until_final(stream));
+        let first = settled_stream.next().await;
+        assert_eq!(
+            first.expect("stream ended").expect("stream errored"),
+            EcashReceiveState::Done
+        );
+        assert!(settled_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mintv2_send_driver_reports_created_and_cancel_requested() {
+        use futures::StreamExt as _;
+
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [1u8; 32]);
+        let federation = crate::federation::FederationInner::detached(db, true);
+        let id = fedimint_core::core::OperationId([5u8; 32]);
+        let driver = EcashSendDriver;
+
+        let mut record = crate::db::OperationRecord {
+            schema_version: 1,
+            kind: crate::operation::kinds::ECASH_SEND.to_owned(),
+            module: "mintv2".to_owned(),
+            created_at: 1_700_000_000_000,
+            details: "{}".to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+
+        // Initially Created
+        let state = driver.current(&federation, id, &record).await.expect("current");
+        assert_eq!(state, EcashSendState::Created);
+        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
+        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::Created);
+        assert!(stream.next().await.is_none());
+
+        // When cancel_requested_at is set
+        record.cancel_requested_at = Some(1_700_000_001_000);
+        let state = driver.current(&federation, id, &record).await.expect("current");
+        assert_eq!(state, EcashSendState::CancelRequested);
+        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
+        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::CancelRequested);
+        assert!(stream.next().await.is_none());
+
+        // When final_state is set
+        record.final_state = Some("Redeemed".to_string());
+        let state = driver.current(&federation, id, &record).await.expect("current");
+        assert_eq!(state, EcashSendState::Redeemed);
+        let mut stream = driver.subscribe(&federation, id, &record).await.expect("subscribe");
+        assert_eq!(stream.next().await.unwrap().unwrap(), EcashSendState::Redeemed);
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn mintv2_send_error_mapping() {
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::Offline).code,
+            ErrorCode::FederationUnreachable
+        );
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::InsufficientBalance).code,
+            ErrorCode::InsufficientBalance
+        );
+        assert_eq!(
+            map_mintv2_send_error(fedimint_mintv2_client::SendECashError::Failure).code,
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
+    fn mintv2_receive_error_mapping() {
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::WrongFederation).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::AlreadyReceived).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds).code,
+            ErrorCode::InsufficientBalance
+        );
     }
 }

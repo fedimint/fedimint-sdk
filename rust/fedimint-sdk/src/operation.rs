@@ -21,6 +21,7 @@
 //! an operation back up, because a subscription yields the current state and
 //! never replays the ones before it.
 
+use core::time::Duration;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use std::sync::Arc;
 use fedimint_core::core::OperationId as UpstreamOperationId;
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt as _;
 
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
@@ -1342,6 +1344,88 @@ where
     /// [`Internal`](crate::ErrorCode::Internal); no caller can reach it, because
     /// [`Operation::details`] does not exist for such a kind.
     fn decode_details(&self, json: &str) -> Result<Box<dyn Any + Send + Sync>>;
+}
+
+/// How long `current` waits for the next replayed state before calling the last one current.
+///
+/// Upstream `subscribe_*` are generators that re-run from the first state and resolve each
+/// already-passed stage immediately. Draining with a short wait per item is how a point-in-time
+/// answer is produced from that.
+pub(crate) const CURRENT_STATE_SETTLE: Duration = Duration::from_millis(500);
+
+/// Ends a stream after its first final state, and on the first error.
+pub(crate) fn until_final<S>(
+    stream: impl futures::Stream<Item = Result<S>> + MaybeSend + 'static,
+) -> BoxStream<'static, Result<S>>
+where
+    S: OperationState,
+{
+    Box::pin(futures::stream::unfold(
+        (Box::pin(stream), false),
+        |(mut stream, done)| async move {
+            if done {
+                return None;
+            }
+            let item = stream.next().await?;
+            let is_done = match &item {
+                Ok(state) => state.is_final(),
+                Err(_) => true,
+            };
+            Some((item, (stream, is_done)))
+        },
+    ))
+}
+
+/// A subscription that yields the current state first: the replayed history is drained until it
+/// settles, the last state it produced is yielded, and every state after that is forwarded as it
+/// comes.
+///
+/// If the inner stream ends before producing anything, this ends too, without yielding: that is
+/// not an "empty" current state, it is the absence of one, and `OperationUpdates::next`'s
+/// `current` fallback is what turns it into an answer. If the yielded state is final (or an
+/// error), nothing more is drained for it; the underlying stream is expected to end right after,
+/// per `Driver::subscribe`'s contract, so the next pull simply observes that.
+pub(crate) fn settled<S>(stream: BoxStream<'static, Result<S>>) -> BoxStream<'static, Result<S>>
+where
+    S: OperationState,
+{
+    Box::pin(futures::stream::unfold(
+        (stream, false),
+        |(mut stream, started)| async move {
+            if started {
+                return stream.next().await.map(|item| (item, (stream, true)));
+            }
+            // The first item is awaited without a timeout: both generations yield it promptly,
+            // and the engine already races every wait in this call against the federation's
+            // `closed` watch. Every item after that is drained with the same per-item timeout,
+            // stopping at the first final state, the first error, or the first timeout.
+            let mut last = stream.next().await?;
+            while matches!(&last, Ok(state) if !state.is_final()) {
+                match fedimint_core::runtime::timeout(CURRENT_STATE_SETTLE, stream.next()).await {
+                    Ok(Some(item)) => last = item,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            Some((last, (stream, true)))
+        },
+    ))
+}
+
+/// The first state a stream yields, mapping an ended stream to this operation's "no state" error.
+///
+/// `Driver::subscribe` already returns a stream wrapped in [`settled`], so this drains it once
+/// rather than draining it a second time the way calling [`settled`] again over it would.
+pub(crate) async fn first_state<S>(mut stream: BoxStream<'static, Result<S>>) -> Result<S>
+where
+    S: OperationState,
+{
+    match stream.next().await {
+        Some(item) => item,
+        None => Err(Error::new(
+            ErrorCode::Internal,
+            "this operation's subscription yielded no state",
+        )),
+    }
 }
 
 /// Rebuilds an SDK operation record from the client's own operation log entry.

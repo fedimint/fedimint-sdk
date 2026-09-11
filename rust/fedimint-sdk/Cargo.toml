@@ -64,6 +64,8 @@ tracing = "0.1.44"
 fd-lock = "4"
 fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+socket2 = { version = "0.5", features = ["all"] }
+
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
