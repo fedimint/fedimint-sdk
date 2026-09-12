@@ -1859,11 +1859,16 @@ impl SdkInner {
         // A federation the application closed on purpose stays closed: later builds must not
         // undo that choice.
         if record.status == StoredStatus::Closed {
-            let config_meta = match crate::db::read_config_meta(&self.db, id).await {
-                Ok(meta) => meta,
+            let (config_meta, status) = match crate::db::read_config_meta(&self.db, id).await {
+                Ok(meta) => (meta, FederationStatus::Closed),
                 Err(e) => {
                     tracing::error!("Failed to read config metadata for {id} during restore: {e}");
-                    return;
+                    (
+                        std::collections::BTreeMap::new(),
+                        FederationStatus::Quarantined {
+                            diagnostic: e.into(),
+                        },
+                    )
                 }
             };
             let federation = Arc::new(FederationInner::new(
@@ -1873,20 +1878,38 @@ impl SdkInner {
                     .with_prefix(crate::db::federation_prefix(id).to_vec()),
                 record,
                 config_meta,
-                FederationStatus::Closed,
+                status,
                 None,
             ));
             self.insert(federation);
             return;
         }
 
-        let config_meta = match crate::db::read_config_meta(&self.db, id).await {
-            Ok(meta) => meta,
+        let (config_meta, meta_err) = match crate::db::read_config_meta(&self.db, id).await {
+            Ok(meta) => (meta, None),
             Err(e) => {
                 tracing::error!("Failed to read config metadata for {id} during restore: {e}");
-                return;
+                (std::collections::BTreeMap::new(), Some(e))
             }
         };
+
+        if let Some(err) = meta_err {
+            let federation = Arc::new(FederationInner::new(
+                *id,
+                Arc::downgrade(self),
+                self.db
+                    .with_prefix(crate::db::federation_prefix(id).to_vec()),
+                record.clone(),
+                config_meta,
+                FederationStatus::Quarantined {
+                    diagnostic: err.into(),
+                },
+                None,
+            ));
+            self.insert(federation);
+            return;
+        }
+
         let federation = Arc::new(FederationInner::new(
             *id,
             Arc::downgrade(self),
