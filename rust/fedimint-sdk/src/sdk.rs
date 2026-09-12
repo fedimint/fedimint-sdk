@@ -384,7 +384,13 @@ impl Sdk {
 
         // The intent is durable before the client writes a byte, so a process killed anywhere
         // after this comes back with the federation joined: the next build finishes it.
-        crate::db::write_federation(&self.inner.db, &id, &record).await?;
+        crate::db::write_federation_with_meta(
+            &self.inner.db,
+            &id,
+            &record,
+            config.global.meta.clone(),
+        )
+        .await?;
 
         let client = match self.inner.join_client(&id, &record).await {
             Ok(client) => client,
@@ -408,6 +414,7 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&id).to_vec()),
             joined,
+            config.global.meta.clone(),
             FederationStatus::Running,
             Some(client),
         ));
@@ -667,7 +674,7 @@ impl Sdk {
         }
 
         let record = existing.record();
-        let (client, revalidated) = match self.inner.start(&upstream, &record).await {
+        let (client, revalidated, config_meta) = match self.inner.start(&upstream, &record).await {
             Ok(started) => started,
             Err(err) => {
                 // A failed reopen leaves the same quarantine this call reports, so later builds
@@ -702,6 +709,7 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&upstream).to_vec()),
             opened,
+            config_meta,
             if recovering {
                 FederationStatus::Recovering
             } else {
@@ -1840,6 +1848,7 @@ impl SdkInner {
                 self.db
                     .with_prefix(crate::db::federation_prefix(id).to_vec()),
                 record,
+                BTreeMap::new(), // config_meta is useless here since it's forgetting
                 FederationStatus::Forgetting,
                 None,
             ));
@@ -1850,13 +1859,51 @@ impl SdkInner {
         // A federation the application closed on purpose stays closed: later builds must not
         // undo that choice.
         if record.status == StoredStatus::Closed {
+            let (config_meta, status) = match crate::db::read_config_meta(&self.db, id).await {
+                Ok(meta) => (meta, FederationStatus::Closed),
+                Err(e) => {
+                    tracing::error!("Failed to read config metadata for {id} during restore: {e}");
+                    (
+                        std::collections::BTreeMap::new(),
+                        FederationStatus::Quarantined {
+                            diagnostic: e.into(),
+                        },
+                    )
+                }
+            };
             let federation = Arc::new(FederationInner::new(
                 *id,
                 Arc::downgrade(self),
                 self.db
                     .with_prefix(crate::db::federation_prefix(id).to_vec()),
                 record,
-                FederationStatus::Closed,
+                config_meta,
+                status,
+                None,
+            ));
+            self.insert(federation);
+            return;
+        }
+
+        let (config_meta, meta_err) = match crate::db::read_config_meta(&self.db, id).await {
+            Ok(meta) => (meta, None),
+            Err(e) => {
+                tracing::error!("Failed to read config metadata for {id} during restore: {e}");
+                (std::collections::BTreeMap::new(), Some(e))
+            }
+        };
+
+        if let Some(err) = meta_err {
+            let federation = Arc::new(FederationInner::new(
+                *id,
+                Arc::downgrade(self),
+                self.db
+                    .with_prefix(crate::db::federation_prefix(id).to_vec()),
+                record.clone(),
+                config_meta,
+                FederationStatus::Quarantined {
+                    diagnostic: err.into(),
+                },
                 None,
             ));
             self.insert(federation);
@@ -1869,12 +1916,14 @@ impl SdkInner {
             self.db
                 .with_prefix(crate::db::federation_prefix(id).to_vec()),
             record.clone(),
+            config_meta.clone(),
             FederationStatus::Closed,
             None,
         ));
         self.insert(federation.clone());
         let status = match self.start(id, &record).await {
-            Ok((client, revalidated)) => {
+            Ok((client, revalidated, new_config_meta)) => {
+                federation.set_config_meta(new_config_meta);
                 // Set before `install`/`announce`, so a refresh `start` made against the client's
                 // live configuration is what `network()`/`capabilities()` and the announced
                 // `FederationInfo` report from here on, not the pre-revalidation snapshot in
@@ -1915,7 +1964,7 @@ impl SdkInner {
         &self,
         id: &config::FederationId,
         record: &FederationRecord,
-    ) -> Result<(ClientHandleArc, FederationRecord)> {
+    ) -> Result<(ClientHandleArc, FederationRecord, BTreeMap<String, String>)> {
         let (client, opened) = if record.status == StoredStatus::Joining {
             crate::db::wipe_federation(&self.db, id).await?;
             let client = self.join_client(id, record).await?;
@@ -1928,7 +1977,7 @@ impl SdkInner {
         };
 
         match self.revalidate(id, &client, &opened).await {
-            Ok(revalidated) => Ok((client, revalidated)),
+            Ok((revalidated, config_meta)) => Ok((client, revalidated, config_meta)),
             Err(err) => {
                 // Not a federation this SDK can keep operating on: shut the freshly opened client
                 // down rather than leave it running unsupervised, and report the refusal so the
@@ -1951,26 +2000,35 @@ impl SdkInner {
         id: &config::FederationId,
         client: &ClientHandleArc,
         record: &FederationRecord,
-    ) -> Result<FederationRecord> {
+    ) -> Result<(FederationRecord, BTreeMap<String, String>)> {
         let config = client.config().await;
         let kinds = crate::modules::module_kinds(&config);
         let generation = crate::modules::check_generation(&kinds)?;
         let capabilities: StoredCapabilities = crate::modules::capabilities_of(&kinds).into();
         let network: StoredNetwork =
             crate::modules::network_of(&self.module_inits, &config)?.into();
+        let name = config.global.federation_name().map(|s| s.to_owned());
 
-        if record.capabilities != capabilities
+        let current_meta = crate::db::read_config_meta(&self.db, id).await?;
+        let new_meta = config.global.meta.clone();
+        let meta_changed = current_meta != new_meta;
+
+        let record_changed = record.capabilities != capabilities
             || record.network != network
             || record.generation != generation
-        {
+            || record.name != name;
+
+        if record_changed || meta_changed {
             let mut refreshed = record.clone();
             refreshed.capabilities = capabilities;
             refreshed.network = network;
             refreshed.generation = generation;
-            crate::db::write_federation(&self.db, id, &refreshed).await?;
-            return Ok(refreshed);
+            refreshed.name = name;
+            crate::db::write_federation_with_meta(&self.db, id, &refreshed, new_meta.clone())
+                .await?;
+            return Ok((refreshed, new_meta));
         }
-        Ok(record.clone())
+        Ok((record.clone(), new_meta))
     }
 }
 
@@ -2615,6 +2673,7 @@ mod tests {
             crate::db::write_federation(&sdk.inner().db, &id, &record)
                 .await
                 .expect("the row is written");
+            let config_meta = std::collections::BTreeMap::new();
             sdk.inner()
                 .insert(Arc::new(crate::federation::FederationInner::new(
                     id,
@@ -2623,6 +2682,7 @@ mod tests {
                         .db
                         .with_prefix(crate::db::federation_prefix(&id).to_vec()),
                     record,
+                    config_meta,
                     FederationStatus::Closed,
                     None,
                 )));

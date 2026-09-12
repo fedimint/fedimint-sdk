@@ -446,6 +446,8 @@ pub(crate) struct FederationInner {
     client: tokio::sync::RwLock<Option<ClientHandleArc>>,
     /// The last configuration that validated, which is what the descriptive accessors answer from.
     record: std::sync::RwLock<FederationRecord>,
+    /// The configuration metadata, kept updated alongside the record.
+    config_meta: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
     /// The observable status, which is richer than the stored one: quarantine and recovery are
     /// facts about a running instance rather than about the storage.
     status: std::sync::RwLock<FederationStatus>,
@@ -479,6 +481,7 @@ impl FederationInner {
         sdk: Weak<SdkInner>,
         db: Database,
         record: FederationRecord,
+        config_meta: std::collections::BTreeMap<String, String>,
         status: FederationStatus,
         client: Option<ClientHandleArc>,
     ) -> FederationInner {
@@ -489,6 +492,7 @@ impl FederationInner {
             db,
             client: tokio::sync::RwLock::new(client),
             record: std::sync::RwLock::new(record),
+            config_meta: std::sync::RwLock::new(config_meta),
             status: std::sync::RwLock::new(status),
             closed: tokio::sync::watch::Sender::new(!running),
             reclaim_starts: tokio::sync::Mutex::new(()),
@@ -526,6 +530,16 @@ impl FederationInner {
     /// A snapshot of the last configuration that validated.
     pub(crate) fn record(&self) -> FederationRecord {
         read_lock(&self.record).clone()
+    }
+
+    /// The federation's configuration metadata.
+    pub(crate) fn config_meta(&self) -> std::collections::BTreeMap<String, String> {
+        read_lock(&self.config_meta).clone()
+    }
+
+    /// Replaces the cached configuration metadata.
+    pub(crate) fn set_config_meta(&self, meta: std::collections::BTreeMap<String, String>) {
+        *write_lock(&self.config_meta) = meta;
     }
 
     /// Replaces the cached configuration snapshot. The durable write is the caller's job.
@@ -1027,6 +1041,7 @@ impl FederationInner {
                 generation: Some(1),
                 name: None,
             },
+            std::collections::BTreeMap::new(),
             status.clone(),
             None,
         );
@@ -1487,6 +1502,7 @@ mod tests {
             Weak::new(),
             root.with_prefix(crate::db::federation_prefix(&id).to_vec()),
             record,
+            std::collections::BTreeMap::new(),
             FederationStatus::Closed,
             None,
         ))

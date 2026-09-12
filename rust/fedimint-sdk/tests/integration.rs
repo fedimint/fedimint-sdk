@@ -906,6 +906,7 @@ async fn activity_lists_what_the_federation_was_used_for() {
     drop(lightning);
     drop(federation);
     drop(sdk);
+
     let reopened = Sdk::builder()
         .storage(Storage::at(&path).expect("a valid path"))
         .build()
@@ -953,4 +954,63 @@ async fn activity_lists_what_the_federation_was_used_for() {
     );
 
     reopened.shutdown().await.expect("shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn federation_metadata_persists_across_restart() {
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+
+    let storage = tempfile::tempdir().expect("a temporary directory");
+    let path = storage.path().to_str().expect("a utf-8 path").to_owned();
+
+    let (id, config_meta, consensus_meta, merged) = {
+        let sdk = Sdk::builder()
+            .storage(Storage::at(&path).expect("a valid path"))
+            .build()
+            .await
+            .expect("an instance opens");
+        let federation = sdk.join(&invite).await.expect("the federation joins");
+        let id = federation.id();
+
+        let meta = federation.meta();
+        let config_meta = meta.config_metadata();
+        let consensus_meta = meta.consensus_metadata().await.expect("consensus meta");
+        let merged = meta.all().await.expect("merged meta");
+
+        assert!(!config_meta.is_empty(), "live federation has config meta");
+
+        sdk.shutdown().await.expect("the instance shuts down");
+        drop(federation);
+        drop(sdk);
+        (id, config_meta, consensus_meta, merged)
+    };
+
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("the instance reopens");
+
+    let federation = reopened
+        .federation(&id)
+        .expect("the federation came back open");
+    let meta = federation.meta();
+
+    assert_eq!(meta.config_metadata(), config_meta);
+    assert_eq!(
+        meta.consensus_metadata().await.expect("consensus meta"),
+        consensus_meta
+    );
+    assert_eq!(meta.all().await.expect("merged meta"), merged);
+
+    reopened.shutdown().await.expect("the instance shuts down");
 }
