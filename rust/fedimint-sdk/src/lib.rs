@@ -412,6 +412,7 @@ mod db;
 mod ecash;
 mod error;
 mod federation;
+mod inputs;
 mod lightning;
 mod meta;
 mod modules;

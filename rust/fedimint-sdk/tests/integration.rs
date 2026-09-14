@@ -2033,3 +2033,235 @@ async fn onchain_quote_refuses_what_cannot_be_withdrawn() {
 
     sdk.shutdown().await.expect("shuts down");
 }
+
+// # A rejected funding is not an ending
+//
+// The three tests below cover the contract `crate::inputs` implements: an upstream send
+// subscription reporting that its funding transaction was rejected does not end the operation.
+// Submitting that transaction took primary-module notes out of the spendable set before
+// consensus said anything, putting them back is a later transaction of the mint's own, and the
+// SDK reports `Refunded` only once that recovery has settled in a way that establishes the value
+// is spendable again, `Failed` when it cannot.
+//
+// ## Why they are `#[ignore]` rather than early-return
+//
+// Every other test in this file returns early when there is no federation, for the reason the
+// `devimint!` macro documents. These are ignored for a different reason, which no federation
+// fixes: on the pinned fedimint the scenario cannot be produced and its outcome cannot be
+// proven.
+//
+// - Provoking the rejection needs two clients holding the same notes, one of which spends them
+//   first. Restoring a second client from the same seed and racing it is the shape the bodies
+//   below use, and it depends on recovery handing back notes that are still spendable on the
+//   first client: fedimint/fedimint#6546.
+// - Proving the ending needs the mint's own input-recovery outcome. Its state machine ends in
+//   `RefundSuccess` or `Error` and neither is nameable outside `fedimint-mint-client`, so the
+//   SDK infers from transaction submission states instead and deliberately reports `Failed`
+//   where it cannot be sure: fedimint/fedimint#9099.
+// - Knowing *when* the recovery has settled, rather than polling for it, needs an operation-level
+//   quiescence signal: fedimint/fedimint#8421.
+//
+// They are written out in full rather than stubbed so that un-ignoring them is the whole change
+// once the upstream gaps close. Run one with
+// `cargo test --locked -- --ignored rejected_funding`.
+
+/// The contract, on the lightning send path: a rejected funding holds the operation open until
+/// the notes it selected have settled, and only then ends it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs fedimint/fedimint#6546 to provoke the rejection and #9099 to prove the ending"]
+async fn lightning_send_with_rejected_funding_waits_for_input_recovery() {
+    use fedimint_sdk::{ActivityStatus, LnSendState};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let funded = fund(&lightning, 200_000).await;
+
+    let (spender, send) = rejected_funding(&devimint, &sdk, &federation, &lightning).await;
+
+    // The rejection has been reported upstream by now. The operation must not be final on it:
+    // the notes the funding selected are neither spent nor yet spendable, and `Refunded` would
+    // promise the second.
+    let state = send.state().await.expect("a state");
+    assert!(
+        matches!(state, LnSendState::Created | LnSendState::Funded),
+        "a rejected funding ended the send at {state:?} before its inputs settled"
+    );
+    let row = activity_row(&federation, send.id()).await;
+    assert_eq!(
+        row.status,
+        ActivityStatus::Pending,
+        "the history row called a send final while its inputs were still being recovered"
+    );
+
+    // Once the recovery settles the ending is chosen from what it established. Restored value
+    // is `Refunded`; anything the SDK cannot establish as a clean return is `Failed`, and both
+    // are legitimate endings for this scenario. What is not legitimate is `Success`.
+    let last = send.await_final().await.expect("the send settles");
+    match last {
+        LnSendState::Refunded => {
+            // The promise `Refunded` makes: no part of the authorised total is still standing
+            // against the balance.
+            balance_settles_at(&federation, funded).await;
+        }
+        LnSendState::Failed { .. } => {
+            eprintln!("the input recovery settled without establishing a clean return");
+        }
+        other => panic!("a payment whose funding was rejected ended in {other:?}"),
+    }
+
+    drop(spender);
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// The same contract across a restart. The gate is not in-memory state: the record carries no
+/// final state while the recovery runs, so a reattached operation re-enters the gate and reaches
+/// the same ending.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs fedimint/fedimint#6546 to provoke the rejection and #9099 to prove the ending"]
+async fn lightning_send_with_rejected_funding_resolves_after_a_restart() {
+    use fedimint_sdk::{LnSendState, OperationKind};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    fund(&lightning, 200_000).await;
+
+    let id = {
+        let (spender, send) = rejected_funding(&devimint, &sdk, &federation, &lightning).await;
+        let id = send.id();
+        drop(spender);
+        id
+    };
+    let federation_id = federation.id();
+    sdk.shutdown().await.expect("the instance shuts down");
+    drop(federation);
+    drop(lightning);
+    drop(sdk);
+
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("the instance reopens");
+    let federation = reopened
+        .federation(&federation_id)
+        .expect("the federation came back open");
+    let any = federation
+        .operation(&id)
+        .await
+        .expect("lookup")
+        .expect("the send survived the restart");
+    assert_eq!(any.kind(), OperationKind::LnSend);
+    let send = any.as_ln_send().expect("a typed handle");
+
+    // Nothing final was written while the recovery was running, so this is a real reattachment
+    // to a live operation rather than a replay of a recorded ending.
+    let last = send.await_final().await.expect("the send settles");
+    assert!(
+        matches!(last, LnSendState::Refunded | LnSendState::Failed { .. }),
+        "a reattached send whose funding was rejected ended in {last:?}"
+    );
+    reopened.shutdown().await.expect("shuts down");
+}
+
+/// The contract on the on-chain send path, which reaches the same gate through the wallet
+/// modules' own funding rejections (`WithdrawState::Failed` for the first, `Aborted` for the
+/// second).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on the on-chain facade, plus fedimint/fedimint#6546 and #9099 as above"]
+async fn onchain_send_with_rejected_funding_waits_for_input_recovery() {
+    use fedimint_sdk::{OnchainSendState, Sats};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+    let funded = fund(&lightning, 500_000).await;
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+
+    let address = faucet("POST", "/address", "")
+        .expect("the faucet issues an address")
+        .trim()
+        .parse()
+        .expect("a bitcoin address");
+    let quote = onchain
+        .quote(&address, Sats::from_sats(100))
+        .await
+        .expect("a quote");
+    let send = onchain.send(quote).await.expect("the withdrawal starts");
+
+    // As above: the rejection is reported, the recovery of the notes the funding selected is
+    // not finished, and the withdrawal must not claim either ending yet.
+    let state = send.state().await.expect("a state");
+    assert_eq!(
+        state,
+        OnchainSendState::Created,
+        "a rejected funding ended the withdrawal before its inputs settled"
+    );
+
+    let last = send.await_final().await.expect("the withdrawal settles");
+    match last {
+        OnchainSendState::Refunded { .. } => balance_settles_at(&federation, funded).await,
+        OnchainSendState::Failed { .. } => {
+            eprintln!("the input recovery settled without establishing a clean return");
+        }
+        other => panic!("a withdrawal whose funding was rejected ended in {other:?}"),
+    }
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// Starts a lightning send whose funding transaction the federation rejects, and returns the
+/// instance that caused the rejection alongside the doomed send.
+///
+/// The rejection is a double spend: a second instance restored from the same seed holds the same
+/// notes, spends them first, and the send's own funding transaction is then refused for inputs
+/// that are already gone. Keeping the returned `Sdk` alive keeps that instance from being torn
+/// down while the send is still being observed.
+///
+/// This is the half that fedimint/fedimint#6546 blocks: a restored client's notes have to still
+/// be spendable on the instance that was restored from for the race to be winnable at all.
+async fn rejected_funding(
+    _devimint: &Devimint,
+    _sdk: &Sdk,
+    _federation: &fedimint_sdk::Federation,
+    _lightning: &fedimint_sdk::Lightning,
+) -> (Sdk, fedimint_sdk::Operation<fedimint_sdk::LnSendState>) {
+    unimplemented!(
+        "fedimint/fedimint#6546: restore a second client onto the same notes, spend \
+                    them there, then quote and send here so the funding transaction is refused"
+    )
+}
+
+/// The one activity row an operation wrote, for a test that wants the bucket rather than the
+/// typed state.
+async fn activity_row(
+    federation: &fedimint_sdk::Federation,
+    id: fedimint_sdk::OperationId,
+) -> fedimint_sdk::ActivityItem {
+    federation
+        .activity(None, 50)
+        .await
+        .expect("activity reads")
+        .items
+        .into_iter()
+        .find(|item| item.operation_id == id)
+        .expect("the send has a history row")
+}

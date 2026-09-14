@@ -1595,25 +1595,6 @@ struct Mintv2SendWatch {
     id: fedimint_core::core::OperationId,
 }
 
-/// The federation a `'static` stream belongs to, looked up again rather than held.
-///
-/// A driver's stream outlives the call that built it and must not keep the federation, its
-/// client or a guard over either alive; a `Weak` to the instance and this lookup are what it
-/// carries instead. Gone, or no longer joined, reads as closed.
-fn federation_again(
-    sdk: &std::sync::Weak<crate::sdk::SdkInner>,
-    federation_id: fedimint_core::config::FederationId,
-) -> Result<Arc<crate::federation::FederationInner>> {
-    let closed = || {
-        Error::new(
-            ErrorCode::FederationClosed,
-            "this federation stopped running",
-        )
-    };
-    let sdk = sdk.upgrade().ok_or_else(closed)?;
-    sdk.federation_inner(&federation_id).ok_or_else(closed)
-}
-
 impl Mintv2SendWatch {
     fn closed() -> Error {
         Error::new(
@@ -1623,7 +1604,7 @@ impl Mintv2SendWatch {
     }
 
     fn federation(&self) -> Result<Arc<crate::federation::FederationInner>> {
-        federation_again(&self.sdk, self.federation_id)
+        crate::federation::federation_again(&self.sdk, self.federation_id)
     }
 
     /// This operation's record as it stands now, or `None` once it has gone.
@@ -1752,7 +1733,7 @@ fn mintv2_receive_subscription(
     let sdk = federation.sdk.clone();
     let federation_id = federation.id;
     let final_stream = futures::stream::once(async move {
-        let federation = federation_again(&sdk, federation_id)?;
+        let federation = crate::federation::federation_again(&sdk, federation_id)?;
         let client = federation.client(false).await?;
         let handle = client.handle();
         // The guard is a read lock, and `quiesce` needs the write side: it must not be held

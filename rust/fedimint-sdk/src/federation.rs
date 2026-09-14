@@ -1314,6 +1314,25 @@ pub(crate) async fn record_recovery_attempt_in(
         .map(|_| ())
 }
 
+/// The federation a `'static` stream belongs to, looked up again rather than held.
+///
+/// A driver's stream outlives the call that built it and must not keep the federation, its
+/// client or a guard over either alive; a `Weak` to the instance and this lookup are what it
+/// carries instead. Gone, or no longer joined, reads as closed.
+pub(crate) fn federation_again(
+    sdk: &Weak<SdkInner>,
+    federation_id: config::FederationId,
+) -> Result<Arc<FederationInner>> {
+    let closed = || {
+        crate::Error::new(
+            crate::ErrorCode::FederationClosed,
+            "this federation stopped running",
+        )
+    };
+    let sdk = sdk.upgrade().ok_or_else(closed)?;
+    sdk.federation_inner(&federation_id).ok_or_else(closed)
+}
+
 /// Awaits `work`, which needs the client alive throughout, on a task of its own.
 ///
 /// `client` is moved in and handed to `work`, and is dropped before this returns: whichever way

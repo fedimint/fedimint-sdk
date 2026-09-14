@@ -20,7 +20,7 @@ use fedimint_ln_common::config::FeeToAmount;
 use fedimint_ln_common::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use futures::{StreamExt, stream};
 
-use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
+use super::driver::{LnReceiveDriver, LnSendDriver, SendStep, through_settle, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
@@ -38,8 +38,15 @@ use crate::{
     OperationState, Preimage, Result, Timestamp,
 };
 
-// Upstream `LnPayState` onto `LnSendState`. The fee and the route come from the executed quote:
+// Upstream `LnPayState` onto a `SendStep`. The fee and the route come from the executed quote:
 // the v1 progress stream carries neither.
+//
+// `Canceled` is upstream's name for the funding transaction being rejected (it is what
+// `LightningPayStates::FundingRejected` is reported as). That is not an ending here: the notes
+// the transaction selected are put back by a later transaction of the mint's own, so the send
+// stays non-final until that settles. `Refunded` is the other thing entirely: the contract was
+// funded and then refunded, which upstream only reports once the refund went through, and it
+// ends the send directly.
 //
 // | upstream                          | here                                   |
 // | --------------------------------- | -------------------------------------- |
@@ -47,20 +54,20 @@ use crate::{
 // | `Funded`, `AwaitingChange`        | `Funded`                               |
 // | `WaitingForRefund`                | `Funded` (a refund is still in flight) |
 // | `Success { preimage }`            | `Success`                              |
-// | `Canceled` (never funded)         | `Refunded`                             |
+// | `Canceled` (funding rejected)     | settle the inputs, then end            |
 // | `Refunded`                        | `Refunded`                             |
 // | `UnexpectedError`                 | `Failed`                               |
 pub(super) fn map_ln_pay(
     state: &LnPayState,
     fee: Amount,
     route: &LightningRoute,
-) -> Result<LnSendState> {
+) -> Result<SendStep> {
     Ok(match state {
-        LnPayState::Created => LnSendState::Created,
+        LnPayState::Created => SendStep::State(LnSendState::Created),
         LnPayState::Funded { .. }
         | LnPayState::AwaitingChange
-        | LnPayState::WaitingForRefund { .. } => LnSendState::Funded,
-        LnPayState::Success { preimage } => LnSendState::Success {
+        | LnPayState::WaitingForRefund { .. } => SendStep::State(LnSendState::Funded),
+        LnPayState::Success { preimage } => SendStep::State(LnSendState::Success {
             // v1 reports the preimage as the hex text the gateway answered with, unvalidated.
             preimage: preimage.parse::<Preimage>().map_err(|err| {
                 Error::new(
@@ -70,45 +77,52 @@ pub(super) fn map_ln_pay(
             })?,
             fee,
             route: route.clone(),
-        },
-        LnPayState::Canceled | LnPayState::Refunded { .. } => LnSendState::Refunded,
-        LnPayState::UnexpectedError { error_message } => LnSendState::Failed {
+        }),
+        LnPayState::Canceled => SendStep::FundingRejected,
+        LnPayState::Refunded { .. } => SendStep::State(LnSendState::Refunded),
+        LnPayState::UnexpectedError { error_message } => SendStep::State(LnSendState::Failed {
             reason: error_message.clone(),
-        },
+        }),
     })
 }
 
-// Upstream `InternalPayState` onto `LnSendState`, for a payment settled inside the federation.
+// Upstream `InternalPayState` onto a `SendStep`, for a payment settled inside the federation.
 //
-// | upstream                       | here        |
-// | ------------------------------ | ----------- |
-// | `Funding`                      | `Created`   |
-// | `Preimage`                     | `Success`   |
-// | `RefundSuccess`                | `Refunded`  |
-// | `FundingFailed` (never debited)| `Refunded`  |
-// | `RefundError`                  | `Failed`    |
-// | `UnexpectedError`              | `Failed`    |
+// `FundingFailed` is the funding transaction being rejected, and is gated the same way
+// `LnPayState::Canceled` is above: the value the rejected transaction removed is recovered
+// afterwards, so the send stays non-final until that settles. `RefundSuccess` is upstream
+// reporting a refund that already succeeded, so it ends the send directly.
+//
+// | upstream                       | here                        |
+// | ------------------------------ | --------------------------- |
+// | `Funding`                      | `Created`                   |
+// | `Preimage`                     | `Success`                   |
+// | `RefundSuccess`                | `Refunded`                  |
+// | `FundingFailed`                | settle the inputs, then end |
+// | `RefundError`                  | `Failed`                    |
+// | `UnexpectedError`              | `Failed`                    |
 pub(super) fn map_internal_pay(
     state: &InternalPayState,
     fee: Amount,
     route: &LightningRoute,
-) -> LnSendState {
+) -> SendStep {
     match state {
-        InternalPayState::Funding => LnSendState::Created,
-        InternalPayState::Preimage(preimage) => LnSendState::Success {
+        InternalPayState::Funding => SendStep::State(LnSendState::Created),
+        InternalPayState::Preimage(preimage) => SendStep::State(LnSendState::Success {
             preimage: Preimage::from_bytes(preimage.0),
             fee,
             route: route.clone(),
-        },
-        InternalPayState::RefundSuccess { .. } | InternalPayState::FundingFailed { .. } => {
-            LnSendState::Refunded
+        }),
+        InternalPayState::RefundSuccess { .. } => SendStep::State(LnSendState::Refunded),
+        InternalPayState::FundingFailed { .. } => SendStep::FundingRejected,
+        InternalPayState::RefundError { error_message, .. } => {
+            SendStep::State(LnSendState::Failed {
+                reason: error_message.clone(),
+            })
         }
-        InternalPayState::RefundError { error_message, .. } => LnSendState::Failed {
-            reason: error_message.clone(),
-        },
-        InternalPayState::UnexpectedError(message) => LnSendState::Failed {
+        InternalPayState::UnexpectedError(message) => SendStep::State(LnSendState::Failed {
             reason: message.clone(),
-        },
+        }),
     }
 }
 
@@ -140,7 +154,7 @@ pub(super) async fn subscribe_send(
     let module = module_of(&client)?;
     let fee = details.fee;
     let route = details.route.clone();
-    let stream: BoxStream<'static, Result<LnSendState>> = match &route {
+    let steps: BoxStream<'static, Result<SendStep>> = match &route {
         LightningRoute::Internal => {
             let upstream = module
                 .subscribe_internal_pay(id)
@@ -158,6 +172,9 @@ pub(super) async fn subscribe_send(
             Box::pin(upstream.map(move |state| map_ln_pay(&state, fee, &route)))
         }
     };
+    // The stream is `'static` and outlives this call, so it carries the way back to the
+    // federation rather than the federation itself; see `through_settle`.
+    let stream = through_settle(steps, federation.sdk.clone(), federation.id, id);
     Ok(until_final(stream))
 }
 
@@ -1140,7 +1157,6 @@ mod tests {
                 },
                 LnSendState::Funded,
             ),
-            (LnPayState::Canceled, LnSendState::Refunded),
             (
                 LnPayState::Refunded {
                     gateway_error: GatewayPayError::OutgoingContractError,
@@ -1159,10 +1175,38 @@ mod tests {
         for (upstream, expected) in cases {
             assert_eq!(
                 map_ln_pay(&upstream, fee(), &gateway_route()).expect("maps"),
-                expected,
+                SendStep::State(expected),
                 "{upstream:?}"
             );
         }
+    }
+
+    /// The whole point of `SendStep`: upstream calls a rejected funding transaction an ending,
+    /// and this mapping refuses to. `Refunded` here would promise the notes the transaction
+    /// selected are spendable again at a moment when nothing has established that.
+    #[test]
+    fn a_rejected_funding_is_not_an_ending_on_the_gateway_route() {
+        assert_eq!(
+            map_ln_pay(&LnPayState::Canceled, fee(), &gateway_route()).expect("maps"),
+            SendStep::FundingRejected,
+        );
+    }
+
+    /// The contract's own refund is the opposite case: upstream reports it only once it went
+    /// through, so there is nothing left to settle and it ends the send directly.
+    #[test]
+    fn a_contract_refund_ends_the_send_without_settling() {
+        assert_eq!(
+            map_ln_pay(
+                &LnPayState::Refunded {
+                    gateway_error: GatewayPayError::OutgoingContractError,
+                },
+                fee(),
+                &gateway_route(),
+            )
+            .expect("maps"),
+            SendStep::State(LnSendState::Refunded),
+        );
     }
 
     #[test]
@@ -1177,11 +1221,11 @@ mod tests {
         .expect("maps");
         assert_eq!(
             mapped,
-            LnSendState::Success {
+            SendStep::State(LnSendState::Success {
                 preimage: Preimage::from_bytes([0x11; 32]),
                 fee: fee(),
                 route: gateway_route(),
-            }
+            })
         );
     }
 
@@ -1223,12 +1267,6 @@ mod tests {
                 LnSendState::Refunded,
             ),
             (
-                InternalPayState::FundingFailed {
-                    error: error.clone(),
-                },
-                LnSendState::Refunded,
-            ),
-            (
                 InternalPayState::RefundError {
                     error_message: "stuck".to_owned(),
                     error,
@@ -1247,10 +1285,29 @@ mod tests {
         for (upstream, expected) in cases {
             assert_eq!(
                 map_internal_pay(&upstream, fee(), &LightningRoute::Internal),
-                expected,
+                SendStep::State(expected),
                 "{upstream:?}"
             );
         }
+    }
+
+    /// The internal route's own funding rejection, gated for the same reason the gateway
+    /// route's is: `FundingFailed` is where the recovery starts, not where it ended.
+    #[test]
+    fn a_rejected_funding_is_not_an_ending_on_the_internal_route() {
+        use fedimint_ln_client::incoming::IncomingSmError;
+
+        let error = IncomingSmError::TimeoutFetchingOffer {
+            payment_hash: fedimint_core::bitcoin::hashes::Hash::hash(b"x"),
+        };
+        assert_eq!(
+            map_internal_pay(
+                &InternalPayState::FundingFailed { error },
+                fee(),
+                &LightningRoute::Internal,
+            ),
+            SendStep::FundingRejected,
+        );
     }
 
     #[test]

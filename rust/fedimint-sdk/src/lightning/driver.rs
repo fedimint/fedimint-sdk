@@ -1,17 +1,68 @@
 //! The two lightning drivers, the backfiller, and the stream helpers they share.
 
 use std::any::Any;
+use std::sync::Weak;
 
+use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
+use fedimint_core::task::MaybeSend;
 use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt as _;
 
 use super::{v1, v2, wire};
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
+use crate::inputs::Restoration;
 use crate::operation::{Backfilled, Backfiller, Driver};
+use crate::sdk::SdkInner;
 use crate::{Error, ErrorCode, LnReceiveState, LnSendState, Result};
 
 pub(super) use crate::operation::{first_state, settled, until_final};
+
+/// What one upstream send state means for this SDK's own send lifecycle.
+///
+/// Both generations map most of their states straight across. The second arm is why this is a
+/// type rather than an `LnSendState`: upstream reports a rejected funding transaction as an
+/// ending, and here it is not one. The value that transaction removed is recovered afterwards,
+/// by a separate transaction that can itself fail, so the send stays non-final until that
+/// settles and the ending is chosen from what it established. See [`crate::inputs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SendStep {
+    /// Hand this state out as it is.
+    State(LnSendState),
+    /// The funding transaction was rejected. Settle the inputs it removed, then end on what
+    /// that proves: [`LnSendState::Refunded`] when the value is spendable again, and
+    /// [`LnSendState::Failed`] when a clean return cannot be established.
+    FundingRejected,
+}
+
+/// Turns a stream of steps into one of states, settling a rejected funding before ending.
+///
+/// The settle is unbounded, and the stream yields nothing while it runs: a subscriber goes on
+/// seeing the last non-final state it was given, which is the truth: the operation has not
+/// finished. `sdk` and `federation_id` are carried rather than a federation or a client,
+/// because the stream outlives the call that built it.
+pub(super) fn through_settle(
+    stream: impl futures::Stream<Item = Result<SendStep>> + MaybeSend + 'static,
+    sdk: Weak<SdkInner>,
+    federation_id: FederationId,
+    id: OperationId,
+) -> BoxStream<'static, Result<LnSendState>> {
+    Box::pin(stream.then(move |step| {
+        let sdk = sdk.clone();
+        async move {
+            match step? {
+                SendStep::State(state) => Ok(state),
+                SendStep::FundingRejected => {
+                    match crate::inputs::settle(sdk, federation_id, id).await? {
+                        Restoration::Restored => Ok(LnSendState::Refunded),
+                        Restoration::Unproven(reason) => Ok(LnSendState::Failed { reason }),
+                    }
+                }
+            }
+        }
+    }))
+}
 
 /// Observes an outgoing lightning payment of either generation, chosen by the record's module.
 pub(crate) struct LnSendDriver;
@@ -149,7 +200,7 @@ fn unknown_module(module: &str) -> Error {
 mod tests {
     use std::time::Duration;
 
-    use futures::{StreamExt as _, stream};
+    use futures::stream;
     use tokio::sync::oneshot;
 
     use super::*;
@@ -248,6 +299,73 @@ mod tests {
             .await
             .expect_err("an empty stream must not settle");
         assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_state_step_passes_straight_through() {
+        let steps: BoxStream<'static, Result<SendStep>> = Box::pin(stream::iter([
+            Ok(SendStep::State(LnSendState::Created)),
+            Ok(SendStep::State(LnSendState::Funded)),
+        ]));
+        let mut stream = through_settle(steps, Weak::new(), a_federation_id(), an_operation_id());
+
+        assert_eq!(
+            stream.next().await.expect("a state").expect("not an error"),
+            LnSendState::Created
+        );
+        assert_eq!(
+            stream.next().await.expect("a state").expect("not an error"),
+            LnSendState::Funded
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    /// The regression this whole path exists for: a rejected funding must reach the settle gate
+    /// rather than being handed out as an ending. The instance is gone here, so the gate cannot
+    /// run and reports the federation closed — which is still proof the step went to the gate.
+    /// Mapping `FundingRejected` back onto `LnSendState::Refunded` would yield a state instead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rejected_funding_goes_to_the_gate_rather_than_ending_the_send() {
+        let steps: BoxStream<'static, Result<SendStep>> = Box::pin(stream::iter([
+            Ok(SendStep::State(LnSendState::Created)),
+            Ok(SendStep::FundingRejected),
+        ]));
+        let mut stream = through_settle(steps, Weak::new(), a_federation_id(), an_operation_id());
+
+        assert_eq!(
+            stream.next().await.expect("a state").expect("not an error"),
+            LnSendState::Created
+        );
+        let err = stream
+            .next()
+            .await
+            .expect("the rejection produces an item")
+            .expect_err("the gate cannot run without an instance");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_error_step_is_forwarded_unchanged() {
+        let steps: BoxStream<'static, Result<SendStep>> = Box::pin(stream::iter([Err(
+            Error::new(ErrorCode::Internal, "upstream went wrong"),
+        )]));
+        let mut stream = through_settle(steps, Weak::new(), a_federation_id(), an_operation_id());
+
+        let err = stream
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("the error is forwarded");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert_eq!(err.message, "upstream went wrong");
+    }
+
+    fn a_federation_id() -> FederationId {
+        FederationId::dummy()
+    }
+
+    fn an_operation_id() -> OperationId {
+        OperationId([0x11; 32])
     }
 
     #[test]

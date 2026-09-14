@@ -271,7 +271,7 @@ pub struct LnQuote {
 }
 
 impl LnQuote {
-    /// The invoice's amount: what will reach the payee.
+    /// The invoice's amount: what reaches the payee if the payment succeeds.
     pub fn invoice_amount(&self) -> Amount {
         self.inner.invoice_amount
     }
@@ -300,12 +300,25 @@ impl LnQuote {
     /// The whole debit this payment will make against the balance:
     /// [`LnQuote::invoice_amount`] plus [`LnQuote::fee`].
     ///
-    /// This is the number to show as "you will pay", and it is exact.
-    /// [`Lightning::send`] debits this much or fails with
+    /// This is the number to show as "you will pay", and it is exact: the
+    /// debit execution is authorised to make, not a ceiling or an estimate.
+    /// A payment that would cost anything else is refused with
     /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), whose
     /// [`ErrorDetails::QuoteTermsChanged`](crate::ErrorDetails::QuoteTermsChanged)
-    /// names this total and the one the payment would now cost. The same
-    /// figure is what [`LnSendDetails::total`] records.
+    /// names this total and the one the payment would now cost, so the user
+    /// re-approves a new number rather than quietly paying a different one.
+    /// The same figure is what [`LnSendDetails::total`] records.
+    ///
+    /// "This much or nothing" is a statement about the authorised debit, not
+    /// about what the balance does moment to moment. Executing the quote
+    /// submits a transaction, and submitting one takes the notes that are to
+    /// pay for it out of the spendable set before the federation has
+    /// accepted anything. A funding attempt the federation then rejects can
+    /// therefore remove value and restore it afterwards. Nothing else is
+    /// ever debited than this total, and a payment that does not succeed
+    /// leaves no lasting debit at all, but the balance may dip and recover
+    /// in between; [`LnSendState::Refunded`] is the state that says the
+    /// recovery is done.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }
@@ -401,10 +414,10 @@ pub struct LnReceive {
 ///
 /// The final states are drawn by what happened to the money.
 /// [`Success`](Self::Success) means the payee was paid;
-/// [`Refunded`](Self::Refunded) means the funds are safe in the balance,
-/// whether returned or never debited; [`Failed`](Self::Failed) means the
-/// payment did not resolve into either. A payment has no cancellation:
-/// once sent it runs to one of those endings.
+/// [`Refunded`](Self::Refunded) means the payment left no lasting debit and
+/// the value is spendable again; [`Failed`](Self::Failed) means the payment
+/// did not resolve into either. A payment has no cancellation: once sent it
+/// runs to one of those endings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LnSendState {
@@ -428,15 +441,36 @@ pub enum LnSendState {
         /// Also recorded as [`LnSendDetails::route`].
         route: LightningRoute,
     },
-    /// Final: the payment did not go through and the funds are in the
-    /// spendable balance, returned or never debited.
+    /// Final: the payment did not go through and the value it was
+    /// authorised for is spendable again.
     ///
     /// This is the ordinary failure of a lightning payment: no route, the
-    /// payee went away, the gateway gave up, or the funding was rejected
-    /// before anything left. The money is safe.
+    /// payee went away, the gateway gave up, or the federation rejected the
+    /// transaction that would have funded it. What the endings have in
+    /// common is the promise this state makes, which is about the balance
+    /// now and not about the route taken to it: whatever the payment
+    /// removed along the way, no part of it is still standing against the
+    /// balance. The money is safe.
+    ///
+    /// Reaching that promise is not always instant, and this state waits
+    /// for it. Funding a payment selects the notes that are to pay for it
+    /// before consensus has accepted anything, so a rejected funding
+    /// transaction leaves value that is neither spent nor yet spendable,
+    /// and returning it is a later transaction of the mint's own. The
+    /// payment stays non-final for as long as that runs. Only once it has
+    /// settled, and settled in a way that establishes the value came back,
+    /// is this state reported; a recovery that settles without
+    /// establishing it ends the payment in [`Failed`](Self::Failed)
+    /// instead.
     Refunded,
     /// Final: the payment failed in a way that did not resolve into a clean
     /// refund.
+    ///
+    /// Either the payment got far enough to be at risk and no refund
+    /// followed, or its funding was rejected and the value that attempt
+    /// removed could not be established as spendable again. Both mean the
+    /// same thing to an application: this state cannot say where the money
+    /// is, so read the balance rather than inferring one.
     Failed {
         /// Human-readable explanation. Diagnostic only, not a stable
         /// contract, and not something to match on.
@@ -466,7 +500,7 @@ impl OperationState for LnSendState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LnSendDetails {
-    /// The invoice this payment pays.
+    /// The invoice this payment was authorised to pay.
     ///
     /// The payee, the payment hash, the description and the expiry all read
     /// back off it.
