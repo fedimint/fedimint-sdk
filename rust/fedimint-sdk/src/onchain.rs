@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
-use fedimint_client_module::transaction::FeeQuote;
+use fedimint_client_module::transaction::{FeeQuote, FeeQuoteRequest};
 use fedimint_core::bitcoin;
 use fedimint_core::config;
+use fedimint_core::core::OperationId;
+use fedimint_core::module::Amounts;
 
 use crate::{
     Address, Amount, Error, ErrorCode, ErrorDetails, FederationStatus, Network, Operation,
@@ -956,7 +958,7 @@ fn check_network(address: &Address, expected: Network) -> Result<()> {
 /// Refuses a withdrawal amount the federation cannot execute: zero, or below the destination's
 /// dust threshold. `amount` is converted with `sats_to_bitcoin` for the comparison against
 /// `dust`, which is the v1 script's `minimal_non_dust()` or the walletv2 config's `dust_limit`.
-fn check_amount(amount: Sats, dust: bitcoin::Amount) -> Result<()> {
+pub(super) fn check_amount(amount: Sats, dust: bitcoin::Amount) -> Result<()> {
     if amount.sats() == 0 {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -1034,6 +1036,65 @@ pub(super) fn plan_of(
         total,
         terms,
     })
+}
+
+/// The fee, its named parts, and the net credit for a claimed deposit, from a dry run of the
+/// primary module's own balancing rather than a guess drawn from the balance.
+///
+/// Shared between both wallet generations, which differ only in what they pass: v1's
+/// `input_amount` is the full gross deposit and `input_fee` its flat peg-in charge, with no
+/// on-chain claim cost of its own (`network_claim = 0`); walletv2's `input_amount` is the gross
+/// already net of the on-chain consolidation fee it deducts before forming the federation
+/// transaction, `input_fee` its consensus fee on that net amount, and `network_claim` the
+/// consolidation fee itself.
+pub(super) async fn claim_figures(
+    client: &Client,
+    input_amount: Amount,
+    input_fee: Amount,
+    network_claim: Amount,
+    gross: Sats,
+) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
+    let quote = client
+        .fee_quote(
+            OperationId::new_random(),
+            FeeQuoteRequest {
+                input_amount: Amounts::new_bitcoin(to_upstream(input_amount)),
+                output_amount: Amounts::ZERO,
+                input_fee: Amounts::new_bitcoin(to_upstream(input_fee)),
+                output_fee: Amounts::ZERO,
+            },
+        )
+        .await
+        .map_err(|err| internal(format!("could not quote the deposit's claim fee: {err}")))?;
+    figures_of(&quote, input_fee, network_claim, gross)
+}
+
+/// The pure arithmetic behind [`claim_figures`], factored out so it is testable without a
+/// client: nothing can build a [`FeeQuote`] except by asking one for real, but the quote itself
+/// is plain data once obtained.
+fn figures_of(
+    quote: &FeeQuote,
+    input_fee: Amount,
+    network_claim: Amount,
+    gross: Sats,
+) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
+    let breakdown = OnchainReceiveFeeBreakdown {
+        peg_in: input_fee,
+        network_claim,
+        primary_module: from_upstream(quote.output.get_bitcoin()),
+        dust: from_upstream(quote.dust.get_bitcoin()),
+    };
+    let fee = add(
+        add(
+            add(breakdown.peg_in, breakdown.network_claim)?,
+            breakdown.primary_module,
+        )?,
+        breakdown.dust,
+    )?;
+    let net_credit = sats_to_amount(gross)?
+        .checked_sub(fee)
+        .ok_or_else(|| internal("the claim fee exceeds the deposit's gross amount"))?;
+    Ok((fee, breakdown, net_credit))
 }
 
 pub(super) fn to_upstream(amount: Amount) -> fedimint_core::Amount {
@@ -1141,6 +1202,11 @@ pub(super) fn timeout() -> Error {
 /// The spendable balance, as `Federation::balance` reads it.
 pub(super) async fn balance_of(client: &Client, status: FederationStatus) -> Result<Amount> {
     crate::federation::balance_of(client, status).await
+}
+
+/// This device's clock, for a details record's `created_at`.
+pub(super) fn now() -> Timestamp {
+    Timestamp::from_epoch_millis(crate::db::now_millis())
 }
 
 #[cfg(test)]
@@ -1458,8 +1524,6 @@ mod tests {
     /// msat funds the transaction, `output` is the module's own 1 000 000 msat fee plus 567
     /// msat of change, `dust` is 5 msat.
     fn a_fee_quote() -> FeeQuote {
-        use fedimint_core::module::Amounts;
-
         FeeQuote {
             input: Amounts::new_bitcoin_msats(34_000),
             output: Amounts::new_bitcoin_msats(1_000_567),
@@ -1503,8 +1567,6 @@ mod tests {
 
     #[test]
     fn plan_of_with_output_below_the_module_fee_is_internal() {
-        use fedimint_core::module::Amounts;
-
         let quote = FeeQuote {
             input: Amounts::ZERO,
             output: Amounts::new_bitcoin_msats(10),
@@ -1617,5 +1679,46 @@ mod tests {
         assert_eq!(internal("oops").code, ErrorCode::Internal);
         assert_eq!(subscribe_error("closed").code, ErrorCode::Internal);
         assert_eq!(timeout().code, ErrorCode::Timeout);
+    }
+
+    #[test]
+    fn figures_of_builds_the_claim_fee_breakdown_and_refuses_a_fee_above_the_gross() {
+        let quote = FeeQuote {
+            input: Amounts::new_bitcoin_msats(0),
+            output: Amounts::new_bitcoin_msats(200),
+            dust: Amounts::new_bitcoin_msats(3),
+        };
+        let (fee, breakdown, net_credit) = figures_of(
+            &quote,
+            Amount::from_msats(1_000_000),
+            Amount::from_msats(500),
+            Sats::from_sats(100_000),
+        )
+        .expect("a claim");
+        assert_eq!(
+            breakdown,
+            OnchainReceiveFeeBreakdown {
+                peg_in: Amount::from_msats(1_000_000),
+                network_claim: Amount::from_msats(500),
+                primary_module: Amount::from_msats(200),
+                dust: Amount::from_msats(3),
+            }
+        );
+        assert_eq!(fee, Amount::from_msats(1_000_703));
+        assert_eq!(net_credit, Amount::from_msats(100_000_000 - 1_000_703));
+
+        let starved = FeeQuote {
+            input: Amounts::ZERO,
+            output: Amounts::new_bitcoin_msats(200_000_000),
+            dust: Amounts::ZERO,
+        };
+        let err = figures_of(
+            &starved,
+            Amount::from_msats(0),
+            Amount::from_msats(0),
+            Sats::from_sats(100_000),
+        )
+        .expect_err("the fee exceeds the gross deposit");
+        assert_eq!(err.code, ErrorCode::Internal);
     }
 }
