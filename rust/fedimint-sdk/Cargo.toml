@@ -58,6 +58,13 @@ fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1a
 fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+# `MintClientModule` keeps its `MintClientConfig` (and the `FeeConsensus`/denomination
+# rounding on it) private, and re-exports nothing that names the type from
+# `fedimint-mint-client` itself, so reading the fee schedule at all means naming
+# `MintClientConfig` at its own defining crate. Already resolved at the identical
+# revision as a transitive dependency of `fedimint-mint-client`; this only makes it
+# directly nameable, it does not change what's compiled.
+fedimint-mint-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
@@ -116,6 +123,7 @@ tokio = { version = "1.48.0", features = [
     "net",
     "io-util",
 ] }
+socket2 = { version = "0.5", features = ["all"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
