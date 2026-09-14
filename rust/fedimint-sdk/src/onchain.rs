@@ -1,15 +1,18 @@
 //! On-chain Bitcoin: deposits into the federation and withdrawals out of
 //! it.
 
+use std::collections::{HashMap, hash_map};
 use std::sync::Arc;
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
-use fedimint_client_module::transaction::{FeeQuote, FeeQuoteRequest};
+use fedimint_client_module::transaction::{
+    FeeQuote, TRANSACTION_SUBMISSION_MODULE_INSTANCE, TxSubmissionStates, TxSubmissionStatesSM,
+};
 use fedimint_core::bitcoin;
 use fedimint_core::config;
-use fedimint_core::core::OperationId;
-use fedimint_core::module::Amounts;
+use fedimint_core::core::{DynOutput, ModuleInstanceId, OperationId};
+use fedimint_core::transaction::Transaction;
 
 use crate::{
     Address, Amount, Error, ErrorCode, ErrorDetails, FederationStatus, Network, Operation,
@@ -207,6 +210,13 @@ impl Onchain {
         check_network(address, federation.record().network.into())?;
         let client = federation.client(true).await?;
         let available = balance_of(&client, federation.status()).await?;
+        // The plan's federation round trip cannot report a shortfall when the balance does not
+        // even cover `amount` on its own; `ErrorDetails::InsufficientBalance::required` documents
+        // that no fee is included in this early figure.
+        let requested = sats_to_amount(amount)?;
+        if available < requested {
+            return Err(insufficient(requested, available));
+        }
         let plan = match module(&client)? {
             WalletModule::V1(module) => v1::plan(&client, &module, address, amount).await?,
             WalletModule::V2(module) => v2::plan(&client, &module, address, amount).await?,
@@ -1071,8 +1081,14 @@ pub(super) fn plan_of(
     })
 }
 
-/// The fee, its named parts, and the net credit for a claimed deposit, from a dry run of the
-/// primary module's own balancing rather than a guess drawn from the balance.
+/// The fee, its named parts, and the net credit for a claimed deposit, read from what the claim
+/// transaction itself minted rather than a dry run of the primary module's own balancing.
+///
+/// A dry run cannot be right here: the mint shapes the change it mints to reach a target note
+/// count per denomination, so the split, and with it the per-note fees, depends on the note
+/// inventory at the moment the claim was built. By the time a claim is observed the notes it
+/// minted are already in that inventory, so a fresh dry run sees a different split and reports a
+/// different fee than the one actually charged.
 ///
 /// Shared between both wallet generations, which differ only in what they pass: v1's
 /// `input_amount` is the full gross deposit and `input_fee` its flat peg-in charge, with no
@@ -1080,42 +1096,164 @@ pub(super) fn plan_of(
 /// already net of the on-chain consolidation fee it deducts before forming the federation
 /// transaction, `input_fee` its consensus fee on that net amount, and `network_claim` the
 /// consolidation fee itself.
+// `operation_id` is the claim's own upstream operation id: v1's deposit operation id, the one
+// `subscribe_deposit` runs under, or walletv2's linked upstream operation id (`v2::Link::upstream`).
+// `claim_mint_outputs` uses it to find the submitted transaction.
 pub(super) async fn claim_figures(
     client: &Client,
+    operation_id: OperationId,
     input_amount: Amount,
     input_fee: Amount,
     network_claim: Amount,
     gross: Sats,
 ) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
-    let quote = client
-        .fee_quote(
-            OperationId::new_random(),
-            FeeQuoteRequest {
-                input_amount: Amounts::new_bitcoin(to_upstream(input_amount)),
-                output_amount: Amounts::ZERO,
-                input_fee: Amounts::new_bitcoin(to_upstream(input_fee)),
-                output_fee: Amounts::ZERO,
-            },
-        )
-        .await
-        .map_err(|err| internal(format!("could not quote the deposit's claim fee: {err}")))?;
-    figures_of(&quote, input_fee, network_claim, gross)
+    let outputs = claim_mint_outputs(client, operation_id).await?;
+    figures_of(&outputs, input_amount, input_fee, network_claim, gross)
 }
 
-/// The pure arithmetic behind [`claim_figures`], factored out so it is testable without a
-/// client: nothing can build a [`FeeQuote`] except by asking one for real, but the quote itself
-/// is plain data once obtained.
+/// The claim transaction's own mint outputs, one `(amount, fee)` pair per output: every output of
+/// a claim is mint change, so this is exactly what the claim minted, paired with what the owning
+/// mint module's own fee schedule charges to mint it.
+///
+/// No public API at this pin reports what a claim actually minted, so this reaches into the
+/// client's own state store: `finalize_and_submit_transaction` registers a transaction-submission
+/// state machine under the claim's operation id whose first state carries the whole transaction,
+/// and the only way to read a state machine back out is `Client::executor`, documented there as
+/// tooling for the CLI, "not meant for external use". The follow-up is an upstream accessor that
+/// reports a claim's outputs directly, without going through the executor at all.
+async fn claim_mint_outputs(
+    client: &Client,
+    operation_id: OperationId,
+) -> Result<Vec<(Amount, Amount)>> {
+    let tx = claim_transaction(client, operation_id).await?;
+    let mut fee_schedules: HashMap<ModuleInstanceId, MintFeeConsensus> = HashMap::new();
+    let mut outputs = Vec::with_capacity(tx.outputs.len());
+    for output in &tx.outputs {
+        let instance_id = output.module_instance_id();
+        if let hash_map::Entry::Vacant(entry) = fee_schedules.entry(instance_id) {
+            entry.insert(mint_fee_consensus(client, instance_id).await?);
+        }
+        let amount = mint_output_amount(output)?;
+        let fee = from_upstream(fee_schedules[&instance_id].fee(to_upstream(amount)));
+        outputs.push((amount, fee));
+    }
+    Ok(outputs)
+}
+
+/// Reads back the transaction a claim submitted, from the transaction-submission state machine
+/// `finalize_and_submit_transaction` registers under the claim's operation id: `Created(tx)`
+/// carries the whole transaction and stays readable, as an inactive state, once the transaction
+/// is accepted.
+async fn claim_transaction(client: &Client, operation_id: OperationId) -> Result<Transaction> {
+    let (active, inactive) = client.executor().get_operation_states(operation_id).await;
+    active
+        .into_iter()
+        .map(|(state, _)| state)
+        .chain(inactive.into_iter().map(|(state, _)| state))
+        .filter(|state| state.module_instance_id() == TRANSACTION_SUBMISSION_MODULE_INSTANCE)
+        .find_map(|state| {
+            let sm = state.as_any().downcast_ref::<TxSubmissionStatesSM>()?;
+            match &sm.state {
+                TxSubmissionStates::Created(tx) => Some(tx.clone()),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| {
+            internal(format!(
+                "no submitted transaction found for claim {}",
+                operation_id.fmt_full()
+            ))
+        })
+}
+
+/// One mint output's amount, whichever mint module generation minted it.
+fn mint_output_amount(output: &DynOutput) -> Result<Amount> {
+    if let Some(v1) = output
+        .as_any()
+        .downcast_ref::<fedimint_mint_common::MintOutput>()
+    {
+        return v1
+            .ensure_v0_ref()
+            .map(|v0| from_upstream(v0.amount))
+            .map_err(internal);
+    }
+    if let Some(v2) = output
+        .as_any()
+        .downcast_ref::<fedimint_mintv2_common::MintOutput>()
+    {
+        return v2
+            .ensure_v0_ref()
+            .map(|v0| from_upstream(v0.denomination.amount()))
+            .map_err(internal);
+    }
+    Err(internal(
+        "a claim transaction's output was not a mint output",
+    ))
+}
+
+/// Either mint module generation's own fee schedule, read once per module instance id by
+/// [`claim_mint_outputs`] and applied to every output that instance minted.
+enum MintFeeConsensus {
+    V1(fedimint_mint_common::config::FeeConsensus),
+    V2(fedimint_mintv2_common::config::FeeConsensus),
+}
+
+impl MintFeeConsensus {
+    fn fee(&self, amount: fedimint_core::Amount) -> fedimint_core::Amount {
+        match self {
+            MintFeeConsensus::V1(fee_consensus) => fee_consensus.fee(amount),
+            MintFeeConsensus::V2(fee_consensus) => fee_consensus.fee(amount),
+        }
+    }
+}
+
+/// The fee schedule for one mint module instance, cast out of the client's decoded config exactly
+/// as `Ecash::quote` reads `MintClientConfig` for the v1 mint: both mint client crates keep the
+/// type private and it is only nameable through their `-common` counterparts.
+async fn mint_fee_consensus(client: &Client, id: ModuleInstanceId) -> Result<MintFeeConsensus> {
+    let module_cfg = client.config().await.get_module_cfg(id).map_err(internal)?;
+    if let Ok(cfg) = module_cfg.cast::<fedimint_mint_common::config::MintClientConfig>() {
+        return Ok(MintFeeConsensus::V1(cfg.fee_consensus.clone()));
+    }
+    let cfg = module_cfg
+        .cast::<fedimint_mintv2_common::config::MintClientConfig>()
+        .map_err(internal)?;
+    Ok(MintFeeConsensus::V2(cfg.fee_consensus.clone()))
+}
+
+/// The pure arithmetic behind [`claim_figures`], factored out so it is testable without a client
+/// or a real claim transaction: `outputs` is one `(amount, fee)` pair per output the claim
+/// minted, `fee` already the owning mint module's `fee_consensus.fee(amount)`.
+///
+/// `net_credit` is the sum of the output amounts: exactly what was minted, exactly what the
+/// balance moved by. `fee` is assembled independently from the four named parts and asserted to
+/// equal `gross - net_credit`, the record's documented identity; a mismatch is a bug in this
+/// function or in what a caller passed, never a figure to guess past.
 fn figures_of(
-    quote: &FeeQuote,
+    outputs: &[(Amount, Amount)],
+    input_amount: Amount,
     input_fee: Amount,
     network_claim: Amount,
     gross: Sats,
 ) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
+    let mut net_credit = Amount::from_msats(0);
+    let mut primary_module = Amount::from_msats(0);
+    for (amount, fee) in outputs {
+        net_credit = add(net_credit, *amount)?;
+        primary_module = add(primary_module, *fee)?;
+    }
+    let minted = add(net_credit, primary_module)?;
+    let available = input_amount
+        .checked_sub(input_fee)
+        .ok_or_else(|| internal("the claim's peg-in fee exceeds its input amount"))?;
+    let dust = available
+        .checked_sub(minted)
+        .ok_or_else(|| internal("the claim minted more than its input amount allows"))?;
     let breakdown = OnchainReceiveFeeBreakdown {
         peg_in: input_fee,
         network_claim,
-        primary_module: from_upstream(quote.output.get_bitcoin()),
-        dust: from_upstream(quote.dust.get_bitcoin()),
+        primary_module,
+        dust,
     };
     let fee = add(
         add(
@@ -1124,9 +1262,14 @@ fn figures_of(
         )?,
         breakdown.dust,
     )?;
-    let net_credit = sats_to_amount(gross)?
-        .checked_sub(fee)
+    let expected_fee = sats_to_amount(gross)?
+        .checked_sub(net_credit)
         .ok_or_else(|| internal("the claim fee exceeds the deposit's gross amount"))?;
+    if fee != expected_fee {
+        return Err(internal(
+            "the claim's fee components do not reconcile with its gross amount and net credit",
+        ));
+    }
     Ok((fee, breakdown, net_credit))
 }
 
@@ -1255,6 +1398,8 @@ pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use fedimint_core::module::Amounts;
+
     use super::*;
     use crate::DetailedOperationState;
 
@@ -1725,44 +1870,55 @@ mod tests {
         assert_eq!(timeout().code, ErrorCode::Timeout);
     }
 
+    /// The hand-built claim the defect fix's own worked example uses: a 100 000 000 msat input,
+    /// a 1 000 000 msat peg-in fee, and three change notes the mint shaped to hit its target note
+    /// count, 67 108 864 / 31 000 000 / 890 000 msat, each charged the same 100 msat fee. Dust is
+    /// whatever the notes plus their fees left of the input after the peg-in fee: 99 000 000
+    /// available less 98 999 164 actually minted, 836 msat.
     #[test]
-    fn figures_of_builds_the_claim_fee_breakdown_and_refuses_a_fee_above_the_gross() {
-        let quote = FeeQuote {
-            input: Amounts::new_bitcoin_msats(0),
-            output: Amounts::new_bitcoin_msats(200),
-            dust: Amounts::new_bitcoin_msats(3),
-        };
+    fn figures_of_builds_the_claim_fee_breakdown_from_its_own_outputs() {
+        let outputs = [
+            (Amount::from_msats(67_108_864), Amount::from_msats(100)),
+            (Amount::from_msats(31_000_000), Amount::from_msats(100)),
+            (Amount::from_msats(890_000), Amount::from_msats(100)),
+        ];
         let (fee, breakdown, net_credit) = figures_of(
-            &quote,
+            &outputs,
+            Amount::from_msats(100_000_000),
             Amount::from_msats(1_000_000),
-            Amount::from_msats(500),
+            Amount::from_msats(0),
             Sats::from_sats(100_000),
         )
         .expect("a claim");
+        assert_eq!(net_credit, Amount::from_msats(98_998_864));
         assert_eq!(
             breakdown,
             OnchainReceiveFeeBreakdown {
                 peg_in: Amount::from_msats(1_000_000),
-                network_claim: Amount::from_msats(500),
-                primary_module: Amount::from_msats(200),
-                dust: Amount::from_msats(3),
+                network_claim: Amount::from_msats(0),
+                primary_module: Amount::from_msats(300),
+                dust: Amount::from_msats(836),
             }
         );
-        assert_eq!(fee, Amount::from_msats(1_000_703));
-        assert_eq!(net_credit, Amount::from_msats(100_000_000 - 1_000_703));
+        assert_eq!(fee, Amount::from_msats(1_001_136));
+        // The record's documented identity: gross less fee equals net credit, exactly.
+        assert_eq!(
+            net_credit.checked_add(fee),
+            Some(Amount::from_msats(100_000_000))
+        );
+    }
 
-        let starved = FeeQuote {
-            input: Amounts::ZERO,
-            output: Amounts::new_bitcoin_msats(200_000_000),
-            dust: Amounts::ZERO,
-        };
+    #[test]
+    fn figures_of_refuses_a_claim_that_minted_more_than_its_input_allows() {
+        let outputs = [(Amount::from_msats(200_000_000), Amount::from_msats(0))];
         let err = figures_of(
-            &starved,
+            &outputs,
+            Amount::from_msats(0),
             Amount::from_msats(0),
             Amount::from_msats(0),
             Sats::from_sats(100_000),
         )
-        .expect_err("the fee exceeds the gross deposit");
+        .expect_err("the notes minted exceed the input amount");
         assert_eq!(err.code, ErrorCode::Internal);
     }
 }

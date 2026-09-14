@@ -461,9 +461,10 @@ async fn observe_link(
     }
 }
 
-/// Re-reads the linked upstream operation's own terms and runs the claim fee dry run, so that a
-/// restart mid-claim needs nothing but the upstream operation id: `value` and `fee` are read
-/// fresh from its `ReceiveMeta` rather than trusted from an earlier pass.
+/// Re-reads the linked upstream operation's own terms and reads back what the claim transaction
+/// itself minted, so that a restart mid-claim needs nothing but the upstream operation id:
+/// `value` and `fee` are read fresh from its `ReceiveMeta` rather than trusted from an earlier
+/// pass.
 async fn claim_from_upstream(
     client: &Client,
     db: &Database,
@@ -489,6 +490,7 @@ async fn claim_from_upstream(
     let input_fee = cfg.fee_consensus.fee(input_amount);
     let (fee_total, breakdown, net_credit) = claim_figures(
         client,
+        found.upstream,
         from_upstream(input_amount),
         from_upstream(input_fee),
         from_upstream(to_upstream_sats(fee)),

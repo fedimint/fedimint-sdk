@@ -351,9 +351,9 @@ pub(super) fn map_deposit(state: &DepositStateV2, peg_in_abs: Amount) -> Deposit
 }
 
 /// A fresh stream over a v1 deposit: maps every upstream state, fills the wire record's
-/// address-side fields the first time a transaction is seen, and on the claim runs the fee dry
-/// run (or reads back a figure a previous subscription already computed) before yielding
-/// `Claimed`.
+/// address-side fields the first time a transaction is seen, and on the claim reads back what the
+/// claim transaction itself minted (or reads back a figure a previous subscription already
+/// computed) before yielding `Claimed`.
 ///
 /// The stream cannot hold the client guard the way `subscribe_withdraw` does, because the claim
 /// may arrive long after this call returns: it captures a weak handle to the SDK and re-derives
@@ -437,14 +437,14 @@ async fn fill_seen(db: &Database, id: OperationId, txid: Txid, gross: Sats) -> R
 }
 
 /// The net credit for a claimed deposit: read back if an earlier subscription already computed
-/// it, since a details record's fee fields fill in at most once, or run the dry run and persist
-/// it.
+/// it, since a details record's fee fields fill in at most once, or read the claim transaction's
+/// own mint outputs and persist the result.
 ///
-/// The dry run runs on a client this function re-derives at the moment it is needed rather than
-/// one held since the subscription started, and the wait itself is handed to
-/// `wait_holding_client` rather than simply awaited here: that function's own documentation is
-/// why a stream may not keep a client handle in its own frame across a wait an idle subscriber
-/// could park on indefinitely.
+/// The read runs on a client this function re-derives at the moment it is needed rather than one
+/// held since the subscription started, and the wait itself is handed to `wait_holding_client`
+/// rather than simply awaited here: that function's own documentation is why a stream may not
+/// keep a client handle in its own frame across a wait an idle subscriber could park on
+/// indefinitely.
 async fn claim_net_credit(
     db: &Database,
     id: OperationId,
@@ -485,6 +485,7 @@ async fn claim_net_credit(
         crate::federation::wait_holding_client(handle, stop, move |client| async move {
             claim_figures(
                 &client,
+                id,
                 sats_to_amount(gross)?,
                 peg_in_abs,
                 Amount::from_msats(0),

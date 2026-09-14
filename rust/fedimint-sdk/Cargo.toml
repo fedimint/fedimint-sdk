@@ -71,6 +71,12 @@ fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "1a
 # directly nameable, it does not change what's compiled.
 fedimint-mint-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+# Named directly for the same reason as `fedimint-mint-common` above: a claim transaction's
+# output amount is read off the concrete `mintv2_common::MintOutput` the client's own state
+# store holds, and `MintClientConfig::fee_consensus` is only nameable through this crate.
+# Already resolved at the identical revision as a transitive dependency of
+# `fedimint-mintv2-client`.
+fedimint-mintv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-wallet-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
