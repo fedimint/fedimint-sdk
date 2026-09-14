@@ -931,11 +931,11 @@ async fn receive_step(
                         let Some(federation) = live_federation(&ctx) else {
                             return Some((Err(federation_closed()), ReceiveCursor::Done));
                         };
-                        let client = match federation.client(false).await {
-                            Ok(client) => client,
+                        let handle = match federation.client(false).await {
+                            Ok(client) => client.handle(),
                             Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                         };
-                        let claimed = claim_from_upstream(&client, &ctx.db, ctx.id, &found).await;
+                        let claimed = claim_from_upstream(&handle, &ctx.db, ctx.id, &found).await;
                         return Some((claimed, ReceiveCursor::Done));
                     }
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
