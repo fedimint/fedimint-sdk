@@ -344,14 +344,6 @@ impl Sdk {
     /// persisted or a committed erase for the same id cannot be finished
     /// first.
     pub async fn join(&self, invite: &InviteCode) -> Result<Federation> {
-        // Implementation note (delete once `Sdk::recover` persists a recovery intent):
-        // - `Sdk::recover` persists its intent to recover, and the operation id of the first
-        //   attempt, before asking the client to join, so a failure between those writes can
-        //   leave a recovery intent for a federation that never actually joined. This call
-        //   must discard such a leftover intent in the same transaction that records the plain
-        //   join, unless the client's own durable state corroborates that a recovery was
-        //   committed. This matters because the erase path bypasses the balance guard for
-        //   recovery-locked federations.
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
         let id = invite.inner().federation_id();
@@ -446,9 +438,8 @@ impl Sdk {
     /// any other federation, and its balance and activity are reported and
     /// kept up to date, provisionally, as the wallet is reconstructed. What
     /// it refuses is the work that needs a complete wallet: every send and
-    /// receive, and taking a fresh backup, fail with
-    /// [`Recovering`](crate::ErrorCode::Recovering) until the
-    /// reconstruction completes.
+    /// receive fails with [`Recovering`](crate::ErrorCode::Recovering)
+    /// until the reconstruction completes.
     ///
     /// This is *not* the list to render a wallet screen from. Use
     /// [`Sdk::stored_federations`] for that: it is a superset of this list
@@ -667,6 +658,20 @@ impl Sdk {
         }
 
         let record = existing.record();
+        // Read from records alone, before `start` invokes the underlying open: a `Failed`
+        // attempt is replaced and a missing operation record is repaired here, so the open
+        // below always runs under a durable, current attempt. Its own failure quarantines
+        // exactly as a failed `start` does.
+        let attempt = match crate::recovery::engine::prepare_open(&self.inner, &existing).await {
+            Ok(attempt) => attempt,
+            Err(err) => {
+                existing.set_status(FederationStatus::Quarantined {
+                    diagnostic: err.clone().into(),
+                });
+                self.inner.announce(&existing);
+                return Err(err);
+            }
+        };
         let (client, revalidated) = match self.inner.start(&upstream, &record).await {
             Ok(started) => started,
             Err(err) => {
@@ -684,7 +689,6 @@ impl Sdk {
         // refreshed the capabilities, network or generation against the client's live
         // configuration, and only flipping `status` here keeps that refresh rather than
         // overwriting it with the stale values `record` still holds.
-        let recovering = client.has_pending_recoveries();
         let mut opened = revalidated;
         opened.status = StoredStatus::Open;
         crate::db::write_federation(&self.inner.db, &upstream, &opened).await?;
@@ -695,6 +699,15 @@ impl Sdk {
         // point at would quietly make them work again. `existing` is already closed — its
         // `closed` watch flipped when it was stopped — and stays that way for as long as anyone
         // holds it.
+        //
+        // Built already locked when it has a recovery to resume: facade calls do not take the
+        // lifecycle mutex, so nothing may find this federation `Running` before `after_open`
+        // below, run once this value exists for its watcher to hold, has decided the status.
+        let provisional = if attempt.is_some() {
+            FederationStatus::Recovering
+        } else {
+            FederationStatus::Running
+        };
         let federation = Arc::new(FederationInner::new(
             upstream,
             Arc::downgrade(&self.inner),
@@ -702,14 +715,11 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&upstream).to_vec()),
             opened,
-            if recovering {
-                FederationStatus::Recovering
-            } else {
-                FederationStatus::Running
-            },
-            Some(client),
+            provisional,
+            Some(client.clone()),
         ));
         self.inner.insert(federation.clone());
+        crate::recovery::engine::after_open(&self.inner, &federation, client, attempt).await;
         crate::federation::reconcile_on_open(&federation).await;
         self.inner.announce(&federation);
         Ok(Federation::new(federation))
@@ -1303,12 +1313,12 @@ impl SdkBuilder {
                 Bip39RootSecretStrategy::<12>::to_root_secret(mnemonic.inner()),
             ),
             location,
+            lifecycle: tokio::sync::Mutex::new(()),
             mnemonic,
             federations: std::sync::RwLock::new(BTreeMap::new()),
             status_tx: tokio::sync::broadcast::Sender::new(STATUS_CAPACITY),
             shutdown_tx: tokio::sync::watch::Sender::new(false),
             lock: std::sync::Mutex::new(lock),
-            lifecycle: tokio::sync::Mutex::new(()),
         });
 
         // Steps 3 and 4: finish committed erases, then reopen everything else. They run
@@ -1615,6 +1625,17 @@ pub(crate) struct SdkInner {
     /// Exactly the string the caller gave `Storage::at` or `Storage::in_browser`, for the error
     /// details that name a location.
     pub(crate) location: String,
+    /// Serializes `join`, `recover`, `resume_recovery`, `close_federation`,
+    /// `reopen_federation`, `forget_federation` and `shutdown` against each other,
+    /// instance-wide, for the whole body of each call.
+    ///
+    /// Without it, two concurrent `join`s of the same invite both pass the `AlreadyJoined` check
+    /// before either has written a row, and both end up writing into one federation namespace;
+    /// two concurrent `reopen_federation`s of the same id both open a client over that same
+    /// namespace. Taken first, before any other lock or the client's own `RwLock`, so a lifecycle
+    /// call never waits on this mutex while holding something a concurrent lifecycle call would
+    /// need.
+    pub(crate) lifecycle: tokio::sync::Mutex<()>,
     /// Held for the instance's lifetime so `export_mnemonic` needs no storage read and keeps
     /// working after shutdown.
     mnemonic: Mnemonic,
@@ -1626,16 +1647,6 @@ pub(crate) struct SdkInner {
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// The single-opener claim, released by `shutdown` or by dropping the last handle.
     lock: std::sync::Mutex<Option<StorageLock>>,
-    /// Serializes `join`, `close_federation`, `reopen_federation`, `forget_federation` and
-    /// `shutdown` against each other, instance-wide, for the whole body of each call.
-    ///
-    /// Without it, two concurrent `join`s of the same invite both pass the `AlreadyJoined` check
-    /// before either has written a row, and both end up writing into one federation namespace;
-    /// two concurrent `reopen_federation`s of the same id both open a client over that same
-    /// namespace. Taken first, before any other lock or the client's own `RwLock`, so a lifecycle
-    /// call never waits on this mutex while holding something a concurrent lifecycle call would
-    /// need.
-    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl core::fmt::Debug for SdkInner {
@@ -1814,12 +1825,63 @@ impl SdkInner {
         Ok(Arc::new(handle))
     }
 
-    /// Carries out a committed erase: wipe the namespace, then drop the registry row.
+    /// Joins a federation whose intent is already recorded, restoring this seed's wallet in it
+    /// from the federation's own recovery log rather than starting a fresh client.
+    ///
+    /// A copy of [`join_client`](Self::join_client) whose last step recovers instead of joins.
+    /// Used by `Sdk::recover` and by `start`'s `Joining` branch when the interrupted join it is
+    /// redoing was itself a recovery.
+    pub(crate) async fn recover_client(
+        &self,
+        id: &config::FederationId,
+        record: &FederationRecord,
+    ) -> Result<ClientHandleArc> {
+        let mut builder = Client::builder().await;
+        builder.with_module_inits(self.module_inits.clone());
+        let preview = fedimint_core::runtime::timeout(
+            CONTACT_TIMEOUT,
+            builder.preview(self.connectors.clone(), &record.invite),
+        )
+        .await
+        .map_err(|_| {
+            crate::Error::new(
+                crate::ErrorCode::Timeout,
+                "the federation's guardians did not answer in time",
+            )
+        })?
+        .map_err(|err| {
+            crate::Error::new(
+                crate::ErrorCode::FederationUnreachable,
+                format!("no guardian answered: {err}"),
+            )
+        })?;
+        let db = self
+            .db
+            .with_prefix(crate::db::federation_prefix(id).to_vec());
+        // No backups: upstream deprecates every backup method for removal in v0.13 ("Recovery
+        // is now efficient enough that backups are no longer necessary"), and at this pin the
+        // mint modules recover from the federation's own recovery log without a snapshot.
+        let handle = preview
+            .recover(db, self.root_secret.clone(), None)
+            .await
+            .map_err(|err| {
+                crate::Error::new(
+                    crate::ErrorCode::Storage,
+                    format!("the federation could not be recovered: {err}"),
+                )
+            })?;
+        Ok(Arc::new(handle))
+    }
+
+    /// Carries out a committed erase: wipe the namespace, drop the recovery record, then drop
+    /// the registry row.
     ///
     /// In that order, so a failure half way leaves the federation `Forgetting` and owed rather
-    /// than forgotten with state behind it.
+    /// than forgotten with state behind it. The recovery record goes with the namespace it
+    /// names an attempt in, before the row that owns both of them.
     pub(crate) async fn finish_erase(&self, id: &config::FederationId) -> Result<()> {
         crate::db::wipe_federation(&self.db, id).await?;
+        crate::db::remove_recovery(&self.db, id).await?;
         crate::db::remove_federation(&self.db, id).await
     }
 
@@ -1873,26 +1935,30 @@ impl SdkInner {
             None,
         ));
         self.insert(federation.clone());
-        let status = match self.start(id, &record).await {
-            Ok((client, revalidated)) => {
-                // Set before `install`/`announce`, so a refresh `start` made against the client's
-                // live configuration is what `network()`/`capabilities()` and the announced
-                // `FederationInfo` report from here on, not the pre-revalidation snapshot in
-                // `record`.
-                federation.set_record(revalidated);
-                let recovering = client.has_pending_recoveries();
-                federation.install(client).await;
-                if recovering {
-                    FederationStatus::Recovering
-                } else {
-                    FederationStatus::Running
-                }
-            }
-            Err(err) => FederationStatus::Quarantined {
+        // A recovery record's pre-open repair runs against records alone, before `start` invokes
+        // the underlying open, and its own failure quarantines exactly as a failed `start` does:
+        // both are folded into the one `?`-chain below.
+        let outcome: Result<()> = async {
+            let attempt = crate::recovery::engine::prepare_open(self, &federation).await?;
+            let (client, revalidated) = self.start(id, &record).await?;
+            // Set before `install`/`announce`, so a refresh `start` made against the client's
+            // live configuration is what `network()`/`capabilities()` and the announced
+            // `FederationInfo` report from here on, not the pre-revalidation snapshot in
+            // `record`.
+            federation.set_record(revalidated);
+            federation.install(client.clone()).await;
+            // Sets the status, `Recovering` or `Running`, and does so before its watcher can
+            // run: the federation was built closed, and the watcher's close-watch would
+            // otherwise end it at once.
+            crate::recovery::engine::after_open(self, &federation, client, attempt).await;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = outcome {
+            federation.set_status(FederationStatus::Quarantined {
                 diagnostic: err.into(),
-            },
-        };
-        federation.set_status(status);
+            });
+        }
         crate::federation::reconcile_on_open(&federation).await;
         self.announce(&federation);
     }
@@ -1906,7 +1972,8 @@ impl SdkInner {
     /// written. No value can exist in that namespace, because the caller never received a handle
     /// to receive with, so the namespace is wiped and the join is redone from the stored invite.
     /// That is deterministic, where trying to tell a half-written client database from a complete
-    /// one is not.
+    /// one is not. A federation that also has a `RecoveryRecord` redoes a *recover* instead of a
+    /// join, from the same invite, keeping the attempt id the record already names.
     ///
     /// The returned record is whatever `revalidate` actually persisted, which is not necessarily
     /// `record` itself: a caller that goes on to write its own status change onto `record` instead
@@ -1918,7 +1985,24 @@ impl SdkInner {
     ) -> Result<(ClientHandleArc, FederationRecord)> {
         let (client, opened) = if record.status == StoredStatus::Joining {
             crate::db::wipe_federation(&self.db, id).await?;
-            let client = self.join_client(id, record).await?;
+            let client = match crate::db::read_recovery(&self.db, id).await? {
+                Some(recovery) => {
+                    let client = self.recover_client(id, record).await?;
+                    // The wipe above took the attempt's operation record with it, if a reopen
+                    // had written one before calling here; it is written again now, into the
+                    // namespace the client has just committed to, so the attempt the root record
+                    // names stays observable and resumable.
+                    crate::federation::record_recovery_attempt_in(
+                        &self
+                            .db
+                            .with_prefix(crate::db::federation_prefix(id).to_vec()),
+                        recovery.attempt,
+                    )
+                    .await?;
+                    client
+                }
+                None => self.join_client(id, record).await?,
+            };
             let mut opened = record.clone();
             opened.status = StoredStatus::Open;
             crate::db::write_federation(&self.db, id, &opened).await?;
@@ -2684,6 +2768,38 @@ mod tests {
                 .expect("the instance reopens");
             assert_eq!(reopened.federation_status(&public), None);
             assert!(reopened.stored_federations().is_empty());
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn finish_erase_removes_the_recovery_record() {
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            plant_closed_federation(&sdk, id).await;
+            crate::db::write_recovery(
+                &sdk.inner().db,
+                &id,
+                &crate::db::RecoveryRecord {
+                    attempt: fedimint_core::core::OperationId([1u8; 32]),
+                },
+            )
+            .await
+            .expect("the recovery record is written");
+
+            sdk.inner()
+                .finish_erase(&id)
+                .await
+                .expect("the erase finishes");
+
+            assert_eq!(
+                crate::db::read_recovery(&sdk.inner().db, &id)
+                    .await
+                    .expect("read"),
+                None
+            );
         }
 
         #[tokio::test(flavor = "multi_thread")]

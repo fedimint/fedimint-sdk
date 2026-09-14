@@ -763,13 +763,14 @@ impl AnyOperation {
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
     // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7, T9 and T12 (T8 filled in the two lightning arms). Until then, `support_of` still answers
-    // `Observable` for every kind whose arm is `None`: the record's kind and schema version are
-    // all it looks at, and neither says whether a driver has been written yet. That is four kinds
-    // in a test build, where `ECASH_SEND` has its own probe arm, and five in any other build,
-    // where that arm is `None` too. This is not a bug in the accessor, which is honest about what
-    // it can do, but a temporary gap between what `support` promises and what a build this
-    // incomplete can deliver; it closes as each task above lands its arm.
+    // T7 and T9 (T8 filled in the two lightning arms, T12 filled in the recovery arm). Until
+    // then, `support_of` still answers `Observable` for every kind whose arm is `None`: the
+    // record's kind and schema version are all it looks at, and neither says whether a driver has
+    // been written yet. That is three kinds in a test build, where `ECASH_SEND` has its own probe
+    // arm, and four in any other build, where that arm is `None` too. This is not a bug in the
+    // accessor, which is honest about what it can do, but a temporary gap between what `support`
+    // promises and what a build this incomplete can deliver; it closes as each task above lands
+    // its arm.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -1418,9 +1419,9 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
         // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash in T7, on-chain in T9, recovery in T12. Until an arm is filled in this
-        // build cannot observe that kind, which is a real answer rather than a gap: the record
-        // is still found, still listed, and still says what it is.
+        // kind: ecash in T7, on-chain in T9; recovery is filled in below. Until an arm is filled
+        // in this build cannot observe that kind, which is a real answer rather than a gap: the
+        // record is still found, still listed, and still says what it is.
         //
         // The probe stands in for the ecash-send driver so that the type-erased accessors are
         // exercised end to end before any facade exists; T7 replaces the pair of arms below with
@@ -1438,7 +1439,9 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
         ))),
         kinds::ONCHAIN_SEND => None,
         kinds::ONCHAIN_RECEIVE => None,
-        kinds::RECOVERY => None,
+        kinds::RECOVERY => Some(ErasedDriver::Recovery(Arc::new(
+            crate::recovery::RecoveryDriver,
+        ))),
         // A tag this build does not know, which `kind_of_tag` already reads as
         // `OperationKind::Unknown`.
         _ => None,
@@ -2481,8 +2484,9 @@ mod tests {
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
         // The probe fixture stands in for the ecash-send driver T7 writes; the two lightning
-        // arms are real. Every other kind is a record this build can find, list and label but
-        // not observe, which the accessors report as `None` rather than as a failure.
+        // arms and the recovery arm are real. `ONCHAIN_SEND` (and `ONCHAIN_RECEIVE`, not
+        // asserted here) is a record this build can find, list and label but not observe, which
+        // the accessors report as `None` rather than as a failure.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
@@ -2496,7 +2500,10 @@ mod tests {
             Some(ErasedDriver::LnReceive(_))
         ));
         assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
-        assert!(driver_for(kinds::RECOVERY).is_none());
+        assert!(matches!(
+            driver_for(kinds::RECOVERY),
+            Some(ErasedDriver::Recovery(_))
+        ));
         // A tag this build does not know is not a lookup failure either.
         assert!(driver_for("something_else").is_none());
         // Backfillers are a list rather than a lookup: one is asked about an upstream module

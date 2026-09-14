@@ -21,8 +21,8 @@ pub(crate) use page::page;
 /// was happening, not because the federation kept a record of the account:
 ///
 /// - Restoring a seed does not restore this history. Recovery reconstructs
-///   what the federation and the backup can prove (notes, spendable
-///   balance, recoverable operations), not a narrative of past activity.
+///   what the federation can prove (notes, spendable balance,
+///   recoverable operations), not a narrative of past activity.
 ///   A wallet restored on a new device has a correct balance and an empty
 ///   or partial activity list.
 /// - Activity from another device or another client is not here. The same

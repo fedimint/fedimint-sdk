@@ -1,7 +1,7 @@
 //! Seed-based wallet recovery.
 //!
-//! Recovery restores a wallet from the seed alone: a federation's backup plus a rescan of the
-//! history it references. Its failure mode is silent fund loss if handled wrong, so this
+//! Recovery restores a wallet from the seed alone, by rescanning the federation's history for
+//! what that seed owns. Its failure mode is silent fund loss if handled wrong, so this
 //! module's contract is written to rule that out: a recovery either completes and the wallet
 //! is restored, or it has not completed and the wallet is not spendable. There is no state in
 //! between that is safe to spend from.
@@ -10,8 +10,7 @@
 //!
 //! A federation whose recovery is **incomplete** is locked. Every ecash, lightning and
 //! on-chain send and receive against it fails with
-//! [`Recovering`](crate::ErrorCode::Recovering), as does
-//! [`Federation::backup`](crate::Federation::backup). Wherever else this crate says an action
+//! [`Recovering`](crate::ErrorCode::Recovering). Wherever else this crate says an action
 //! is refused "while a recovery is in progress", this is the lock meant, and this section is
 //! its authoritative definition.
 //!
@@ -147,31 +146,28 @@
 //! - **Value the local state alone could have reclaimed is forfeited.** Out-of-band notes
 //!   this instance handed out and could still have reclaimed are recorded only locally, so
 //!   erasing that record gives up the reclaim.
-// Implementation notes (delete once implemented):
-// - Crash-at-every-checkpoint idempotency is a hard requirement: kill the process at each
-//   persisted checkpoint of a recovery, restart, and assert the recovered wallet is identical
-//   to one recovered without interruption.
-// - The underlying client does not persist a stopped recovery as failed: its own progress
-//   rests at the last durable checkpoint, and opening the federation again resumes the rescan
-//   from there automatically, whether via `reopen_federation` or via `SdkBuilder::build`
-//   bringing up federations at startup. The SDK cannot veto that restart, so on such a reopen
-//   it must mint the new attempt itself (a new `OperationId`, exactly as `resume_recovery`
-//   would) and persist that record *before* the underlying open is invoked, not merely
-//   before this call returns: the underlying open spawns recovery tasks while it runs, so a
-//   rescan can be advancing, or finished, before the open call returns. A crash in that
-//   window must not leave an unlogged attempt running with the SDK's own record still naming
-//   the old one, or the next boot would mint a third attempt.
-// - A guard that refuses to erase a federation which still reports a balance must not count
-//   the provisional balance of a recovery-locked federation: that balance is unspendable
-//   because of the lock, so counting it would close the erase path, the only way to end a
-//   recovery that cannot be retried into completion. There is deliberately no call to cancel
-//   a running recovery; erase is the only mechanism that can end one.
 
-use crate::{Federation, FederationId, InviteCode, Operation, OperationState, Result, Sdk};
+use std::sync::Arc;
+
+use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+use crate::db::{FederationRecord, OperationRecordKey, RecoveryRecord, StoredStatus};
+use crate::federation::FederationInner;
+use crate::operation::OperationInner;
+use crate::{
+    Federation, FederationId, FederationStatus, InviteCode, Operation, OperationState, Result, Sdk,
+};
+
+mod driver;
+pub(crate) mod engine;
+mod wire;
+
+pub(crate) use driver::RecoveryDriver;
 
 impl Sdk {
-    /// Joins a federation and restores this seed's wallet in it from the
-    /// federation's backup plus a rescan.
+    /// Joins a federation and restores this seed's wallet in it by rescanning
+    /// the federation's history.
     ///
     /// Use this instead of [`Sdk::join`] when the instance was built from a mnemonic the user
     /// restored and the federation may already hold funds belonging to that seed. A plain
@@ -191,6 +187,7 @@ impl Sdk {
     /// # A failed call may still have joined
     ///
     /// An `Err` from this call does not certify that nothing happened: a
+    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout) or [`Storage`](crate::ErrorCode::Storage) can
     /// arrive after the federation is already joined and already committed to recovering.
     ///
@@ -222,18 +219,137 @@ impl Sdk {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), each with the
     /// may-already-have-joined caveat above.
     pub async fn recover(&self, invite: &InviteCode) -> Result<Recovery> {
-        // Implementation notes (delete once implemented):
-        // - The underlying client commits the join durably (configuration, secret hash,
-        //   pending-recovery marker) before any step that can still fail after it. Order the
-        //   SDK's own writes first: persist the recovery intent and the operation id this
-        //   call would return before the upstream join is asked to mutate anything, so that
-        //   if the join committed, the SDK's recovery record exists too.
-        // - An intent written for a join that never committed is inert: only the underlying
-        //   client's own durable recovery marker, not the SDK's intent alone, makes a
-        //   federation count as recovering. The next `recover` for the same federation
-        //   supersedes a leftover intent, and a plain `Sdk::join` discards it in the same
-        //   transaction that joins.
-        unimplemented!()
+        let _lifecycle = self.inner().lifecycle.lock().await;
+        self.inner().alive()?;
+        let id = invite.inner().federation_id();
+
+        // An id already here is `AlreadyJoined`, closed and quarantined included, because
+        // `reopen_federation` is the call that wants making. A committed erase is the exception:
+        // it is finished first and then this is a first-time recovery of the same federation.
+        if let Some(existing) = self.inner().federation_inner(&id) {
+            if existing.status() == FederationStatus::Forgetting {
+                self.inner().finish_erase(&id).await?;
+                self.inner().remove(&id);
+            } else {
+                return Err(crate::Error::new(
+                    crate::ErrorCode::AlreadyJoined,
+                    "this instance already holds that federation",
+                ));
+            }
+        }
+
+        let config = self.inner().download_config(invite).await?;
+        let preview = crate::modules::preview_of(&self.inner().module_inits, &config)?;
+        let record = FederationRecord {
+            invite: invite.inner().clone(),
+            network: preview.network.into(),
+            status: StoredStatus::Joining,
+            capabilities: crate::modules::capabilities_of(&preview.modules).into(),
+            generation: crate::modules::check_generation(&preview.modules)?,
+            name: preview.name.clone(),
+        };
+
+        let attempt = UpstreamOperationId::new_random();
+        // The intent is durable, together with the row it belongs to, before the client writes
+        // a byte: a process killed anywhere after this comes back with the federation
+        // recovering, and `SdkInner::start` redoes the recover under this same attempt id.
+        crate::db::write_joining_with_recovery(
+            &self.inner().db,
+            &id,
+            &record,
+            &RecoveryRecord { attempt },
+        )
+        .await?;
+
+        let client = match self.inner().recover_client(&id, &record).await {
+            Ok(client) => client,
+            Err(err) => {
+                let namespace = self
+                    .inner()
+                    .db
+                    .with_prefix(crate::db::federation_prefix(&id).to_vec());
+                // Whether the underlying client got as far as writing into the federation's
+                // namespace is what decides between the two outcomes the docs describe. Nothing
+                // written means nothing joined: the row and its recovery record are dropped, as
+                // a failed `Sdk::join` drops its own. Anything written means the join may have
+                // committed, and the docs promise that such a federation is not lost: it stays
+                // `Joining` with its recovery record, is reported `Quarantined` with this error
+                // as its diagnostic, and the next open redoes the recovery under the same
+                // attempt id.
+                // An inconclusive read counts as committed: erasing is the destructive answer, and
+                // it is only right when the namespace is known to be empty.
+                let committed = crate::db::is_empty(&namespace)
+                    .await
+                    .map(|empty| !empty)
+                    .unwrap_or(true);
+                if !committed {
+                    let _ = self.inner().finish_erase(&id).await;
+                    self.inner().remove(&id);
+                    return Err(err);
+                }
+                let federation = Arc::new(FederationInner::new(
+                    id,
+                    Arc::downgrade(self.inner()),
+                    namespace,
+                    record,
+                    FederationStatus::Quarantined {
+                        diagnostic: err.clone().into(),
+                    },
+                    None,
+                ));
+                self.inner().insert(federation.clone());
+                self.inner().announce(&federation);
+                return Err(err);
+            }
+        };
+
+        let mut joined = record;
+        joined.status = StoredStatus::Open;
+        crate::db::write_federation(&self.inner().db, &id, &joined).await?;
+
+        // Locked from the first moment it can be found: facade calls do not take the lifecycle
+        // mutex, so a federation published as `Running` with its rescan still going would accept
+        // a send or a receive until `after_open` below corrected it.
+        let federation = Arc::new(FederationInner::new(
+            id,
+            Arc::downgrade(self.inner()),
+            self.inner()
+                .db
+                .with_prefix(crate::db::federation_prefix(&id).to_vec()),
+            joined,
+            FederationStatus::Recovering,
+            Some(client.clone()),
+        ));
+        // Written before the federation is published, so a failure here has nothing live to
+        // leave behind: the client is stopped and the federation surfaces as `Quarantined`,
+        // the outcome the docs describe for an error after the join has committed. The root
+        // record already names the attempt, so the reopen that brings it back writes this
+        // record under the same id and resumes the rescan.
+        if let Err(err) = federation.record_recovery_attempt(attempt).await {
+            drop(client);
+            if let Err(stop) = federation.stop().await {
+                tracing::warn!(
+                    target: "fedimint_sdk",
+                    federation = %federation.id,
+                    error = %stop,
+                    "could not cleanly shut down the client of a recovery that failed to start",
+                );
+            }
+            federation.set_status(FederationStatus::Quarantined {
+                diagnostic: err.clone().into(),
+            });
+            self.inner().insert(federation.clone());
+            self.inner().announce(&federation);
+            return Err(err);
+        }
+        self.inner().insert(federation.clone());
+        engine::after_open(self.inner(), &federation, client, Some(attempt)).await;
+        crate::federation::reconcile_on_open(&federation).await;
+        self.inner().announce(&federation);
+        Ok(Recovery {
+            federation: Federation::new(federation.clone()),
+            progress: progress_handle(&federation, attempt).await?,
+        })
     }
 
     /// Resumes, or retries, the recovery of a federation this instance
@@ -274,9 +390,9 @@ impl Sdk {
     /// federation but has no recovery for it, because it was joined with [`Sdk::join`] rather
     /// than [`Sdk::recover`]. Resuming a recovery is a different request from starting the
     /// first one, and this call deliberately does not do the second: turning a plainly
-    /// joined federation into a recovering one would re-derive its client state from a backup
-    /// while local state derived from that same seed already exists, a double-application
-    /// hazard no rescan can be trusted to survive. A wallet that should have been recovered
+    /// joined federation into a recovering one would re-derive its client state from the
+    /// federation's history while local state derived from that same seed already exists, a
+    /// double-application hazard no rescan can be trusted to survive. A wallet that should have been recovered
     /// and was joined plainly instead has to take the erase path in the module documentation.
     ///
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the id names no open
@@ -286,11 +402,10 @@ impl Sdk {
     /// closed federation back, recovery record and all, and this call then works on it:
     /// re-joining is neither needed nor accepted.
     ///
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) and
-    /// [`Timeout`](crate::ErrorCode::Timeout) when the guardians cannot be reached to fetch
-    /// the backup a new attempt starts from, and [`Storage`](crate::ErrorCode::Storage) if
-    /// the attempt cannot be recorded durably. None of these releases the lock or unwinds the
-    /// recovery record. An error raised while retrying a *stopped* attempt on an open
+    /// [`Storage`](crate::ErrorCode::Storage) if the attempt cannot be recorded durably or the
+    /// client cannot be reopened over the federation's local state, which is all a new attempt
+    /// needs: no guardian is contacted to start one. This does not release the lock or unwind
+    /// the recovery record. An error raised while retrying a *stopped* attempt on an open
     /// federation can leave the federation with no live handle, in which case it transitions
     /// to [`Quarantined`](crate::FederationStatus::Quarantined) carrying the error as its
     /// diagnostic, this call reports
@@ -300,24 +415,90 @@ impl Sdk {
     /// raised before that point leaves the running client untouched, and the call can simply
     /// be made again.
     pub async fn resume_recovery(&self, id: &FederationId) -> Result<Recovery> {
-        // Implementation notes (delete once implemented):
-        // - Presence of a *corroborated* recovery record is what this call keys on: an
-        //   intent whose upstream join never committed is not a record (see `Sdk::recover`'s
-        //   notes), so a plainly joined federation cannot ride in on a leftover intent.
-        // - "Running" must be verified against the underlying client, not taken from the
-        //   record's word: a current-attempt record whose rescan is not actually live should
-        //   be completed here, the restart finished then observed, rather than trusted and
-        //   watched.
-        // - The underlying client only derives and spawns recoveries when it is built, so
-        //   retrying a *stopped* attempt on an open federation means shutting the live client
-        //   down and rebuilding it, and the shutdown must run before the step that can still
-        //   fail, so an error from the rebuild leaves the federation with no live handle.
-        //   Persist the new attempt's id durably before attempting the rebuild, so it
-        //   survives as the current attempt for a later reopen to resume rather than mint
-        //   another.
-        // - `InvalidInput` here matches `Federation::activity`'s use of it for a cursor the
-        //   federation did not issue: a well-formed id this call does not apply to.
-        unimplemented!()
+        let _lifecycle = self.inner().lifecycle.lock().await;
+        self.inner().alive()?;
+        let upstream = id.inner();
+        let federation = self
+            .inner()
+            .federation_inner(&upstream)
+            .filter(|federation| federation.is_open())
+            .ok_or_else(|| {
+                crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this instance holds no open federation with that id",
+                )
+            })?;
+
+        let Some((record, on_file)) = engine::attempt_on_file(self.inner(), &federation).await?
+        else {
+            return Err(crate::Error::new(
+                crate::ErrorCode::InvalidInput,
+                "this federation was joined, not recovered; there is no recovery to resume",
+            ));
+        };
+
+        let attempt = match on_file {
+            engine::AttemptOnFile::Done => {
+                return Ok(Recovery {
+                    federation: Federation::new(federation.clone()),
+                    progress: progress_handle(&federation, record.attempt).await?,
+                });
+            }
+            // "Running" is verified against the underlying client rather than taken on the
+            // record's word: a current attempt whose rescan is not actually live is completed
+            // here, exactly as the watcher would, rather than trusted and handed back to watch.
+            engine::AttemptOnFile::None | engine::AttemptOnFile::Running => {
+                // Idempotent: repairs the crash window where the record is missing, and is a
+                // harmless rewrite of the same record otherwise. Done before either branch so
+                // that a completion finds a record to mark done.
+                federation.record_recovery_attempt(record.attempt).await?;
+                // The guard is a temporary, gone before the completion below: its swap needs
+                // the last handle to the client it retires.
+                let pending = federation.client(false).await?.has_pending_recoveries();
+                if !pending {
+                    engine::finish(self.inner(), &federation, record.attempt).await;
+                }
+                record.attempt
+            }
+            // The underlying client only derives and spawns recoveries when it is built, so
+            // retrying a stopped attempt means rebuilding the client. The new attempt is made
+            // durable before the rebuild, so it survives as the current attempt for a later
+            // reopen to resume rather than minting another.
+            engine::AttemptOnFile::Failed { .. } => {
+                let new_attempt = engine::new_attempt(self.inner(), &federation).await?;
+                match federation
+                    .replace_client(|| async { self.inner().open_client(&upstream).await })
+                    .await
+                {
+                    // The federation was closed, quarantined or erased while this call was
+                    // minting the new attempt: whatever did that owns the status now, and this
+                    // call must not quarantine a federation that is no longer this call's to
+                    // decide about.
+                    Err(err) if err.code == crate::ErrorCode::FederationClosed => {
+                        return Err(err);
+                    }
+                    Err(err) => {
+                        federation.set_status(FederationStatus::Quarantined {
+                            diagnostic: err.clone().into(),
+                        });
+                        self.inner().announce(&federation);
+                        return Err(err);
+                    }
+                    Ok(()) => {
+                        let client = federation.client(false).await?.handle();
+                        engine::after_open(self.inner(), &federation, client, Some(new_attempt))
+                            .await;
+                        self.inner().announce(&federation);
+                    }
+                }
+                new_attempt
+            }
+        };
+
+        Ok(Recovery {
+            federation: Federation::new(federation.clone()),
+            progress: progress_handle(&federation, attempt).await?,
+        })
     }
 
     /// Where this federation's recovery stands, or `None` if it never had
@@ -357,8 +538,62 @@ impl Sdk {
     /// federation that has no recovery is `Ok(None)`, never an error, that
     /// is the whole point of the `Option`.
     pub async fn recovery_status(&self, id: &FederationId) -> Result<Option<RecoveryState>> {
-        unimplemented!()
+        self.inner().alive()?;
+        let upstream = id.inner();
+        let federation = self
+            .inner()
+            .federation_inner(&upstream)
+            .filter(|federation| federation.is_open())
+            .ok_or_else(|| {
+                crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this instance holds no open federation with that id",
+                )
+            })?;
+
+        let Some((_, on_file)) = engine::attempt_on_file(self.inner(), &federation).await? else {
+            return Ok(None);
+        };
+        Ok(Some(match on_file {
+            engine::AttemptOnFile::None | engine::AttemptOnFile::Running => RecoveryState::Running,
+            engine::AttemptOnFile::Done => RecoveryState::Done,
+            engine::AttemptOnFile::Failed { reason } => RecoveryState::Failed { reason },
+        }))
     }
+}
+
+/// The typed handle over an attempt just written, built from the record as it reads right now.
+///
+/// Shared by [`Sdk::recover`] and [`Sdk::resume_recovery`], the two calls that hand a fresh or
+/// resumed attempt back to the caller.
+///
+/// # Errors
+///
+/// [`Internal`](crate::ErrorCode::Internal) if `attempt` has no operation record: every caller
+/// writes or verifies one first, so this is a bug in this crate rather than a condition an
+/// application can be in.
+async fn progress_handle(
+    federation: &Arc<FederationInner>,
+    attempt: UpstreamOperationId,
+) -> Result<Operation<RecoveryState>> {
+    let db = federation.db();
+    let mut dbtx = db.begin_transaction_nc().await;
+    let record = dbtx.get_value(&OperationRecordKey(attempt)).await;
+    drop(dbtx);
+    let record = record.ok_or_else(|| {
+        crate::Error::new(
+            crate::ErrorCode::Internal,
+            format!("no record for recovery attempt {}", attempt.fmt_full()),
+        )
+    })?;
+    Ok(Operation::attach(
+        Arc::new(OperationInner {
+            federation: federation.clone(),
+            id: attempt,
+            record,
+        }),
+        Arc::new(RecoveryDriver),
+    ))
 }
 
 /// A federation that is being recovered, plus the operation doing it.
@@ -444,7 +679,7 @@ pub enum RecoveryState {
     /// This is the only state that releases the lock, and the only one for
     /// which [`is_complete`](Self::is_complete) is true. It says the wallet
     /// is restored: everything the seed owned in this federation that a
-    /// backup and a rescan can find has been found.
+    /// rescan can find has been found.
     Done,
     /// Final for this attempt, and the wallet is **not** recovered.
     ///
@@ -512,6 +747,9 @@ impl OperationState for RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{OperationRecord, StoredCapabilities, StoredNetwork};
+    use crate::operation::kinds;
+    use crate::{ErrorCode, Storage};
 
     #[test]
     fn recovery_state_running_is_not_final() {
@@ -554,5 +792,186 @@ mod tests {
         };
         assert!(stopped.is_final());
         assert!(!stopped.is_complete());
+    }
+
+    /// A real, in-memory instance: `recovery_status` and `resume_recovery` read and write the
+    /// root store through a genuine `SdkInner`, and there is no cheaper way to get one here than
+    /// the public builder, exactly as `engine`'s own tests do.
+    async fn detached_sdk() -> Sdk {
+        Sdk::builder()
+            .storage(Storage::in_memory())
+            .build()
+            .await
+            .expect("an instance opens")
+    }
+
+    /// Plants an open federation with no live client, so the lifecycle calls that read only
+    /// records can be tested natively. Mirrors `sdk::tests::building::plant_closed_federation`,
+    /// which cannot be reused from here: it is private to that module.
+    async fn plant_open_federation(sdk: &Sdk, id: fedimint_core::config::FederationId) {
+        let record = FederationRecord {
+            invite: fedimint_core::invite_code::InviteCode::new(
+                fedimint_core::util::SafeUrl::parse("wss://guardian.example:5000")
+                    .expect("a valid url"),
+                fedimint_core::PeerId::from(0),
+                id,
+                None,
+            ),
+            network: StoredNetwork::Regtest,
+            status: StoredStatus::Open,
+            capabilities: StoredCapabilities {
+                ecash: true,
+                lightning: false,
+                onchain: false,
+            },
+            generation: Some(1),
+            name: Some("Planted".to_owned()),
+        };
+        crate::db::write_federation(&sdk.inner().db, &id, &record)
+            .await
+            .expect("the row is written");
+        sdk.inner().insert(Arc::new(FederationInner::new(
+            id,
+            Arc::downgrade(sdk.inner()),
+            sdk.inner()
+                .db
+                .with_prefix(crate::db::federation_prefix(&id).to_vec()),
+            record,
+            FederationStatus::Running,
+            None,
+        )));
+    }
+
+    /// Plants an attempt's operation record directly, without going through
+    /// `record_recovery_attempt`, so a test can set up any final state it wants.
+    async fn plant_attempt_record(
+        federation: &FederationInner,
+        id: UpstreamOperationId,
+        final_state: Option<String>,
+    ) {
+        let db = federation.db();
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(
+            &OperationRecordKey(id),
+            &OperationRecord {
+                schema_version: crate::operation::READABLE_STATE_SCHEMA,
+                kind: kinds::RECOVERY.to_owned(),
+                module: String::new(),
+                created_at: 0,
+                details: "{}".to_owned(),
+                phase: None,
+                cancel_requested_at: None,
+                final_state,
+            },
+        )
+        .await;
+        dbtx.commit_tx().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_status_of_an_unknown_id_is_federation_closed() {
+        let sdk = detached_sdk().await;
+        let id = FederationId::from_upstream(fedimint_core::config::FederationId::dummy());
+
+        let err = sdk
+            .recovery_status(&id)
+            .await
+            .expect_err("this instance holds no such federation");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_status_of_a_plainly_joined_federation_is_none() {
+        let sdk = detached_sdk().await;
+        let upstream = fedimint_core::config::FederationId::dummy();
+        plant_open_federation(&sdk, upstream).await;
+
+        let status = sdk
+            .recovery_status(&FederationId::from_upstream(upstream))
+            .await
+            .expect("a plainly joined federation is readable");
+        assert_eq!(status, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_status_reads_the_attempt_on_file() {
+        let sdk = detached_sdk().await;
+        let upstream = fedimint_core::config::FederationId::dummy();
+        plant_open_federation(&sdk, upstream).await;
+        let federation = sdk
+            .inner()
+            .federation_inner(&upstream)
+            .expect("just planted");
+
+        let attempt = UpstreamOperationId([9u8; 32]);
+        crate::db::write_recovery(&sdk.inner().db, &upstream, &RecoveryRecord { attempt })
+            .await
+            .expect("write the root record");
+        plant_attempt_record(
+            &federation,
+            attempt,
+            Some(
+                wire::encode_state(&RecoveryState::Failed {
+                    reason: "guardian gone".to_owned(),
+                })
+                .expect("encode"),
+            ),
+        )
+        .await;
+
+        let status = sdk
+            .recovery_status(&FederationId::from_upstream(upstream))
+            .await
+            .expect("the attempt's record reads back");
+        assert_eq!(
+            status,
+            Some(RecoveryState::Failed {
+                reason: "guardian gone".to_owned(),
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_recovery_refuses_a_plainly_joined_federation() {
+        let sdk = detached_sdk().await;
+        let upstream = fedimint_core::config::FederationId::dummy();
+        plant_open_federation(&sdk, upstream).await;
+
+        let err = sdk
+            .resume_recovery(&FederationId::from_upstream(upstream))
+            .await
+            .expect_err("this federation was joined, not recovered");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_recovery_of_a_completed_attempt_hands_back_done() {
+        let sdk = detached_sdk().await;
+        let upstream = fedimint_core::config::FederationId::dummy();
+        plant_open_federation(&sdk, upstream).await;
+        let federation = sdk
+            .inner()
+            .federation_inner(&upstream)
+            .expect("just planted");
+
+        let attempt = UpstreamOperationId([11u8; 32]);
+        crate::db::write_recovery(&sdk.inner().db, &upstream, &RecoveryRecord { attempt })
+            .await
+            .expect("write the root record");
+        plant_attempt_record(
+            &federation,
+            attempt,
+            Some(wire::encode_state(&RecoveryState::Done).expect("encode")),
+        )
+        .await;
+
+        let recovery = sdk
+            .resume_recovery(&FederationId::from_upstream(upstream))
+            .await
+            .expect("a completed recovery is handed back rather than restarted");
+        assert_eq!(
+            recovery.progress.state().await.expect("state"),
+            RecoveryState::Done
+        );
     }
 }

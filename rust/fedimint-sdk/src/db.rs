@@ -57,6 +57,8 @@ pub(crate) enum SdkDbPrefix {
     Seed = 0x01,
     /// One row per federation the storage remembers, in any state.
     Federation = 0x02,
+    /// One row per federation that was joined with `Sdk::recover`, naming its current attempt.
+    Recovery = 0x03,
 }
 
 /// The key of the single seed record.
@@ -283,6 +285,32 @@ impl_db_record!(
 );
 impl_db_lookup!(key = FederationKey, query_prefix = FederationKeyPrefix);
 
+/// The key of one federation's recovery record.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct RecoveryKey(pub(crate) FederationId);
+
+/// Every recovery record in the instance.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct RecoveryKeyPrefix;
+
+/// Which attempt is the federation's current one.
+///
+/// Present from the moment `Sdk::recover` commits its join for the rest of the federation's
+/// life, so that a completed recovery keeps reporting `Done`; absent for a federation joined
+/// with `Sdk::join`, which is how `Sdk::recovery_status` tells the two apart.
+#[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
+pub(crate) struct RecoveryRecord {
+    /// The operation record, in the federation's namespace, that tracks the current attempt.
+    pub(crate) attempt: fedimint_core::core::OperationId,
+}
+
+impl_db_record!(
+    key = RecoveryKey,
+    value = RecoveryRecord,
+    db_prefix = SdkDbPrefix::Recovery,
+);
+impl_db_lookup!(key = RecoveryKey, query_prefix = RecoveryKeyPrefix);
+
 /// Reads one record, reporting a backend or decode failure instead of panicking.
 ///
 /// `Cap: Send` on all four helpers is upstream's bound, not a choice: the raw transaction ops are
@@ -378,6 +406,52 @@ pub(crate) async fn write_federation(
     let sdk_db = db.with_prefix(sdk_prefix().to_vec());
     let mut dbtx = sdk_db.begin_transaction().await;
     write(&mut dbtx, &FederationKey(*id), record).await?;
+    commit(dbtx).await
+}
+
+/// The recovery record for `id`, if this instance ever called `Sdk::recover` on it.
+pub(crate) async fn read_recovery(
+    db: &Database,
+    id: &FederationId,
+) -> Result<Option<RecoveryRecord>> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction_nc().await;
+    read(&mut dbtx, &RecoveryKey(*id)).await
+}
+
+/// Writes the recovery record for `id`.
+pub(crate) async fn write_recovery(
+    db: &Database,
+    id: &FederationId,
+    record: &RecoveryRecord,
+) -> Result<()> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction().await;
+    write(&mut dbtx, &RecoveryKey(*id), record).await?;
+    commit(dbtx).await
+}
+
+/// Removes the recovery record for `id`. Done by `SdkInner::finish_erase`.
+pub(crate) async fn remove_recovery(db: &Database, id: &FederationId) -> Result<()> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction().await;
+    remove(&mut dbtx, &RecoveryKey(*id)).await?;
+    commit(dbtx).await
+}
+
+/// The federation row and its recovery record in one transaction: a recovery intent never
+/// exists without the row that owns it, and a row `Sdk::recover` wrote never exists without
+/// the intent.
+pub(crate) async fn write_joining_with_recovery(
+    db: &Database,
+    id: &FederationId,
+    federation: &FederationRecord,
+    recovery: &RecoveryRecord,
+) -> Result<()> {
+    let sdk_db = db.with_prefix(sdk_prefix().to_vec());
+    let mut dbtx = sdk_db.begin_transaction().await;
+    write(&mut dbtx, &FederationKey(*id), federation).await?;
+    write(&mut dbtx, &RecoveryKey(*id), recovery).await?;
     commit(dbtx).await
 }
 
@@ -792,6 +866,77 @@ mod tests {
             .await
             .expect("the write succeeds");
         assert!(!is_empty(&db).await.expect("the scan succeeds"));
+    }
+
+    #[test]
+    fn the_recovery_prefix_is_0x03() {
+        assert_eq!(SdkDbPrefix::Recovery as u8, 0x03);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recovery_record_round_trips() {
+        let db = db();
+        let id = FederationId::dummy();
+        let recovery = RecoveryRecord {
+            attempt: fedimint_core::core::OperationId([7u8; 32]),
+        };
+
+        write_recovery(&db, &id, &recovery)
+            .await
+            .expect("the write succeeds");
+        assert_eq!(
+            read_recovery(&db, &id).await.expect("the read succeeds"),
+            Some(recovery)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recovery_record_is_absent_until_written() {
+        let db = db();
+        let id = FederationId::dummy();
+        assert_eq!(read_recovery(&db, &id).await.expect("read"), None);
+
+        write_recovery(
+            &db,
+            &id,
+            &RecoveryRecord {
+                attempt: fedimint_core::core::OperationId([1u8; 32]),
+            },
+        )
+        .await
+        .expect("write");
+        assert!(read_recovery(&db, &id).await.expect("read").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_joining_row_and_the_recovery_record_land_together() {
+        let db = db();
+        let id = FederationId::dummy();
+        let federation = FederationRecord {
+            status: StoredStatus::Joining,
+            ..record(id)
+        };
+        let recovery = RecoveryRecord {
+            attempt: fedimint_core::core::OperationId([3u8; 32]),
+        };
+
+        write_joining_with_recovery(&db, &id, &federation, &recovery)
+            .await
+            .expect("the write succeeds");
+        assert_eq!(
+            read_federation(&db, &id).await.expect("read"),
+            Some(federation.clone())
+        );
+        assert_eq!(read_recovery(&db, &id).await.expect("read"), Some(recovery));
+
+        // Erasing the intent leaves the row that owns it alone; that row is removed
+        // separately, by `remove_federation`.
+        remove_recovery(&db, &id).await.expect("remove");
+        assert_eq!(read_recovery(&db, &id).await.expect("read"), None);
+        assert_eq!(
+            read_federation(&db, &id).await.expect("read"),
+            Some(federation)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
