@@ -763,10 +763,21 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// [`Storage`](crate::ErrorCode::Storage) if the federation's state
-    /// cannot be flushed before it stops, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
-    /// whole instance has been shut down.
+    /// whole instance has been shut down, which is the one error here that
+    /// means nothing happened.
+    ///
+    /// The federation is retired before anything else can fail, so the rest
+    /// describe how far the stop got and never whether it happened:
+    /// [`Storage`](crate::ErrorCode::Storage) if the choice could not be
+    /// persisted, which leaves the federation
+    /// [`Quarantined`](FederationStatus::Quarantined) for a later build or
+    /// [`Sdk::reopen_federation`] to retry, and
+    /// [`Internal`](crate::ErrorCode::Internal) if its client could not be
+    /// shut down cleanly because something else was still using it, which
+    /// leaves the federation [`Closed`](FederationStatus::Closed) with its
+    /// workers stopped but not waited for. Reopening it immediately after
+    /// that is the one thing worth avoiding.
     pub async fn close_federation(&self, id: &FederationId) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
@@ -780,12 +791,31 @@ impl Sdk {
             return Ok(());
         }
 
-        federation.stop().await?;
+        // Quiesce and shutdown are taken apart here, rather than going through
+        // `FederationInner::stop`, so that the transition cannot be lost to a failure of the
+        // second half. `quiesce` is what actually retires the federation — it takes the client
+        // out from under every handle, stops its workers and flips `closed` — and it cannot
+        // fail; the client shutdown that follows can, when something else still holds a clone
+        // of the handle and `shutdown_client` therefore never gets the last reference. Failing
+        // the call there and then, as `stop` did, left a federation that was already dead
+        // recorded and announced as `Running`, and reopened by the next build. So the outcome
+        // is carried past the transition instead and reported at the end, the same way
+        // `Sdk::shutdown` sets `Closed` whatever `stop` returns.
+        let client = federation.quiesce().await;
 
         // Set the moment the client is retired, mirroring `forget_federation`'s status update
         // right after `quiesce`: the federation is already stopped here, and it must never be
         // observable as `Running` while the durable write below is still pending, or has failed.
         federation.set_status(FederationStatus::Closed);
+
+        // Still attempted before the write, as it was when `stop` did it: an unclean shutdown
+        // is worth reporting, because the client's workers have been told to stop but not
+        // waited for, and a caller going straight on to reopen this federation would be
+        // opening a second client over storage the first one has not finished with.
+        let shutdown = match client {
+            Some(client) => crate::federation::shutdown_client(client).await,
+            None => Ok(()),
+        };
 
         // Persisted as a choice, not merely as a fact: later builds must stop reopening this
         // federation, which is exactly what separates it from a quarantine.
@@ -805,7 +835,7 @@ impl Sdk {
         }
         federation.set_record(record);
         self.inner.announce(&federation);
-        Ok(())
+        shutdown
     }
 
     /// Permanently deletes this federation's local state.

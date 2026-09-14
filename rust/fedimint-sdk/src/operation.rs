@@ -3568,6 +3568,135 @@ mod tests {
         drop(updates);
     }
 
+    /// A driver whose stream waits on the client the way the mintv2 facades do: through
+    /// [`crate::federation::wait_holding_client`], so that the handle it needs is not parked in
+    /// the stream's own frame.
+    ///
+    /// `Arc<()>` stands in for the `ClientHandleArc` — a real one needs a federation to open a
+    /// client against, and the strong count is the whole of what matters here, since
+    /// `shutdown_client` reclaims the real handle with `Arc::try_unwrap`.
+    struct ClientWaitingDriver {
+        /// The stand-in handle. The test holds one reference; a wait in flight holds the other.
+        handle: Arc<()>,
+        /// Stands in for the client's task-group shutdown token, which `quiesce` fires.
+        stop: tokio::sync::watch::Sender<bool>,
+    }
+
+    impl Driver<ProbeState> for ClientWaitingDriver {
+        fn current<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<ProbeState>> {
+            Box::pin(async { Ok(ProbeState::Running) })
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
+            let handle = self.handle.clone();
+            let mut stop = self.stop.subscribe();
+            Box::pin(async move {
+                let stream = futures::stream::once(async move {
+                    crate::federation::wait_holding_client(
+                        handle,
+                        async move {
+                            let _ = stop.wait_for(|stopping| *stopping).await;
+                        },
+                        // Never ends by itself, like a wait on a federation that has stopped
+                        // answering: only the client being told to stop can end it.
+                        |held| async move {
+                            let _held = held;
+                            futures::future::pending::<()>().await;
+                            Ok(ProbeState::Done)
+                        },
+                    )
+                    .await
+                });
+                Ok(Box::pin(stream) as BoxStream<'static, Result<ProbeState>>)
+            })
+        }
+
+        fn same_state(&self, previous: &ProbeState, next: &ProbeState) -> bool {
+            previous == next
+        }
+
+        fn encode_state(&self, state: &ProbeState) -> Result<String> {
+            Ok(format!("{state:?}"))
+        }
+
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
+        }
+
+        fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+            Err(Error::new(ErrorCode::Internal, "no details"))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_idle_subscriber_parked_on_a_client_wait_still_gives_the_handle_back() {
+        use core::future::Future;
+        use core::task::{Context, Poll};
+
+        let (stop, _) = tokio::sync::watch::channel(false);
+        let handle = Arc::new(());
+        let driver = Arc::new(ClientWaitingDriver {
+            handle: handle.clone(),
+            stop: stop.clone(),
+        });
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        // This test and the driver each hold one, and every wait in flight holds one more: the
+        // count is back here once the handle has been given back, which is the state
+        // `shutdown_client` needs, since it reclaims the real handle with `Arc::try_unwrap`.
+        let unheld = Arc::strong_count(&handle);
+
+        // Drive one `next` until the driver's stream is parked on its wait, then drop it and
+        // leave the subscriber idle — the subscriber itself stays alive, which is what keeps
+        // the stream alive. Nothing polls that stream from here on: a `select!` or a timeout
+        // written inside it would never fire again, so a handle parked in its own frame would
+        // be beyond reclaiming, and every close from then on would retire the federation and
+        // then fail.
+        {
+            let mut next = Box::pin(updates.next());
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            for _ in 0..100 {
+                assert!(matches!(next.as_mut().poll(&mut cx), Poll::Pending));
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                Arc::strong_count(&handle),
+                unheld + 1,
+                "the stream should be waiting on the client by now"
+            );
+        }
+
+        // What `quiesce` does to the client's task group before `shutdown_client` asks for the
+        // last reference.
+        stop.send_replace(true);
+
+        // Slept through rather than yielded through: the release happens on a task of its own,
+        // and yielding only hands the runtime back to this same future.
+        let mut released = false;
+        for _ in 0..1_000 {
+            if Arc::strong_count(&handle) == unheld {
+                released = true;
+                break;
+            }
+            fedimint_core::runtime::sleep(core::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            released,
+            "an idle subscriber held the client handle, so the close could not have it"
+        );
+        drop(updates);
+    }
+
     /// A driver whose `current` never resolves and whose `subscribe` either never resolves or
     /// hands out an empty stream, for the shutdown timing the other drivers cannot express: a
     /// federation that stops while a subscriber is still setting up.

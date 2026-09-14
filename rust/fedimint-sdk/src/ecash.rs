@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use fedimint_client::Client;
+use fedimint_client::{Client, ClientHandleArc};
 use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::util::{BoxFuture, BoxStream};
 use futures::StreamExt;
@@ -1467,7 +1467,6 @@ async fn mintv2_reclaim(
         )
     })?;
 
-    let client_arc = client.handle();
     let mintv2 = client
         .get_first_module::<fedimint_mintv2_client::MintClientModule>()
         .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
@@ -1494,6 +1493,8 @@ async fn mintv2_reclaim(
         Err(err) => return Err(map_mintv2_receive_error(err)),
     };
 
+    let client_arc = client.handle();
+
     // The client guard was held only for the bounded submission work above (`receive`).
     // Release it here before waiting for the outcome: `await_final_receive_operation_state`
     // waits on federation consensus (which is unbounded if the federation is slow or
@@ -1501,19 +1502,45 @@ async fn mintv2_reclaim(
     // from acquiring its write lock on close or shutdown.
     drop(client);
 
-    let mintv2 = client_arc
-        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
-        .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
-
-    let outcome = mintv2
-        .await_final_receive_operation_state(op_id)
-        .await
-        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+    // The handle goes with the wait rather than staying on this future: this is reached from
+    // the driver's subscription as well as from a direct read, and a subscription that parked
+    // here holding it would fail every later close. See `mintv2_receive_outcome`.
+    let outcome = mintv2_receive_outcome(client_arc, op_id).await?;
 
     Ok(match outcome {
         fedimint_mintv2_client::FinalReceiveOperationState::Success => EcashSendState::Canceled,
         fedimint_mintv2_client::FinalReceiveOperationState::Rejected => EcashSendState::Redeemed,
     })
+}
+
+/// Waits for a mintv2 receive operation to reach its final state, holding the client only for
+/// as long as the wait actually runs.
+///
+/// The wait ends when the federation reaches consensus on the claiming transaction, so it is
+/// unbounded — a federation that is slow, unreachable or simply not asked about again never
+/// ends it — and it needs the client alive throughout. Both callers are inside a driver's
+/// `'static` stream, or feed one: `mintv2_reclaim` is driven by the send subscription, and the
+/// mintv2 branch of `EcashReceiveDriver::subscribe` is the stream itself. A stream parked here
+/// with a `ClientHandleArc` in its frame would never give it back, because an idle subscriber
+/// stops polling it altogether — which is why the wait is handed to
+/// [`crate::federation::wait_holding_client`], where the runtime keeps driving it and the
+/// client's own shutdown can reclaim the handle. That function's documentation has the whole
+/// reasoning.
+async fn mintv2_receive_outcome(
+    client: ClientHandleArc,
+    op_id: fedimint_core::core::OperationId,
+) -> Result<fedimint_mintv2_client::FinalReceiveOperationState> {
+    let stop = client.task_group().make_handle().make_shutdown_rx();
+    crate::federation::wait_holding_client(client, stop, move |client| async move {
+        let mintv2 = client
+            .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+            .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+        mintv2
+            .await_final_receive_operation_state(op_id)
+            .await
+            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))
+    })
+    .await
 }
 
 fn decode_send_wire(details: &str) -> Result<EcashSendDetailsWire> {
@@ -1766,23 +1793,19 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                 } else {
                     None
                 };
+                // This stream is what an idle subscriber parks on, so the wait for the final
+                // state goes through `mintv2_receive_outcome` rather than being awaited here:
+                // the client handle it needs must not be left in an unpolled frame.
                 let final_stream = futures::stream::once(async move {
-                    let mintv2 = client_arc
-                        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
-                        .map_err(|_| {
-                            Error::new(ErrorCode::NotSupported, "mintv2 module not found")
-                        })?;
-                    let res = mintv2.await_final_receive_operation_state(id).await;
-                    match res {
-                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success) => {
+                    match mintv2_receive_outcome(client_arc, id).await? {
+                        fedimint_mintv2_client::FinalReceiveOperationState::Success => {
                             Ok(EcashReceiveState::Done)
                         }
-                        Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected) => {
+                        fedimint_mintv2_client::FinalReceiveOperationState::Rejected => {
                             Ok(EcashReceiveState::Failed {
                                 reason: "Transaction was rejected".to_string(),
                             })
                         }
-                        Err(err) => Err(Error::new(ErrorCode::Internal, err.to_string())),
                     }
                 });
                 let stream = futures::stream::iter(initial).chain(final_stream);
@@ -2718,5 +2741,115 @@ mod tests {
                 .code,
             ErrorCode::InsufficientBalance
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_succeeds_and_reports_closed_while_idle_reclaim_subscriber_remains_alive() {
+        use core::future::Future;
+        use core::task::{Context, Poll};
+        use futures::StreamExt as _;
+
+        use crate::FederationStatus;
+
+        let (stop_tx, rx) = tokio::sync::watch::channel(false);
+        let client_slot = Arc::new(tokio::sync::RwLock::new(Some(Arc::new(()))));
+
+        // A stream modeling a mintv2 send subscription undergoing reclaim:
+        // yields CancelRequested, then enters an unbounded consensus wait via `wait_holding_client`.
+        let slot_clone = client_slot.clone();
+        let stream = futures::stream::unfold(0, move |step| {
+            let slot = slot_clone.clone();
+            let mut stop = rx.clone();
+            async move {
+                match step {
+                    0 => Some((Ok(EcashSendState::CancelRequested), 1)),
+                    1 => {
+                        let handle = {
+                            let guard = slot.read().await;
+                            guard
+                                .as_ref()
+                                .cloned()
+                                .expect("client is live at start of reclaim")
+                        };
+                        let res = crate::federation::wait_holding_client(
+                            handle,
+                            async move {
+                                let _ = stop.wait_for(|stopping| *stopping).await;
+                            },
+                            |held| async move {
+                                let _held = held;
+                                futures::future::pending::<()>().await;
+                                Ok(EcashSendState::Canceled)
+                            },
+                        )
+                        .await;
+                        Some((res, 2))
+                    }
+                    _ => None,
+                }
+            }
+        });
+
+        // Wrapped in the production stream pipeline for send subscriptions.
+        let mut subscriber = settled(until_final(Box::pin(stream)));
+
+        // Drive the first item to observe CancelRequested.
+        let first = subscriber.next().await;
+        assert_eq!(first.unwrap().unwrap(), EcashSendState::CancelRequested);
+
+        // Drive the stream until it is parked waiting on consensus inside `wait_holding_client`.
+        {
+            let mut next = Box::pin(subscriber.next());
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            for _ in 0..100 {
+                assert!(matches!(next.as_mut().poll(&mut cx), Poll::Pending));
+                tokio::task::yield_now().await;
+            }
+        }
+
+        // A detached federation standing in for the lifecycle status checks.
+        let db = crate::db::federation_namespace(&crate::db::in_memory_root(), [2u8; 32]);
+        let federation = crate::federation::FederationInner::detached(db, true);
+        assert_eq!(federation.status(), FederationStatus::Running);
+
+        // Mimic `close_federation`:
+        // 1. Quiesce takes the client handle and fires the stop signal on the client task group.
+        let client = client_slot
+            .write()
+            .await
+            .take()
+            .expect("client handle was present");
+        let _ = federation.quiesce().await;
+        stop_tx.send_replace(true);
+
+        // 2. The federation status is immediately set to Closed.
+        federation.set_status(FederationStatus::Closed);
+
+        // 3. shutdown_client needs sole ownership via `Arc::try_unwrap`.
+        // Because `wait_holding_client` dropped its handle when `stop` fired,
+        // sole ownership is reclaimed cleanly while the subscriber stays alive.
+        let mut unwrap_succeeded = false;
+        let mut reclaimed = client;
+        for _ in 0..100 {
+            match Arc::try_unwrap(reclaimed) {
+                Ok(_) => {
+                    unwrap_succeeded = true;
+                    break;
+                }
+                Err(stray) => {
+                    reclaimed = stray;
+                    fedimint_core::runtime::sleep(core::time::Duration::from_millis(5)).await;
+                }
+            }
+        }
+
+        assert!(
+            unwrap_succeeded,
+            "shutdown_client should acquire sole ownership even while the idle subscriber is alive"
+        );
+        assert_eq!(federation.status(), FederationStatus::Closed);
+
+        // Subscriber remains alive in scope.
+        drop(subscriber);
     }
 }
