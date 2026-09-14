@@ -3697,6 +3697,111 @@ mod tests {
         drop(updates);
     }
 
+    /// A driver shaped like the mintv2 receive subscription: an update that is ready at once,
+    /// chained to a wait that needs the client.
+    ///
+    /// The chained future is built when `subscribe` runs but is not polled while the first
+    /// update is being handed out, so whatever it captured sits in a frame that has never run.
+    /// It carries a `Weak` and takes its handle when the wait starts, which is what the real
+    /// one does by looking the federation up again.
+    struct ChainedClientWaitDriver {
+        /// The stand-in handle, as in [`ClientWaitingDriver`]. The driver holds the strong
+        /// reference the stream upgrades to.
+        handle: Arc<()>,
+        /// Stands in for the client's task-group shutdown token, which `quiesce` fires.
+        stop: tokio::sync::watch::Sender<bool>,
+    }
+
+    impl Driver<ProbeState> for ChainedClientWaitDriver {
+        fn current<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<ProbeState>> {
+            Box::pin(async { Ok(ProbeState::Running) })
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            _federation: &'a FederationInner,
+            _id: UpstreamOperationId,
+            _record: &'a OperationRecord,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<ProbeState>>>> {
+            let handle = Arc::downgrade(&self.handle);
+            let mut stop = self.stop.subscribe();
+            Box::pin(async move {
+                // Ready immediately, like the `Issuing` an active receive reports.
+                let initial = futures::stream::iter(vec![Ok(ProbeState::Running)]);
+                let waiting = futures::stream::once(async move {
+                    let handle = handle.upgrade().ok_or_else(|| {
+                        Error::new(ErrorCode::FederationClosed, "the client is gone")
+                    })?;
+                    crate::federation::wait_holding_client(
+                        handle,
+                        async move {
+                            let _ = stop.wait_for(|stopping| *stopping).await;
+                        },
+                        |held| async move {
+                            let _held = held;
+                            futures::future::pending::<()>().await;
+                            Ok(ProbeState::Done)
+                        },
+                    )
+                    .await
+                });
+                Ok(Box::pin(initial.chain(waiting)) as BoxStream<'static, Result<ProbeState>>)
+            })
+        }
+
+        fn same_state(&self, previous: &ProbeState, next: &ProbeState) -> bool {
+            previous == next
+        }
+
+        fn encode_state(&self, state: &ProbeState) -> Result<String> {
+            Ok(format!("{state:?}"))
+        }
+
+        fn decode_state(&self, encoded: &str) -> Result<ProbeState> {
+            decode_probe_state(encoded)
+        }
+
+        fn decode_details(&self, _json: &str) -> Result<Box<dyn Any + Send + Sync>> {
+            Err(Error::new(ErrorCode::Internal, "no details"))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subscriber_that_read_one_update_and_stopped_is_holding_no_client() {
+        let (stop, _) = tokio::sync::watch::channel(false);
+        let handle = Arc::new(());
+        let driver = Arc::new(ChainedClientWaitDriver {
+            handle: handle.clone(),
+            stop,
+        });
+        let operation = probe_operation_with(driver as Arc<dyn Driver<ProbeState>>).await;
+        let mut updates = operation.updates();
+        // This test and the driver each hold one. Anything above this is a client a close
+        // cannot have, since `shutdown_client` reclaims the real handle with `Arc::try_unwrap`.
+        let unheld = Arc::strong_count(&handle);
+
+        assert_eq!(
+            updates.next().await.expect("an update"),
+            Some(ProbeState::Running)
+        );
+
+        // Not polled again — this is exactly where an application that read the update and
+        // went on with its day leaves the subscriber. The rest of the stream has never run,
+        // and a handle captured into it at subscribe time would be stranded there for as long
+        // as the subscriber lives, failing every close that followed.
+        assert_eq!(
+            Arc::strong_count(&handle),
+            unheld,
+            "a subscriber that has only read its first update is holding the client"
+        );
+        drop(updates);
+    }
+
     /// A driver whose `current` never resolves and whose `subscribe` either never resolves or
     /// hands out an empty stream, for the shutdown timing the other drivers cannot express: a
     /// federation that stops while a subscriber is still setting up.
