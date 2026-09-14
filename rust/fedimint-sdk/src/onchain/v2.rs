@@ -324,15 +324,7 @@ pub(super) async fn receive(
 /// should start from, so that an event already in the log before this address was handed out is
 /// never mistaken for a payment to it.
 pub(super) async fn event_log_tail(client: &Client) -> u64 {
-    const PAGE: u64 = 1024;
-    let mut pos = EventLogId::LOG_START;
-    loop {
-        let page = client.get_event_log(Some(pos), PAGE).await;
-        let Some(last) = page.last() else {
-            return u64::from(pos);
-        };
-        pos = last.id().saturating_add(1);
-    }
+    u64::from(client.get_next_event_log_id().await)
 }
 
 /// A walletv2 deposit's own upstream operation, discovered by scanning the event log for the
@@ -645,12 +637,18 @@ pub(super) async fn current_receive(
 /// be left parked indefinitely by an idle subscriber, so it may not hold a client guard (or even
 /// a [`fedimint_client::ClientHandleArc`]) in its own state across a poll; see
 /// [`wait_holding_client`]'s own documentation.
+///
+/// `added` is the one exception: a [`tokio::sync::watch::Receiver`] outlives the client it was
+/// obtained from (it is a plain channel handle, not a lock or a handle that keeps a federation
+/// from closing), so it is fetched once, in [`subscribe_receive`], and carried here for the whole
+/// life of the stream rather than re-derived on every poll the way the client itself is.
 #[derive(Clone)]
 struct ReceiveCtx {
     sdk: Weak<SdkInner>,
     federation_id: fedimint_core::config::FederationId,
     db: Database,
     id: OperationId,
+    added: tokio::sync::watch::Receiver<()>,
 }
 
 fn live_federation(ctx: &ReceiveCtx) -> Option<Arc<FederationInner>> {
@@ -669,9 +667,13 @@ enum ReceiveCursor {
         cursor: u64,
         announced: bool,
     },
-    /// Linked, and the on-chain outcome has not been checked at all yet.
+    /// Linked. `announced` says whether the `Confirmed` a fresh link always earns has already
+    /// been reported: the on-chain outcome itself is only checked once that has happened, so a
+    /// continuous subscriber can never see a linked deposit jump straight from
+    /// `WaitingForTransaction` past `Confirmed` to `Claimed`.
     Linked {
         link: Link,
+        announced: bool,
     },
     /// Linked, `Confirmed` was already reported, and now the wait is for the module's own final
     /// state, unbounded this time.
@@ -690,11 +692,23 @@ pub(super) async fn subscribe_receive(
     federation: &FederationInner,
     id: OperationId,
 ) -> Result<BoxStream<'static, Result<OnchainReceiveState>>> {
+    let client = federation.client(false).await?;
+    // Obtained once, here, rather than freshly from the client on every visit to the `Linking`
+    // arm below. `Client::log_event_added_rx` only ever clones the receiver it stores internally,
+    // and nothing in `Client` ever marks that stored receiver as seen, so a fresh clone reports a
+    // change the instant any event at all has ever been logged, past or future: waited on
+    // straight away, that busy-scans the log instead of waiting for a new one. Keeping this one
+    // receiver for the stream's whole life, and calling `mark_unchanged` on it immediately before
+    // each scan (see `receive_step`'s `Linking` arm), is what turns `changed().await` into an
+    // actual wait for something logged after the scan started.
+    let added = client.log_event_added_rx();
+    drop(client);
     let ctx = ReceiveCtx {
         sdk: federation.sdk.clone(),
         federation_id: federation.id,
         db: federation.db(),
         id,
+        added,
     };
     let stream = futures::stream::unfold(ReceiveCursor::Start, move |cursor| {
         receive_step(ctx.clone(), cursor)
@@ -706,7 +720,7 @@ pub(super) async fn subscribe_receive(
 /// the algorithm does not hand out (finding a link, a bounded check that already resolved) and
 /// returns only once there is a state to report, together with where the next call resumes.
 async fn receive_step(
-    ctx: ReceiveCtx,
+    mut ctx: ReceiveCtx,
     mut cursor: ReceiveCursor,
 ) -> Option<(Result<OnchainReceiveState>, ReceiveCursor)> {
     loop {
@@ -726,7 +740,10 @@ async fn receive_step(
                     return Some((claimed_from(details), ReceiveCursor::Done));
                 }
                 match wire_link(&details) {
-                    Ok(Some(found)) => ReceiveCursor::Linked { link: found },
+                    Ok(Some(found)) => ReceiveCursor::Linked {
+                        link: found,
+                        announced: false,
+                    },
                     Ok(None) => {
                         let address = match OnchainReceiveDetails::try_from(details.clone()) {
                             Ok(public) => public.address,
@@ -753,13 +770,23 @@ async fn receive_step(
                     Ok(client) => client,
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 };
+                // Marked unchanged right before the scan, not after: an event logged while
+                // `find_link` is still paging through the log must still register once this call
+                // reaches the `None` arm below, or it would sit unnoticed until some later,
+                // unrelated event happened to wake the wait. `ctx.added` is the one receiver
+                // `subscribe_receive` obtained for the stream's whole life; see there for why it
+                // must not be re-fetched from the client here instead.
+                ctx.added.mark_unchanged();
                 match find_link(&client, &address, from).await {
                     Some(found) => {
                         drop(client);
                         if let Err(err) = link(&federation, ctx.id, &found).await {
                             return Some((Err(err), ReceiveCursor::Done));
                         }
-                        ReceiveCursor::Linked { link: found }
+                        ReceiveCursor::Linked {
+                            link: found,
+                            announced: false,
+                        }
                     }
                     None if !announced => {
                         drop(client);
@@ -773,11 +800,10 @@ async fn receive_step(
                         ));
                     }
                     None => {
-                        let mut added = client.log_event_added_rx();
                         let mut closed = federation.closed();
                         drop(client);
                         tokio::select! {
-                            _ = added.changed() => {}
+                            _ = ctx.added.changed() => {}
                             _ = closed.changed() => {
                                 if closed.has_changed().is_err() || *closed.borrow_and_update() {
                                     return Some((Err(federation_closed()), ReceiveCursor::Done));
@@ -792,7 +818,31 @@ async fn receive_step(
                     }
                 }
             }
-            ReceiveCursor::Linked { link: found } => {
+            // A fresh link always earns an immediate `Confirmed`, reported before the on-chain
+            // outcome is ever checked: the transaction has already been seen by the scanner, and
+            // that is what `Confirmed` means on walletv2. Checking straight away and reporting
+            // `Claimed` directly when the claim already settled would let a continuous
+            // subscriber jump from `WaitingForTransaction` past `Confirmed`, which loses
+            // information the engine's own deduplication makes this extra step free to keep.
+            ReceiveCursor::Linked {
+                link: found,
+                announced: false,
+            } => {
+                return Some((
+                    Ok(OnchainReceiveState::Confirmed {
+                        txid: found.txid.clone(),
+                        gross_deposited: found.gross,
+                    }),
+                    ReceiveCursor::Linked {
+                        link: found,
+                        announced: true,
+                    },
+                ));
+            }
+            ReceiveCursor::Linked {
+                link: found,
+                announced: true,
+            } => {
                 let Some(federation) = live_federation(&ctx) else {
                     return Some((Err(federation_closed()), ReceiveCursor::Done));
                 };
@@ -800,7 +850,13 @@ async fn receive_step(
                     Ok(client) => client,
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 };
-                match observe_link(&client, &ctx.db, ctx.id, &found).await {
+                // Every other arm drops its guard before awaiting anything else: a close must
+                // always be able to take the client write lock. `observe_link` and, on the
+                // `Aborted` branch, `read_address` run on a cloned handle instead, so the guard
+                // is gone before either one is awaited.
+                let handle = client.handle();
+                drop(client);
+                match observe_link(&handle, &ctx.db, ctx.id, &found).await {
                     Ok(ClaimProgress::StillFunding) => {
                         return Some((
                             Ok(OnchainReceiveState::Confirmed {
