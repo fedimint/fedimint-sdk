@@ -1657,12 +1657,15 @@ async fn onchain_deposit_and_withdrawal_round_trip() {
         "0.00030000"
     );
 
-    assert_eq!(
-        federation.balance().await.expect("balance"),
+    // `Succeeded` is the federation accepting the withdrawal; the change from the notes it
+    // consumed is minted afterwards, so the balance is waited for rather than read once.
+    balance_settles_at(
+        &federation,
         net_credit
             .checked_sub(total)
-            .expect("the total was debited")
-    );
+            .expect("the total was debited"),
+    )
+    .await;
 
     let history = federation.activity(None, 10).await.expect("two rows");
     assert_eq!(history.items.len(), 2);
