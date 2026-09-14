@@ -299,7 +299,7 @@ mod tests {
 
     fn ecash_receive_details() -> EcashReceiveDetails {
         EcashReceiveDetails {
-            notes: TOKEN.parse().expect("a valid ecash token"),
+            notes: Some(TOKEN.parse().expect("a valid ecash token")),
             notes_value: Amount::from_msats(1_000),
             fee: Amount::from_msats(36),
             net_credit: Amount::from_msats(964),

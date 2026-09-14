@@ -763,10 +763,21 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// [`Storage`](crate::ErrorCode::Storage) if the federation's state
-    /// cannot be flushed before it stops, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the
-    /// whole instance has been shut down.
+    /// whole instance has been shut down, which is the one error here that
+    /// means nothing happened.
+    ///
+    /// The federation is retired before anything else can fail, so the rest
+    /// describe how far the stop got and never whether it happened:
+    /// [`Storage`](crate::ErrorCode::Storage) if the choice could not be
+    /// persisted, which leaves the federation
+    /// [`Quarantined`](FederationStatus::Quarantined) for a later build or
+    /// [`Sdk::reopen_federation`] to retry, and
+    /// [`Internal`](crate::ErrorCode::Internal) if its client could not be
+    /// shut down cleanly because something else was still using it, which
+    /// leaves the federation [`Closed`](FederationStatus::Closed) with its
+    /// workers stopped but not waited for. Reopening it immediately after
+    /// that is the one thing worth avoiding.
     pub async fn close_federation(&self, id: &FederationId) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.alive()?;
@@ -780,12 +791,31 @@ impl Sdk {
             return Ok(());
         }
 
-        federation.stop().await?;
+        // Quiesce and shutdown are taken apart here, rather than going through
+        // `FederationInner::stop`, so that the transition cannot be lost to a failure of the
+        // second half. `quiesce` is what actually retires the federation — it takes the client
+        // out from under every handle, stops its workers and flips `closed` — and it cannot
+        // fail; the client shutdown that follows can, when something else still holds a clone
+        // of the handle and `shutdown_client` therefore never gets the last reference. Failing
+        // the call there and then, as `stop` did, left a federation that was already dead
+        // recorded and announced as `Running`, and reopened by the next build. So the outcome
+        // is carried past the transition instead and reported at the end, the same way
+        // `Sdk::shutdown` sets `Closed` whatever `stop` returns.
+        let client = federation.quiesce().await;
 
         // Set the moment the client is retired, mirroring `forget_federation`'s status update
         // right after `quiesce`: the federation is already stopped here, and it must never be
         // observable as `Running` while the durable write below is still pending, or has failed.
         federation.set_status(FederationStatus::Closed);
+
+        // Still attempted before the write, as it was when `stop` did it: an unclean shutdown
+        // is worth reporting, because the client's workers have been told to stop but not
+        // waited for, and a caller going straight on to reopen this federation would be
+        // opening a second client over storage the first one has not finished with.
+        let shutdown = match client {
+            Some(client) => crate::federation::shutdown_client(client).await,
+            None => Ok(()),
+        };
 
         // Persisted as a choice, not merely as a fact: later builds must stop reopening this
         // federation, which is exactly what separates it from a quarantine.
@@ -805,7 +835,7 @@ impl Sdk {
         }
         federation.set_record(record);
         self.inner.announce(&federation);
-        Ok(())
+        shutdown
     }
 
     /// Permanently deletes this federation's local state.
@@ -962,33 +992,52 @@ impl Sdk {
         // function, which is the only thing that can consume it. Calling a shutdown helper from
         // in here would be a no-op regardless, because this scope is still holding that
         // reference and `Arc::into_inner` would return `None`.
-        if !already_committed
-            && !recovering
-            && let Some(client) = client.as_ref()
-        {
-            // An `Err` here is treated as nothing to guard against. At this pin the only way
-            // `get_balance_for_unit` fails is "primary module not available", where a balance is
-            // meaningless and there is nothing spendable to protect; a future upstream change
-            // that grows a second failure mode would need this reconsidered.
-            if let Ok(balance) = client.get_balance_for_unit(AmountUnit::BITCOIN).await
-                && balance.msats != 0
-            {
-                let remaining = Amount::from_msats(balance.msats);
-                self.persist_closed(&federation).await?;
-                return Err(crate::Error::with_details(
-                    crate::ErrorCode::BalanceNotEmpty,
-                    "this federation still holds spendable ecash",
-                    crate::ErrorDetails::BalanceNotEmpty { remaining },
-                ));
+        if !already_committed && !recovering {
+            if let Some(client) = client.as_ref() {
+                // An `Err` here is treated as nothing to guard against. At this pin the only way
+                // `get_balance_for_unit` fails is "primary module not available", where a balance is
+                // meaningless and there is nothing spendable to protect; a future upstream change
+                // that grows a second failure mode would need this reconsidered.
+                if let Ok(balance) = client.get_balance_for_unit(AmountUnit::BITCOIN).await
+                    && balance.msats != 0
+                {
+                    let remaining = Amount::from_msats(balance.msats);
+                    self.persist_closed(&federation).await?;
+                    return Err(crate::Error::with_details(
+                        crate::ErrorCode::BalanceNotEmpty,
+                        "this federation still holds spendable ecash",
+                        crate::ErrorDetails::BalanceNotEmpty { remaining },
+                    ));
+                }
+                // Out-of-band ecash a receiver has not redeemed and this instance could still
+                // reclaim shows up here on the v1 mint: upstream keeps a state machine alive for
+                // exactly as long as the refund is still available.
+                if !client.get_active_operations().await.is_empty() {
+                    self.persist_closed(&federation).await?;
+                    return Err(crate::Error::new(
+                        crate::ErrorCode::PendingOperations,
+                        "this federation still has operations that have not finished",
+                    ));
+                }
             }
+
             // Out-of-band ecash a receiver has not redeemed and this instance could still
-            // reclaim shows up here too: upstream keeps a state machine alive for exactly as
-            // long as the refund is still available.
-            if !client.get_active_operations().await.is_empty() {
+            // reclaim: on the v1 mint with a live client that shows up above in
+            // `get_active_operations`, but on mintv2 it does not, because a mintv2 send leaves
+            // no state machine behind. Furthermore, when a federation is already closed
+            // (either via `close_federation` or because a previous `forget_federation` refusal
+            // quiesced the client), `client` is `None` and the live-client guards above are
+            // skipped entirely.
+            //
+            // Checking here outside the `let Some(client)` guard ensures that an unsettled
+            // send protects its notes from deletion regardless of whether the client was
+            // running, already closed, or being repeatedly forgotten after a first refusal.
+            if federation.has_unsettled_ecash_send().await? {
                 self.persist_closed(&federation).await?;
                 return Err(crate::Error::new(
                     crate::ErrorCode::PendingOperations,
-                    "this federation still has operations that have not finished",
+                    "this federation still has out-of-band ecash that has not been redeemed \
+                     or reclaimed",
                 ));
             }
         }
@@ -2833,6 +2882,113 @@ mod tests {
                 reopened.federation_status(&public),
                 Some(FederationStatus::Closed)
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_refuses_repeatedly_with_unsettled_ecash_send() {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let op_id = fedimint_core::core::OperationId([42u8; 32]);
+            let record = crate::db::OperationRecord {
+                schema_version: 0,
+                kind: crate::operation::kinds::ECASH_SEND.to_string(),
+                module: "mintv2".to_string(),
+                created_at: 1_000,
+                details: "{}".to_string(),
+                phase: None,
+                cancel_requested_at: None,
+                final_state: None,
+            };
+            let db = fed_inner.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&crate::db::OperationRecordKey(op_id), &record)
+                .await;
+            dbtx.commit_tx().await;
+
+            // The first forget attempt must refuse because of the unsettled send.
+            let err1 = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("first forget must refuse");
+            assert_eq!(err1.code, crate::ErrorCode::PendingOperations);
+
+            // A second forget attempt (where the client is already None/closed) must STILL refuse,
+            // never falling through to erase the federation and discard notes.
+            let err2 = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("second forget must also refuse");
+            assert_eq!(err2.code, crate::ErrorCode::PendingOperations);
+
+            // The federation remains stored and closed.
+            assert_eq!(
+                sdk.federation_status(&public),
+                Some(FederationStatus::Closed)
+            );
+            assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn close_then_forget_refuses_with_unsettled_ecash_send() {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let op_id = fedimint_core::core::OperationId([43u8; 32]);
+            let record = crate::db::OperationRecord {
+                schema_version: 0,
+                kind: crate::operation::kinds::ECASH_SEND.to_string(),
+                module: "mintv2".to_string(),
+                created_at: 1_000,
+                details: "{}".to_string(),
+                phase: None,
+                cancel_requested_at: None,
+                final_state: None,
+            };
+            let db = fed_inner.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&crate::db::OperationRecordKey(op_id), &record)
+                .await;
+            dbtx.commit_tx().await;
+
+            // Calling close explicitly first.
+            sdk.close_federation(&public).await.expect("close succeeds");
+            assert_eq!(
+                sdk.federation_status(&public),
+                Some(FederationStatus::Closed)
+            );
+
+            // Forgetting a federation that was already closed must still check SDK records
+            // and refuse deletion when an unsettled send exists.
+            let err = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("forgetting closed federation with unsettled send must refuse");
+            assert_eq!(err.code, crate::ErrorCode::PendingOperations);
+
+            assert_eq!(
+                sdk.federation_status(&public),
+                Some(FederationStatus::Closed)
+            );
+            assert_eq!(sdk.stored_federations().len(), 1);
         }
     }
 }

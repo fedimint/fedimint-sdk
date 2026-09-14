@@ -8,6 +8,7 @@ use fedimint_core::config;
 use fedimint_core::db::Database;
 use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 use fedimint_core::module::AmountUnit;
+use fedimint_core::task::MaybeSend;
 use futures::StreamExt;
 
 use crate::db::{FederationRecord, StoredStatus};
@@ -146,31 +147,7 @@ impl Federation {
     /// doing and not a storage fault, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self) -> Result<Amount> {
-        // Reading a balance is not fund-touching: a recovery-locked federation's number is
-        // partial and worth showing as progress, and it is the spends that are refused.
-        let client = self.inner.client(false).await?;
-        let balance = match client.get_balance_for_unit(AmountUnit::BITCOIN).await {
-            Ok(balance) => balance,
-            // A v1 mint recovers as `RecoveryMode::Unusable` and is left out of the client's
-            // module registry until the client is opened again after the rescan
-            // (`fedimint-client/src/client/builder.rs:951`), so a recovering federation of that
-            // generation has no balance source at all yet. What has been recovered *so far* into
-            // something spendable is then exactly nothing, which is the provisional figure the
-            // docs promise; the swap that ends the recovery brings the real one.
-            Err(_) if self.inner.status() == FederationStatus::Recovering => {
-                return Ok(Amount::from_msats(0));
-            }
-            Err(err) => {
-                // The one way this fails in practice is a client with no primary module, which
-                // happens when API-version negotiation left every module out. That is not the
-                // caller's doing and not a storage fault.
-                return Err(crate::Error::new(
-                    crate::ErrorCode::Internal,
-                    format!("this federation cannot report a balance: {err}"),
-                ));
-            }
-        };
-        Ok(Amount::from_msats(balance.msats))
+        self.inner.balance().await
     }
 
     /// Opens a new, independent subscription to the balance.
@@ -545,6 +522,52 @@ impl FederationInner {
             ));
         }
         Ok(ClientGuard(guard))
+    }
+
+    /// The ecash balance: the value this instance currently holds as its balance with this federation.
+    ///
+    /// Takes a client guard of its own, so a caller that is already holding one must call
+    /// [`balance_of`] instead; see that function for why.
+    pub(crate) async fn balance(&self) -> Result<Amount> {
+        let client = self.client(false).await?;
+        balance_of(&client, self.status()).await
+    }
+
+    /// Whether this federation still has an out-of-band ecash send that has not settled.
+    ///
+    /// The erase guard cannot answer this from the client alone. On the v1 mint an unredeemed
+    /// send keeps a state machine alive for as long as the refund is available, so
+    /// `get_active_operations` sees it; mintv2 has no state machine at all — its `send` takes
+    /// the notes out of the balance, writes a log entry and returns — so an outstanding mintv2
+    /// send is invisible there. A wallet that sent its whole balance out of band therefore
+    /// looks, to the client, exactly like an empty one with nothing running, and erasing it
+    /// would throw away the only copy of notes that are still reclaimable.
+    ///
+    /// Answered from the SDK's own records instead, which exist for both generations: an
+    /// `ecash_send` with no `final_state` has not been observed reaching
+    /// [`Canceled`](crate::EcashSendState::Canceled) or
+    /// [`Redeemed`](crate::EcashSendState::Redeemed).
+    ///
+    /// Deliberately refuses on "not known to have settled" rather than "known to be
+    /// reclaimable": a send whose notes the receiver has already redeemed, which nothing has
+    /// observed yet, also blocks the erase. That is the safe direction — the remedy is to
+    /// observe the operation, which settles it — and the alternative would mean guessing about
+    /// bearer notes that may still be live.
+    pub(crate) async fn has_unsettled_ecash_send(&self) -> Result<bool> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+        use futures::StreamExt;
+
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let mut records = dbtx
+            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
+            .await;
+        while let Some((_, record)) = records.next().await {
+            if record.kind == crate::operation::kinds::ECASH_SEND && record.final_state.is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
@@ -970,7 +993,7 @@ impl FederationInner {
                 details: claimed.details,
                 phase: claimed.phase,
                 cancel_requested_at: None,
-                final_state: None,
+                final_state: claimed.final_state,
             },
             // Nothing claimed it, so it is recorded under the module that owns it and reads back
             // as a kind this build does not know: real, listable, and honestly not actionable.
@@ -1177,6 +1200,72 @@ pub(crate) async fn record_recovery_attempt_in(
         .map(|_| ())
 }
 
+/// Awaits `work`, which needs the client alive throughout, on a task of its own.
+///
+/// `client` is moved in and handed to `work`, and is dropped before this returns: whichever way
+/// the wait ended, the handle is already back by the time the caller is told about it.
+///
+/// # Why the wait is not simply awaited in place
+///
+/// [`shutdown_client`] needs the last reference to the handle, so a clone that outlives its
+/// purpose is a close that fails. A facade call may hold one safely, because dropping the call
+/// drops the clone with it. A driver's *stream* may not: the engine keeps the stream on the
+/// subscriber across a dropped `next` (see `OperationUpdates::next`), so an application that
+/// stops polling leaves it parked wherever its last `await` returned `Pending`, holding
+/// everything that `await` had borrowed for as long as the subscriber lives. Nothing polls it
+/// after that, which is what makes an unbounded client wait inside a stream unrecoverable: no
+/// `select!` written in there can fire and no timeout in there can elapse, because neither is
+/// ever polled again. An idle subscriber parked on one keeps the handle for ever, and every
+/// close from then on retires the federation and then fails with `Internal`, leaving it
+/// recorded as still running.
+///
+/// Running the wait on a task the runtime drives regardless of the caller is what keeps the
+/// handle reclaimable. `stop` is the client's own task-group shutdown token
+/// (`TaskHandle::make_shutdown_rx`), which both [`FederationInner::quiesce`] and
+/// [`FederationInner::replace_client`] fire before asking for the handle back — the same shape
+/// the recovery watcher uses, for the same reason. The task also gives up the moment the caller
+/// goes away, so a dropped subscription leaves nothing waiting behind it.
+pub(crate) async fn wait_holding_client<C, T, S, F, Fut>(client: C, stop: S, work: F) -> Result<T>
+where
+    C: MaybeSend + 'static,
+    T: MaybeSend + 'static,
+    S: Future<Output = ()> + MaybeSend + 'static,
+    F: FnOnce(C) -> Fut + MaybeSend + 'static,
+    Fut: Future<Output = Result<T>> + MaybeSend + 'static,
+{
+    let (mut tx, rx) = tokio::sync::oneshot::channel();
+    fedimint_core::task::spawn("sdk-client-wait", async move {
+        let outcome = {
+            let mut work = core::pin::pin!(work(client));
+            tokio::select! {
+                outcome = &mut work => Some(outcome),
+                () = stop => Some(Err(crate::Error::new(
+                    crate::ErrorCode::FederationClosed,
+                    "this federation stopped running",
+                ))),
+                // Nobody is left to answer: holding the client for an answer no one will read
+                // is the very thing this function exists to avoid.
+                () = tx.closed() => None,
+            }
+        };
+        // `work`, and with it the client handle it was given, is dropped by the block above,
+        // before the answer goes out. A caller told that the wait is over is therefore never
+        // racing the release of the handle it was waiting on: `shutdown_client` can have it.
+        if let Some(outcome) = outcome {
+            let _ = tx.send(outcome);
+        }
+    });
+
+    rx.await.unwrap_or_else(|_| {
+        // The sender goes without answering only if the task itself did, which outside a
+        // runtime being torn down under it cannot happen.
+        Err(crate::Error::new(
+            crate::ErrorCode::Internal,
+            "the wait on this federation's client did not finish",
+        ))
+    })
+}
+
 /// Shuts a client down, waiting for its workers.
 ///
 /// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
@@ -1184,9 +1273,11 @@ pub(crate) async fn record_recovery_attempt_in(
 /// executor stopped and let the eventual drop clean up, which upstream also logs about.
 pub(crate) async fn shutdown_client(mut client: ClientHandleArc) -> Result<()> {
     // A stray clone is normally on its way out already: the recovery watcher drops its clone
-    // the moment the federation's `closed` watch flips, which every caller of this function
-    // has done before calling it, but that drop runs on another task and may not have been
-    // scheduled yet. Waiting a bounded moment for it turns that race into a clean shutdown.
+    // the moment the federation's `closed` watch flips, and a `wait_holding_client` task drops
+    // its own when the client's task group is told to stop — both of which every caller of this
+    // function has done before calling it, but those drops run on other tasks and may not have
+    // been scheduled yet. Waiting a bounded moment for them turns that race into a clean
+    // shutdown.
     const STRAY_REFERENCE_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
     const STRAY_REFERENCE_ATTEMPTS: usize = 100;
 
@@ -1252,14 +1343,51 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
 // anywhere is degraded rather than fatal, and forgetting one would leak the client and the store's
 // file lock for no reason. `Sdk::shutdown` is still the way to get a clean stop.
 
+/// The spendable balance, read through a client the caller already has.
+///
+/// This exists so that a facade call holding a [`ClientGuard`] never reaches for a second one.
+/// [`FederationInner::client`] takes a read guard on a `tokio::sync::RwLock`, and that lock is
+/// write-preferring: once [`FederationInner::quiesce`] queues its writer, further readers block
+/// behind it. A call that took a read guard, then asked for another one while still holding the
+/// first, would deadlock against a close that arrives between the two — the second read waits on
+/// the queued writer, and the writer waits on the guard the caller is still holding.
+///
+/// Reading the balance is the one place that came up in practice, because
+/// [`FederationInner::balance`] acquires its own guard; callers already inside a guarded section
+/// pass it here instead.
+pub(crate) async fn balance_of(client: &Client, status: FederationStatus) -> Result<Amount> {
+    let balance = match client.get_balance_for_unit(AmountUnit::BITCOIN).await {
+        Ok(balance) => balance,
+        // A v1 mint recovers as `RecoveryMode::Unusable` and is left out of the client's
+        // module registry until the client is opened again after the rescan
+        // (`fedimint-client/src/client/builder.rs:951`), so a recovering federation of that
+        // generation has no balance source at all yet. What has been recovered *so far* into
+        // something spendable is then exactly nothing, which is the provisional figure the
+        // docs promise; the swap that ends the recovery brings the real one.
+        Err(_) if status == FederationStatus::Recovering => {
+            return Ok(Amount::from_msats(0));
+        }
+        Err(err) => {
+            return Err(crate::Error::new(
+                crate::ErrorCode::Internal,
+                format!("this federation cannot report a balance: {err}"),
+            ));
+        }
+    };
+    Ok(Amount::from_msats(balance.msats))
+}
+
 /// A read guard over one federation's live client.
 ///
 /// Holding it keeps a close, an erase or a shutdown waiting until the call is done.
 pub(crate) struct ClientGuard<'a>(tokio::sync::RwLockReadGuard<'a, Option<ClientHandleArc>>);
 
 impl ClientGuard<'_> {
-    /// A clone of the client behind this guard, for a task that must outlive the guard itself
-    /// (the recovery watcher, which drops its guard and then blocks on the client alone).
+    /// A clone of the client behind this guard, for a wait that must outlive the guard itself:
+    /// the recovery watcher, which drops its guard and then blocks on the client alone, and the
+    /// mintv2 facades, which drop theirs before an unbounded wait on consensus. Whoever takes
+    /// one owes it back before the federation can close — [`wait_holding_client`] is how a
+    /// stream keeps that promise, and [`shutdown_client`] is what collects on it.
     pub(crate) fn handle(&self) -> ClientHandleArc {
         self.0
             .as_ref()
@@ -2125,6 +2253,118 @@ mod tests {
 
         updates.changed().await.expect("the sender is still alive");
         assert_eq!(*updates.borrow(), 1);
+    }
+
+    /// A wait that never ends by itself, over a stand-in for the client handle.
+    ///
+    /// `Arc<()>` stands in because a `ClientHandleArc` cannot be built without a federation to
+    /// open a client against, and it is the right stand-in: `shutdown_client` reclaims the real
+    /// one with `Arc::try_unwrap`, so a strong count back at one is exactly the condition these
+    /// tests are about.
+    async fn a_wait_that_never_ends(held: std::sync::Arc<()>) -> Result<&'static str> {
+        let _held = held;
+        futures::future::pending::<()>().await;
+        Ok("unreachable")
+    }
+
+    /// A `stop` future in the shape of the client's task-group shutdown token.
+    async fn told_to_stop(mut rx: tokio::sync::watch::Receiver<bool>) {
+        let _ = rx.wait_for(|stopping| *stopping).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_wait_hands_its_answer_back() {
+        let handle = std::sync::Arc::new(());
+        let (_stop, rx) = tokio::sync::watch::channel(false);
+
+        let answer = wait_holding_client(handle.clone(), told_to_stop(rx), |held| async move {
+            drop(held);
+            Ok("settled")
+        })
+        .await
+        .expect("the wait finished on its own");
+
+        assert_eq!(answer, "settled");
+        assert_eq!(
+            std::sync::Arc::strong_count(&handle),
+            1,
+            "a finished wait keeps nothing"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_wait_gives_the_handle_back_when_the_client_is_told_to_stop() {
+        let handle = std::sync::Arc::new(());
+        let (stop, rx) = tokio::sync::watch::channel(false);
+
+        // The wait itself never ends, so the only thing that can end it is the stop signal —
+        // which is what `quiesce` fires on the client's task group before `shutdown_client`
+        // asks for the last reference.
+        let (outcome, ()) = tokio::join!(
+            wait_holding_client(handle.clone(), told_to_stop(rx), a_wait_that_never_ends),
+            async {
+                tokio::task::yield_now().await;
+                stop.send_replace(true);
+            }
+        );
+
+        assert_eq!(
+            outcome.expect_err("the wait ends with the client").code,
+            ErrorCode::FederationClosed
+        );
+        // Already back by the time the caller is told, with no waiting around for it: the
+        // handle is dropped before the answer is sent.
+        assert_eq!(
+            std::sync::Arc::strong_count(&handle),
+            1,
+            "the handle a stopped client's wait held was not given back"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_wait_nobody_is_listening_to_gives_the_handle_back() {
+        let handle = std::sync::Arc::new(());
+        // Never fired: this is the other way a wait ends, with the subscription that wanted the
+        // answer dropped before there was one.
+        let (_stop, rx) = tokio::sync::watch::channel(false);
+
+        {
+            let mut waiting = Box::pin(wait_holding_client(
+                handle.clone(),
+                told_to_stop(rx),
+                a_wait_that_never_ends,
+            ));
+            let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+            assert!(matches!(
+                waiting.as_mut().poll(&mut cx),
+                core::task::Poll::Pending
+            ));
+            assert_eq!(
+                std::sync::Arc::strong_count(&handle),
+                2,
+                "the wait should be holding the handle by now"
+            );
+        }
+
+        assert!(
+            handle_released(&handle).await,
+            "the handle was not given back when the caller went away"
+        );
+    }
+
+    /// Waits for nothing but this test to hold `handle`.
+    ///
+    /// The release happens on a task of its own, so this sleeps rather than yielding: yielding
+    /// hands the runtime back to this same future, which on a multi-threaded runtime can loop
+    /// through every attempt before another thread has picked the task up at all.
+    async fn handle_released(handle: &std::sync::Arc<()>) -> bool {
+        for _ in 0..1_000 {
+            if std::sync::Arc::strong_count(handle) == 1 {
+                return true;
+            }
+            fedimint_core::runtime::sleep(core::time::Duration::from_millis(5)).await;
+        }
+        false
     }
 
     #[tokio::test(flavor = "multi_thread")]
