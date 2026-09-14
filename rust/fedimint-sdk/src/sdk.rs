@@ -2184,7 +2184,10 @@ impl Drop for SdkInner {
 }
 
 /// How long a call waits for a federation's guardians before it reports a timeout.
-const CONTACT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
+///
+/// `pub(crate)` so that `onchain.rs` can reuse the same bound for its own federation round
+/// trips instead of duplicating the value.
+pub(crate) const CONTACT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
 
 /// One independent status subscription's state.
 ///

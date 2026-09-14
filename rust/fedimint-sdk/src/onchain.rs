@@ -3,8 +3,20 @@
 
 use std::sync::Arc;
 
-use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp, Txid};
+use fedimint_client::Client;
+use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::transaction::FeeQuote;
+use fedimint_core::bitcoin;
+use fedimint_core::config;
 
+use crate::{
+    Address, Amount, Error, ErrorCode, ErrorDetails, FederationStatus, Network, Operation,
+    OperationState, Result, Sats, Timestamp, Txid,
+};
+
+mod driver;
+mod v1;
+mod v2;
 mod wire;
 
 /// The on-chain facade for one federation, backed by its wallet module.
@@ -262,7 +274,7 @@ impl OnchainQuote {
     ///
     /// This is *not* what leaves the balance; see [`OnchainQuote::total`].
     pub fn amount(&self) -> Sats {
-        unimplemented!()
+        self.inner.amount
     }
 
     /// The exact aggregate cost of this withdrawal, over and above
@@ -284,7 +296,7 @@ impl OnchainQuote {
     /// [`to_sats_exact`](crate::Amount::to_sats_exact) will normally return
     /// `None` here.
     pub fn fee(&self) -> Amount {
-        unimplemented!()
+        self.inner.plan.fee
     }
 
     /// The total that will be debited from the balance:
@@ -301,7 +313,7 @@ impl OnchainQuote {
     /// re-approves a new number instead of quietly paying a different one.
     /// This is the figure [`OnchainSendDetails::total`] records.
     pub fn total(&self) -> Amount {
-        unimplemented!()
+        self.inner.plan.total
     }
 
     /// [`OnchainQuote::fee`], split into the named parts it is made of.
@@ -315,7 +327,7 @@ impl OnchainQuote {
     /// balance; see [`OnchainSendFeeBreakdown`] for why a caller should not
     /// re-derive it by summing.
     pub fn fee_breakdown(&self) -> OnchainSendFeeBreakdown {
-        unimplemented!()
+        self.inner.plan.breakdown.clone()
     }
 
     /// When this quote stops being executable.
@@ -325,7 +337,7 @@ impl OnchainQuote {
     /// tend to be shorter-lived than lightning ones, because the fee
     /// estimate they carry tracks a moving mempool.
     pub fn expires_at(&self) -> Timestamp {
-        unimplemented!()
+        self.inner.expires_at
     }
 }
 
@@ -855,11 +867,281 @@ struct OnchainInner {
     federation: Arc<crate::federation::FederationInner>,
 }
 
-/// Placeholder for a quote's frozen plan: destination, amount, the fee and
-/// its components, and the configuration context they were computed
-/// against.
+/// A quote's frozen plan: the destination, the amount, the fee and its parts, and the upstream
+/// terms the fee was computed from, so that `send` can tell whether they moved.
 #[derive(Debug)]
-struct OnchainQuoteInner;
+pub(super) struct OnchainQuoteInner {
+    /// The federation the quote was made against. A quote is refused on any other.
+    pub(super) federation_id: config::FederationId,
+    pub(super) address: Address,
+    pub(super) amount: Sats,
+    pub(super) plan: Plan,
+    pub(super) expires_at: Timestamp,
+}
+
+/// What a withdrawal will cost and how it will go, for either wallet module generation.
+#[derive(Debug)]
+pub(super) struct Plan {
+    pub(super) breakdown: OnchainSendFeeBreakdown,
+    /// The sum of `breakdown`.
+    pub(super) fee: Amount,
+    /// `amount` converted to millisatoshis, plus `fee`.
+    pub(super) total: Amount,
+    pub(super) terms: Terms,
+}
+
+/// The upstream inputs a plan was computed from. `send` recomputes the plan from the same
+/// inputs read again and refuses on any difference in the total.
+#[derive(Debug)]
+pub(super) enum Terms {
+    /// v1: the on-chain fee `get_withdraw_fees` quoted for the destination output, and the fee
+    /// quote `send_fee_quote` returned for funding it.
+    V1 {
+        fees: fedimint_wallet_common::PegOutFees,
+        quote: FeeQuote,
+    },
+    /// walletv2: the on-chain fee `send_fee` quoted, and the fee quote `send_fee_quote` returned.
+    V2 {
+        chain_fee: bitcoin::Amount,
+        quote: FeeQuote,
+    },
+}
+
+/// How long a quote stays executable after it is issued: shorter than lightning's 60 seconds
+/// because the chain-fee estimate a plan carries tracks a moving mempool.
+pub(super) const QUOTE_VALIDITY_MILLIS: u64 = 30_000;
+
+/// The wallet module the live client has, whichever generation it is.
+enum WalletModule<'a> {
+    V1(ClientModuleInstance<'a, fedimint_wallet_client::WalletClientModule>),
+    V2(ClientModuleInstance<'a, fedimint_walletv2_client::WalletClientModule>),
+}
+
+/// Picks the generation by asking the client, not the stored record: a facade obtained while a
+/// module was present and used after the configuration dropped it is the `NotSupported` case.
+fn module(client: &Client) -> Result<WalletModule<'_>> {
+    if let Ok(module) = client.get_first_module::<fedimint_walletv2_client::WalletClientModule>() {
+        return Ok(WalletModule::V2(module));
+    }
+    if let Ok(module) = client.get_first_module::<fedimint_wallet_client::WalletClientModule>() {
+        return Ok(WalletModule::V1(module));
+    }
+    Err(Error::new(
+        ErrorCode::NotSupported,
+        "this federation no longer has a wallet module",
+    ))
+}
+
+/// Checks a withdrawal destination's Bitcoin network against the federation's. `Onchain::quote`
+/// runs this before anything is committed, on both wallet module generations.
+fn check_network(address: &Address, expected: Network) -> Result<()> {
+    if address.inner().is_valid_for_network(expected.to_bitcoin()) {
+        return Ok(());
+    }
+    Err(Error::with_details(
+        ErrorCode::NetworkMismatch,
+        format!(
+            "the address is for {} but the federation runs on {}",
+            address.observed_prefix(),
+            expected.as_str()
+        ),
+        ErrorDetails::NetworkMismatch {
+            expected,
+            compatible: address.compatible_networks(),
+            observed_prefix: address.observed_prefix(),
+        },
+    ))
+}
+
+/// Refuses a withdrawal amount the federation cannot execute: zero, or below the destination's
+/// dust threshold. `amount` is converted with `sats_to_bitcoin` for the comparison against
+/// `dust`, which is the v1 script's `minimal_non_dust()` or the walletv2 config's `dust_limit`.
+fn check_amount(amount: Sats, dust: bitcoin::Amount) -> Result<()> {
+    if amount.sats() == 0 {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "a withdrawal of zero satoshis is not valid",
+        ));
+    }
+    if sats_to_bitcoin(amount) < dust {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{amount} is below the destination's dust threshold of {} sat",
+                dust.to_sat()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a quote made for another federation or past its window.
+fn ensure_executable(
+    quote: &OnchainQuoteInner,
+    federation_id: config::FederationId,
+    now_millis: u64,
+) -> Result<()> {
+    if quote.federation_id != federation_id {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "this quote was issued by another federation",
+        ));
+    }
+    if now_millis > quote.expires_at.epoch_millis() {
+        return Err(quote_expired(quote.expires_at, false));
+    }
+    Ok(())
+}
+
+/// Assembles a withdrawal's plan from the on-chain fee the destination output costs, the wallet
+/// module's own fee on that output, and the fee quote for funding it, whose `output` already
+/// includes that explicit fee (`fedimint-client/src/client.rs:865-935`): `change` is what is
+/// left of the quote's output once the module's own fee is taken back out, plus the dust the
+/// quote reports.
+// `chain_fee` is `PegOutFees::amount()` on v1 and `send_fee()` on walletv2; `module_fee` is
+// `peg_out_abs` on v1 and `fee_consensus.fee(output_value)` on walletv2. Both callers derive
+// `wallet_output` the same way from there: `chain_fee + module_fee`.
+pub(super) fn plan_of(
+    chain_fee: Amount,
+    module_fee: Amount,
+    quote: &FeeQuote,
+    amount: Sats,
+    terms: Terms,
+) -> Result<Plan> {
+    let funding = from_upstream(quote.input.get_bitcoin());
+    let output = from_upstream(quote.output.get_bitcoin());
+    let dust = from_upstream(quote.dust.get_bitcoin());
+    let wallet_output = add(chain_fee, module_fee)?;
+    let change = output
+        .checked_sub(module_fee)
+        .and_then(|remainder| remainder.checked_add(dust))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "the fee quote's output is smaller than the wallet module's own fee",
+            )
+        })?;
+    let breakdown = OnchainSendFeeBreakdown {
+        wallet_output,
+        funding,
+        change,
+    };
+    let fee = add(add(wallet_output, funding)?, change)?;
+    let total = add(sats_to_amount(amount)?, fee)?;
+    Ok(Plan {
+        breakdown,
+        fee,
+        total,
+        terms,
+    })
+}
+
+pub(super) fn to_upstream(amount: Amount) -> fedimint_core::Amount {
+    fedimint_core::Amount::from_msats(amount.msats())
+}
+
+pub(super) fn from_upstream(amount: fedimint_core::Amount) -> Amount {
+    Amount::from_msats(amount.msats)
+}
+
+pub(super) fn sats_to_bitcoin(sats: Sats) -> bitcoin::Amount {
+    bitcoin::Amount::from_sat(sats.sats())
+}
+
+pub(super) fn bitcoin_to_sats(amount: bitcoin::Amount) -> Sats {
+    Sats::from_sats(amount.to_sat())
+}
+
+pub(super) fn sats_to_amount(sats: Sats) -> Result<Amount> {
+    sats.to_amount().ok_or_else(|| {
+        Error::new(
+            ErrorCode::Internal,
+            "the amount does not fit in a millisatoshi count",
+        )
+    })
+}
+
+pub(super) fn add(left: Amount, right: Amount) -> Result<Amount> {
+    left.checked_add(right)
+        .ok_or_else(|| Error::new(ErrorCode::Internal, "an amount overflowed"))
+}
+
+pub(super) fn quote_changed(quoted_total: Amount, current_total: Amount) -> Error {
+    Error::with_details(
+        ErrorCode::QuoteChanged,
+        format!(
+            "the withdrawal would now debit {} msat instead of the quoted {} msat",
+            current_total.msats(),
+            quoted_total.msats()
+        ),
+        ErrorDetails::QuoteTermsChanged {
+            quoted_total,
+            current_total,
+        },
+    )
+}
+
+pub(super) fn quote_expired(expires_at: Timestamp, already_executed: bool) -> Error {
+    let message = if already_executed {
+        "this withdrawal has already been executed or is being executed"
+    } else {
+        "this quote is no longer executable; quote again"
+    };
+    Error::with_details(
+        ErrorCode::QuoteExpired,
+        message,
+        ErrorDetails::QuoteExpired {
+            expires_at,
+            already_executed,
+        },
+    )
+}
+
+pub(super) fn insufficient(required: Amount, available: Amount) -> Error {
+    Error::with_details(
+        ErrorCode::InsufficientBalance,
+        format!(
+            "the withdrawal needs {} msat but only {} msat is spendable",
+            required.msats(),
+            available.msats()
+        ),
+        ErrorDetails::InsufficientBalance {
+            required,
+            available,
+        },
+    )
+}
+
+pub(super) fn unreachable(cause: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::FederationUnreachable,
+        format!("the federation did not answer: {cause}"),
+    )
+}
+
+pub(super) fn internal(cause: impl core::fmt::Display) -> Error {
+    Error::new(ErrorCode::Internal, cause.to_string())
+}
+
+/// An upstream subscription that could not be opened, for either generation's driver.
+pub(super) fn subscribe_error(cause: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("could not follow this operation upstream: {cause}"),
+    )
+}
+
+/// A federation round trip took longer than `crate::sdk::CONTACT_TIMEOUT`, the same bound
+/// `Sdk::download_config` and friends use, made `pub(crate)` so this facade can share it rather
+/// than duplicate the value.
+pub(super) fn timeout() -> Error {
+    Error::new(ErrorCode::Timeout, "the federation did not answer in time")
+}
+
+/// The spendable balance, as `Federation::balance` reads it.
+pub(super) async fn balance_of(client: &Client, status: FederationStatus) -> Result<Amount> {
+    crate::federation::balance_of(client, status).await
+}
 
 #[cfg(test)]
 mod tests {
@@ -1125,5 +1407,215 @@ mod tests {
         // And the aggregate is why it is an `Amount`: the parts do not add
         // up to a whole number of satoshis.
         assert_eq!(summed.to_sats_exact(), None);
+    }
+
+    #[test]
+    fn check_network_accepts_a_regtest_address_on_regtest() {
+        assert!(check_network(&an_address(), Network::Regtest).is_ok());
+    }
+
+    #[test]
+    fn check_network_refuses_it_on_mainnet_with_details() {
+        let err = check_network(&an_address(), Network::Bitcoin).expect_err("wrong network");
+        assert_eq!(err.code, ErrorCode::NetworkMismatch);
+        match err.detail() {
+            Some(ErrorDetails::NetworkMismatch {
+                expected,
+                compatible,
+                observed_prefix,
+            }) => {
+                assert_eq!(*expected, Network::Bitcoin);
+                assert_eq!(compatible, &vec![Network::Regtest]);
+                assert_eq!(observed_prefix, "bcrt");
+            }
+            other => panic!("expected NetworkMismatch details, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_amount_refuses_zero_and_below_dust() {
+        let dust = bitcoin::Amount::from_sat(546);
+        assert_eq!(
+            check_amount(Sats::from_sats(0), dust)
+                .expect_err("zero")
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            check_amount(Sats::from_sats(545), dust)
+                .expect_err("below dust")
+                .code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn check_amount_accepts_at_dust() {
+        assert!(check_amount(Sats::from_sats(546), bitcoin::Amount::from_sat(546)).is_ok());
+    }
+
+    /// The hand-built quote the withdrawal fee breakdown decision spells out: `input` 34 000
+    /// msat funds the transaction, `output` is the module's own 1 000 000 msat fee plus 567
+    /// msat of change, `dust` is 5 msat.
+    fn a_fee_quote() -> FeeQuote {
+        use fedimint_core::module::Amounts;
+
+        FeeQuote {
+            input: Amounts::new_bitcoin_msats(34_000),
+            output: Amounts::new_bitcoin_msats(1_000_567),
+            dust: Amounts::new_bitcoin_msats(5),
+        }
+    }
+
+    #[test]
+    fn plan_of_builds_the_withdrawal_fee_breakdown() {
+        let quote = a_fee_quote();
+        let amount = Sats::from_sats(500_000);
+        let plan = plan_of(
+            Amount::from_msats(200_000),
+            Amount::from_msats(1_000_000),
+            &quote,
+            amount,
+            Terms::V2 {
+                chain_fee: bitcoin::Amount::from_sat(200),
+                quote: quote.clone(),
+            },
+        )
+        .expect("a plan");
+        assert_eq!(
+            plan.breakdown,
+            OnchainSendFeeBreakdown {
+                wallet_output: Amount::from_msats(1_200_000),
+                funding: Amount::from_msats(34_000),
+                change: Amount::from_msats(572),
+            }
+        );
+        assert_eq!(plan.fee, Amount::from_msats(1_234_572));
+        assert_eq!(
+            plan.total,
+            amount
+                .to_amount()
+                .expect("500 000 sat is representable in msat")
+                .checked_add(plan.fee)
+                .expect("no overflow at this magnitude")
+        );
+    }
+
+    #[test]
+    fn plan_of_with_output_below_the_module_fee_is_internal() {
+        use fedimint_core::module::Amounts;
+
+        let quote = FeeQuote {
+            input: Amounts::ZERO,
+            output: Amounts::new_bitcoin_msats(10),
+            dust: Amounts::ZERO,
+        };
+        let err = plan_of(
+            Amount::from_msats(0),
+            Amount::from_msats(25),
+            &quote,
+            Sats::from_sats(1),
+            Terms::V2 {
+                chain_fee: bitcoin::Amount::ZERO,
+                quote: quote.clone(),
+            },
+        )
+        .expect_err("inconsistent");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    fn a_quote(expires_at: u64) -> OnchainQuoteInner {
+        let quote = a_fee_quote();
+        OnchainQuoteInner {
+            federation_id: fedimint_core::config::FederationId::dummy(),
+            address: an_address(),
+            amount: Sats::from_sats(500_000),
+            plan: plan_of(
+                Amount::from_msats(200_000),
+                Amount::from_msats(1_000_000),
+                &quote,
+                Sats::from_sats(500_000),
+                Terms::V2 {
+                    chain_fee: bitcoin::Amount::from_sat(200),
+                    quote: quote.clone(),
+                },
+            )
+            .expect("a plan"),
+            expires_at: Timestamp::from_epoch_millis(expires_at),
+        }
+    }
+
+    #[test]
+    fn a_quote_is_executable_until_it_expires_and_only_on_its_federation() {
+        let quote = a_quote(1_000);
+        let id = fedimint_core::config::FederationId::dummy();
+        assert!(ensure_executable(&quote, id, 999).is_ok());
+        assert!(ensure_executable(&quote, id, 1_000).is_ok());
+        let err = ensure_executable(&quote, id, 1_001).expect_err("expired");
+        assert_eq!(err.code, ErrorCode::QuoteExpired);
+        match err.detail() {
+            Some(ErrorDetails::QuoteExpired {
+                expires_at,
+                already_executed,
+            }) => {
+                assert_eq!(*expires_at, Timestamp::from_epoch_millis(1_000));
+                assert!(!already_executed);
+            }
+            other => panic!("expected QuoteExpired details, got {other:?}"),
+        }
+        let other = fedimint_core::config::FederationId(
+            fedimint_core::bitcoin::hashes::Hash::hash(b"another federation"),
+        );
+        assert_eq!(
+            ensure_executable(&quote, other, 0)
+                .expect_err("wrong federation")
+                .code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn quote_accessors_read_the_frozen_plan() {
+        let quote = OnchainQuote { inner: a_quote(5) };
+        assert_eq!(quote.amount(), Sats::from_sats(500_000));
+        assert_eq!(quote.fee(), Amount::from_msats(1_234_572));
+        assert_eq!(quote.total(), Amount::from_msats(501_234_572));
+        assert_eq!(quote.expires_at(), Timestamp::from_epoch_millis(5));
+        assert_eq!(
+            quote.fee_breakdown().wallet_output,
+            Amount::from_msats(1_200_000)
+        );
+    }
+
+    #[test]
+    fn the_error_helpers_carry_their_details() {
+        match quote_changed(Amount::from_msats(10), Amount::from_msats(12)).detail() {
+            Some(ErrorDetails::QuoteTermsChanged {
+                quoted_total,
+                current_total,
+            }) => {
+                assert_eq!(*quoted_total, Amount::from_msats(10));
+                assert_eq!(*current_total, Amount::from_msats(12));
+            }
+            other => panic!("expected QuoteTermsChanged, got {other:?}"),
+        }
+        match insufficient(Amount::from_msats(10), Amount::from_msats(3)).detail() {
+            Some(ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, Amount::from_msats(10));
+                assert_eq!(*available, Amount::from_msats(3));
+            }
+            other => panic!("expected InsufficientBalance, got {other:?}"),
+        }
+        assert_eq!(
+            quote_expired(Timestamp::from_epoch_millis(1), true).code,
+            ErrorCode::QuoteExpired
+        );
+        assert_eq!(unreachable("down").code, ErrorCode::FederationUnreachable);
+        assert_eq!(internal("oops").code, ErrorCode::Internal);
+        assert_eq!(subscribe_error("closed").code, ErrorCode::Internal);
+        assert_eq!(timeout().code, ErrorCode::Timeout);
     }
 }
