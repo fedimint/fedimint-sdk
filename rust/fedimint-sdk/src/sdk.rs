@@ -1050,6 +1050,16 @@ impl Sdk {
                      or reclaimed",
                 ));
             }
+            // An on-chain deposit that has seen a funding transaction but not yet been claimed
+            // is checked the same way, and outside the live-client guard for the same reason:
+            // the guard must hold regardless of whether the client happens to be running.
+            if federation.has_seen_unclaimed_deposit().await? {
+                self.persist_closed(&federation).await?;
+                return Err(crate::Error::new(
+                    crate::ErrorCode::PendingOperations,
+                    "this federation still has a deposit that has been seen but not claimed",
+                ));
+            }
         }
 
         // Phase 3: commit before performing. From the moment the tombstone lands the federation

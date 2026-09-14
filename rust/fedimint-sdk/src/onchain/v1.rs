@@ -292,11 +292,16 @@ pub(super) enum DepositStep {
     Claimed { txid: Txid, gross: Sats },
 }
 
-// Upstream v1 `DepositStateV2` onto `OnchainReceiveState`, variant for variant, plus the
-// below-fee rule: the peg-in monitor refuses to claim a deposit at or below the federation's
-// deposit fee but still writes the sentinel that makes `subscribe_deposit` report `Claimed`
+// Upstream v1 `DepositStateV2` onto `OnchainReceiveState`, variant for variant but not payload
+// for payload, plus the below-fee rule: the peg-in monitor refuses to claim a deposit at or
+// below the federation's deposit fee but still writes the sentinel that makes
+// `subscribe_deposit` report `Claimed`
 // (`modules/fedimint-wallet-client/src/pegin_monitor.rs:494-497,552-561`), so a `Claimed` this
 // small is handed back as `Failed` instead, with no ecash ever having been minted for it.
+//
+// Only the transaction half of upstream's `btc_out_point` is carried; the vout is nothing this
+// API needs. `Claimed` additionally reports a net credit this SDK computes itself; upstream's
+// own `Claimed` reports only the gross figure it deposited.
 pub(super) fn map_deposit(state: &DepositStateV2, peg_in_abs: Amount) -> DepositStep {
     match state {
         DepositStateV2::WaitingForTransaction => {

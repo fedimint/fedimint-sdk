@@ -14,7 +14,11 @@ use crate::{
 /// The operation has seen a transaction past
 /// [`WaitingForTransaction`](crate::OnchainReceiveState::WaitingForTransaction): a deposit
 /// address has stopped being a pure watch. The only phase an on-chain record ever carries.
-pub(super) const PHASE_SEEN: u32 = 1;
+///
+/// `pub(crate)`, not `pub(super)`: `federation.rs`'s erase guard
+/// ([`has_seen_unclaimed_deposit`](crate::federation::FederationInner::has_seen_unclaimed_deposit))
+/// reads it too, through the re-export at `src/onchain.rs`.
+pub(crate) const PHASE_SEEN: u32 = 1;
 
 /// [`OnchainSendDetails`] as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

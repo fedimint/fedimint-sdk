@@ -764,15 +764,11 @@ impl AnyOperation {
     /// does not read the operation's state, so it is not a promise that
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
-    // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7 and T9 (T8 filled in the two lightning arms, T12 filled in the recovery arm). Until
-    // then, `support_of` still answers `Observable` for every kind whose arm is `None`: the
-    // record's kind and schema version are all it looks at, and neither says whether a driver has
-    // been written yet. That is three kinds in a test build, where `ECASH_SEND` has its own probe
-    // arm, and four in any other build, where that arm is `None` too. This is not a bug in the
-    // accessor, which is honest about what it can do, but a temporary gap between what `support`
-    // promises and what a build this incomplete can deliver; it closes as each task above lands
-    // its arm.
+    // is accurate now that every kind in `kinds` has a driver arm in `driver_for` below: a kind
+    // with no arm would still read `Observable` here regardless, since `support_of` only looks at
+    // the record's kind and schema version, and neither says whether a driver exists. This
+    // accessor is honest about what it can do, and a kind tag this build simply does not
+    // recognise reads `UnknownKind` instead, which is a different case entirely.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -1506,10 +1502,10 @@ pub(crate) enum ErasedDriver {
 // expressions rather than a table of cached singletons.
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
-        // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash in T7, lightning in T8, on-chain in T9, recovery in T12. Until an arm is
-        // filled in this build cannot observe that kind, which is a real answer rather than a gap:
-        // the record is still found, still listed, and still says what it is.
+        // One arm per tag in `kinds`, written by the facade that owns that kind: ecash, lightning,
+        // on-chain and recovery. A kind tag with no arm here is still found, still listed, and
+        // still says what it is; it simply cannot be observed, which is a real answer rather than
+        // a gap.
         kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
             crate::ecash::EcashSendDriver,
         ))),
@@ -1522,8 +1518,12 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
         kinds::LN_RECEIVE => Some(ErasedDriver::LnReceive(Arc::new(
             crate::lightning::LnReceiveDriver,
         ))),
-        kinds::ONCHAIN_SEND => None,
-        kinds::ONCHAIN_RECEIVE => None,
+        kinds::ONCHAIN_SEND => Some(ErasedDriver::OnchainSend(Arc::new(
+            crate::onchain::OnchainSendDriver,
+        ))),
+        kinds::ONCHAIN_RECEIVE => Some(ErasedDriver::OnchainReceive(Arc::new(
+            crate::onchain::OnchainReceiveDriver,
+        ))),
         kinds::RECOVERY => Some(ErasedDriver::Recovery(Arc::new(
             crate::recovery::RecoveryDriver,
         ))),
@@ -1539,18 +1539,20 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
-    // One entry per facade that owns a module kind: ecash in T7, lightning in T8, on-chain in T9.
-    // The probe entry is the engine's own fixture and exists only in a test build.
+    // One entry per facade that owns a module kind: ecash, lightning, on-chain. The probe entry
+    // is the engine's own fixture and exists only in a test build.
     #[cfg(test)]
     return vec![
         Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
         Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
         Arc::new(crate::lightning::LnBackfiller),
+        Arc::new(crate::onchain::OnchainBackfiller),
     ];
     #[cfg(not(test))]
     vec![
         Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
         Arc::new(crate::lightning::LnBackfiller),
+        Arc::new(crate::onchain::OnchainBackfiller),
     ]
 }
 
@@ -2734,12 +2736,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
-        let any = any_operation(kinds::ONCHAIN_SEND, "walletv2", READABLE_STATE_SCHEMA).await;
-        assert_eq!(any.kind(), OperationKind::OnchainSend);
-        // `support` is about the record rather than about what this build can observe, so it
-        // still says observable; the accessor is where a kind no facade has written a driver for
-        // yet answers `None`, in exactly the way a kind mismatch does.
-        assert_eq!(any.support(), OperationSupport::Observable);
+        // Every tag in `kinds` has a driver now that on-chain is wired up, so the only kind tag
+        // left without one is a made-up one this build does not recognise at all: `kind_of_tag`
+        // reads it as `Unknown` rather than as a real kind with a missing driver, but the
+        // accessor's answer is the same `None` either way.
+        let any = any_operation("made_up_kind", "made_up_module", READABLE_STATE_SCHEMA).await;
+        assert_eq!(any.kind(), OperationKind::Unknown);
+        assert_eq!(any.support(), OperationSupport::UnknownKind);
         assert!(any.as_onchain_send().is_none());
     }
 
@@ -2879,9 +2882,8 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // Ecash (T7), lightning (T8), and recovery (T12) are real drivers. `ONCHAIN_SEND` (and
-        // `ONCHAIN_RECEIVE`) is a record this build can find, list and label but not observe, which
-        // the accessors report as `None` rather than as a failure.
+        // Ecash, lightning, on-chain and recovery are all real drivers now: every tag in
+        // `kinds` has one.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
@@ -2898,8 +2900,14 @@ mod tests {
             driver_for(kinds::LN_RECEIVE),
             Some(ErasedDriver::LnReceive(_))
         ));
-        assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
-        assert!(driver_for(kinds::ONCHAIN_RECEIVE).is_none());
+        assert!(matches!(
+            driver_for(kinds::ONCHAIN_SEND),
+            Some(ErasedDriver::OnchainSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::ONCHAIN_RECEIVE),
+            Some(ErasedDriver::OnchainReceive(_))
+        ));
         assert!(matches!(
             driver_for(kinds::RECOVERY),
             Some(ErasedDriver::Recovery(_))
@@ -2909,7 +2917,7 @@ mod tests {
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 3);
+        assert_eq!(backfillers.len(), 4);
         assert!(backfillers.iter().any(|b| {
             b.backfill(
                 UpstreamOperationId([0u8; 32]),

@@ -21,6 +21,14 @@ mod v1;
 mod v2;
 mod wire;
 
+pub(crate) use driver::{OnchainBackfiller, OnchainReceiveDriver, OnchainSendDriver};
+/// The deposit address a walletv2 `Receive` upstream meta names, for `federation.rs`'s
+/// reconciler; re-exported so it does not have to name the upstream wallet types itself.
+pub(crate) use v2::deposit_address_of;
+/// The only phase an on-chain record ever carries, re-exported for `federation.rs`'s erase
+/// guard; see [`wire`]'s own doc for what it means.
+pub(crate) use wire::PHASE_SEEN;
+
 /// The on-chain facade for one federation, backed by its wallet module.
 ///
 /// Obtained from [`Federation::onchain`](crate::Federation::onchain), which
@@ -61,9 +69,6 @@ mod wire;
 /// exactly as firmly as one still in progress, and only a recovery that
 /// reaches completion releases it. There is no acknowledge, no override, and
 /// no way to spend or receive on a partially restored wallet.
-// Implementation notes (delete once implemented):
-// - Both the `v1` and `walletv2` `send_fee_quote` are millisatoshi-denominated, which is
-//   why the fee and total accessors on this facade return `Amount` rather than `Sats`.
 #[derive(Debug, Clone)]
 pub struct Onchain {
     inner: Arc<OnchainInner>,
@@ -145,15 +150,18 @@ impl Onchain {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn receive(&self) -> Result<OnchainReceive> {
-        // Implementation notes (delete once implemented):
-        // - Persist the operation, including the address, in the same storage transaction
-        //   that creates it, before returning.
-        // - A receive that has not yet seen a transaction must not count toward
-        //   `forget_federation`'s pending-operations guard; only `WaitingForConfirmation`
-        //   onward should.
-        // - Reasoning about a second output paying the same address is a wallet-scanner
-        //   detail this contract deliberately does not promise on.
-        unimplemented!()
+        let federation = &self.inner.federation;
+        // The recovery lock applies to a deposit exactly as it does to a send; see this type's
+        // own doc.
+        let client = federation.client(true).await?;
+        match module(&client)? {
+            WalletModule::V1(module) => {
+                v1::receive(federation, &client, &module, Arc::new(OnchainReceiveDriver)).await
+            }
+            WalletModule::V2(module) => {
+                v2::receive(federation, &client, &module, Arc::new(OnchainReceiveDriver)).await
+            }
+        }
     }
 
     /// Plans a withdrawal and returns an executable quote for it.
@@ -193,10 +201,31 @@ impl Onchain {
     /// [`Timeout`](crate::ErrorCode::Timeout), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn quote(&self, address: &Address, amount: Sats) -> Result<OnchainQuote> {
-        // Implementation notes (delete once implemented):
-        // - The network check must run here, before anything is committed, on both wallet
-        //   module generations.
-        unimplemented!()
+        let federation = &self.inner.federation;
+        // Runs before the client is touched, so a foreign-network address fails the same way
+        // on both generations and on a recovering federation alike.
+        check_network(address, federation.record().network.into())?;
+        let client = federation.client(true).await?;
+        let available = balance_of(&client, federation.status()).await?;
+        let plan = match module(&client)? {
+            WalletModule::V1(module) => v1::plan(&client, &module, address, amount).await?,
+            WalletModule::V2(module) => v2::plan(&client, &module, address, amount).await?,
+        };
+        if available < plan.total {
+            return Err(insufficient(plan.total, available));
+        }
+        let issued = crate::db::now_millis();
+        Ok(OnchainQuote {
+            inner: OnchainQuoteInner {
+                federation_id: federation.id,
+                address: address.clone(),
+                amount,
+                plan,
+                expires_at: Timestamp::from_epoch_millis(
+                    issued.saturating_add(QUOTE_VALIDITY_MILLIS),
+                ),
+            },
+        })
     }
 
     /// Executes a quoted withdrawal.
@@ -236,12 +265,56 @@ impl Onchain {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: OnchainQuote) -> Result<Operation<OnchainSendState>> {
-        // Implementation notes (delete once implemented):
-        // - Re-check every bound input of the quote (fee estimate, federation config, note
-        //   selection) before funding; any drift is `QuoteChanged`, never a different debit.
-        // - Write `OnchainSendDetails` in the same storage transaction that creates the
-        //   operation.
-        unimplemented!()
+        let federation = &self.inner.federation;
+        let quote = quote.inner;
+        ensure_executable(&quote, federation.id, crate::db::now_millis())?;
+        // The guard is held across the re-check, the funding and the record write, which is
+        // what `create_operation` requires of its caller.
+        let client = federation.client(true).await?;
+        match (module(&client)?, &quote.plan.terms) {
+            (
+                WalletModule::V1(module),
+                Terms::V1 {
+                    fees,
+                    quote: quoted,
+                },
+            ) => {
+                v1::send(
+                    federation,
+                    &client,
+                    &module,
+                    &quote,
+                    *fees,
+                    quoted,
+                    Arc::new(OnchainSendDriver),
+                )
+                .await
+            }
+            (
+                WalletModule::V2(module),
+                Terms::V2 {
+                    chain_fee,
+                    quote: quoted,
+                },
+            ) => {
+                v2::send(
+                    federation,
+                    &client,
+                    &module,
+                    &quote,
+                    *chain_fee,
+                    quoted,
+                    Arc::new(OnchainSendDriver),
+                )
+                .await
+            }
+            // The federation changed wallet generation between the quote and now, which the
+            // generation rule makes a different federation for every practical purpose.
+            _ => Err(Error::new(
+                ErrorCode::QuoteChanged,
+                "this federation's wallet module changed since the quote was issued",
+            )),
+        }
     }
 
     /// Builds the facade for one federation. Handed out by `Federation::onchain`.
@@ -426,15 +499,6 @@ pub struct OnchainReceive {
 /// where it has got to, they are the same in every state, and a receipt has
 /// to be renderable for a withdrawal that failed as much as for one that
 /// succeeded. They live on [`OnchainSendDetails`].
-// Implementation notes (delete once implemented):
-//
-// - The first wallet module's `WithdrawState` has `Created`, `Succeeded(Txid)` and
-//   `Failed(String)`; its `Failed` means the funding transaction rejected before anything
-//   left the balance, so it maps to `Refunded`, not `Failed`. Payloads become named fields.
-// - The second wallet module's send machine has no separate broadcast step: its `Funding`
-//   is `Created`, `Success(txid)` is `Succeeded`, `Aborted` (funding rejected, nothing
-//   debited) is `Refunded`, and `Failure` (funding accepted, no transaction produced,
-//   documented upstream as a programming error or a misbehaving federation) is `Failed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainSendState {
@@ -589,22 +653,6 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// gross amount once one was seen, are on the details record too, so an
 /// application never needs to have observed an earlier state to describe a
 /// failed deposit.
-// Implementation notes (delete once implemented):
-//
-// This follows upstream `fedimint-wallet-client`'s `DepositStateV2` variant for variant,
-// but not payload for payload, on the `v1` wallet module. Under `walletv2` there is no
-// per-address state machine to follow: the chain-side phases here are the SDK's own
-// observation of the address, and the module's claim machine lands on them as `Funding` ->
-// `Confirmed`, `Success` -> `Claimed`, `Aborted` (claim stays claimable, retried under the
-// same operation id) -> stays `Confirmed`.
-//
-// - Only the transaction half of the outpoint is carried; upstream's `v1` variants also
-//   carry the vout, which nothing in this API needs.
-// - Every state that knows the gross amount reports it (`WaitingForConfirmation`,
-//   `Confirmed`, `Claimed`), unlike upstream `v1` which only ever names it
-//   `btc_deposited`.
-// - `Claimed` additionally reports a net credit this SDK computes; upstream reports only
-//   the gross figure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
@@ -731,15 +779,6 @@ impl OperationState for OnchainReceiveState {
 /// [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) names its parts
 /// for a screen that wants to explain the difference between what was sent
 /// and what was credited rather than merely state it.
-// Implementation notes (delete once implemented):
-// - `txid` and `gross_deposited` are `OperationDetails` placement-rule case 3: announced by
-//   `WaitingForConfirmation` and the two states after it, and dropped by `Failed`, which can
-//   follow a transaction that was already seen and carries nothing but a reason.
-// - `net_credit` duplicates the figure `Claimed` carries; that state is final, so nothing
-//   drops it. It is here so the record alone completes a receipt without a second call to
-//   `Operation::state`.
-// - `fee` and `fee_breakdown` are carried by no state at any point, so this record is the
-//   only place either can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct OnchainReceiveDetails {
@@ -831,12 +870,6 @@ impl crate::operation::DetailedOperationState for OnchainReceiveState {
 /// change. It is also the figure
 /// [`OnchainReceiveDetails::net_credit`] was actually computed from, so it is
 /// the only one guaranteed to reconcile with the balance movement.
-// Implementation notes (delete once implemented):
-// - `peg_in` is the `v1` wallet module's flat peg-in fee, or `walletv2`'s consensus input
-//   fee on the amount the transaction carries.
-// - `network_claim` is zero under `v1`, which claims the full gross and charges only
-//   in-transaction fees; it is nonzero only under `walletv2`, which deducts an on-chain
-//   consolidation cost from the gross before the federation transaction's amount is formed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct OnchainReceiveFeeBreakdown {
@@ -1207,6 +1240,17 @@ pub(super) async fn balance_of(client: &Client, status: FederationStatus) -> Res
 /// This device's clock, for a details record's `created_at`.
 pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
+}
+
+/// The deposit address a stored `ONCHAIN_RECEIVE` details record names, or `None` if it does
+/// not decode as one.
+///
+/// Lets `FederationInner::owner_of_deposit_address` walk the operation index and compare
+/// addresses without naming this facade's wire types itself.
+pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
+    wire::decode_receive_wire(details)
+        .ok()
+        .map(|wire| wire.address)
 }
 
 #[cfg(test)]

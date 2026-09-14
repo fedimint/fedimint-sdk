@@ -212,7 +212,10 @@ pub(super) async fn send(
 
 // walletv2 `FinalSendOperationState` onto `OnchainSendState`. There is no separate broadcast
 // step and no `Created` to map here: that state is reported directly by `current_send` and
-// `subscribe_send` before this ever runs.
+// `subscribe_send` before this ever runs. Upstream documents `Failure` itself as "a programming
+// error has occurred or the federation is malicious"
+// (`modules/fedimint-walletv2-client/src/lib.rs:104`), which is why it maps to `Failed` rather
+// than the ordinary `Refunded` ending `Aborted` gets.
 //
 // | upstream    | here                                                          |
 // | ----------- | ------------------------------------------------------------- |
@@ -434,6 +437,11 @@ pub(super) async fn upstream_state(
     }
 }
 
+// walletv2 has no per-address state machine to follow the way v1's `DepositStateV2` is one: the
+// phases `OnchainReceiveState` reports here are this SDK's own observation of the address, and
+// the module's own claim machine lands on them as `Funding` -> `Confirmed`, `Success` ->
+// `Claimed`, `Aborted` (the claim stays claimable, retried under the same operation id) -> stays
+// `Confirmed`.
 /// What the bounded (or, once already `Confirmed`, unbounded) check of a linked upstream
 /// operation found.
 enum ClaimProgress {
