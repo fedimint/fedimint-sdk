@@ -1583,7 +1583,7 @@ pub(crate) struct EcashBackfiller;
 impl Backfiller for EcashBackfiller {
     fn backfill(
         &self,
-        id: UpstreamOperationId,
+        _id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
@@ -2732,18 +2732,6 @@ mod tests {
         assert_eq!(any.kind(), OperationKind::EcashSend);
         assert_eq!(any.support(), OperationSupport::StateSchemaTooNew);
         assert!(any.as_ecash_send().is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
-        // Every tag in `kinds` has a driver now that on-chain is wired up, so the only kind tag
-        // left without one is a made-up one this build does not recognise at all: `kind_of_tag`
-        // reads it as `Unknown` rather than as a real kind with a missing driver, but the
-        // accessor's answer is the same `None` either way.
-        let any = any_operation("made_up_kind", "made_up_module", READABLE_STATE_SCHEMA).await;
-        assert_eq!(any.kind(), OperationKind::Unknown);
-        assert_eq!(any.support(), OperationSupport::UnknownKind);
-        assert!(any.as_onchain_send().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

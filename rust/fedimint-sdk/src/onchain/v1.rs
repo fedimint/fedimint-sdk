@@ -485,9 +485,11 @@ async fn claim_net_credit(
     let stop = handle.task_group().make_handle().make_shutdown_rx();
     let (fee, breakdown, net_credit) =
         crate::federation::wait_holding_client(handle, stop, move |client| async move {
+            let wallet_instance = module_of(&client)?.id;
             claim_figures(
                 &client,
                 id,
+                wallet_instance,
                 sats_to_amount(gross)?,
                 peg_in_abs,
                 Amount::from_msats(0),

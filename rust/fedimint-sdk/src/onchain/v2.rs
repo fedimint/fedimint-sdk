@@ -487,12 +487,14 @@ async fn claim_from_upstream(
     let net_of_chain_fee = value
         .checked_sub(fee)
         .ok_or_else(|| internal("the deposit's on-chain claim fee exceeds its value"))?;
-    let cfg = config(client, module_of(client)?.id).await?;
+    let wallet_instance = module_of(client)?.id;
+    let cfg = config(client, wallet_instance).await?;
     let input_amount = to_upstream_sats(net_of_chain_fee);
     let input_fee = cfg.fee_consensus.fee(input_amount);
     let (fee_total, breakdown, net_credit) = claim_figures(
         client,
         found.upstream,
+        wallet_instance,
         from_upstream(input_amount),
         from_upstream(input_fee),
         from_upstream(to_upstream_sats(fee)),
@@ -774,6 +776,8 @@ async fn receive_step(
                     Ok(client) => client,
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 };
+                let handle = client.handle();
+                drop(client);
                 // Marked unchanged right before the scan, not after: an event logged while
                 // `find_link` is still paging through the log must still register once this call
                 // reaches the `None` arm below, or it would sit unnoticed until some later,
@@ -781,9 +785,8 @@ async fn receive_step(
                 // `subscribe_receive` obtained for the stream's whole life; see there for why it
                 // must not be re-fetched from the client here instead.
                 ctx.added.mark_unchanged();
-                match find_link(&client, &address, from).await {
+                match find_link(&handle, &address, from).await {
                     Some(found) => {
-                        drop(client);
                         if let Err(err) = link(&federation, ctx.id, &found).await {
                             return Some((Err(err), ReceiveCursor::Done));
                         }
@@ -793,7 +796,6 @@ async fn receive_step(
                         }
                     }
                     None if !announced => {
-                        drop(client);
                         return Some((
                             Ok(OnchainReceiveState::WaitingForTransaction),
                             ReceiveCursor::Linking {
@@ -805,7 +807,6 @@ async fn receive_step(
                     }
                     None => {
                         let mut closed = federation.closed();
-                        drop(client);
                         tokio::select! {
                             _ = ctx.added.changed() => {}
                             _ = closed.changed() => {
