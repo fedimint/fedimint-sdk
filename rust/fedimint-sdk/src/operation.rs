@@ -1438,12 +1438,14 @@ pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
     /// What the SDK would have written for this entry, or `None` if this backfiller does not
     /// recognise it.
     ///
-    /// `module_kind` is `OperationLogEntry::operation_module_kind`, `meta` is the entry's own
-    /// JSON, read with `try_meta` so that a shape this build does not know is a `None` here
-    /// rather than a panic, and `created_at` is the client's own creation time in milliseconds,
-    /// for the details records that carry one.
+    /// `id` is the upstream operation id the entry was read under, `module_kind` is
+    /// `OperationLogEntry::operation_module_kind`, `meta` is the entry's own JSON, read with
+    /// `try_meta` so that a shape this build does not know is a `None` here rather than a panic,
+    /// and `created_at` is the client's own creation time in milliseconds, for the details
+    /// records that carry one.
     fn backfill(
         &self,
+        id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
@@ -1579,6 +1581,7 @@ pub(crate) struct EcashBackfiller;
 impl Backfiller for EcashBackfiller {
     fn backfill(
         &self,
+        id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
@@ -1903,6 +1906,7 @@ pub(crate) struct ProbeBackfiller;
 impl Backfiller for ProbeBackfiller {
     fn backfill(
         &self,
+        _id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         _created_at: u64,
@@ -2132,6 +2136,35 @@ pub(crate) async fn write_details_in(
     )
     .await
     .map_err(crate::db::storage_error)
+}
+
+/// The key under which the SDK's own details record rides inside a module's metadata, so a
+/// record rebuilt from the module's log entry after a crash carries the exact quoted terms.
+pub(crate) const CUSTOM_META_KEY: &str = "fedimint_sdk";
+
+/// The details record wrapped for a module's custom metadata.
+pub(crate) fn custom_meta<W>(wire: &W) -> Result<serde_json::Value>
+where
+    W: serde::Serialize,
+{
+    let wire = serde_json::to_value(wire).map_err(custom_meta_encode_error)?;
+    Ok(serde_json::json!({ CUSTOM_META_KEY: wire }))
+}
+
+/// The details record carried inside a module's custom metadata, if this SDK put one there.
+pub(crate) fn from_custom_meta<W>(meta: &serde_json::Value) -> Option<W>
+where
+    W: serde::de::DeserializeOwned,
+{
+    let wire = meta.as_object()?.get(CUSTOM_META_KEY)?;
+    serde_json::from_value(wire.clone()).ok()
+}
+
+fn custom_meta_encode_error(err: serde_json::Error) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("could not encode a custom-meta record: {err}"),
+    )
 }
 
 /// The shared state behind a type-erased operation handle.
@@ -2878,12 +2911,22 @@ mod tests {
         let backfillers = backfillers();
         assert_eq!(backfillers.len(), 3);
         assert!(backfillers.iter().any(|b| {
-            b.backfill("probe_module", &serde_json::Value::Null, 0)
-                .is_some()
+            b.backfill(
+                UpstreamOperationId([0u8; 32]),
+                "probe_module",
+                &serde_json::Value::Null,
+                0,
+            )
+            .is_some()
         }));
         assert!(backfillers.iter().all(|b| {
-            b.backfill("unknown_module", &serde_json::Value::Null, 0)
-                .is_none()
+            b.backfill(
+                UpstreamOperationId([0u8; 32]),
+                "unknown_module",
+                &serde_json::Value::Null,
+                0,
+            )
+            .is_none()
         }));
     }
 
@@ -2910,7 +2953,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &spend_json, 0)
             .expect("claims a SpendOOB entry under the mint module kind");
         assert_eq!(backfilled.kind, kinds::ECASH_SEND);
         let wire: crate::ecash::EcashSendDetailsWire =
@@ -2934,7 +2977,12 @@ mod tests {
             serde_json::to_value(&internal_reissue_meta).expect("serializes");
         assert!(
             backfiller
-                .backfill("mint", &internal_reissue_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mint",
+                    &internal_reissue_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -2952,7 +3000,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &reissue_json, 0)
             .expect("claims a Reissuance entry under the mint module kind when marked");
         assert_eq!(backfilled.kind, kinds::ECASH_RECEIVE);
         let wire: crate::ecash::EcashReceiveDetailsWire =
@@ -2982,7 +3030,12 @@ mod tests {
         };
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
         let backfilled = backfiller
-            .backfill("mintv2", &mintv2_send_json, 9)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_send_json,
+                9,
+            )
             .expect("claims a Send entry under the mintv2 module kind");
         assert_eq!(backfilled.kind, kinds::ECASH_SEND);
         let wire: crate::ecash::EcashSendDetailsWire =
@@ -3004,7 +3057,12 @@ mod tests {
         let mintv2_send_no_copy_json =
             serde_json::to_value(&mintv2_send_no_copy).expect("serializes");
         let backfilled = backfiller
-            .backfill("mintv2", &mintv2_send_no_copy_json, 9)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_send_no_copy_json,
+                9,
+            )
             .expect("claims a Send entry even with no SDK copy");
         let wire: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -3019,7 +3077,12 @@ mod tests {
         let unparseable_send_json = serde_json::to_value(&unparseable_send).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &unparseable_send_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &unparseable_send_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -3042,7 +3105,12 @@ mod tests {
         };
         let mintv2_receive_json = serde_json::to_value(&mintv2_receive).expect("serializes");
         let backfilled_v2_receive = backfiller
-            .backfill("mintv2", &mintv2_receive_json, 0)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_receive_json,
+                0,
+            )
             .expect("claims a Receive entry under mintv2");
         assert_eq!(backfilled_v2_receive.kind, kinds::ECASH_RECEIVE);
         let wire_recv: crate::ecash::EcashReceiveDetailsWire =
@@ -3071,7 +3139,12 @@ mod tests {
         let mintv2_reclaim_json = serde_json::to_value(&mintv2_reclaim).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_reclaim_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_reclaim_json,
+                    0
+                )
                 .is_none(),
             "an internal send-reclaim receive must not become a user-facing ecash receive",
         );
@@ -3086,7 +3159,12 @@ mod tests {
         let mintv2_unmarked_json = serde_json::to_value(&mintv2_unmarked).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_unmarked_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_unmarked_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -3099,13 +3177,22 @@ mod tests {
         let mintv2_reissue_json = serde_json::to_value(&mintv2_reissue).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_reissue_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_reissue_json,
+                    0
+                )
                 .is_none()
         );
 
         // A module kind this backfiller does not own claims nothing, even with a
         // shape it would otherwise recognise.
-        assert!(backfiller.backfill("wallet", &spend_json, 0).is_none());
+        assert!(
+            backfiller
+                .backfill(UpstreamOperationId([0u8; 32]), "wallet", &spend_json, 0)
+                .is_none()
+        );
     }
 
     #[test]
@@ -3132,7 +3219,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &spend_json, 0)
             .expect("claims SpendOOB");
         let wire: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -3160,7 +3247,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &reissue_json, 0)
             .expect("claims Reissuance");
         let wire: crate::ecash::EcashReceiveDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");

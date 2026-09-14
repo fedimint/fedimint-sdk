@@ -38,6 +38,11 @@ impl Address {
         Self { address }
     }
 
+    /// The wrapped address, for the on-chain facade's quote and send calls.
+    pub(crate) fn inner(&self) -> &bitcoin::Address<NetworkUnchecked> {
+        &self.address
+    }
+
     /// Every network this address could have been intended for.
     ///
     /// Crate-internal: this is what fills

@@ -23,7 +23,7 @@ use super::{
     quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
-use crate::operation::{Backfilled, Driver, kinds, record_phase_in};
+use crate::operation::{Backfilled, Driver, custom_meta, from_custom_meta, kinds, record_phase_in};
 use crate::{
     Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
     LnReceiveDetails, LnReceiveState, LnSendDetails, LnSendState, Network, Operation, Preimage,
@@ -350,7 +350,7 @@ pub(super) async fn send(
             gateway.clone(),
             send_fee,
             expiration_delta,
-            wire::custom_meta(&wire::LnSendDetailsWire::from(&details))?,
+            custom_meta(&wire::LnSendDetailsWire::from(&details))?,
         )
         .await
     {
@@ -463,7 +463,7 @@ pub(super) async fn receive(
         // gives on its own. The invoice is not known until the call returns, so the copy
         // carries a placeholder for it and `expires_at`; the backfiller takes both from
         // upstream's own meta instead.
-        let copy = wire::custom_meta(&wire::LnReceiveDetailsWire {
+        let copy = custom_meta(&wire::LnReceiveDetailsWire {
             invoice: String::new(),
             description: description.to_owned(),
             requested_amount_msats: amount.msats(),
@@ -621,7 +621,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             // passes that check but whose route does not parse (a gateway id from a build this
             // one cannot read) is no more trustworthy than no copy at all, so it falls back to
             // the same upstream-derived estimate as a missing copy.
-            let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&custom_meta)
+            let copy = from_custom_meta::<wire::LnSendDetailsWire>(&custom_meta)
                 .filter(|copy| copy.invoice == invoice.to_string())
                 .and_then(|copy| {
                     Some((
@@ -660,7 +660,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             let LightningInvoice::Bolt11(invoice) = meta.invoice;
             let invoice = Bolt11Invoice::from_upstream(invoice);
             let amount = invoice.amount()?;
-            let copy = wire::from_custom_meta::<wire::LnReceiveDetailsWire>(&meta.custom_meta);
+            let copy = from_custom_meta::<wire::LnReceiveDetailsWire>(&meta.custom_meta);
             let (description, requested_amount, fee, net_credit, created_at) = match &copy {
                 Some(copy) => (
                     copy.description.clone(),
@@ -881,7 +881,7 @@ mod tests {
             created_at: 1_650_000_000_000,
             gateway_fee_msats: None,
         };
-        let meta = outgoing_meta(101_000, wire::custom_meta(&copy).expect("encode"));
+        let meta = outgoing_meta(101_000, custom_meta(&copy).expect("encode"));
         let claimed = backfill(&meta, 9).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
         // The copy's figures, not the contract-derived estimate (1_000 / 101_000) the log entry
@@ -904,7 +904,7 @@ mod tests {
             created_at: 1_650_000_000_000,
             reclaim_operation_id: None,
         };
-        let meta = incoming_meta(99_500, wire::custom_meta(&copy).expect("encode"));
+        let meta = incoming_meta(99_500, custom_meta(&copy).expect("encode"));
         let claimed = backfill(&meta, 9).expect("claimed");
         let details = wire::decode_receive_details(&claimed.details).expect("decodes");
         // The copy's figures, not the contract-derived estimate (fee 500, net credit 99_500)

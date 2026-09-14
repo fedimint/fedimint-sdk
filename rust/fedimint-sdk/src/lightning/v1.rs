@@ -28,7 +28,9 @@ use super::{
     quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
-use crate::operation::{Backfilled, Driver, kinds, record_phase_in, write_details_in};
+use crate::operation::{
+    Backfilled, Driver, custom_meta, from_custom_meta, kinds, record_phase_in, write_details_in,
+};
 use crate::sdk::SdkInner;
 use crate::{
     Amount, Bolt11Invoice, Error, ErrorCode, GatewayId, LightningRoute, LnReceive,
@@ -756,7 +758,7 @@ pub(super) async fn send(
         .pay_bolt11_invoice(
             gateway.map(|gateway| *gateway),
             quote.invoice.inner().clone(),
-            wire::custom_meta(&quoted_wire)?,
+            custom_meta(&quoted_wire)?,
         )
         .await
         .map_err(|err| {
@@ -928,7 +930,7 @@ pub(super) async fn receive(
     // not known until the call returns, so the copy carries a placeholder for it and
     // `expires_at`; the backfiller takes both from upstream's own meta instead.
     let created_at = now();
-    let custom_meta = wire::custom_meta(&wire::LnReceiveDetailsWire {
+    let custom_meta = custom_meta(&wire::LnReceiveDetailsWire {
         invoice: String::new(),
         description: description.to_owned(),
         requested_amount_msats: amount.msats(),
@@ -1001,7 +1003,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
             };
             // Trusted only when it names this exact invoice: an entry created by something
             // other than this SDK could carry anything under the same metadata key.
-            let copy = wire::from_custom_meta::<wire::LnSendDetailsWire>(&extra_meta)
+            let copy = from_custom_meta::<wire::LnSendDetailsWire>(&extra_meta)
                 .filter(|copy| copy.invoice == invoice.to_string());
             let (fee, total) = match copy {
                 Some(copy) => {
@@ -1053,7 +1055,7 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
         } => {
             let invoice = Bolt11Invoice::from_upstream(invoice);
             let amount = invoice.amount()?;
-            let copy = wire::from_custom_meta::<wire::LnReceiveDetailsWire>(&extra_meta);
+            let copy = from_custom_meta::<wire::LnReceiveDetailsWire>(&extra_meta);
             let (description, requested_amount, fee, net_credit, created_at) = match &copy {
                 Some(copy) => (
                     copy.description.clone(),
@@ -1449,7 +1451,7 @@ mod tests {
                     "gateway_id": GATEWAY_ID,
                 }
             },
-            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+            "extra_meta": custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
@@ -1492,7 +1494,7 @@ mod tests {
                     "gateway_id": GATEWAY_ID,
                 }
             },
-            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+            "extra_meta": custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
@@ -1527,7 +1529,7 @@ mod tests {
                     "gateway_id": null,
                 }
             },
-            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+            "extra_meta": custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
@@ -1564,7 +1566,7 @@ mod tests {
                     "gateway_id": null,
                 }
             },
-            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+            "extra_meta": custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_send_details(&claimed.details).expect("decodes");
@@ -1598,7 +1600,7 @@ mod tests {
                     "gateway_id": GATEWAY_ID,
                 }
             },
-            "extra_meta": wire::custom_meta(&copy).expect("encode"),
+            "extra_meta": custom_meta(&copy).expect("encode"),
         });
         let claimed = backfill(&meta, 1_700_000_000_000).expect("claimed");
         let details = wire::decode_receive_details(&claimed.details).expect("decodes");
