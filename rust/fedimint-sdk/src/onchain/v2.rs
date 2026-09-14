@@ -22,9 +22,9 @@ use fedimint_walletv2_common::config::WalletClientConfig;
 use futures::StreamExt as _;
 
 use super::{
-    OnchainQuoteInner, Plan, Terms, balance_of, bitcoin_to_sats, check_amount, claim_figures,
-    from_upstream, insufficient, internal, now, plan_of, quote_changed, sats_to_bitcoin,
-    subscribe_error, timeout, unreachable, wire,
+    OnchainQuoteInner, Plan, Terms, balance_of, bitcoin_to_sats, check_amount, check_covers_amount,
+    claim_figures, from_upstream, insufficient, internal, now, plan_of, quote_changed,
+    sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
 };
 use crate::federation::{FederationInner, wait_holding_client};
 use crate::operation::{
@@ -33,7 +33,7 @@ use crate::operation::{
 };
 use crate::sdk::{CONTACT_TIMEOUT, SdkInner};
 use crate::{
-    Address, Error, ErrorCode, OnchainReceive, OnchainReceiveDetails, OnchainReceiveState,
+    Address, Amount, Error, ErrorCode, OnchainReceive, OnchainReceiveDetails, OnchainReceiveState,
     OnchainSendDetails, OnchainSendState, Operation, Result, Sats, Txid,
 };
 
@@ -112,9 +112,11 @@ pub(super) async fn plan(
     module: &ClientModuleInstance<'_, WalletClientModule>,
     address: &Address,
     amount: Sats,
+    available: Amount,
 ) -> Result<Plan> {
     let cfg = config(client, module.id).await?;
     check_amount(amount, cfg.dust_limit)?;
+    check_covers_amount(amount, available)?;
     let chain_fee_btc = fedimint_core::runtime::timeout(CONTACT_TIMEOUT, module.send_fee())
         .await
         .map_err(|_| timeout())?

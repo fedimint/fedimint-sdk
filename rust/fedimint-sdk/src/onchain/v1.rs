@@ -17,9 +17,9 @@ use fedimint_wallet_common::PegOutFees;
 use futures::StreamExt;
 
 use super::{
-    OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount, claim_figures,
-    from_upstream, insufficient, internal, now, plan_of, quote_changed, sats_to_amount,
-    sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
+    OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
+    check_covers_amount, claim_figures, from_upstream, insufficient, internal, now, plan_of,
+    quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
 };
 use crate::federation::FederationInner;
 use crate::operation::{
@@ -50,6 +50,7 @@ pub(super) async fn plan(
     module: &WalletClientModule,
     address: &Address,
     amount: Sats,
+    available: Amount,
 ) -> Result<Plan> {
     // The network was already checked by the caller (`Onchain::quote`) against this exact
     // federation, so a failure here is a bug in that ordering, not a bad address.
@@ -59,6 +60,7 @@ pub(super) async fn plan(
         .require_network(module.get_network())
         .map_err(|err| internal(format!("the address's network was already checked: {err}")))?;
     check_amount(amount, checked.script_pubkey().minimal_non_dust())?;
+    check_covers_amount(amount, available)?;
     let fees = fedimint_core::runtime::timeout(
         CONTACT_TIMEOUT,
         module.get_withdraw_fees(&checked, sats_to_bitcoin(amount)),

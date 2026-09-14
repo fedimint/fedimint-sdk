@@ -1441,6 +1441,10 @@ async fn federation_metadata_persists_across_restart() {
 /// (`bitcoin-cli -regtest -rpcuser=... -rpcpassword=... -datadir=...`); this splits it on
 /// whitespace and appends `args`. The faucet (see `faucet` above) has no on-chain endpoint at
 /// all, so this is the only way this suite reaches bitcoind.
+///
+/// The wallet is named explicitly: devimint's bitcoind has several loaded (the gateways' among
+/// them), and `bitcoin-cli` refuses a wallet call without a selection then. `default` is the one
+/// devimint creates and funds for itself (`devimint/src/external.rs`).
 fn bitcoin_cli(args: &[&str]) -> String {
     let client = std::env::var("FM_BTC_CLIENT")
         .unwrap_or_else(|err| panic!("FM_BTC_CLIENT is not set ({err}); run under devimint"));
@@ -1450,6 +1454,7 @@ fn bitcoin_cli(args: &[&str]) -> String {
         .expect("FM_BTC_CLIENT names at least a program");
     let output = std::process::Command::new(program)
         .args(words)
+        .arg("-rpcwallet=default")
         .args(args)
         .output()
         .unwrap_or_else(|err| panic!("could not run `{program}`: {err}"));
@@ -1632,9 +1637,20 @@ async fn onchain_deposit_and_withdrawal_round_trip() {
         other => panic!("expected Succeeded, got {other:?}"),
     };
 
-    let raw = bitcoin_cli(&["getrawtransaction", &send_txid.to_string(), "true"]);
-    assert!(raw.contains(destination.as_str()), "{raw}");
-    assert!(raw.contains("0.00030000"), "{raw}");
+    // `Succeeded` is the federation's broadcast, and the transaction reaches bitcoind's mempool
+    // a moment later, so the destination is polled rather than read once. Unconfirmed first
+    // (`minconf` 0), then confirmed by a block of our own.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if bitcoin_cli(&["getreceivedbyaddress", &destination, "0"]) == "0.00030000" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the withdrawal {send_txid} did not reach the destination within a minute"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     mine_blocks(1);
     assert_eq!(
         bitcoin_cli(&["getreceivedbyaddress", &destination, "1"]),

@@ -210,16 +210,13 @@ impl Onchain {
         check_network(address, federation.record().network.into())?;
         let client = federation.client(true).await?;
         let available = balance_of(&client, federation.status()).await?;
-        // The plan's federation round trip cannot report a shortfall when the balance does not
-        // even cover `amount` on its own; `ErrorDetails::InsufficientBalance::required` documents
-        // that no fee is included in this early figure.
-        let requested = sats_to_amount(amount)?;
-        if available < requested {
-            return Err(insufficient(requested, available));
-        }
         let plan = match module(&client)? {
-            WalletModule::V1(module) => v1::plan(&client, &module, address, amount).await?,
-            WalletModule::V2(module) => v2::plan(&client, &module, address, amount).await?,
+            WalletModule::V1(module) => {
+                v1::plan(&client, &module, address, amount, available).await?
+            }
+            WalletModule::V2(module) => {
+                v2::plan(&client, &module, address, amount, available).await?
+            }
         };
         if available < plan.total {
             return Err(insufficient(plan.total, available));
@@ -1001,6 +998,19 @@ fn check_network(address: &Address, expected: Network) -> Result<()> {
 /// Refuses a withdrawal amount the federation cannot execute: zero, or below the destination's
 /// dust threshold. `amount` is converted with `sats_to_bitcoin` for the comparison against
 /// `dust`, which is the v1 script's `minimal_non_dust()` or the walletv2 config's `dust_limit`.
+/// The refusal a plan makes before its federation round trip: a balance that does not even
+/// cover `amount` on its own. The round trip cannot report a shortfall, and
+/// `ErrorDetails::InsufficientBalance::required` documents that no fee is included in this early
+/// figure. Runs after the amount itself was validated, so an amount the federation could never
+/// withdraw is refused as invalid whatever the balance.
+pub(super) fn check_covers_amount(amount: Sats, available: Amount) -> Result<()> {
+    let requested = sats_to_amount(amount)?;
+    if available < requested {
+        return Err(insufficient(requested, available));
+    }
+    Ok(())
+}
+
 pub(super) fn check_amount(amount: Sats, dust: bitcoin::Amount) -> Result<()> {
     if amount.sats() == 0 {
         return Err(Error::new(
