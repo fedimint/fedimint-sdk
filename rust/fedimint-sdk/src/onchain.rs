@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use crate::{Address, Amount, Operation, OperationState, Result, Sats, Timestamp, Txid};
 
+mod wire;
+
 /// The on-chain facade for one federation, backed by its wallet module.
 ///
 /// Obtained from [`Federation::onchain`](crate::Federation::onchain), which
