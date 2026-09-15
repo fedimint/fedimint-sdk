@@ -30,38 +30,65 @@ pub(super) use crate::operation::{first_state, settled, until_final};
 pub(super) enum SendStep {
     /// Hand this state out as it is.
     State(LnSendState),
-    /// The funding transaction was rejected. Settle the inputs it removed, then end on what
-    /// that proves: [`LnSendState::Refunded`] when the value is spendable again, and
-    /// [`LnSendState::Failed`] when a clean return cannot be established.
+    /// The funding transaction was rejected. Report the send as still running, settle the
+    /// inputs it removed, then end on what that proves: [`LnSendState::Refunded`] when the
+    /// value is spendable again, and [`LnSendState::Failed`] when a clean return cannot be
+    /// established. One step, two states out; see [`through_settle`] for why the first of them
+    /// cannot wait on the second.
     FundingRejected,
 }
 
 /// Turns a stream of steps into one of states, settling a rejected funding before ending.
 ///
-/// The settle is unbounded, and the stream yields nothing while it runs: a subscriber goes on
-/// seeing the last non-final state it was given, which is the truth: the operation has not
-/// finished. `sdk` and `federation_id` are carried rather than a federation or a client,
-/// because the stream outlives the call that built it.
+/// A rejection becomes **two** items: the non-final state the operation is actually in, and
+/// then, once the settle finishes, the ending it established. Yielding the first before
+/// waiting is load-bearing rather than cosmetic. Upstream hands back a single cached outcome
+/// for an operation whose ending it has already recorded (`ClientContext::outcome_or_updates`),
+/// so a send reattached after a restart can have the rejection as the *only* step there is;
+/// and `settled`, which every subscription and every `current` goes through, awaits its first
+/// item with no timeout. A stream that waited for the settle before yielding anything would
+/// hang `Operation::state()` and a new subscriber's first update for as long as the recovery
+/// ran, which on a stalled recovery is for ever.
+///
+/// `Created` is the state to report there: the funding was rejected, so the payment never
+/// reached `Funded`, and it is still running while its inputs are recovered. On a live stream
+/// that repeats the `Created` the payment already reported, which the engine's `same_state`
+/// dedup drops.
+///
+/// `sdk` and `federation_id` are carried rather than a federation or a client, because the
+/// stream outlives the call that built it.
+//
+// `unfold` rather than `flat_map` over boxed sub-streams: boxing a stream needs `Send`, which
+// this crate cannot require (`MaybeSend`, `wasm32`), and the state machine here is small
+// enough that spelling it out costs less than working around that.
 pub(super) fn through_settle(
     stream: impl futures::Stream<Item = Result<SendStep>> + MaybeSend + 'static,
     sdk: Weak<SdkInner>,
     federation_id: FederationId,
     id: OperationId,
 ) -> BoxStream<'static, Result<LnSendState>> {
-    Box::pin(stream.then(move |step| {
-        let sdk = sdk.clone();
-        async move {
-            match step? {
-                SendStep::State(state) => Ok(state),
-                SendStep::FundingRejected => {
-                    match crate::inputs::settle(sdk, federation_id, id).await? {
-                        Restoration::Restored => Ok(LnSendState::Refunded),
-                        Restoration::Unproven(reason) => Ok(LnSendState::Failed { reason }),
-                    }
-                }
+    Box::pin(futures::stream::unfold(
+        (Box::pin(stream), sdk, false),
+        move |(mut steps, sdk, settle_next)| async move {
+            if settle_next {
+                let ending = match crate::inputs::settle(sdk.clone(), federation_id, id).await {
+                    Ok(Restoration::Restored) => Ok(LnSendState::Refunded),
+                    Ok(Restoration::Unproven(reason)) => Ok(LnSendState::Failed { reason }),
+                    Err(err) => Err(err),
+                };
+                return Some((ending, (steps, sdk, false)));
             }
-        }
-    }))
+            let item = match steps.next().await? {
+                Err(err) => Err(err),
+                Ok(SendStep::State(state)) => Ok(state),
+                // The pending state now, the ending on the next pull.
+                Ok(SendStep::FundingRejected) => {
+                    return Some((Ok(LnSendState::Created), (steps, sdk, true)));
+                }
+            };
+            Some((item, (steps, sdk, false)))
+        },
+    ))
 }
 
 /// Observes an outgoing lightning payment of either generation, chosen by the record's module.
@@ -204,7 +231,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
-    use crate::{Amount, LightningRoute, Preimage};
+    use crate::{Amount, LightningRoute, OperationState as _, Preimage};
 
     // Only `LnSendState`'s non-final (`Created`, `Funded`) and final (`Refunded`, `Failed`)
     // variants that need no fields are used below; `settled` treats every state the same way
@@ -322,7 +349,7 @@ mod tests {
 
     /// The regression this whole path exists for: a rejected funding must reach the settle gate
     /// rather than being handed out as an ending. The instance is gone here, so the gate cannot
-    /// run and reports the federation closed — which is still proof the step went to the gate.
+    /// run and reports the federation closed, which is still proof the step went to the gate.
     /// Mapping `FundingRejected` back onto `LnSendState::Refunded` would yield a state instead.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_rejected_funding_goes_to_the_gate_rather_than_ending_the_send() {
@@ -336,12 +363,44 @@ mod tests {
             stream.next().await.expect("a state").expect("not an error"),
             LnSendState::Created
         );
+        // The rejection's own pending state, yielded before the gate is waited on at all.
+        assert_eq!(
+            stream.next().await.expect("a state").expect("not an error"),
+            LnSendState::Created
+        );
         let err = stream
             .next()
             .await
-            .expect("the rejection produces an item")
+            .expect("the rejection produces an ending")
             .expect_err("the gate cannot run without an instance");
         assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    /// Reattaching to an operation whose rejection upstream has already cached: the whole step
+    /// stream is the rejection, with no earlier state to fall back on. The first item still has
+    /// to be a non-final state, because `settled` awaits its first item without a timeout and
+    /// every `Operation::state()` and new subscription goes through that. A stream that waited
+    /// for the settle before yielding would hang them for as long as the recovery ran.
+    ///
+    /// The ordering is the testable half of that. How long the gate itself takes cannot be
+    /// exercised here, because with no instance behind the `Weak` it fails at once instead of
+    /// waiting; what this pins down is that the pending state comes first regardless.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cached_rejection_reports_pending_before_waiting() {
+        let steps: BoxStream<'static, Result<SendStep>> =
+            Box::pin(stream::iter([Ok(SendStep::FundingRejected)]));
+        let mut stream = through_settle(steps, Weak::new(), a_federation_id(), an_operation_id());
+
+        let first = stream
+            .next()
+            .await
+            .expect("a cached rejection still reports where the operation is")
+            .expect("not an error");
+        assert_eq!(first, LnSendState::Created);
+        assert!(
+            !first.is_final(),
+            "a send whose inputs are still being recovered was reported as finished"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

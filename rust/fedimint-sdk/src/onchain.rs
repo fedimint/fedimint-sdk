@@ -409,10 +409,13 @@ impl OnchainQuote {
     /// transaction, and submitting one takes the notes that are to fund it
     /// out of the spendable set before the federation has accepted anything,
     /// so a funding attempt the federation then rejects can remove value and
-    /// restore it afterwards. A withdrawal that does not happen leaves no
-    /// lasting debit, but the balance may dip and recover in between;
-    /// [`OnchainSendState::Refunded`] is the state that says the recovery is
-    /// done.
+    /// restore it afterwards.
+    ///
+    /// Nothing else is ever debited than this total. What becomes of it when
+    /// the withdrawal does not happen is the ending's to say rather than the
+    /// quote's: [`OnchainSendState::Refunded`] is the one that promises no
+    /// lasting debit, reported only once the value is spendable again, and
+    /// [`OnchainSendState::Failed`] is the one that cannot promise it.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }

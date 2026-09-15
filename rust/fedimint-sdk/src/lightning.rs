@@ -313,12 +313,14 @@ impl LnQuote {
     /// about what the balance does moment to moment. Executing the quote
     /// submits a transaction, and submitting one takes the notes that are to
     /// pay for it out of the spendable set before the federation has
-    /// accepted anything. A funding attempt the federation then rejects can
-    /// therefore remove value and restore it afterwards. Nothing else is
-    /// ever debited than this total, and a payment that does not succeed
-    /// leaves no lasting debit at all, but the balance may dip and recover
-    /// in between; [`LnSendState::Refunded`] is the state that says the
-    /// recovery is done.
+    /// accepted anything, so a funding attempt the federation then rejects
+    /// can remove value and restore it afterwards.
+    ///
+    /// Nothing else is ever debited than this total. What becomes of it when
+    /// the payment does not succeed is the ending's to say rather than the
+    /// quote's: [`LnSendState::Refunded`] is the one that promises no
+    /// lasting debit, reported only once the value is spendable again, and
+    /// [`LnSendState::Failed`] is the one that cannot promise it.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }
