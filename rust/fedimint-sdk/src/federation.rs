@@ -463,6 +463,11 @@ pub(crate) struct FederationInner {
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
     reclaim_starts: tokio::sync::Mutex<()>,
+    /// Serialises the allocation of a deposit address per federation: asking the wallet module
+    /// for an address, checking that no unfinished record already names it and committing the
+    /// record for it happen under this lock, so two concurrent `Onchain::receive` calls that
+    /// are handed the same walletv2 address can never both record it.
+    deposit_allocations: tokio::sync::Mutex<()>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -510,6 +515,7 @@ impl FederationInner {
             closed: tokio::sync::watch::Sender::new(!running),
             recovery_changed: tokio::sync::watch::Sender::new(0),
             reclaim_starts: tokio::sync::Mutex::new(()),
+            deposit_allocations: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -816,6 +822,11 @@ impl FederationInner {
     /// The lock that serialises starting a lightning claim retry for this federation.
     pub(crate) async fn lock_reclaim_starts(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.reclaim_starts.lock().await
+    }
+
+    /// Takes the per-federation deposit-allocation lock; see the field's own documentation.
+    pub(crate) async fn lock_deposit_allocations(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.deposit_allocations.lock().await
     }
 
     /// `Ok` while this federation is still usable, and

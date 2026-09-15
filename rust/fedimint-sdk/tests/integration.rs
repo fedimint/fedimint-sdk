@@ -1847,6 +1847,54 @@ async fn onchain_receive_never_hands_out_a_watched_address() {
     sdk.shutdown().await.expect("shuts down");
 }
 
+/// Two calls racing each other never record one address twice: the check for an address an
+/// operation already follows and the commit of the new operation's record are one step. Without
+/// that, two concurrent calls handed the same walletv2 address would both pass the check before
+/// either record existed, and one payment would be adopted twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn onchain_concurrent_receives_never_share_an_address() {
+    use fedimint_sdk::ErrorCode;
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+
+    // Separate tasks on the multi-threaded runtime, so the calls really overlap.
+    let racing: Vec<_> = (0..8)
+        .map(|_| {
+            let onchain = onchain.clone();
+            tokio::spawn(async move { onchain.receive().await })
+        })
+        .collect();
+    let mut handed_out = Vec::new();
+    for task in racing {
+        match task.await.expect("the call does not panic") {
+            Ok(receive) => handed_out.push(receive),
+            Err(err) => {
+                eprintln!("a racing call was refused: {err}");
+                assert_eq!(devimint.shape, "v2", "only walletv2 refuses: {err}");
+                assert_eq!(err.code, ErrorCode::Internal, "{err}");
+            }
+        }
+    }
+    assert!(
+        !handed_out.is_empty(),
+        "at least one call hands out an address"
+    );
+    for (i, a) in handed_out.iter().enumerate() {
+        for b in &handed_out[i + 1..] {
+            assert_ne!(a.address, b.address, "one address was recorded twice");
+            assert_ne!(a.operation.id(), b.operation.id());
+        }
+    }
+
+    sdk.shutdown().await.expect("shuts down");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn onchain_deposit_survives_a_restart() {
     use fedimint_sdk::OnchainReceiveState;

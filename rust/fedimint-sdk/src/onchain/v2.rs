@@ -331,12 +331,17 @@ pub(super) async fn subscribe_send(
 /// should start from. That tail is read before the address is asked for, as upstream's own doc
 /// on `receive` requires: the module's scanner can claim a payment to the address in the gap
 /// after handing it out, and a position taken afterwards would put that event behind the scan.
+///
+/// The whole allocation runs under the federation's deposit-allocation lock, so the check that
+/// no unfinished record already names the address and the commit of the record for it cannot
+/// interleave with another call's: two concurrent calls handed the same address record it once.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
     client: &Client,
     module: &ClientModuleInstance<'_, WalletClientModule>,
     driver: Arc<dyn Driver<OnchainReceiveState>>,
 ) -> Result<OnchainReceive> {
+    let _allocation = federation.lock_deposit_allocations().await;
     let created_at = now();
     let cursor = event_log_tail(client).await;
     let checked = module.receive().await;
