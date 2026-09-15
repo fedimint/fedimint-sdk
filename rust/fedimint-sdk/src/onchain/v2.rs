@@ -333,8 +333,8 @@ pub(super) async fn subscribe_send(
 /// after handing it out, and a position taken afterwards would put that event behind the scan.
 ///
 /// The whole allocation runs under the federation's deposit-allocation lock, so the check that
-/// no unfinished record already names the address and the commit of the record for it cannot
-/// interleave with another call's: two concurrent calls handed the same address record it once.
+/// no record already names the address and the commit of the record for it cannot interleave
+/// with another call's: two concurrent calls handed the same address record it once.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
     client: &Client,
@@ -343,27 +343,39 @@ pub(super) async fn receive(
 ) -> Result<OnchainReceive> {
     let _allocation = federation.lock_deposit_allocations().await;
     let created_at = now();
-    let cursor = event_log_tail(client).await;
-    let checked = module.receive().await;
-    // walletv2 offers one unused address at a time and hands the same one back until its
-    // scanner sees it paid (fedimint/fedimint#9101). `Onchain::receive` promises an address never
-    // handed out before, and two records following one address would both adopt the same claim,
-    // so a repeat is refused rather than recorded while the earlier record is still unfinished.
-    // An address whose record has already reached its end is let through: the scanner can hand
-    // it back once more in the moment before it advances past the paid address, and the claim
-    // that record adopted is behind the cursor read above, so the new record cannot adopt it.
-    if let Some(owner) = federation
-        .owner_of_deposit_address(&checked.to_string())
-        .await?
-        && !owner.finished
-    {
-        return Err(internal(format!(
-            "the federation's wallet handed out an address already watched by operation {}; \
-             it offers one unused deposit address at a time, so a fresh one is available only \
-             once that address has been paid",
-            owner.id.fmt_full()
-        )));
-    }
+    // walletv2 offers one unused address at a time: `receive` hands the highest address its
+    // scanner has derived back until the scanner sees it paid, and only then grinds the next one
+    // (fedimint/fedimint#9101). `Onchain::receive` promises an address never handed out before,
+    // so an address an SDK record already names is never recorded again. While that record is
+    // unfinished nothing will change until its address is paid, and the call is refused at
+    // once. Once it has finished, the scanner is at work on the next address, which it can take
+    // a while to find (it is a hash-prefix search), so the call waits for it the way the very
+    // first `receive` on a fresh wallet waits for the scanner's first address, up to the same
+    // bound every federation round trip gets.
+    let mut waited = core::time::Duration::ZERO;
+    let (cursor, checked) = loop {
+        let cursor = event_log_tail(client).await;
+        let checked = module.receive().await;
+        let Some(owner) = federation
+            .owner_of_deposit_address(&checked.to_string())
+            .await?
+        else {
+            break (cursor, checked);
+        };
+        if !owner.finished {
+            return Err(internal(format!(
+                "the federation's wallet handed out an address already watched by operation {}; \
+                 it offers one unused deposit address at a time, so a fresh one is available \
+                 only once that address has been paid",
+                owner.id.fmt_full()
+            )));
+        }
+        if waited >= CONTACT_TIMEOUT {
+            return Err(timeout());
+        }
+        fedimint_core::runtime::sleep(RETIRED_ADDRESS_POLL).await;
+        waited += RETIRED_ADDRESS_POLL;
+    };
     let address = Address::from_upstream(checked.clone().into_unchecked());
     let id = OperationId::new_random();
     let wire = wire::OnchainReceiveDetailsWire {
@@ -382,6 +394,10 @@ pub(super) async fn receive(
         .await?;
     Ok(OnchainReceive { address, operation })
 }
+
+/// How often [`receive`] asks the wallet module again for an address, while the module is still
+/// handing back one whose deposit this SDK has already seen through to its end.
+const RETIRED_ADDRESS_POLL: core::time::Duration = core::time::Duration::from_millis(250);
 
 /// The event log's current tail: the position a scan for a deposit's `ReceivePaymentEvent`
 /// should start from, so that an event already in the log before this address was handed out is

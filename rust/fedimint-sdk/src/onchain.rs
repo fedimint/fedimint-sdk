@@ -157,7 +157,11 @@ impl Onchain {
     /// following rather than a fresh one. A wallet that offers one unused
     /// address at a time does that when a second call is made before the
     /// first address has been paid; the address is not handed out again, and
-    /// the operation already following it is unaffected.
+    /// the operation already following it is unaffected. Right after such
+    /// an address's deposit is claimed, the same wallet may still be
+    /// deriving its next address: the call waits for it within the usual
+    /// contact timeout and is [`Timeout`](crate::ErrorCode::Timeout) past
+    /// it, never a repeat of the funded address.
     pub async fn receive(&self) -> Result<OnchainReceive> {
         let federation = &self.inner.federation;
         // The recovery lock applies to a deposit exactly as it does to a send; see this type's
