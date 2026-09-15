@@ -258,6 +258,7 @@ impl Sdk {
             &id,
             &record,
             &RecoveryRecord { attempt },
+            config.global.meta.clone(),
         )
         .await?;
 
@@ -292,6 +293,7 @@ impl Sdk {
                     Arc::downgrade(self.inner()),
                     namespace,
                     record,
+                    config.global.meta.clone(),
                     FederationStatus::Quarantined {
                         diagnostic: err.clone().into(),
                     },
@@ -317,6 +319,7 @@ impl Sdk {
                 .db
                 .with_prefix(crate::db::federation_prefix(&id).to_vec()),
             joined,
+            config.global.meta.clone(),
             FederationStatus::Recovering,
             Some(client.clone()),
         ));
@@ -837,6 +840,7 @@ mod tests {
                 .db
                 .with_prefix(crate::db::federation_prefix(&id).to_vec()),
             record,
+            std::collections::BTreeMap::new(),
             FederationStatus::Running,
             None,
         )));
