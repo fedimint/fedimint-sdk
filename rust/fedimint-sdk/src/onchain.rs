@@ -215,7 +215,7 @@ impl Onchain {
                 v1::plan(federation, &client, &module, address, amount, available).await?
             }
             WalletModule::V2(module) => {
-                v2::plan(&client, &module, address, amount, available).await?
+                v2::plan(federation, &client, &module, address, amount, available).await?
             }
         };
         if available < plan.total {

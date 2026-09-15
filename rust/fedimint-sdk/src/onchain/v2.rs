@@ -22,9 +22,10 @@ use fedimint_walletv2_common::config::WalletClientConfig;
 use futures::StreamExt as _;
 
 use super::{
-    OnchainQuoteInner, Plan, Terms, balance_of, bitcoin_to_sats, check_amount, check_covers_amount,
-    claim_figures, from_upstream, insufficient, internal, now, plan_of, quote_changed,
-    sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
+    OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
+    check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
+    now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout,
+    unreachable, wire,
 };
 use crate::federation::{FederationInner, wait_holding_client};
 use crate::operation::{
@@ -108,6 +109,7 @@ fn map_send_error(err: SendError) -> Error {
 /// Plans a walletv2 withdrawal: prices the destination output, then the transaction that funds
 /// it.
 pub(super) async fn plan(
+    federation: &Arc<FederationInner>,
     client: &Client,
     module: &ClientModuleInstance<'_, WalletClientModule>,
     address: &Address,
@@ -124,13 +126,27 @@ pub(super) async fn plan(
     let output_value = sats_to_bitcoin(amount)
         .checked_add(chain_fee_btc)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
-    let quote = module.send_fee_quote(output_value).await.map_err(|err| {
-        internal(format!(
-            "could not quote the withdrawal's funding fee: {err}"
-        ))
-    })?;
-    let module_fee = from_upstream(cfg.fee_consensus.fee(to_upstream_sats(output_value)));
     let chain_fee = from_upstream(fedimint_core::Amount::from(chain_fee_btc));
+    let quote = match module.send_fee_quote(output_value).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            // `required` is the amount plus the on-chain fee already quoted above; the dry
+            // run that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(amount)?, chain_fee)?;
+            return Err(fee_quote_failure(
+                client,
+                federation.status(),
+                short,
+                &text,
+                required,
+                "could not quote the withdrawal's funding fee",
+            )
+            .await);
+        }
+    };
+    let module_fee = from_upstream(cfg.fee_consensus.fee(to_upstream_sats(output_value)));
     plan_of(
         chain_fee,
         module_fee,
@@ -162,17 +178,31 @@ pub(super) async fn send(
     let output_value = sats_to_bitcoin(quote.amount)
         .checked_add(fresh_chain_fee)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
-    let fresh_quote = module.send_fee_quote(output_value).await.map_err(|err| {
-        internal(format!(
-            "could not re-quote the withdrawal's funding fee: {err}"
-        ))
-    })?;
+    let fresh_chain_fee_amount = from_upstream(fedimint_core::Amount::from(fresh_chain_fee));
+    let fresh_quote = match module.send_fee_quote(output_value).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            // `required` is the amount plus the on-chain fee already re-quoted above; the dry
+            // run that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(quote.amount)?, fresh_chain_fee_amount)?;
+            return Err(fee_quote_failure(
+                client,
+                federation.status(),
+                short,
+                &text,
+                required,
+                "could not re-quote the withdrawal's funding fee",
+            )
+            .await);
+        }
+    };
     // Both `send_fee` and `send_fee_quote` must return exactly what they returned when this
     // quote was built, or the federation changing wallet generation between the two: either is
     // reported here, before anything is submitted, as `QuoteChanged`.
     if chain_fee != fresh_chain_fee || quoted != &fresh_quote {
         let module_fee = from_upstream(cfg.fee_consensus.fee(to_upstream_sats(output_value)));
-        let fresh_chain_fee_amount = from_upstream(fedimint_core::Amount::from(fresh_chain_fee));
         let current = plan_of(
             fresh_chain_fee_amount,
             module_fee,
@@ -433,18 +463,20 @@ pub(super) async fn upstream_state(
 
 // walletv2 has no per-address state machine to follow the way v1's `DepositStateV2` is one: the
 // phases `OnchainReceiveState` reports here are this SDK's own observation of the address, and
-// the module's own claim machine lands on them as `Funding` -> `Confirmed`, `Success` ->
-// `Claimed`, `Aborted` (the claim stays claimable, retried under the same operation id) -> stays
-// `Confirmed`.
+// the module's own claim machine lands on them as `Funding` -> `Confirmed`, `Success` (once the
+// mint has issued the claimed notes) -> `Claimed`, `Aborted` (the claim stays claimable, retried
+// under the same operation id) -> stays `Confirmed`.
 /// What the bounded (or, once already `Confirmed`, unbounded) check of a linked upstream
 /// operation found.
 enum ClaimProgress {
-    /// The claim has not settled; still `Confirmed`.
+    /// The claim has not settled, or has settled but the mint has not finished issuing the
+    /// claimed notes yet; still `Confirmed` either way.
     StillFunding,
     /// The federation rejected the claim; still `Confirmed`, and a later `ReceivePaymentEvent`
     /// for the same address relinks it under a fresh upstream operation.
     Aborted,
-    /// The claim settled; the wire record has been updated and this is the state to report.
+    /// The claim settled and its notes are issued; the wire record has been updated and this is
+    /// the state to report.
     Claimed(OnchainReceiveState),
 }
 
@@ -457,16 +489,43 @@ async fn observe_link(
     match upstream_state(client, found.upstream).await? {
         None => Ok(ClaimProgress::StillFunding),
         Some(FinalReceiveOperationState::Aborted) => Ok(ClaimProgress::Aborted),
-        Some(FinalReceiveOperationState::Success) => Ok(ClaimProgress::Claimed(
-            claim_from_upstream(client, db, id, found).await?,
-        )),
+        Some(FinalReceiveOperationState::Success) => {
+            // `claim_from_upstream` waits out however long the mint takes to issue the claimed
+            // notes, which is no longer necessarily quick (see its own doc comment). A bounded
+            // caller must not be dragged into that wait: when issuance has not finished yet,
+            // this reports the claim as still `Confirmed`, exactly like an unsettled claim, and
+            // leaves the actual wait to whichever caller can afford an unbounded one
+            // (`ReceiveCursor::Waiting`, on the subscription).
+            if client.has_active_states(found.upstream).await {
+                return Ok(ClaimProgress::StillFunding);
+            }
+            Ok(ClaimProgress::Claimed(
+                claim_from_upstream(client, db, id, found).await?,
+            ))
+        }
     }
 }
+
+/// How often [`claim_from_upstream`] re-checks whether the mint has finished issuing the claimed
+/// notes, once the claim transaction itself has settled.
+///
+/// Mirrors `src/ecash.rs`'s `MINTV2_CANCEL_POLL`: shortened under `cfg(test)` so a test that
+/// waits this out does not have to sit through the production interval.
+#[cfg(not(test))]
+const RECEIVE_ISSUANCE_POLL: core::time::Duration = core::time::Duration::from_millis(200);
+#[cfg(test)]
+const RECEIVE_ISSUANCE_POLL: core::time::Duration = core::time::Duration::from_millis(25);
 
 /// Re-reads the linked upstream operation's own terms and reads back what the claim transaction
 /// itself minted, so that a restart mid-claim needs nothing but the upstream operation id:
 /// `value` and `fee` are read fresh from its `ReceiveMeta` rather than trusted from an earlier
 /// pass.
+///
+/// `FinalReceiveOperationState::Success` only means the claim transaction was accepted into
+/// consensus; the mint outputs it creates are issued afterwards by the primary module's own
+/// state machines, so this waits for that too before reading the transaction, or an application
+/// that spends as soon as it sees `Claimed` could find the balance short of what was just
+/// credited.
 async fn claim_from_upstream(
     client: &Client,
     db: &Database,
@@ -491,6 +550,18 @@ async fn claim_from_upstream(
     let cfg = config(client, wallet_instance).await?;
     let input_amount = to_upstream_sats(net_of_chain_fee);
     let input_fee = cfg.fee_consensus.fee(input_amount);
+
+    // Upstream's own `await_receive` waits on `Client::await_primary_module_outputs` for the
+    // same reason ($FM/modules/fedimint-walletv2-client/src/lib.rs:599-640), but that method is
+    // private at this pin. `Client::has_active_states` stands in for it: every state machine the
+    // claim registered under this operation id, the mint's output machines included, has
+    // finished once it reports none left active ($FM/fedimint-client/src/client.rs:1216). Mint
+    // issuance cannot be delayed from a test at this pin, so this loop cannot be exercised by
+    // anything but the devimint suite.
+    while client.has_active_states(found.upstream).await {
+        fedimint_core::runtime::sleep(RECEIVE_ISSUANCE_POLL).await;
+    }
+
     let (fee_total, breakdown, net_credit) = claim_figures(
         client,
         found.upstream,
@@ -682,7 +753,8 @@ enum ReceiveCursor {
         announced: bool,
     },
     /// Linked, `Confirmed` was already reported, and now the wait is for the module's own final
-    /// state, unbounded this time.
+    /// state, unbounded this time, and, once that succeeds, for the mint to finish issuing the
+    /// claimed notes.
     Waiting {
         link: Link,
     },
@@ -778,6 +850,7 @@ async fn receive_step(
                 };
                 let handle = client.handle();
                 drop(client);
+                let stop = handle.task_group().make_handle().make_shutdown_rx();
                 // Marked unchanged right before the scan, not after: an event logged while
                 // `find_link` is still paging through the log must still register once this call
                 // reaches the `None` arm below, or it would sit unnoticed until some later,
@@ -785,8 +858,19 @@ async fn receive_step(
                 // `subscribe_receive` obtained for the stream's whole life; see there for why it
                 // must not be re-fetched from the client here instead.
                 ctx.added.mark_unchanged();
-                match find_link(&handle, &address, from).await {
-                    Some(found) => {
+                // Run through `wait_holding_client`, like every other client-owning read in this
+                // stream: the engine keeps this step's own future parked, handle and all, across
+                // a dropped `next()`, so nothing here may hold the handle in its own frame across
+                // an `.await` (see `wait_holding_client`'s own documentation). That is what keeps
+                // the handle out of the `tokio::select!` below too: it is on the spawned task by
+                // the time that runs, not in this future's own state.
+                let scan_address = address.clone();
+                let found = wait_holding_client(handle, stop, move |client| async move {
+                    Ok(find_link(&client, &scan_address, from).await)
+                })
+                .await;
+                match found {
+                    Ok(Some(found)) => {
                         if let Err(err) = link(&federation, ctx.id, &found).await {
                             return Some((Err(err), ReceiveCursor::Done));
                         }
@@ -795,7 +879,7 @@ async fn receive_step(
                             announced: false,
                         }
                     }
-                    None if !announced => {
+                    Ok(None) if !announced => {
                         return Some((
                             Ok(OnchainReceiveState::WaitingForTransaction),
                             ReceiveCursor::Linking {
@@ -805,7 +889,7 @@ async fn receive_step(
                             },
                         ));
                     }
-                    None => {
+                    Ok(None) => {
                         let mut closed = federation.closed();
                         tokio::select! {
                             _ = ctx.added.changed() => {}
@@ -821,6 +905,7 @@ async fn receive_step(
                             announced: true,
                         }
                     }
+                    Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 }
             }
             // A fresh link always earns an immediate `Confirmed`, reported before the on-chain
@@ -858,10 +943,20 @@ async fn receive_step(
                 // Every other arm drops its guard before awaiting anything else: a close must
                 // always be able to take the client write lock. `observe_link` and, on the
                 // `Aborted` branch, `read_address` run on a cloned handle instead, so the guard
-                // is gone before either one is awaited.
+                // is gone before either one is awaited; `observe_link` itself runs through
+                // `wait_holding_client`, so that handle is never in this future's own frame
+                // either, the same as every other client-owning read in this stream.
                 let handle = client.handle();
                 drop(client);
-                match observe_link(&handle, &ctx.db, ctx.id, &found).await {
+                let stop = handle.task_group().make_handle().make_shutdown_rx();
+                let db = ctx.db.clone();
+                let id = ctx.id;
+                let observed = found.clone();
+                let outcome = wait_holding_client(handle, stop, move |client| async move {
+                    observe_link(&client, &db, id, &observed).await
+                })
+                .await;
+                match outcome {
                     Ok(ClaimProgress::StillFunding) => {
                         return Some((
                             Ok(OnchainReceiveState::Confirmed {
@@ -936,11 +1031,24 @@ async fn receive_step(
                         let Some(federation) = live_federation(&ctx) else {
                             return Some((Err(federation_closed()), ReceiveCursor::Done));
                         };
-                        let handle = match federation.client(false).await {
-                            Ok(client) => client.handle(),
+                        let client = match federation.client(false).await {
+                            Ok(client) => client,
                             Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                         };
-                        let claimed = claim_from_upstream(&handle, &ctx.db, ctx.id, &found).await;
+                        let handle = client.handle();
+                        drop(client);
+                        let stop = handle.task_group().make_handle().make_shutdown_rx();
+                        let db = ctx.db.clone();
+                        let id = ctx.id;
+                        let claim_link = found.clone();
+                        // `claim_from_upstream` now waits out the mint's issuance of the claimed
+                        // notes, which can take a while: run it through `wait_holding_client` so
+                        // a subscriber that stops polling here does not leave the handle stuck
+                        // for that whole wait.
+                        let claimed = wait_holding_client(handle, stop, move |client| async move {
+                            claim_from_upstream(&client, &db, id, &claim_link).await
+                        })
+                        .await;
                         return Some((claimed, ReceiveCursor::Done));
                     }
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
