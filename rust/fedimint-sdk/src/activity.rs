@@ -46,8 +46,9 @@ pub(crate) use page::page;
 ///    side was to receive (outgoing) or to send (incoming). Gross of this
 ///    wallet's fees, and as executed rather than as requested: an ecash
 ///    send reports the notes actually issued, not the amount typed.
-/// 2. `fee` is what this wallet was charged on those terms: on top of the
-///    counterparty figure when outgoing, out of it when incoming.
+/// 2. `fee` is what this wallet pays on those terms if the transfer
+///    succeeds: on top of the counterparty figure when outgoing, out of
+///    it when incoming.
 /// 3. `direction` is which way the transfer was to move value.
 ///
 /// For a row whose [`status`](ActivityItem::status) is
@@ -77,13 +78,20 @@ pub(crate) use page::page;
 /// [`status`](ActivityItem::status) is [`Success`](ActivityStatus::Success).
 /// For the other buckets:
 ///
-/// - [`Refunded`](ActivityStatus::Refunded) and
-///   [`Canceled`](ActivityStatus::Canceled): the value went out and came
-///   back (a refunded payment's funding returned, a canceled send's notes
-///   reclaimed), so the net movement is zero apart from a fee already
-///   spent. The fields go on describing the attempt, "1000 sat, refunded" is
-///   what a list needs to show, and it is the bucket, not the numbers, that
-///   says the money came back.
+/// - [`Refunded`](ActivityStatus::Refunded): the attempt left no lasting
+///   debit and the value is safe in the balance. That is a statement about
+///   the balance once the row reads `Refunded`, not about the route taken to
+///   it: an attempt may have removed value and had it restored, and the
+///   bucket is not reported until that has settled. The fields go on
+///   describing the attempt, "1000 sat, refunded" is what a list needs to
+///   show, and it is the bucket, not the numbers, that says how it ended;
+///   read the operation and the balance for what the attempt actually
+///   cost.
+/// - [`Canceled`](ActivityStatus::Canceled): the transfer did not happen.
+///   Outgoing value that was committed has been reclaimed, and an incoming
+///   transfer called off or lapsed unpaid never arrived at all, so there is
+///   nothing for `amount` to have moved. The fields still describe what was
+///   attempted, and again it is the bucket that says how it ended.
 /// - [`Failed`](ActivityStatus::Failed): the transfer neither completed nor
 ///   resolved into a clean return, so the balance effect is not something
 ///   this row can assert. Render the attempt; read the operation and the
@@ -330,10 +338,23 @@ pub enum ActivityStatus {
     /// Ended without completing, and without the value being known to be
     /// safe in the balance.
     Failed,
-    /// Ended without completing, and the value is safe in the balance,
-    /// returned after it was debited, as for a lightning payment that could
-    /// not be routed, or never debited at all, as for a funding transaction
-    /// the federation rejected.
+    /// Ended without completing, leaving no lasting debit: the value the
+    /// operation was authorised for is spendable again.
+    ///
+    /// Both the ordinary endings arrive here, a lightning payment that could
+    /// not be routed and had its contract refunded as much as one whose
+    /// funding transaction the federation rejected. What they share is the
+    /// promise, which is about the balance now rather than about what
+    /// happened on the way: no part of the authorised total is still
+    /// standing against it.
+    ///
+    /// An operation is not put in this bucket until that is true of it.
+    /// Value committed to a transaction the federation then rejects is
+    /// neither spent nor immediately spendable, and returning it is a later
+    /// transaction of its own; the row stays [`Pending`](Self::Pending)
+    /// while that runs. A recovery that settles without establishing the
+    /// return lands in [`Failed`](Self::Failed) instead, which is exactly
+    /// the distinction between the two buckets.
     Refunded,
     /// Ended without completing, because the operation was called off or
     /// simply lapsed: reclaimed out-of-band ecash, whose notes went out and
