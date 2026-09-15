@@ -6,6 +6,7 @@ use std::sync::{Arc, Weak};
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::TransactionSubmitError;
 use fedimint_client_module::transaction::FeeQuote;
 use fedimint_core::bitcoin;
 use fedimint_core::core::{ModuleInstanceId, OperationId};
@@ -468,8 +469,9 @@ pub(super) async fn upstream_state(
 // walletv2 has no per-address state machine to follow the way v1's `DepositStateV2` is one: the
 // phases `OnchainReceiveState` reports here are this SDK's own observation of the address, and
 // the module's own claim machine lands on them as `Funding` -> `Confirmed`, `Success` (once the
-// mint has issued the claimed notes) -> `Claimed`, `Aborted` (the claim stays claimable, retried
-// under the same operation id) -> stays `Confirmed`.
+// mint has issued the claimed notes) -> `Claimed`, or `Failed` if the mint could not issue one of
+// them, `Aborted` (the claim stays claimable, retried under the same operation id) -> stays
+// `Confirmed`.
 /// What the bounded (or, once already `Confirmed`, unbounded) check of a linked upstream
 /// operation found.
 enum ClaimProgress {
@@ -479,9 +481,10 @@ enum ClaimProgress {
     /// The federation rejected the claim; still `Confirmed`, and a later `ReceivePaymentEvent`
     /// for the same address relinks it under a fresh upstream operation.
     Aborted,
-    /// The claim settled and its notes are issued; the wire record has been updated and this is
-    /// the state to report.
-    Claimed(OnchainReceiveState),
+    /// The claim settled and reached its end: either its notes are issued and the wire record
+    /// carries the credit (`Claimed`), or the mint could not issue one of them (`Failed`).
+    /// Either way this is the final state to report.
+    Final(OnchainReceiveState),
 }
 
 async fn observe_link(
@@ -495,30 +498,21 @@ async fn observe_link(
         Some(FinalReceiveOperationState::Aborted) => Ok(ClaimProgress::Aborted),
         Some(FinalReceiveOperationState::Success) => {
             // `claim_from_upstream` waits out however long the mint takes to issue the claimed
-            // notes, which is no longer necessarily quick (see its own doc comment). A bounded
-            // caller must not be dragged into that wait: when issuance has not finished yet,
-            // this reports the claim as still `Confirmed`, exactly like an unsettled claim, and
-            // leaves the actual wait to whichever caller can afford an unbounded one
-            // (`ReceiveCursor::Waiting`, on the subscription).
+            // notes (see its own doc comment). A bounded caller must not be dragged into that
+            // wait: while any state machine the claim registered is still running, the mint's
+            // output ones included, this reports the claim as still `Confirmed`, exactly like an
+            // unsettled claim, and leaves the wait to whichever caller can afford an unbounded
+            // one (`ReceiveCursor::Waiting`, on the subscription). Once none is left, the wait
+            // in `claim_from_upstream` only reads the outcome already recorded.
             if client.has_active_states(found.upstream).await {
                 return Ok(ClaimProgress::StillFunding);
             }
-            Ok(ClaimProgress::Claimed(
+            Ok(ClaimProgress::Final(
                 claim_from_upstream(client, db, id, found).await?,
             ))
         }
     }
 }
-
-/// How often [`claim_from_upstream`] re-checks whether the mint has finished issuing the claimed
-/// notes, once the claim transaction itself has settled.
-///
-/// Mirrors `src/ecash.rs`'s `MINTV2_CANCEL_POLL`: shortened under `cfg(test)` so a test that
-/// waits this out does not have to sit through the production interval.
-#[cfg(not(test))]
-const RECEIVE_ISSUANCE_POLL: core::time::Duration = core::time::Duration::from_millis(200);
-#[cfg(test)]
-const RECEIVE_ISSUANCE_POLL: core::time::Duration = core::time::Duration::from_millis(25);
 
 /// Re-reads the linked upstream operation's own terms and reads back what the claim transaction
 /// itself minted, so that a restart mid-claim needs nothing but the upstream operation id:
@@ -529,7 +523,8 @@ const RECEIVE_ISSUANCE_POLL: core::time::Duration = core::time::Duration::from_m
 /// consensus; the mint outputs it creates are issued afterwards by the primary module's own
 /// state machines, so this waits for that too before reading the transaction, or an application
 /// that spends as soon as it sees `Claimed` could find the balance short of what was just
-/// credited.
+/// credited. A note the mint fails to issue ends the deposit as `Failed` instead: the claim was
+/// accepted, but the credit it promised never became spendable.
 async fn claim_from_upstream(
     client: &Client,
     db: &Database,
@@ -544,7 +539,13 @@ async fn claim_from_upstream(
     let meta: WalletOperationMeta = entry
         .try_meta()
         .map_err(|err| internal(format!("could not read the linked deposit's terms: {err}")))?;
-    let WalletOperationMeta::Receive(ReceiveMeta { value, fee, .. }) = meta else {
+    let WalletOperationMeta::Receive(ReceiveMeta {
+        value,
+        fee,
+        change_outpoint_range,
+        ..
+    }) = meta
+    else {
         return Err(internal("the linked upstream operation is not a receive"));
     };
     let net_of_chain_fee = value
@@ -555,15 +556,31 @@ async fn claim_from_upstream(
     let input_amount = to_upstream_sats(net_of_chain_fee);
     let input_fee = cfg.fee_consensus.fee(input_amount);
 
-    // Upstream's own `await_receive` waits on `Client::await_primary_module_outputs` for the
-    // same reason ($FM/modules/fedimint-walletv2-client/src/lib.rs:599-640), but that method is
-    // private at this pin. `Client::has_active_states` stands in for it: every state machine the
-    // claim registered under this operation id, the mint's output machines included, has
-    // finished once it reports none left active ($FM/fedimint-client/src/client.rs:1216). Mint
-    // issuance cannot be delayed from a test at this pin, so this loop cannot be exercised by
-    // anything but the devimint suite.
-    while client.has_active_states(found.upstream).await {
-        fedimint_core::runtime::sleep(RECEIVE_ISSUANCE_POLL).await;
+    // The same wait upstream's own `await_receive` makes before it reports a claim
+    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:624-635): it returns once every note the
+    // claim minted is spendable, and fails if the mint's own state machine for one of them
+    // ended in failure instead. Mint issuance cannot be delayed or failed from a test at this
+    // pin, so only the devimint suite exercises the wait, and only its success path.
+    let issued = client
+        .await_primary_bitcoin_module_outputs(
+            found.upstream,
+            change_outpoint_range.into_iter().collect(),
+        )
+        .await;
+    match issued {
+        Ok(()) => {}
+        Err(TransactionSubmitError::PrimaryModule(cause)) => {
+            return Ok(OnchainReceiveState::Failed {
+                reason: format!(
+                    "the claim was accepted but its notes could not be issued: {cause}"
+                ),
+            });
+        }
+        Err(err) => {
+            return Err(internal(format!(
+                "could not wait for the claimed notes to be issued: {err}"
+            )));
+        }
     }
 
     let (fee_total, breakdown, net_credit) = claim_figures(
@@ -710,7 +727,7 @@ pub(super) async fn current_receive(
                 gross_deposited: found.gross,
             })
         }
-        ClaimProgress::Claimed(state) => Ok(state),
+        ClaimProgress::Final(state) => Ok(state),
     }
 }
 
@@ -987,7 +1004,7 @@ async fn receive_step(
                             },
                         ));
                     }
-                    Ok(ClaimProgress::Claimed(state)) => {
+                    Ok(ClaimProgress::Final(state)) => {
                         return Some((Ok(state), ReceiveCursor::Done));
                     }
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
