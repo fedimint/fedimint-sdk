@@ -764,15 +764,11 @@ impl AnyOperation {
     /// does not read the operation's state, so it is not a promise that
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
-    // is accurate once every kind in `kinds` has a driver arm in `driver_for` below, filled in by
-    // T7 and T9 (T8 filled in the two lightning arms, T12 filled in the recovery arm). Until
-    // then, `support_of` still answers `Observable` for every kind whose arm is `None`: the
-    // record's kind and schema version are all it looks at, and neither says whether a driver has
-    // been written yet. That is three kinds in a test build, where `ECASH_SEND` has its own probe
-    // arm, and four in any other build, where that arm is `None` too. This is not a bug in the
-    // accessor, which is honest about what it can do, but a temporary gap between what `support`
-    // promises and what a build this incomplete can deliver; it closes as each task above lands
-    // its arm.
+    // is accurate now that every kind in `kinds` has a driver arm in `driver_for` below: a kind
+    // with no arm would still read `Observable` here regardless, since `support_of` only looks at
+    // the record's kind and schema version, and neither says whether a driver exists. This
+    // accessor is honest about what it can do, and a kind tag this build simply does not
+    // recognise reads `UnknownKind` instead, which is a different case entirely.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -1438,12 +1434,14 @@ pub(crate) trait Backfiller: MaybeSend + MaybeSync + 'static {
     /// What the SDK would have written for this entry, or `None` if this backfiller does not
     /// recognise it.
     ///
-    /// `module_kind` is `OperationLogEntry::operation_module_kind`, `meta` is the entry's own
-    /// JSON, read with `try_meta` so that a shape this build does not know is a `None` here
-    /// rather than a panic, and `created_at` is the client's own creation time in milliseconds,
-    /// for the details records that carry one.
+    /// `id` is the upstream operation id the entry was read under, `module_kind` is
+    /// `OperationLogEntry::operation_module_kind`, `meta` is the entry's own JSON, read with
+    /// `try_meta` so that a shape this build does not know is a `None` here rather than a panic,
+    /// and `created_at` is the client's own creation time in milliseconds, for the details
+    /// records that carry one.
     fn backfill(
         &self,
+        id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
@@ -1504,10 +1502,10 @@ pub(crate) enum ErasedDriver {
 // expressions rather than a table of cached singletons.
 pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
     match kind {
-        // One arm per tag in `kinds`, filled in by the task that writes the facade owning that
-        // kind: ecash in T7, lightning in T8, on-chain in T9, recovery in T12. Until an arm is
-        // filled in this build cannot observe that kind, which is a real answer rather than a gap:
-        // the record is still found, still listed, and still says what it is.
+        // One arm per tag in `kinds`, written by the facade that owns that kind: ecash, lightning,
+        // on-chain and recovery. A kind tag with no arm here is still found, still listed, and
+        // still says what it is; it simply cannot be observed, which is a real answer rather than
+        // a gap.
         kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
             crate::ecash::EcashSendDriver,
         ))),
@@ -1520,8 +1518,12 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
         kinds::LN_RECEIVE => Some(ErasedDriver::LnReceive(Arc::new(
             crate::lightning::LnReceiveDriver,
         ))),
-        kinds::ONCHAIN_SEND => None,
-        kinds::ONCHAIN_RECEIVE => None,
+        kinds::ONCHAIN_SEND => Some(ErasedDriver::OnchainSend(Arc::new(
+            crate::onchain::OnchainSendDriver,
+        ))),
+        kinds::ONCHAIN_RECEIVE => Some(ErasedDriver::OnchainReceive(Arc::new(
+            crate::onchain::OnchainReceiveDriver,
+        ))),
         kinds::RECOVERY => Some(ErasedDriver::Recovery(Arc::new(
             crate::recovery::RecoveryDriver,
         ))),
@@ -1537,18 +1539,20 @@ pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
 /// *module* kind and one module produces several of the SDK's kinds: the facade that owns the
 /// module is the only thing that can tell them apart.
 pub(crate) fn backfillers() -> Vec<Arc<dyn Backfiller>> {
-    // One entry per facade that owns a module kind: ecash in T7, lightning in T8, on-chain in T9.
-    // The probe entry is the engine's own fixture and exists only in a test build.
+    // One entry per facade that owns a module kind: ecash, lightning, on-chain. The probe entry
+    // is the engine's own fixture and exists only in a test build.
     #[cfg(test)]
     return vec![
         Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
         Arc::new(ProbeBackfiller) as Arc<dyn Backfiller>,
         Arc::new(crate::lightning::LnBackfiller),
+        Arc::new(crate::onchain::OnchainBackfiller),
     ];
     #[cfg(not(test))]
     vec![
         Arc::new(EcashBackfiller) as Arc<dyn Backfiller>,
         Arc::new(crate::lightning::LnBackfiller),
+        Arc::new(crate::onchain::OnchainBackfiller),
     ]
 }
 
@@ -1579,6 +1583,7 @@ pub(crate) struct EcashBackfiller;
 impl Backfiller for EcashBackfiller {
     fn backfill(
         &self,
+        _id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
@@ -1903,6 +1908,7 @@ pub(crate) struct ProbeBackfiller;
 impl Backfiller for ProbeBackfiller {
     fn backfill(
         &self,
+        _id: UpstreamOperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         _created_at: u64,
@@ -2132,6 +2138,35 @@ pub(crate) async fn write_details_in(
     )
     .await
     .map_err(crate::db::storage_error)
+}
+
+/// The key under which the SDK's own details record rides inside a module's metadata, so a
+/// record rebuilt from the module's log entry after a crash carries the exact quoted terms.
+pub(crate) const CUSTOM_META_KEY: &str = "fedimint_sdk";
+
+/// The details record wrapped for a module's custom metadata.
+pub(crate) fn custom_meta<W>(wire: &W) -> Result<serde_json::Value>
+where
+    W: serde::Serialize,
+{
+    let wire = serde_json::to_value(wire).map_err(custom_meta_encode_error)?;
+    Ok(serde_json::json!({ CUSTOM_META_KEY: wire }))
+}
+
+/// The details record carried inside a module's custom metadata, if this SDK put one there.
+pub(crate) fn from_custom_meta<W>(meta: &serde_json::Value) -> Option<W>
+where
+    W: serde::de::DeserializeOwned,
+{
+    let wire = meta.as_object()?.get(CUSTOM_META_KEY)?;
+    serde_json::from_value(wire.clone()).ok()
+}
+
+fn custom_meta_encode_error(err: serde_json::Error) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("could not encode a custom-meta record: {err}"),
+    )
 }
 
 /// The shared state behind a type-erased operation handle.
@@ -2700,17 +2735,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_kind_this_build_has_no_driver_for_yields_no_handle() {
-        let any = any_operation(kinds::ONCHAIN_SEND, "walletv2", READABLE_STATE_SCHEMA).await;
-        assert_eq!(any.kind(), OperationKind::OnchainSend);
-        // `support` is about the record rather than about what this build can observe, so it
-        // still says observable; the accessor is where a kind no facade has written a driver for
-        // yet answers `None`, in exactly the way a kind mismatch does.
-        assert_eq!(any.support(), OperationSupport::Observable);
-        assert!(any.as_onchain_send().is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn a_record_with_no_module_marker_reports_none_rather_than_an_empty_name() {
         let any = any_operation(kinds::RECOVERY, "", READABLE_STATE_SCHEMA).await;
         assert_eq!(any.kind(), OperationKind::Recovery);
@@ -2846,9 +2870,8 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // Ecash (T7), lightning (T8), and recovery (T12) are real drivers. `ONCHAIN_SEND` (and
-        // `ONCHAIN_RECEIVE`) is a record this build can find, list and label but not observe, which
-        // the accessors report as `None` rather than as a failure.
+        // Ecash, lightning, on-chain and recovery are all real drivers now: every tag in
+        // `kinds` has one.
         assert!(matches!(
             driver_for(kinds::ECASH_SEND),
             Some(ErasedDriver::EcashSend(_))
@@ -2865,8 +2888,14 @@ mod tests {
             driver_for(kinds::LN_RECEIVE),
             Some(ErasedDriver::LnReceive(_))
         ));
-        assert!(driver_for(kinds::ONCHAIN_SEND).is_none());
-        assert!(driver_for(kinds::ONCHAIN_RECEIVE).is_none());
+        assert!(matches!(
+            driver_for(kinds::ONCHAIN_SEND),
+            Some(ErasedDriver::OnchainSend(_))
+        ));
+        assert!(matches!(
+            driver_for(kinds::ONCHAIN_RECEIVE),
+            Some(ErasedDriver::OnchainReceive(_))
+        ));
         assert!(matches!(
             driver_for(kinds::RECOVERY),
             Some(ErasedDriver::Recovery(_))
@@ -2876,14 +2905,24 @@ mod tests {
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();
-        assert_eq!(backfillers.len(), 3);
+        assert_eq!(backfillers.len(), 4);
         assert!(backfillers.iter().any(|b| {
-            b.backfill("probe_module", &serde_json::Value::Null, 0)
-                .is_some()
+            b.backfill(
+                UpstreamOperationId([0u8; 32]),
+                "probe_module",
+                &serde_json::Value::Null,
+                0,
+            )
+            .is_some()
         }));
         assert!(backfillers.iter().all(|b| {
-            b.backfill("unknown_module", &serde_json::Value::Null, 0)
-                .is_none()
+            b.backfill(
+                UpstreamOperationId([0u8; 32]),
+                "unknown_module",
+                &serde_json::Value::Null,
+                0,
+            )
+            .is_none()
         }));
     }
 
@@ -2910,7 +2949,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &spend_json, 0)
             .expect("claims a SpendOOB entry under the mint module kind");
         assert_eq!(backfilled.kind, kinds::ECASH_SEND);
         let wire: crate::ecash::EcashSendDetailsWire =
@@ -2934,7 +2973,12 @@ mod tests {
             serde_json::to_value(&internal_reissue_meta).expect("serializes");
         assert!(
             backfiller
-                .backfill("mint", &internal_reissue_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mint",
+                    &internal_reissue_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -2952,7 +2996,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &reissue_json, 0)
             .expect("claims a Reissuance entry under the mint module kind when marked");
         assert_eq!(backfilled.kind, kinds::ECASH_RECEIVE);
         let wire: crate::ecash::EcashReceiveDetailsWire =
@@ -2982,7 +3026,12 @@ mod tests {
         };
         let mintv2_send_json = serde_json::to_value(&mintv2_send).expect("serializes");
         let backfilled = backfiller
-            .backfill("mintv2", &mintv2_send_json, 9)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_send_json,
+                9,
+            )
             .expect("claims a Send entry under the mintv2 module kind");
         assert_eq!(backfilled.kind, kinds::ECASH_SEND);
         let wire: crate::ecash::EcashSendDetailsWire =
@@ -3004,7 +3053,12 @@ mod tests {
         let mintv2_send_no_copy_json =
             serde_json::to_value(&mintv2_send_no_copy).expect("serializes");
         let backfilled = backfiller
-            .backfill("mintv2", &mintv2_send_no_copy_json, 9)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_send_no_copy_json,
+                9,
+            )
             .expect("claims a Send entry even with no SDK copy");
         let wire: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -3019,7 +3073,12 @@ mod tests {
         let unparseable_send_json = serde_json::to_value(&unparseable_send).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &unparseable_send_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &unparseable_send_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -3042,7 +3101,12 @@ mod tests {
         };
         let mintv2_receive_json = serde_json::to_value(&mintv2_receive).expect("serializes");
         let backfilled_v2_receive = backfiller
-            .backfill("mintv2", &mintv2_receive_json, 0)
+            .backfill(
+                UpstreamOperationId([0u8; 32]),
+                "mintv2",
+                &mintv2_receive_json,
+                0,
+            )
             .expect("claims a Receive entry under mintv2");
         assert_eq!(backfilled_v2_receive.kind, kinds::ECASH_RECEIVE);
         let wire_recv: crate::ecash::EcashReceiveDetailsWire =
@@ -3071,7 +3135,12 @@ mod tests {
         let mintv2_reclaim_json = serde_json::to_value(&mintv2_reclaim).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_reclaim_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_reclaim_json,
+                    0
+                )
                 .is_none(),
             "an internal send-reclaim receive must not become a user-facing ecash receive",
         );
@@ -3086,7 +3155,12 @@ mod tests {
         let mintv2_unmarked_json = serde_json::to_value(&mintv2_unmarked).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_unmarked_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_unmarked_json,
+                    0
+                )
                 .is_none()
         );
 
@@ -3099,13 +3173,22 @@ mod tests {
         let mintv2_reissue_json = serde_json::to_value(&mintv2_reissue).expect("serializes");
         assert!(
             backfiller
-                .backfill("mintv2", &mintv2_reissue_json, 0)
+                .backfill(
+                    UpstreamOperationId([0u8; 32]),
+                    "mintv2",
+                    &mintv2_reissue_json,
+                    0
+                )
                 .is_none()
         );
 
         // A module kind this backfiller does not own claims nothing, even with a
         // shape it would otherwise recognise.
-        assert!(backfiller.backfill("wallet", &spend_json, 0).is_none());
+        assert!(
+            backfiller
+                .backfill(UpstreamOperationId([0u8; 32]), "wallet", &spend_json, 0)
+                .is_none()
+        );
     }
 
     #[test]
@@ -3132,7 +3215,7 @@ mod tests {
 
         let backfiller = EcashBackfiller;
         let backfilled = backfiller
-            .backfill("mint", &spend_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &spend_json, 0)
             .expect("claims SpendOOB");
         let wire: crate::ecash::EcashSendDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");
@@ -3160,7 +3243,7 @@ mod tests {
         };
         let reissue_json = serde_json::to_value(&reissue_meta).expect("serializes");
         let backfilled = backfiller
-            .backfill("mint", &reissue_json, 0)
+            .backfill(UpstreamOperationId([0u8; 32]), "mint", &reissue_json, 0)
             .expect("claims Reissuance");
         let wire: crate::ecash::EcashReceiveDetailsWire =
             serde_json::from_str(&backfilled.details).expect("valid wire json");

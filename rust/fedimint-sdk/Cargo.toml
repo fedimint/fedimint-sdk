@@ -52,6 +52,10 @@ fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4
 fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+# `EventLogId` and the client's `get_event_log`/`log_event_added_rx` read positions in it, needed
+# to scan for a walletv2 deposit's `ReceivePaymentEvent`; nothing already listed here re-exports
+# it (`fedimint-client` only re-exports `EventHandlerError` from this crate).
+fedimint-eventlog = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
@@ -67,8 +71,16 @@ fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "1a
 # directly nameable, it does not change what's compiled.
 fedimint-mint-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+# Named directly for the same reason as `fedimint-mint-common` above: a claim transaction's
+# output amount is read off the concrete `mintv2_common::MintOutput` the client's own state
+# store holds, and `MintClientConfig::fee_consensus` is only nameable through this crate.
+# Already resolved at the identical revision as a transitive dependency of
+# `fedimint-mintv2-client`.
+fedimint-mintv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+fedimint-wallet-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
+fedimint-walletv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 
 # `bip39` is named directly only to switch its `zeroize` feature on, which
 # `fedimint-bip39` does not: features are unioned, so this is the same single

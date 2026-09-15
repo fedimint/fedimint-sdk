@@ -15,28 +15,6 @@ use crate::{
 /// incoming contract was confirmed paid. The only phase a lightning record ever carries.
 pub(super) const PHASE_FUNDED: u32 = 1;
 
-/// The key under which the SDK's own details record rides inside the module's metadata, so a
-/// record rebuilt from the module's log entry after a crash carries the exact quoted terms.
-pub(super) const CUSTOM_META_KEY: &str = "fedimint_sdk";
-
-/// The details record wrapped for the module's custom metadata.
-pub(super) fn custom_meta<W>(wire: &W) -> Result<serde_json::Value>
-where
-    W: Serialize,
-{
-    let wire = serde_json::to_value(wire).map_err(encode_error)?;
-    Ok(serde_json::json!({ CUSTOM_META_KEY: wire }))
-}
-
-/// The details record carried inside the module's custom metadata, if this SDK put one there.
-pub(super) fn from_custom_meta<W>(meta: &serde_json::Value) -> Option<W>
-where
-    W: serde::de::DeserializeOwned,
-{
-    let wire = meta.as_object()?.get(CUSTOM_META_KEY)?;
-    serde_json::from_value(wire.clone()).ok()
-}
-
 /// [`LightningRoute`] as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -328,6 +306,7 @@ fn decode_error(err: serde_json::Error) -> Error {
 mod tests {
     use super::*;
     use crate::Amount;
+    use crate::operation::{CUSTOM_META_KEY, custom_meta, from_custom_meta};
 
     const GATEWAY_ID: &str = "0218845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166";
     const INVOICE: &str = "lnbcrt1u1pj48ugqdq2vdhkven9v5pp5g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zqsp5242424242424242424242424242424242424242424242424242s9qrsgqcqzys2reg4wsryjt5w8z33ugydecgfmgyvtttwa7e0yzlm803z203j9hqspa4lr6m09cd808xkw9uh4sxc8wf3w6k0gaf5zrqm7zhcxug0vqqpdkpja";

@@ -463,6 +463,11 @@ pub(crate) struct FederationInner {
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
     reclaim_starts: tokio::sync::Mutex<()>,
+    /// Serialises the allocation of a deposit address per federation: asking the wallet module
+    /// for an address, checking that no unfinished record already names it and committing the
+    /// record for it happen under this lock, so two concurrent `Onchain::receive` calls that
+    /// are handed the same walletv2 address can never both record it.
+    deposit_allocations: tokio::sync::Mutex<()>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -475,6 +480,14 @@ pub(crate) struct FederationInner {
 /// state this build cannot reconstruct from the log entry alone.
 fn is_unclaimed_placeholder(record: &crate::db::OperationRecord) -> bool {
     record.kind == record.module
+}
+
+/// What [`FederationInner::owner_of_deposit_address`] found: the `ONCHAIN_RECEIVE` operation
+/// that names an address, and whether it has already reached a final state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DepositAddressOwner {
+    pub(crate) id: fedimint_core::core::OperationId,
+    pub(crate) finished: bool,
 }
 
 impl FederationInner {
@@ -502,6 +515,7 @@ impl FederationInner {
             closed: tokio::sync::watch::Sender::new(!running),
             recovery_changed: tokio::sync::watch::Sender::new(0),
             reclaim_starts: tokio::sync::Mutex::new(()),
+            deposit_allocations: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -572,6 +586,73 @@ impl FederationInner {
             }
         }
         Ok(false)
+    }
+
+    /// Whether this federation has an on-chain deposit that has seen a funding transaction but
+    /// not yet reached a final state.
+    ///
+    /// The erase guard's on-chain counterpart to
+    /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send): an `ONCHAIN_RECEIVE` record
+    /// that reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN) (past
+    /// [`WaitingForTransaction`](crate::OnchainReceiveState::WaitingForTransaction)) and has no
+    /// final state yet is a claim in progress, which erasing the federation must not abandon. A
+    /// deposit address that was handed out and never funded does not count: it has no phase at
+    /// all, and [`Onchain::receive`](crate::Onchain::receive)'s own doc says why that is
+    /// deliberate.
+    pub(crate) async fn has_seen_unclaimed_deposit(&self) -> Result<bool> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+        use futures::StreamExt;
+
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let mut records = dbtx
+            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
+            .await;
+        while let Some((_, record)) = records.next().await {
+            if record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
+                && record.phase == Some(crate::onchain::PHASE_SEEN)
+                && record.final_state.is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The operation, if any, whose `ONCHAIN_RECEIVE` record already names `address`, and
+    /// whether that operation has reached a final state.
+    ///
+    /// Walks the operation index exactly as
+    /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send) does. Used by
+    /// [`backfill_at`](Self::backfill_at)'s adoption check to recognise a walletv2 deposit's
+    /// upstream `Receive` entry as one this SDK already tracks under the record
+    /// `Onchain::receive` created for the address, before a backfiller gets the chance to write a
+    /// second, orphaned record for the same deposit; and by walletv2's `receive` to refuse an
+    /// address an unfinished operation is still following.
+    pub(crate) async fn owner_of_deposit_address(
+        &self,
+        address: &str,
+    ) -> Result<Option<DepositAddressOwner>> {
+        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+        use futures::StreamExt;
+
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let mut records = dbtx
+            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
+            .await;
+        while let Some((key, record)) = records.next().await {
+            if record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
+                && crate::onchain::deposit_address_of_record(&record.details).as_deref()
+                    == Some(address)
+            {
+                return Ok(Some(DepositAddressOwner {
+                    id: key.0,
+                    finished: record.final_state.is_some(),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
@@ -741,6 +822,11 @@ impl FederationInner {
     /// The lock that serialises starting a lightning claim retry for this federation.
     pub(crate) async fn lock_reclaim_starts(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.reclaim_starts.lock().await
+    }
+
+    /// Takes the per-federation deposit-allocation lock; see the field's own documentation.
+    pub(crate) async fn lock_deposit_allocations(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.deposit_allocations.lock().await
     }
 
     /// `Ok` while this federation is still usable, and
@@ -995,9 +1081,22 @@ impl FederationInner {
         // `try_meta` rather than `meta`: the latter panics on a shape this build does not know,
         // and every entry here was written by a module rather than by this crate.
         let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
+
+        // A walletv2 deposit's own upstream `Receive` entry never gets a backfilled record of
+        // its own: `Onchain::receive` already minted one for the address before this entry ever
+        // existed (walletv2's `receive` call returns only the address, with no operation id of
+        // its own), and adopting it here by address is what stops the backfiller below from
+        // giving the same deposit a second, orphaned record under the upstream entry's id.
+        if module == "walletv2"
+            && let Some(address) = crate::onchain::deposit_address_of(&meta)
+            && self.owner_of_deposit_address(&address).await?.is_some()
+        {
+            return Ok(None);
+        }
+
         let claimed = crate::operation::backfillers()
             .into_iter()
-            .find_map(|backfiller| backfiller.backfill(&module, &meta, created_at));
+            .find_map(|backfiller| backfiller.backfill(id, &module, &meta, created_at));
         let record = match claimed {
             Some(claimed) => crate::db::OperationRecord {
                 schema_version: crate::operation::READABLE_STATE_SCHEMA,
@@ -2110,6 +2209,129 @@ mod tests {
         assert_eq!(indexed, vec![(record.created_at, id)]);
     }
 
+    /// A stand-in `ONCHAIN_RECEIVE` details record naming `address`, in exactly the shape
+    /// `onchain::wire::OnchainReceiveDetailsWire` serialises: this module cannot name that type
+    /// itself, so the JSON is built by hand from its documented field names instead.
+    fn onchain_receive_details(address: &str) -> serde_json::Value {
+        serde_json::json!({
+            "address": address,
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_700_000_000_000u64,
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn owner_of_deposit_address_finds_a_planted_record_by_address_and_not_by_another() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([7u8; 32]);
+        federation
+            .create_operation(
+                id,
+                kinds::ONCHAIN_RECEIVE,
+                "wallet",
+                &onchain_receive_details("owned-address"),
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+
+        assert_eq!(
+            federation
+                .owner_of_deposit_address("owned-address")
+                .await
+                .expect("lookup"),
+            Some(DepositAddressOwner {
+                id,
+                finished: false
+            })
+        );
+        assert_eq!(
+            federation
+                .owner_of_deposit_address("some-other-address")
+                .await
+                .expect("lookup"),
+            None
+        );
+
+        // A record that reached a final state is still the address's owner, reported as
+        // finished.
+        let mut dbtx = db.begin_transaction().await;
+        let mut record = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("the record just created");
+        record.final_state = Some("\"claimed\"".to_owned());
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.commit_tx().await;
+        assert_eq!(
+            federation
+                .owner_of_deposit_address("owned-address")
+                .await
+                .expect("lookup"),
+            Some(DepositAddressOwner { id, finished: true })
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn has_seen_unclaimed_deposit_tracks_the_phase_and_the_final_state() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let id = UpstreamOperationId([8u8; 32]);
+        federation
+            .create_operation(
+                id,
+                kinds::ONCHAIN_RECEIVE,
+                "wallet",
+                &onchain_receive_details("waiting-address"),
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+
+        // A fresh deposit that has not seen a transaction yet does not count: an address handed
+        // out and never funded must not block an erase.
+        assert!(
+            !federation
+                .has_seen_unclaimed_deposit()
+                .await
+                .expect("lookup")
+        );
+
+        crate::operation::record_phase_in(&db, id, crate::onchain::PHASE_SEEN)
+            .await
+            .expect("record the phase");
+        assert!(
+            federation
+                .has_seen_unclaimed_deposit()
+                .await
+                .expect("lookup")
+        );
+
+        // Once a final state lands, the deposit is settled one way or the other and no longer
+        // blocks an erase.
+        let mut dbtx = db.begin_transaction().await;
+        let mut record = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("the record just created");
+        record.final_state = Some("\"claimed\"".to_owned());
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.commit_tx().await;
+        assert!(
+            !federation
+                .has_seen_unclaimed_deposit()
+                .await
+                .expect("lookup")
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn an_operation_is_found_again_through_a_fresh_handle_over_the_same_store() {
         let root = in_memory_root();
@@ -2186,10 +2408,9 @@ mod tests {
             .expect("the operation is still there after a real restart");
         assert_eq!(found.kind(), crate::OperationKind::OnchainReceive);
         assert_eq!(found.raw_kind().module.as_deref(), Some("wallet"));
-        assert!(
-            found.as_onchain_receive().is_none(),
-            "this build has no on-chain driver yet, so there is no typed handle"
-        );
+        // On-chain has a driver, so the typed handle exists here; what this test actually checks
+        // is that the record survives a real restart, below.
+        assert!(found.as_onchain_receive().is_some());
         // The record itself is byte-for-byte what was written before the restart.
         let db = federation.db();
         let mut dbtx = db.begin_transaction_nc().await;

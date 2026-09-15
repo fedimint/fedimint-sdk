@@ -1050,6 +1050,16 @@ impl Sdk {
                      or reclaimed",
                 ));
             }
+            // An on-chain deposit that has seen a funding transaction but not yet been claimed
+            // is checked the same way, and outside the live-client guard for the same reason:
+            // the guard must hold regardless of whether the client happens to be running.
+            if federation.has_seen_unclaimed_deposit().await? {
+                self.persist_closed(&federation).await?;
+                return Err(crate::Error::new(
+                    crate::ErrorCode::PendingOperations,
+                    "this federation still has a deposit that has been seen but not claimed",
+                ));
+            }
         }
 
         // Phase 3: commit before performing. From the moment the tombstone lands the federation
@@ -2184,7 +2194,10 @@ impl Drop for SdkInner {
 }
 
 /// How long a call waits for a federation's guardians before it reports a timeout.
-const CONTACT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
+///
+/// `pub(crate)` so that `onchain.rs` can reuse the same bound for its own federation round
+/// trips instead of duplicating the value.
+pub(crate) const CONTACT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
 
 /// One independent status subscription's state.
 ///

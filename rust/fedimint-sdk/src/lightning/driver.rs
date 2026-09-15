@@ -125,6 +125,7 @@ pub(crate) struct LnBackfiller;
 impl Backfiller for LnBackfiller {
     fn backfill(
         &self,
+        _id: OperationId,
         module_kind: &str,
         meta: &serde_json::Value,
         created_at: u64,
