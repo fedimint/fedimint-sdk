@@ -933,6 +933,7 @@ async fn activity_lists_what_the_federation_was_used_for() {
     drop(lightning);
     drop(federation);
     drop(sdk);
+
     let reopened = Sdk::builder()
         .storage(Storage::at(&path).expect("a valid path"))
         .build()
@@ -1147,6 +1148,11 @@ async fn recovery_restores_a_wallet_with_history() {
     );
     drop(updates);
     let balance_before_restart = recovery.federation.balance().await.expect("balance");
+    let config_meta = recovery.federation.meta().config_metadata();
+    assert!(
+        !config_meta.is_empty(),
+        "a recovered federation has config meta"
+    );
 
     // Restart B: every handle dropped before rebuilding on the same storage, as in
     // `lightning_receive_is_paid_by_the_faucet_and_survives_a_restart`.
@@ -1175,6 +1181,7 @@ async fn recovery_restores_a_wallet_with_history() {
         federation.balance().await.expect("balance"),
         balance_before_restart
     );
+    assert_eq!(federation.meta().config_metadata(), config_meta);
 
     reopened.shutdown().await.expect("the instance shuts down");
 }
@@ -1274,4 +1281,155 @@ async fn recovery_locks_the_federation_while_it_runs() {
     balance_settles_at(&recovery.federation, funded).await;
 
     sdk_b.shutdown().await.expect("the instance shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn federation_metadata_persists_across_restart() {
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+
+    let storage = tempfile::tempdir().expect("a temporary directory");
+    let path = storage.path().to_str().expect("a utf-8 path").to_owned();
+
+    let mint_client = std::env::var("FM_MINT_CLIENT")
+        .unwrap_or_else(|err| panic!("FM_MINT_CLIENT is not set ({err}); run under devimint"));
+    let mut words = mint_client.split_whitespace();
+    let program = words
+        .next()
+        .expect("FM_MINT_CLIENT names at least a program");
+    let base_args: Vec<&str> = words.collect();
+
+    let fed_size: usize = std::env::var("FM_FED_SIZE")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse()
+        .expect("FM_FED_SIZE must be a number");
+
+    let run_admin = |admin_args: &[&str]| {
+        for i in 0..fed_size {
+            let our_id = i.to_string();
+            let output = std::process::Command::new(program)
+                .args(&base_args)
+                .args(["--our-id", &our_id, "--password", "pass"])
+                .args(admin_args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "admin command failed for guardian {i}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+
+    let (id, config_meta, consensus_meta, merged) = {
+        let sdk = Sdk::builder()
+            .storage(Storage::at(&path).expect("a valid path"))
+            .build()
+            .await
+            .expect("an instance opens");
+        let federation = sdk.join(&invite).await.expect("the federation joins");
+        let id = federation.id();
+
+        let meta = federation.meta();
+        let config_meta = meta.config_metadata();
+        assert!(!config_meta.is_empty(), "live federation has config meta");
+
+        let overlap_key = config_meta.keys().next().expect("a key").clone();
+        let initial_config_val = config_meta.get(&overlap_key).unwrap().clone();
+
+        let mut payload1_map = serde_json::Map::new();
+        payload1_map.insert(overlap_key.clone(), serde_json::json!("consensus_wins"));
+        payload1_map.insert("only_consensus".to_owned(), serde_json::json!("new_value"));
+        let payload1 = serde_json::Value::Object(payload1_map).to_string();
+
+        run_admin(&["module", "meta", "submit", &payload1]);
+
+        let mut current_consensus = None;
+        for _ in 0..20 {
+            if let Some(mcv) = meta.consensus_metadata().await.expect("consensus meta")
+                && !mcv.value.is_empty()
+            {
+                current_consensus = Some(mcv);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let consensus1 = current_consensus.expect("consensus metadata published");
+
+        let all1 = meta.all().await.expect("merged meta");
+        assert_eq!(all1.get(&overlap_key), Some(&"consensus_wins".to_owned()));
+        assert_eq!(all1.get("only_consensus"), Some(&"new_value".to_owned()));
+        assert_eq!(
+            meta.config_metadata().get(&overlap_key),
+            Some(&initial_config_val)
+        );
+
+        let mut payload2_map = serde_json::Map::new();
+        payload2_map.insert(
+            overlap_key.clone(),
+            serde_json::json!("consensus_wins_again"),
+        );
+        payload2_map.insert(
+            "only_consensus".to_owned(),
+            serde_json::json!("newer_value"),
+        );
+        let payload2 = serde_json::Value::Object(payload2_map).to_string();
+
+        run_admin(&["module", "meta", "submit", &payload2]);
+
+        let mut current_consensus2 = None;
+        for _ in 0..20 {
+            if let Some(mcv) = meta.consensus_metadata().await.expect("consensus meta")
+                && mcv.revision > consensus1.revision
+            {
+                current_consensus2 = Some(mcv);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let consensus2 = current_consensus2.expect("consensus metadata updated");
+        assert!(consensus2.revision > consensus1.revision);
+
+        let all2 = meta.all().await.expect("merged meta 2");
+        assert_eq!(
+            all2.get(&overlap_key),
+            Some(&"consensus_wins_again".to_owned())
+        );
+
+        let final_config = meta.config_metadata();
+        let final_consensus = meta.consensus_metadata().await.expect("final consensus");
+        let final_merged = meta.all().await.expect("final merged");
+
+        sdk.shutdown().await.expect("the instance shuts down");
+        drop(federation);
+        drop(sdk);
+        (id, final_config, final_consensus, final_merged)
+    };
+
+    let reopened = Sdk::builder()
+        .storage(Storage::at(&path).expect("a valid path"))
+        .build()
+        .await
+        .expect("the instance reopens");
+
+    let federation = reopened
+        .federation(&id)
+        .expect("the federation came back open");
+    let meta = federation.meta();
+
+    assert_eq!(meta.config_metadata(), config_meta);
+    assert_eq!(
+        meta.consensus_metadata().await.expect("consensus meta"),
+        consensus_meta
+    );
+    assert_eq!(meta.all().await.expect("merged meta"), merged);
+
+    reopened.shutdown().await.expect("the instance shuts down");
 }
