@@ -1806,10 +1806,11 @@ async fn onchain_receive_hands_out_a_fresh_address_each_time() {
     sdk.shutdown().await.expect("shuts down");
 }
 
-/// An address is never handed out twice: a second call either yields a different address or,
-/// where the federation's wallet offers only one unused address at a time (walletv2,
-/// fedimint/fedimint#9101), refuses rather than recording a second operation on the first
-/// address. Either way the first operation keeps watching its address alone.
+/// An address is never handed out twice while an operation is still following it: a second
+/// call either yields a different address or, where the federation's wallet offers only one
+/// unused address at a time (walletv2, fedimint/fedimint#9101), refuses rather than recording a
+/// second operation on the first address. Either way the first operation keeps its address
+/// alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn onchain_receive_never_hands_out_a_watched_address() {
     use fedimint_sdk::{ErrorCode, OnchainReceiveState};

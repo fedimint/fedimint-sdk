@@ -153,11 +153,11 @@ impl Onchain {
     /// [`Storage`](crate::ErrorCode::Storage),
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), and
     /// [`Internal`](crate::ErrorCode::Internal) if the federation's wallet
-    /// handed back an address this SDK already watches rather than a fresh
-    /// one. A wallet that offers one unused address at a time does that when
-    /// a second call is made before the first address has been paid; the
-    /// address is not handed out again, and the operation already watching
-    /// it is unaffected.
+    /// handed back an address an unfinished operation of this SDK is still
+    /// following rather than a fresh one. A wallet that offers one unused
+    /// address at a time does that when a second call is made before the
+    /// first address has been paid; the address is not handed out again, and
+    /// the operation already following it is unaffected.
     pub async fn receive(&self) -> Result<OnchainReceive> {
         let federation = &self.inner.federation;
         // The recovery lock applies to a deposit exactly as it does to a send; see this type's

@@ -477,6 +477,14 @@ fn is_unclaimed_placeholder(record: &crate::db::OperationRecord) -> bool {
     record.kind == record.module
 }
 
+/// What [`FederationInner::owner_of_deposit_address`] found: the `ONCHAIN_RECEIVE` operation
+/// that names an address, and whether it has already reached a final state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DepositAddressOwner {
+    pub(crate) id: fedimint_core::core::OperationId,
+    pub(crate) finished: bool,
+}
+
 impl FederationInner {
     /// Assembles the shared state for one federation.
     ///
@@ -605,18 +613,20 @@ impl FederationInner {
         Ok(false)
     }
 
-    /// The operation, if any, whose `ONCHAIN_RECEIVE` record already names `address`.
+    /// The operation, if any, whose `ONCHAIN_RECEIVE` record already names `address`, and
+    /// whether that operation has reached a final state.
     ///
     /// Walks the operation index exactly as
     /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send) does. Used by
     /// [`backfill_at`](Self::backfill_at)'s adoption check to recognise a walletv2 deposit's
     /// upstream `Receive` entry as one this SDK already tracks under the record
     /// `Onchain::receive` created for the address, before a backfiller gets the chance to write a
-    /// second, orphaned record for the same deposit.
+    /// second, orphaned record for the same deposit; and by walletv2's `receive` to refuse an
+    /// address an unfinished operation is still following.
     pub(crate) async fn owner_of_deposit_address(
         &self,
         address: &str,
-    ) -> Result<Option<fedimint_core::core::OperationId>> {
+    ) -> Result<Option<DepositAddressOwner>> {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
         use futures::StreamExt;
 
@@ -630,7 +640,10 @@ impl FederationInner {
                 && crate::onchain::deposit_address_of_record(&record.details).as_deref()
                     == Some(address)
             {
-                return Ok(Some(key.0));
+                return Ok(Some(DepositAddressOwner {
+                    id: key.0,
+                    finished: record.final_state.is_some(),
+                }));
             }
         }
         Ok(None)
@@ -2203,7 +2216,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn owner_of_deposit_address_finds_a_planted_record_by_address_and_not_by_another() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);
-        let federation = FederationInner::detached(db, true);
+        let federation = FederationInner::detached(db.clone(), true);
         let id = UpstreamOperationId([7u8; 32]);
         federation
             .create_operation(
@@ -2222,7 +2235,10 @@ mod tests {
                 .owner_of_deposit_address("owned-address")
                 .await
                 .expect("lookup"),
-            Some(id)
+            Some(DepositAddressOwner {
+                id,
+                finished: false
+            })
         );
         assert_eq!(
             federation
@@ -2230,6 +2246,24 @@ mod tests {
                 .await
                 .expect("lookup"),
             None
+        );
+
+        // A record that reached a final state is still the address's owner, reported as
+        // finished.
+        let mut dbtx = db.begin_transaction().await;
+        let mut record = dbtx
+            .get_value(&OperationRecordKey(id))
+            .await
+            .expect("the record just created");
+        record.final_state = Some("\"claimed\"".to_owned());
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.commit_tx().await;
+        assert_eq!(
+            federation
+                .owner_of_deposit_address("owned-address")
+                .await
+                .expect("lookup"),
+            Some(DepositAddressOwner { id, finished: true })
         );
     }
 

@@ -342,17 +342,21 @@ pub(super) async fn receive(
     let checked = module.receive().await;
     // walletv2 offers one unused address at a time and hands the same one back until its
     // scanner sees it paid (fedimint/fedimint#9101). `Onchain::receive` promises an address never
-    // handed out before, and two records watching one address would both adopt the same claim,
-    // so a repeat is refused rather than recorded.
+    // handed out before, and two records following one address would both adopt the same claim,
+    // so a repeat is refused rather than recorded while the earlier record is still unfinished.
+    // An address whose record has already reached its end is let through: the scanner can hand
+    // it back once more in the moment before it advances past the paid address, and the claim
+    // that record adopted is behind the cursor read above, so the new record cannot adopt it.
     if let Some(owner) = federation
         .owner_of_deposit_address(&checked.to_string())
         .await?
+        && !owner.finished
     {
         return Err(internal(format!(
             "the federation's wallet handed out an address already watched by operation {}; \
              it offers one unused deposit address at a time, so a fresh one is available only \
              once that address has been paid",
-            owner.fmt_full()
+            owner.id.fmt_full()
         )));
     }
     let address = Address::from_upstream(checked.clone().into_unchecked());
