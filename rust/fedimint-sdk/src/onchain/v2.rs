@@ -327,8 +327,10 @@ pub(super) async fn subscribe_send(
 ///
 /// walletv2's `receive` returns only the address, with no operation of its own
 /// (`modules/fedimint-walletv2-client/src/lib.rs:579`): the SDK mints its own operation id and
-/// records the event log's current tail as the position a scan for the matching
-/// `ReceivePaymentEvent` should start from.
+/// records the event log's tail as the position a scan for the matching `ReceivePaymentEvent`
+/// should start from. That tail is read before the address is asked for, as upstream's own doc
+/// on `receive` requires: the module's scanner can claim a payment to the address in the gap
+/// after handing it out, and a position taken afterwards would put that event behind the scan.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
     client: &Client,
@@ -336,8 +338,8 @@ pub(super) async fn receive(
     driver: Arc<dyn Driver<OnchainReceiveState>>,
 ) -> Result<OnchainReceive> {
     let created_at = now();
-    let checked = module.receive().await;
     let cursor = event_log_tail(client).await;
+    let checked = module.receive().await;
     let address = Address::from_upstream(checked.clone().into_unchecked());
     let id = OperationId::new_random();
     let wire = wire::OnchainReceiveDetailsWire {
