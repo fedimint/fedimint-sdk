@@ -1533,7 +1533,10 @@ fn classify_fee_quote_failure(
             total: from_upstream(short.total_amount),
         });
     }
-    if text.contains("Insufficient funds") {
+    // The v1 mint's `InsufficientBalanceError` arrives wrapped in the client's submission error
+    // when the quote is the wallet's, so its own wording is matched too, as the lightning v2
+    // send does; the typed downcast above is for the unwrapped case.
+    if text.contains("Insufficient funds") || text.contains("Insufficient balance") {
         return Some(FeeQuoteFailure::Text);
     }
     None
@@ -2079,6 +2082,15 @@ mod tests {
         // The v2 mint's plain-text refusal, with no typed error at all.
         assert!(matches!(
             classify_fee_quote_failure(None, "Insufficient funds"),
+            Some(FeeQuoteFailure::Text)
+        ));
+        // The v1 mint's wording, wrapped by the client's submission error so no typed error
+        // survives the downcast.
+        assert!(matches!(
+            classify_fee_quote_failure(
+                None,
+                "primary module: Insufficient balance: requested 1 sat but only 0 sat available"
+            ),
             Some(FeeQuoteFailure::Text)
         ));
         // Neither mint's wording: not this crate's problem to interpret.

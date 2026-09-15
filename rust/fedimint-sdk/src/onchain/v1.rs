@@ -84,7 +84,7 @@ pub(super) async fn plan(
     let quote = match module.send_fee_quote(output_value).await {
         Ok(quote) => quote,
         Err(err) => {
-            let text = err.to_string();
+            let text = format!("{err:#}");
             let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
             // `required` is the amount plus the on-chain fee already quoted above; the
             // dry run that would have priced the funding side is exactly what failed.
@@ -151,7 +151,7 @@ pub(super) async fn send(
     let fresh_quote = match module.send_fee_quote(output_value).await {
         Ok(fee_quote) => fee_quote,
         Err(err) => {
-            let text = err.to_string();
+            let text = format!("{err:#}");
             let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
             // `required` is the amount plus the on-chain fee already re-quoted above; the
             // dry run that would have priced the funding side is exactly what failed.
