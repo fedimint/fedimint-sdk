@@ -189,6 +189,10 @@ pub(super) async fn send(
     if available < quote.plan.total {
         return Err(insufficient(quote.plan.total, available));
     }
+    // Residual race, not closeable from this side: the re-check above and the funding below are
+    // two separate client transactions, and a concurrent spend or issuance on this wallet in
+    // between can still change what the funding actually selects and pays. Closing it needs a
+    // quote-and-submit that upstream runs as one transaction (fedimint/fedimint#9098).
     let created_at = now();
     let details = OnchainSendDetails {
         address: quote.address.clone(),

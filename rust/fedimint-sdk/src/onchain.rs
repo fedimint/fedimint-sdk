@@ -1301,7 +1301,7 @@ fn mint_input_amount(input: &DynInput, instance_id: ModuleInstanceId) -> Result<
 /// melted alike: both generations' `input_fee` and `output_fee` apply the very same
 /// `fee_consensus.fee(amount)` regardless of direction
 /// (`$FM/modules/fedimint-mint-client/src/lib.rs:1005-1022`,
-/// `$FM/modules/fedimint-mintv2-client/src/lib.rs:150-168`).
+/// `$FM/modules/fedimint-mintv2-client/src/lib.rs:449-461`).
 enum MintFeeConsensus {
     V1(fedimint_mint_common::config::FeeConsensus),
     V2(fedimint_mintv2_common::config::FeeConsensus),

@@ -1677,6 +1677,131 @@ async fn onchain_deposit_and_withdrawal_round_trip() {
     assert_eq!(newest.amount, Some(Amount::from_msats(30_000_000)));
     assert_eq!(newest.fee, Some(withdrawal_fee));
 
+    // A second deposit lands in a wallet that already holds notes. The claim the mint builds for
+    // it may consolidate or rebalance what is there, so its transaction can carry mint inputs
+    // beside the wallet input; the credit and the record's identity have to hold all the same.
+    let after_withdrawal = net_credit
+        .checked_sub(total)
+        .expect("the total was debited");
+    let second = claim_deposit(&onchain, 20_000).await;
+    balance_settles_at(
+        &federation,
+        after_withdrawal
+            .checked_add(second)
+            .expect("no overflow at this magnitude"),
+    )
+    .await;
+    let history = federation.activity(None, 10).await.expect("three rows");
+    assert_eq!(history.items.len(), 3);
+    assert_eq!(history.items[0].kind, OperationKind::OnchainReceive);
+    assert_eq!(history.items[0].status, ActivityStatus::Success);
+
+    // The whole balance cannot be withdrawn: the amount fits, the amount plus its fees does
+    // not, and that shortfall surfaces from inside the funding quote.
+    let balance = federation.balance().await.expect("balance");
+    let err = onchain
+        .quote(&destination_address, balance.sats_floor())
+        .await
+        .expect_err("the fees do not fit");
+    assert_eq!(err.code, ErrorCode::InsufficientBalance);
+
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// Pays a fresh deposit address `sats` from bitcoind, mines it in, waits for the claim and
+/// checks the record's identity, returning the net credit the deposit made.
+async fn claim_deposit(onchain: &fedimint_sdk::Onchain, sats: u64) -> fedimint_sdk::Amount {
+    use fedimint_sdk::{OnchainReceiveState, Sats};
+
+    let receive = onchain.receive().await.expect("a deposit address");
+    send_to_address(&receive.address.to_string(), sats);
+    mine_blocks(21);
+    let claimed = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        receive.operation.await_final(),
+    )
+    .await
+    .expect("the deposit is claimed within two minutes")
+    .expect("the deposit settles");
+    let net_credit = match claimed {
+        OnchainReceiveState::Claimed {
+            gross_deposited,
+            net_credit,
+            ..
+        } => {
+            assert_eq!(gross_deposited, Sats::from_sats(sats));
+            net_credit
+        }
+        other => panic!("expected Claimed, got {other:?}"),
+    };
+    let details = receive.operation.details().await.expect("details");
+    let fee = details.fee.expect("a claimed deposit has a fee");
+    assert_eq!(
+        Sats::from_sats(sats)
+            .to_amount()
+            .and_then(|gross| gross.checked_sub(fee)),
+        Some(net_credit)
+    );
+    net_credit
+}
+
+/// A subscriber that stopped polling must not keep the federation from closing: the stream it
+/// holds is parked wherever its last wait returned pending, and nothing in there is ever polled
+/// again, so whatever that wait held is held for as long as the subscriber lives.
+#[tokio::test(flavor = "multi_thread")]
+async fn onchain_parked_deposit_subscriber_does_not_block_a_close() {
+    use fedimint_sdk::OnchainReceiveState;
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let id = federation.id();
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+    let receive = onchain.receive().await.expect("a deposit address");
+
+    let mut updates = receive.operation.updates();
+    let first = updates.next().await.expect("a state").expect("a state");
+    assert_eq!(first, OnchainReceiveState::WaitingForTransaction);
+    // Nobody pays, so the next wait does not resolve; give it up and keep the subscriber.
+    let parked = tokio::time::timeout(std::time::Duration::from_millis(200), updates.next()).await;
+    assert!(parked.is_err(), "an unpaid address yields nothing further");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        sdk.close_federation(&id),
+    )
+    .await
+    .expect("the close is not held up by the parked subscriber")
+    .expect("the federation closes");
+    drop(updates);
+    drop(receive);
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// Two calls hand out two addresses, as `Onchain::receive` promises.
+///
+/// walletv2 returns the same address until its background scanner has advanced its index
+/// (fedimint/fedimint#9101), so on that shape two calls made in quick succession share an
+/// address and two operations can claim one payment. Ignored until that is fixed upstream.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "fedimint/fedimint#9101: walletv2 hands out the same address until its scanner advances"]
+async fn onchain_receive_hands_out_a_fresh_address_each_time() {
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+
+    let first = onchain.receive().await.expect("a deposit address");
+    let second = onchain.receive().await.expect("another deposit address");
+    assert_ne!(first.address, second.address);
+    assert_ne!(first.operation.id(), second.operation.id());
+
     sdk.shutdown().await.expect("shuts down");
 }
 
