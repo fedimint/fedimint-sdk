@@ -1784,8 +1784,9 @@ async fn onchain_parked_deposit_subscriber_does_not_block_a_close() {
 /// Two calls hand out two addresses, as `Onchain::receive` promises.
 ///
 /// walletv2 returns the same address until its background scanner has advanced its index
-/// (fedimint/fedimint#9101), so on that shape two calls made in quick succession share an
-/// address and two operations can claim one payment. Ignored until that is fixed upstream.
+/// (fedimint/fedimint#9101), so on that shape the second of two calls made in quick succession
+/// is refused instead (`onchain_receive_never_hands_out_a_watched_address` covers that). Ignored
+/// until a fresh address per call is available upstream.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "fedimint/fedimint#9101: walletv2 hands out the same address until its scanner advances"]
 async fn onchain_receive_hands_out_a_fresh_address_each_time() {
@@ -1801,6 +1802,46 @@ async fn onchain_receive_hands_out_a_fresh_address_each_time() {
     let second = onchain.receive().await.expect("another deposit address");
     assert_ne!(first.address, second.address);
     assert_ne!(first.operation.id(), second.operation.id());
+
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// An address is never handed out twice: a second call either yields a different address or,
+/// where the federation's wallet offers only one unused address at a time (walletv2,
+/// fedimint/fedimint#9101), refuses rather than recording a second operation on the first
+/// address. Either way the first operation keeps watching its address alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn onchain_receive_never_hands_out_a_watched_address() {
+    use fedimint_sdk::{ErrorCode, OnchainReceiveState};
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+
+    let first = onchain.receive().await.expect("a deposit address");
+    match onchain.receive().await {
+        Ok(second) => {
+            assert_ne!(first.address, second.address);
+            assert_ne!(first.operation.id(), second.operation.id());
+        }
+        Err(err) => {
+            eprintln!("the second call was refused: {err}");
+            assert_eq!(devimint.shape, "v2", "only walletv2 refuses: {err}");
+            assert_eq!(err.code, ErrorCode::Internal, "{err}");
+        }
+    }
+    assert_eq!(
+        first
+            .operation
+            .state()
+            .await
+            .expect("the first still reads"),
+        OnchainReceiveState::WaitingForTransaction
+    );
 
     sdk.shutdown().await.expect("shuts down");
 }
