@@ -711,7 +711,8 @@ fn federation_closed() -> Error {
 
 /// The current state of a walletv2 deposit, following the same three-step algorithm
 /// `subscribe_receive` runs continuously: a claimed record answers from storage, an unlinked
-/// address gets one scan of the event log, and a linked one gets one bounded check of the claim.
+/// address gets one scan of the event log, and a linked one gets one bounded check of the claim,
+/// relinking past an aborted claim to its retry the way the subscription does.
 pub(super) async fn current_receive(
     federation: &FederationInner,
     id: OperationId,
@@ -741,7 +742,24 @@ pub(super) async fn current_receive(
             }
         }
     };
-    match observe_link(&client, &db, id, &found).await? {
+    let mut found = found;
+    let mut progress = observe_link(&client, &db, id, &found).await?;
+    // An aborted claim is retried by the module under a fresh upstream operation, announced by
+    // another `ReceivePaymentEvent` for the same address. `subscribe_receive` relinks to it from
+    // the aborted link's cursor; this bounded read has to do the same, or a caller that only
+    // ever polls `state()` would stay pinned to the aborted operation and read `Confirmed` long
+    // after the retry claimed the deposit. Each aborted operation answers its final state at
+    // once, so the loop only ever spends the bound on the live claim at its end.
+    while let ClaimProgress::Aborted = progress {
+        let address = read_address(&db, id).await?;
+        let Some(next) = find_link(&client, &address, found.cursor).await else {
+            break;
+        };
+        link(federation, id, &next).await?;
+        progress = observe_link(&client, &db, id, &next).await?;
+        found = next;
+    }
+    match progress {
         ClaimProgress::StillFunding | ClaimProgress::Aborted => {
             Ok(OnchainReceiveState::Confirmed {
                 txid: found.txid,
