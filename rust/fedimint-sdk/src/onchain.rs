@@ -212,7 +212,7 @@ impl Onchain {
         let available = balance_of(&client, federation.status()).await?;
         let plan = match module(&client)? {
             WalletModule::V1(module) => {
-                v1::plan(&client, &module, address, amount, available).await?
+                v1::plan(federation, &client, &module, address, amount, available).await?
             }
             WalletModule::V2(module) => {
                 v2::plan(&client, &module, address, amount, available).await?
@@ -1092,7 +1092,8 @@ pub(super) fn plan_of(
 }
 
 /// The fee, its named parts, and the net credit for a claimed deposit, read from what the claim
-/// transaction itself minted rather than a dry run of the primary module's own balancing.
+/// transaction itself minted and melted, rather than a dry run of the primary module's own
+/// balancing.
 ///
 /// A dry run cannot be right here: the mint shapes the change it mints to reach a target note
 /// count per denomination, so the split, and with it the per-note fees, depends on the note
@@ -1108,9 +1109,12 @@ pub(super) fn plan_of(
 /// consolidation fee itself.
 // `operation_id` is the claim's own upstream operation id: v1's deposit operation id, the one
 // `subscribe_deposit` runs under, or walletv2's linked upstream operation id
-// (`v2::Link::upstream`). `claim_mint_outputs` uses it to find the submitted transaction, and
+// (`v2::Link::upstream`). `claim_mint_movement` uses it to find the submitted transaction, and
 // `wallet_instance` (both callers' own `module.id`) to check that transaction funds itself from
-// the wallet module and not some other input.
+// exactly one wallet input. A funded wallet's claim is not always single-input: mint v1
+// consolidates notes above eight of one denomination in `create_final_inputs_and_outputs`
+// (`$FM/modules/fedimint-mint-client/src/lib.rs:1365`) and mintv2's `rebalance` can spend
+// existing notes too, so mint inputs may sit beside the wallet input that funds the claim.
 pub(super) async fn claim_figures(
     client: &Client,
     operation_id: OperationId,
@@ -1120,37 +1124,47 @@ pub(super) async fn claim_figures(
     network_claim: Amount,
     gross: Sats,
 ) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
-    let outputs = claim_mint_outputs(client, operation_id, wallet_instance).await?;
-    figures_of(&outputs, input_amount, input_fee, network_claim, gross)
+    let (outputs, mint_inputs) = claim_mint_movement(client, operation_id, wallet_instance).await?;
+    figures_of(
+        &outputs,
+        &mint_inputs,
+        input_amount,
+        input_fee,
+        network_claim,
+        gross,
+    )
 }
 
-/// The claim transaction's own mint outputs, one `(amount, fee)` pair per output: every output of
-/// a claim is mint change, so this is exactly what the claim minted, paired with what the owning
-/// mint module's own fee schedule charges to mint it.
+/// The claim transaction's mint movement: every output it minted, and every mint input it spent
+/// beside its one wallet input, each an `(amount, fee)` pair paired with what the owning mint
+/// module's own fee schedule charges to move it.
 ///
 /// Refuses, rather than silently under-reporting, a transaction that does not have the shape a
-/// claim must have: exactly one input, from the wallet module (`wallet_instance`) itself, and at
-/// least one mint output. A claim with no mint outputs read back as an empty list here would
-/// otherwise be reported as a zero credit with the whole deposit folded into dust.
+/// claim must have: exactly one input from the wallet module (`wallet_instance`) itself, any
+/// number of mint inputs beside it, and at least one mint output. A claim with no mint outputs
+/// read back as an empty list here would otherwise be reported as a zero credit with the whole
+/// deposit folded into dust.
 ///
-/// No public API at this pin reports what a claim actually minted, so this reaches into the
-/// client's own state store: `finalize_and_submit_transaction` registers a transaction-submission
-/// state machine under the claim's operation id whose first state carries the whole transaction,
-/// and the only way to read a state machine back out is `Client::executor`, documented there as
-/// tooling for the CLI, "not meant for external use". The follow-up is an upstream accessor that
-/// reports a claim's outputs directly, without going through the executor at all.
-async fn claim_mint_outputs(
+/// No public API at this pin reports what a claim actually minted and melted, so this reaches
+/// into the client's own state store: `finalize_and_submit_transaction` registers a
+/// transaction-submission state machine under the claim's operation id whose first state carries
+/// the whole transaction, and the only way to read a state machine back out is
+/// `Client::executor`, documented there as tooling for the CLI, "not meant for external use". The
+/// follow-up is an upstream accessor that reports a claim's inputs and outputs directly, without
+/// going through the executor at all.
+async fn claim_mint_movement(
     client: &Client,
     operation_id: OperationId,
     wallet_instance: ModuleInstanceId,
-) -> Result<Vec<(Amount, Amount)>> {
+) -> Result<(Vec<(Amount, Amount)>, Vec<(Amount, Amount)>)> {
     let tx = claim_transaction(client, operation_id).await?;
-    check_claim_shape(
-        tx.inputs.len(),
-        tx.inputs.first().map(DynInput::module_instance_id),
-        wallet_instance,
-        tx.outputs.len(),
-    )?;
+    let wallet_inputs = tx
+        .inputs
+        .iter()
+        .filter(|input| input.module_instance_id() == wallet_instance)
+        .count();
+    check_claim_shape(wallet_inputs, tx.inputs.len(), tx.outputs.len())?;
+
     let mut fee_schedules: HashMap<ModuleInstanceId, MintFeeConsensus> = HashMap::new();
     let mut outputs = Vec::with_capacity(tx.outputs.len());
     for output in &tx.outputs {
@@ -1162,28 +1176,34 @@ async fn claim_mint_outputs(
         let fee = from_upstream(fee_schedules[&instance_id].fee(to_upstream(amount)));
         outputs.push((amount, fee));
     }
-    Ok(outputs)
+
+    let mut mint_inputs = Vec::with_capacity(tx.inputs.len().saturating_sub(1));
+    for input in &tx.inputs {
+        let instance_id = input.module_instance_id();
+        if instance_id == wallet_instance {
+            continue;
+        }
+        if let hash_map::Entry::Vacant(entry) = fee_schedules.entry(instance_id) {
+            entry.insert(mint_fee_consensus(client, instance_id).await?);
+        }
+        let amount = mint_input_amount(input, instance_id)?;
+        let fee = from_upstream(fee_schedules[&instance_id].fee(to_upstream(amount)));
+        mint_inputs.push((amount, fee));
+    }
+
+    Ok((outputs, mint_inputs))
 }
 
-/// Whether a claim transaction has the shape [`claim_mint_outputs`] can read: exactly one input,
-/// from the wallet module's own instance (a claim funds itself from one wallet input, and
-/// nothing else), and at least one output to read credit from. Split out of
-/// [`claim_mint_outputs`] so it is testable without a client or a real transaction.
-fn check_claim_shape(
-    inputs: usize,
-    input_instance: Option<ModuleInstanceId>,
-    wallet_instance: ModuleInstanceId,
-    outputs: usize,
-) -> Result<()> {
-    if inputs != 1 {
+/// Whether a claim transaction has the shape [`claim_mint_movement`] can read: exactly one input
+/// from the wallet module's own instance (a claim funds itself from one wallet input, with any
+/// number of mint inputs beside it, but never more than that one wallet input), and at least one
+/// output to read credit from. Split out of [`claim_mint_movement`] so it is testable without a
+/// client or a real transaction.
+fn check_claim_shape(wallet_inputs: usize, total_inputs: usize, outputs: usize) -> Result<()> {
+    if wallet_inputs != 1 {
         return Err(internal(format!(
-            "a claim transaction funds itself from exactly one input, found {inputs}"
-        )));
-    }
-    if input_instance != Some(wallet_instance) {
-        return Err(internal(format!(
-            "a claim transaction's input belongs to module instance {input_instance:?}, not the \
-             wallet module's own instance {wallet_instance}"
+            "a claim transaction funds itself from exactly one wallet input, found \
+             {wallet_inputs} among {total_inputs} total inputs"
         )));
     }
     if outputs == 0 {
@@ -1248,8 +1268,40 @@ fn mint_output_amount(output: &DynOutput, instance_id: ModuleInstanceId) -> Resu
     )))
 }
 
+/// One mint input's amount, whichever mint module generation melted it. `instance_id` names the
+/// module instance that owns `input`, so an input that is neither the wallet input nor readable
+/// as a mint input here is refused naming the module instance rather than skipped.
+fn mint_input_amount(input: &DynInput, instance_id: ModuleInstanceId) -> Result<Amount> {
+    if let Some(v1) = input
+        .as_any()
+        .downcast_ref::<fedimint_mint_common::MintInput>()
+    {
+        return v1
+            .ensure_v0_ref()
+            .map(|v0| from_upstream(v0.amount))
+            .map_err(internal);
+    }
+    if let Some(v2) = input
+        .as_any()
+        .downcast_ref::<fedimint_mintv2_common::MintInput>()
+    {
+        return v2
+            .ensure_v0_ref()
+            .map(|v0| from_upstream(v0.note.denomination.amount()))
+            .map_err(internal);
+    }
+    Err(internal(format!(
+        "a claim transaction's input belongs to module instance {instance_id}, not the wallet \
+         module or a mint module this build can read"
+    )))
+}
+
 /// Either mint module generation's own fee schedule, read once per module instance id by
-/// [`claim_mint_outputs`] and applied to every output that instance minted.
+/// [`claim_mint_movement`] and applied to every note that instance's module moved, minted or
+/// melted alike: both generations' `input_fee` and `output_fee` apply the very same
+/// `fee_consensus.fee(amount)` regardless of direction
+/// (`$FM/modules/fedimint-mint-client/src/lib.rs:1005-1022`,
+/// `$FM/modules/fedimint-mintv2-client/src/lib.rs:150-168`).
 enum MintFeeConsensus {
     V1(fedimint_mint_common::config::FeeConsensus),
     V2(fedimint_mintv2_common::config::FeeConsensus),
@@ -1280,34 +1332,54 @@ async fn mint_fee_consensus(client: &Client, id: ModuleInstanceId) -> Result<Min
 
 /// The pure arithmetic behind [`claim_figures`], factored out so it is testable without a client
 /// or a real claim transaction: `outputs` is one `(amount, fee)` pair per output the claim
-/// minted, `fee` already the owning mint module's `fee_consensus.fee(amount)`.
+/// minted, `mint_inputs` one `(amount, fee)` pair per mint input it spent beside its wallet
+/// input, `fee` in both already the owning mint module's `fee_consensus.fee(amount)`.
 ///
-/// `net_credit` is the sum of the amounts in `outputs`, exactly what was minted. `fee` is
-/// `gross` less `net_credit`, by construction. This function trusts its caller: `outputs` is
-/// checked to actually be what the claim minted by [`claim_mint_outputs`], not here, and
-/// `input_amount`, `input_fee`, `network_claim` and `gross` are trusted to already be consistent
-/// with each other, so there is no reading of `outputs` this function's own arithmetic could
-/// catch as wrong.
+/// `net_credit` is the net movement through the mint modules: the outputs' amounts less the mint
+/// inputs' amounts, exactly what a claim that only mints (no mint inputs) minted before, and
+/// less when a mint input melted some of that back. `primary_module` is every mint fee the claim
+/// paid, on outputs and mint inputs alike. `dust` is what the wallet input's net amount, plus the
+/// mint inputs' amounts, leaves once the outputs and every mint fee are paid: the residue too
+/// small to have been minted into a note of its own. `fee` is `gross` less `net_credit`, by
+/// construction.
+///
+/// This function trusts its caller: `outputs` and `mint_inputs` are checked to actually be what
+/// the claim moved by [`claim_mint_movement`], not here, and `input_amount`, `input_fee`,
+/// `network_claim` and `gross` are trusted to already be consistent with each other, so there is
+/// no reading of `outputs` or `mint_inputs` this function's own arithmetic could catch as wrong.
 fn figures_of(
     outputs: &[(Amount, Amount)],
+    mint_inputs: &[(Amount, Amount)],
     input_amount: Amount,
     input_fee: Amount,
     network_claim: Amount,
     gross: Sats,
 ) -> Result<(Amount, OnchainReceiveFeeBreakdown, Amount)> {
-    let mut net_credit = Amount::from_msats(0);
-    let mut primary_module = Amount::from_msats(0);
+    let mut output_amount = Amount::from_msats(0);
+    let mut output_fee = Amount::from_msats(0);
     for (amount, fee) in outputs {
-        net_credit = add(net_credit, *amount)?;
-        primary_module = add(primary_module, *fee)?;
+        output_amount = add(output_amount, *amount)?;
+        output_fee = add(output_fee, *fee)?;
     }
-    let minted = add(net_credit, primary_module)?;
+    let mut mint_input_amount = Amount::from_msats(0);
+    let mut mint_input_fee = Amount::from_msats(0);
+    for (amount, fee) in mint_inputs {
+        mint_input_amount = add(mint_input_amount, *amount)?;
+        mint_input_fee = add(mint_input_fee, *fee)?;
+    }
+    let primary_module = add(output_fee, mint_input_fee)?;
+    let net_credit = output_amount
+        .checked_sub(mint_input_amount)
+        .ok_or_else(|| internal("a claim's mint inputs exceed its mint outputs"))?;
     let available = input_amount
         .checked_sub(input_fee)
         .ok_or_else(|| internal("the claim's peg-in fee exceeds its input amount"))?;
-    let dust = available
-        .checked_sub(minted)
-        .ok_or_else(|| internal("the claim minted more than its input amount allows"))?;
+    let funded = add(available, mint_input_amount)?;
+    let spent = add(output_amount, output_fee)?;
+    let dust = funded
+        .checked_sub(spent)
+        .and_then(|remainder| remainder.checked_sub(mint_input_fee))
+        .ok_or_else(|| internal("the claim's inputs do not cover its outputs and their fees"))?;
     let breakdown = OnchainReceiveFeeBreakdown {
         peg_in: input_fee,
         network_claim,
@@ -1425,6 +1497,78 @@ pub(super) fn timeout() -> Error {
 /// The spendable balance, as `Federation::balance` reads it.
 pub(super) async fn balance_of(client: &Client, status: FederationStatus) -> Result<Amount> {
     crate::federation::balance_of(client, status).await
+}
+
+/// What a fee-quote dry run's failure means, before either mint's answer is turned into an
+/// [`Error`]. Mirrors [`crate::lightning`]'s own `FeeQuoteFailure`; kept as a separate copy here
+/// because the two facades' `balance_of` differ (this one needs a [`FederationStatus`]) and
+/// neither may name the other's private types.
+///
+/// The dry run balances the funding transaction against the real notes and fails inside the
+/// primary module when they cannot cover it, on either wallet generation: v1's `send_fee_quote`
+/// and walletv2's both end in the same module-agnostic `Client::fee_quote`
+/// (`$FM/fedimint-client/src/client.rs:877`), so the failure is classified the same way
+/// regardless of which wallet generation asked for the quote. The v1 mint (`fedimint-mint-client`)
+/// reports it with the typed [`fedimint_mint_client::InsufficientBalanceError`], which already
+/// carries the amounts that were short; the v2 mint (`fedimint-mintv2-client`) reports the same
+/// condition as a plain-text `anyhow` context, `"Insufficient funds"`
+/// (`fedimint-mintv2-client/src/lib.rs:503`), with no amounts of its own.
+#[derive(Debug)]
+enum FeeQuoteFailure {
+    /// The v1 mint's typed error, carrying its own requested and total amounts.
+    Typed { requested: Amount, total: Amount },
+    /// The v2 mint's plain-text refusal, which names no amounts.
+    Text,
+}
+
+/// Recognizes either mint's insufficient-balance refusal from a fee-quote failure, or reports
+/// neither is a match. Pure so the mapping can be checked without a live `Client`.
+fn classify_fee_quote_failure(
+    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
+    text: &str,
+) -> Option<FeeQuoteFailure> {
+    if let Some(short) = short {
+        return Some(FeeQuoteFailure::Typed {
+            requested: from_upstream(short.requested_amount),
+            total: from_upstream(short.total_amount),
+        });
+    }
+    if text.contains("Insufficient funds") {
+        return Some(FeeQuoteFailure::Text);
+    }
+    None
+}
+
+/// Turns a fee-quote dry run's failure into the [`Error`] it represents, for both wallet
+/// generations' `plan` and send-time recheck.
+///
+/// `required` is the amount the failed quote was for: the withdrawal's amount plus the on-chain
+/// fee when that was already quoted, since the exact funding total the quote would have reported
+/// is not knowable once the quote itself failed, and `ErrorDetails::InsufficientBalance::required`
+/// only promises the shortfall's rough scale, not an exact total. `context` names the quote for
+/// the fallback message, when `short` is absent and `text` does not match either mint's wording
+/// for "the notes on hand are short".
+pub(super) async fn fee_quote_failure(
+    client: &Client,
+    status: FederationStatus,
+    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
+    text: &str,
+    required: Amount,
+    context: &str,
+) -> Error {
+    match classify_fee_quote_failure(short, text) {
+        Some(FeeQuoteFailure::Typed { requested, total }) => insufficient(requested, total),
+        Some(FeeQuoteFailure::Text) => {
+            // The v2 mint's text names no amounts, so the balance is read again here. A
+            // failed read must not mask the real refusal that was already found, so it
+            // falls back to zero rather than turning this into an unrelated error.
+            let available = balance_of(client, status)
+                .await
+                .unwrap_or(Amount::from_msats(0));
+            insufficient(required, available)
+        }
+        None => internal(format!("{context}: {text}")),
+    }
 }
 
 /// This device's clock, for a details record's `created_at`.
@@ -1917,6 +2061,30 @@ mod tests {
         assert_eq!(timeout().code, ErrorCode::Timeout);
     }
 
+    #[test]
+    fn fee_quote_failure_is_classified_before_either_mint_is_asked() {
+        // The v1 mint's typed error wins even when the accompanying text also happens to
+        // mention the v2 mint's wording; the typed case is unambiguous and checked first.
+        let typed = fedimint_mint_client::InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(10),
+            total_amount: fedimint_core::Amount::from_msats(3),
+        };
+        match classify_fee_quote_failure(Some(&typed), "Insufficient funds") {
+            Some(FeeQuoteFailure::Typed { requested, total }) => {
+                assert_eq!(requested, Amount::from_msats(10));
+                assert_eq!(total, Amount::from_msats(3));
+            }
+            other => panic!("expected the typed case, got {other:?}"),
+        }
+        // The v2 mint's plain-text refusal, with no typed error at all.
+        assert!(matches!(
+            classify_fee_quote_failure(None, "Insufficient funds"),
+            Some(FeeQuoteFailure::Text)
+        ));
+        // Neither mint's wording: not this crate's problem to interpret.
+        assert!(classify_fee_quote_failure(None, "the federation timed out").is_none());
+    }
+
     /// The hand-built claim the defect fix's own worked example uses: a 100 000 000 msat input,
     /// a 1 000 000 msat peg-in fee, and three change notes the mint shaped to hit its target note
     /// count, 67 108 864 / 31 000 000 / 890 000 msat, each charged the same 100 msat fee. Dust is
@@ -1931,6 +2099,7 @@ mod tests {
         ];
         let (fee, breakdown, net_credit) = figures_of(
             &outputs,
+            &[],
             Amount::from_msats(100_000_000),
             Amount::from_msats(1_000_000),
             Amount::from_msats(0),
@@ -1955,6 +2124,7 @@ mod tests {
         let outputs = [(Amount::from_msats(200_000_000), Amount::from_msats(0))];
         let err = figures_of(
             &outputs,
+            &[],
             Amount::from_msats(0),
             Amount::from_msats(0),
             Amount::from_msats(0),
@@ -1964,11 +2134,66 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Internal);
     }
 
+    /// A consolidating claim on a funded wallet: one 10 000 msat output (fee 10) minted beside
+    /// two mint inputs it melted, 3 000 and 2 000 msat (fee 5 each), on top of an 8 000 msat
+    /// wallet input charged a 100 msat peg-in fee. `net_credit` is the output net of what was
+    /// melted back (10 000 − 5 000 = 5 000), `primary_module` every mint fee paid regardless of
+    /// direction (10 + 5 + 5 = 20), and `dust` what the wallet input's net amount plus the melted
+    /// notes leaves once the output and its fee, and the melted notes' own fees, are paid:
+    /// (8 000 − 100) + 5 000 − (10 000 + 10) − 10 = 2 880 msat.
+    #[test]
+    fn figures_of_reads_the_net_movement_of_a_claim_with_mint_inputs() {
+        let outputs = [(Amount::from_msats(10_000), Amount::from_msats(10))];
+        let mint_inputs = [
+            (Amount::from_msats(3_000), Amount::from_msats(5)),
+            (Amount::from_msats(2_000), Amount::from_msats(5)),
+        ];
+        let (fee, breakdown, net_credit) = figures_of(
+            &outputs,
+            &mint_inputs,
+            Amount::from_msats(8_000),
+            Amount::from_msats(100),
+            Amount::from_msats(0),
+            Sats::from_sats(8),
+        )
+        .expect("a consolidating claim");
+        assert_eq!(net_credit, Amount::from_msats(5_000));
+        assert_eq!(
+            breakdown,
+            OnchainReceiveFeeBreakdown {
+                peg_in: Amount::from_msats(100),
+                network_claim: Amount::from_msats(0),
+                primary_module: Amount::from_msats(20),
+                dust: Amount::from_msats(2_880),
+            }
+        );
+        assert_eq!(fee, Amount::from_msats(3_000));
+    }
+
     /// A claim transaction with no outputs would otherwise be read as a zero credit with the
     /// whole deposit folded into dust; `check_claim_shape` refuses it before any output is read.
     #[test]
     fn check_claim_shape_refuses_a_claim_with_no_outputs() {
-        let err = check_claim_shape(1, Some(5), 5, 0).expect_err("a claim with no outputs");
+        let err = check_claim_shape(1, 1, 0).expect_err("a claim with no outputs");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    /// A funded wallet's claim consolidating notes: one wallet input plus mint inputs beside it
+    /// is a valid shape, not just the single-input case.
+    #[test]
+    fn check_claim_shape_accepts_one_wallet_input_plus_mint_inputs() {
+        check_claim_shape(1, 3, 1).expect("one wallet input plus two mint inputs");
+    }
+
+    #[test]
+    fn check_claim_shape_refuses_a_claim_with_no_wallet_input() {
+        let err = check_claim_shape(0, 2, 1).expect_err("a claim with no wallet input");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn check_claim_shape_refuses_a_claim_with_two_wallet_inputs() {
+        let err = check_claim_shape(2, 2, 1).expect_err("a claim with two wallet inputs");
         assert_eq!(err.code, ErrorCode::Internal);
     }
 }

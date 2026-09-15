@@ -18,8 +18,9 @@ use futures::StreamExt;
 
 use super::{
     OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
-    check_covers_amount, claim_figures, from_upstream, insufficient, internal, now, plan_of,
-    quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
+    check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
+    now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout,
+    unreachable, wire,
 };
 use crate::federation::FederationInner;
 use crate::operation::{
@@ -46,6 +47,7 @@ pub(super) fn module_of(client: &Client) -> Result<ClientModuleInstance<'_, Wall
 
 /// Plans a v1 withdrawal: prices the destination output, then the transaction that funds it.
 pub(super) async fn plan(
+    federation: &Arc<FederationInner>,
     client: &Client,
     module: &WalletClientModule,
     address: &Address,
@@ -75,16 +77,30 @@ pub(super) async fn plan(
     let output_value = sats_to_bitcoin(amount)
         .checked_add(fees.amount())
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
-    let quote = module.send_fee_quote(output_value).await.map_err(|err| {
-        internal(format!(
-            "could not quote the withdrawal's funding fee: {err}"
-        ))
-    })?;
-    let module_fee = from_upstream(module.get_fee_consensus().peg_out_abs);
     // A Bitcoin amount is consensus-bounded to 21 million BTC, well inside a millisatoshi `u64`,
     // so this never overflows: the same conversion upstream's own `From<bitcoin::Amount> for
     // fedimint_core::Amount` uses.
     let chain_fee = from_upstream(fedimint_core::Amount::from(fees.amount()));
+    let quote = match module.send_fee_quote(output_value).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            // `required` is the amount plus the on-chain fee already quoted above; the
+            // dry run that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(amount)?, chain_fee)?;
+            return Err(fee_quote_failure(
+                client,
+                federation.status(),
+                short,
+                &text,
+                required,
+                "could not quote the withdrawal's funding fee",
+            )
+            .await);
+        }
+    };
+    let module_fee = from_upstream(module.get_fee_consensus().peg_out_abs);
     plan_of(
         chain_fee,
         module_fee,
@@ -131,20 +147,34 @@ pub(super) async fn send(
     let output_value = sats_to_bitcoin(quote.amount)
         .checked_add(fresh_fees.amount())
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
-    let fresh_quote = module.send_fee_quote(output_value).await.map_err(|err| {
-        internal(format!(
-            "could not re-quote the withdrawal's funding fee: {err}"
-        ))
-    })?;
+    let fresh_chain_fee = from_upstream(fedimint_core::Amount::from(fresh_fees.amount()));
+    let fresh_quote = match module.send_fee_quote(output_value).await {
+        Ok(fee_quote) => fee_quote,
+        Err(err) => {
+            let text = err.to_string();
+            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
+            // `required` is the amount plus the on-chain fee already re-quoted above; the
+            // dry run that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(quote.amount)?, fresh_chain_fee)?;
+            return Err(fee_quote_failure(
+                client,
+                federation.status(),
+                short,
+                &text,
+                required,
+                "could not re-quote the withdrawal's funding fee",
+            )
+            .await);
+        }
+    };
     // Both `get_withdraw_fees` and `send_fee_quote` must return exactly what they returned when
     // this quote was built; the federation rebuilds the peg-out from `fees` at submission time
     // and rejects a `total_weight` it disagrees with, so a mismatch caught here first is a
     // `QuoteChanged` refusal instead of a submission failure.
     if fees != fresh_fees || quoted != &fresh_quote {
         let module_fee = from_upstream(module.get_fee_consensus().peg_out_abs);
-        let chain_fee = from_upstream(fedimint_core::Amount::from(fresh_fees.amount()));
         let current = plan_of(
-            chain_fee,
+            fresh_chain_fee,
             module_fee,
             &fresh_quote,
             quote.amount,
@@ -243,23 +273,14 @@ pub(super) async fn receive(
     driver: Arc<dyn Driver<OnchainReceiveState>>,
 ) -> Result<OnchainReceive> {
     let created_at = now();
-    // The address is not known until the call below returns it, so the placeholder carries only
-    // the one field this record has before then; a record rebuilt from the log after a crash
-    // between upstream's commit and the write below finds this same placeholder and nothing
-    // else, since nothing else about a fresh deposit is known yet either.
-    let placeholder = wire::OnchainReceiveDetailsWire {
-        address: String::new(),
-        txid: None,
-        gross_deposited_sats: None,
-        fee_msats: None,
-        fee_breakdown: None,
-        net_credit_msats: None,
-        created_at: created_at.epoch_millis(),
-        upstream_operation_id: None,
-        event_cursor: None,
-    };
+    // The address is not known until the call below returns it, so there is nothing this SDK
+    // could put in `extra_meta` yet that upstream's own meta does not already carry once the
+    // call commits: `WalletOperationMetaVariant::Deposit`'s own `address` field. Passing `Null`
+    // rather than a placeholder wire means `backfill`, reconstructing a record from a crash
+    // between upstream's commit and the write below, always reads the real address from that
+    // field rather than risking a placeholder this SDK wrote earlier.
     let info = module
-        .safe_allocate_deposit_address(custom_meta(&placeholder)?)
+        .safe_allocate_deposit_address(serde_json::Value::Null)
         .await
         .map_err(|err| {
             let text = err.to_string();
@@ -272,7 +293,14 @@ pub(super) async fn receive(
     let address = Address::from_upstream(info.address.clone().into_unchecked());
     let wire = wire::OnchainReceiveDetailsWire {
         address: info.address.to_string(),
-        ..placeholder
+        txid: None,
+        gross_deposited_sats: None,
+        fee_msats: None,
+        fee_breakdown: None,
+        net_credit_msats: None,
+        created_at: created_at.epoch_millis(),
+        upstream_operation_id: None,
+        event_cursor: None,
     };
     let operation = federation
         .create_operation(
@@ -507,10 +535,11 @@ async fn claim_net_credit(
     Ok(net_credit)
 }
 
-/// Rebuilds a record from a v1 log entry: exact for an operation this SDK created, whose
-/// metadata carries the quoted terms verbatim; an estimate for one this SDK did not create, with
-/// no address-side facts for a deposit beyond the address itself, and no mint-side funding cost
-/// for a withdrawal, since neither is knowable from the operation log alone.
+/// Rebuilds a record from a v1 log entry. A deposit is always rebuilt from upstream's own meta
+/// alone, address and nothing else, because `receive` never puts a wire of its own on a deposit's
+/// entry; a withdrawal is exact when this SDK made it, whose metadata carries the quoted terms
+/// verbatim, and an estimate otherwise, with no mint-side funding cost, since that is unknowable
+/// from the operation log alone.
 pub(super) fn backfill(
     id: OperationId,
     meta: &serde_json::Value,
@@ -519,18 +548,20 @@ pub(super) fn backfill(
     let meta: WalletOperationMeta = serde_json::from_value(meta.clone()).ok()?;
     match meta.variant {
         WalletOperationMetaVariant::Deposit { address, .. } => {
-            let wire = from_custom_meta::<wire::OnchainReceiveDetailsWire>(&meta.extra_meta)
-                .unwrap_or(wire::OnchainReceiveDetailsWire {
-                    address: address.assume_checked_ref().to_string(),
-                    txid: None,
-                    gross_deposited_sats: None,
-                    fee_msats: None,
-                    fee_breakdown: None,
-                    net_credit_msats: None,
-                    created_at,
-                    upstream_operation_id: None,
-                    event_cursor: None,
-                });
+            // `receive` never puts a wire of its own in a deposit's `extra_meta` (the address is
+            // not known until after the call that would carry it), so this is always rebuilt
+            // from upstream's own meta: the address it names, and this entry's `created_at`.
+            let wire = wire::OnchainReceiveDetailsWire {
+                address: address.assume_checked_ref().to_string(),
+                txid: None,
+                gross_deposited_sats: None,
+                fee_msats: None,
+                fee_breakdown: None,
+                net_credit_msats: None,
+                created_at,
+                upstream_operation_id: None,
+                event_cursor: None,
+            };
             Some(Backfilled {
                 kind: kinds::ONCHAIN_RECEIVE,
                 details: wire::encode_receive_wire(&wire).ok()?,
@@ -728,6 +759,37 @@ mod tests {
             details.created_at,
             Timestamp::from_epoch_millis(1_700_000_000_000)
         );
+    }
+
+    /// The exact payload a crash between `safe_allocate_deposit_address`'s commit and
+    /// `create_operation`'s own write would have left behind, if `receive` still put a wire of
+    /// its own in a deposit's `extra_meta`: the placeholder's empty address, because the real one
+    /// was not known until after the call it rode inside of. `backfill` never reads a deposit's
+    /// `extra_meta` at all, so upstream's own address wins regardless of what is there.
+    #[test]
+    fn a_deposit_log_entry_with_a_stale_placeholder_backfills_upstream_s_address() {
+        let placeholder = wire::OnchainReceiveDetailsWire {
+            address: String::new(),
+            txid: None,
+            gross_deposited_sats: None,
+            fee_msats: None,
+            fee_breakdown: None,
+            net_credit_msats: None,
+            created_at: 1_700_000_000_000,
+            upstream_operation_id: None,
+            event_cursor: None,
+        };
+        let meta = serde_json::json!({
+            "variant": {
+                "deposit": {
+                    "address": an_address(),
+                },
+            },
+            "extra_meta": custom_meta(&placeholder).expect("encode"),
+        });
+        let backfilled = backfill(an_operation_id(), &meta, 1_700_000_000_000).expect("recognised");
+        let details = wire::decode_receive_details(&backfilled.details).expect("decode");
+        assert_eq!(details.address.to_string(), an_address());
     }
 
     #[test]
