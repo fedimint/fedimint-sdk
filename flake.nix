@@ -170,6 +170,7 @@
             pkgs.go
             pkgs.libclang
             pkgs.cmake
+            pkgs.rustPlatform.bindgenHook
             playwrightBrowsers
           ];
 
@@ -177,6 +178,15 @@
             export PLAYWRIGHT_BROWSERS_PATH=${playwrightBrowsers}
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
+            
+            # bindgenHook exports a global BINDGEN_EXTRA_CLANG_ARGS which breaks
+            # cross-compilation (e.g., wasm32). We capture it and scope it strictly
+            # to the host target so native builds like aws-lc-sys succeed.
+            if [ -n "''${BINDGEN_EXTRA_CLANG_ARGS:-}" ]; then
+              HOST_TARGET=$(rustc -vV | sed -n 's|host: ||p' | tr '-' '_')
+              export "BINDGEN_EXTRA_CLANG_ARGS_''${HOST_TARGET}=$BINDGEN_EXTRA_CLANG_ARGS"
+              unset BINDGEN_EXTRA_CLANG_ARGS
+            fi
           '';
 
           androidShellHook = ''
