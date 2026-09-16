@@ -764,11 +764,11 @@ impl AnyOperation {
     /// does not read the operation's state, so it is not a promise that
     /// reading the state will succeed.
     // "`Observable` means supported: the matching `as_*` accessor will hand back a typed handle"
-    // is accurate now that every kind in `kinds` has a driver arm in `driver_for` below: a kind
-    // with no arm would still read `Observable` here regardless, since `support_of` only looks at
-    // the record's kind and schema version, and neither says whether a driver exists. This
-    // accessor is honest about what it can do, and a kind tag this build simply does not
-    // recognise reads `UnknownKind` instead, which is a different case entirely.
+    // is exact, not by discipline: `driver_for` below names a driver for every `OperationKind`
+    // other than `Unknown`, its match has no wildcard so the compiler refuses a kind added there
+    // without one, and `every_kind_this_build_writes_has_a_driver_and_reads_observable` confirms
+    // `Some` for every kind this build actually writes. With a driver's existence pinned down
+    // that way, `support_of` looking only at the kind and the schema version is exact too.
     pub fn support(&self) -> OperationSupport {
         self.inner.support
     }
@@ -819,7 +819,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ecash_send(&self) -> Option<Operation<EcashSendState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::EcashSend(driver) => self.typed(OperationKind::EcashSend, driver),
             // A tag whose driver observes another state type, which `typed`'s own kind check
             // would refuse in any case.
@@ -833,7 +833,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ecash_receive(&self) -> Option<Operation<EcashReceiveState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::EcashReceive(driver) => self.typed(OperationKind::EcashReceive, driver),
             _ => None,
         }
@@ -845,7 +845,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ln_send(&self) -> Option<Operation<LnSendState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::LnSend(driver) => self.typed(OperationKind::LnSend, driver),
             _ => None,
         }
@@ -857,7 +857,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_ln_receive(&self) -> Option<Operation<LnReceiveState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::LnReceive(driver) => self.typed(OperationKind::LnReceive, driver),
             _ => None,
         }
@@ -869,7 +869,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_onchain_send(&self) -> Option<Operation<OnchainSendState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::OnchainSend(driver) => self.typed(OperationKind::OnchainSend, driver),
             _ => None,
         }
@@ -881,7 +881,7 @@ impl AnyOperation {
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
     pub fn as_onchain_receive(&self) -> Option<Operation<OnchainReceiveState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::OnchainReceive(driver) => {
                 self.typed(OperationKind::OnchainReceive, driver)
             }
@@ -908,7 +908,7 @@ impl AnyOperation {
     /// recovery from the [`FederationId`](crate::FederationId) alone; the
     /// [recovery module](crate::Recovery) lays out all three routes.
     pub fn as_recovery(&self) -> Option<Operation<RecoveryState>> {
-        match driver_for(&self.inner.raw.kind)? {
+        match driver_for(self.inner.kind)? {
             ErasedDriver::Recovery(driver) => self.typed(OperationKind::Recovery, driver),
             _ => None,
         }
@@ -1221,6 +1221,19 @@ pub(crate) mod kinds {
     pub(crate) const ONCHAIN_RECEIVE: &str = "onchain_receive";
     /// Restoring a wallet from its seed.
     pub(crate) const RECOVERY: &str = "recovery";
+
+    /// Every tag above, so a test can walk every kind this build writes.
+    ///
+    /// A tag added above and not added here is a tag no test in this module ever exercises.
+    pub(crate) const ALL: [&str; 7] = [
+        ECASH_SEND,
+        ECASH_RECEIVE,
+        LN_SEND,
+        LN_RECEIVE,
+        ONCHAIN_SEND,
+        ONCHAIN_RECEIVE,
+        RECOVERY,
+    ];
 }
 
 /// This build's reading of a persisted kind tag.
@@ -1500,36 +1513,35 @@ pub(crate) enum ErasedDriver {
 // A driver holds nothing — every method takes the federation it should act on — so building one
 // per lookup costs an `Arc` allocation and no state, which is what lets the arms below be plain
 // expressions rather than a table of cached singletons.
-pub(crate) fn driver_for(kind: &str) -> Option<ErasedDriver> {
+pub(crate) fn driver_for(kind: OperationKind) -> Option<ErasedDriver> {
     match kind {
-        // One arm per tag in `kinds`, written by the facade that owns that kind: ecash, lightning,
-        // on-chain and recovery. A kind tag with no arm here is still found, still listed, and
-        // still says what it is; it simply cannot be observed, which is a real answer rather than
-        // a gap.
-        kinds::ECASH_SEND => Some(ErasedDriver::EcashSend(Arc::new(
+        // One arm per `OperationKind` variant, written by the facade that owns that kind: ecash,
+        // lightning, on-chain and recovery. No wildcard: a variant added to `OperationKind` does
+        // not compile until its driver is named here, which is what lets `support` promise that
+        // `Observable` means a typed handle.
+        OperationKind::EcashSend => Some(ErasedDriver::EcashSend(Arc::new(
             crate::ecash::EcashSendDriver,
         ))),
-        kinds::ECASH_RECEIVE => Some(ErasedDriver::EcashReceive(Arc::new(
+        OperationKind::EcashReceive => Some(ErasedDriver::EcashReceive(Arc::new(
             crate::ecash::EcashReceiveDriver,
         ))),
-        kinds::LN_SEND => Some(ErasedDriver::LnSend(Arc::new(
+        OperationKind::LnSend => Some(ErasedDriver::LnSend(Arc::new(
             crate::lightning::LnSendDriver,
         ))),
-        kinds::LN_RECEIVE => Some(ErasedDriver::LnReceive(Arc::new(
+        OperationKind::LnReceive => Some(ErasedDriver::LnReceive(Arc::new(
             crate::lightning::LnReceiveDriver,
         ))),
-        kinds::ONCHAIN_SEND => Some(ErasedDriver::OnchainSend(Arc::new(
+        OperationKind::OnchainSend => Some(ErasedDriver::OnchainSend(Arc::new(
             crate::onchain::OnchainSendDriver,
         ))),
-        kinds::ONCHAIN_RECEIVE => Some(ErasedDriver::OnchainReceive(Arc::new(
+        OperationKind::OnchainReceive => Some(ErasedDriver::OnchainReceive(Arc::new(
             crate::onchain::OnchainReceiveDriver,
         ))),
-        kinds::RECOVERY => Some(ErasedDriver::Recovery(Arc::new(
+        OperationKind::Recovery => Some(ErasedDriver::Recovery(Arc::new(
             crate::recovery::RecoveryDriver,
         ))),
-        // A tag this build does not know, which `kind_of_tag` already reads as
-        // `OperationKind::Unknown`.
-        _ => None,
+        // No driver, by construction: an unrecognised kind has nothing to observe.
+        OperationKind::Unknown => None,
     }
 }
 
@@ -2743,16 +2755,9 @@ mod tests {
 
     #[test]
     fn every_tag_this_build_writes_reads_back_as_its_kind() {
-        let pairs = [
-            (kinds::ECASH_SEND, OperationKind::EcashSend),
-            (kinds::ECASH_RECEIVE, OperationKind::EcashReceive),
-            (kinds::LN_SEND, OperationKind::LnSend),
-            (kinds::LN_RECEIVE, OperationKind::LnReceive),
-            (kinds::ONCHAIN_SEND, OperationKind::OnchainSend),
-            (kinds::ONCHAIN_RECEIVE, OperationKind::OnchainReceive),
-            (kinds::RECOVERY, OperationKind::Recovery),
-        ];
-        for (tag, kind) in pairs {
+        // `kinds::ALL` and `KNOWN_KINDS` are declared in the same order as the seven `as_*`
+        // accessors, so zipping them pairs each tag with the kind it must read back as.
+        for (tag, kind) in kinds::ALL.into_iter().zip(KNOWN_KINDS) {
             assert_eq!(kind_of_tag(tag), kind, "{tag}");
         }
         // A module kind is not a kind tag: a record backfilled from a log entry this build
@@ -2761,10 +2766,34 @@ mod tests {
         assert_eq!(kind_of_tag("mint"), OperationKind::Unknown);
         assert_eq!(kind_of_tag(""), OperationKind::Unknown);
         // Every tag is distinct, or two kinds would collide in storage.
-        let mut tags: Vec<_> = pairs.iter().map(|(tag, _)| *tag).collect();
+        let mut tags = kinds::ALL.to_vec();
         tags.sort_unstable();
         tags.dedup();
-        assert_eq!(tags.len(), pairs.len());
+        assert_eq!(tags.len(), kinds::ALL.len());
+    }
+
+    #[test]
+    fn every_kind_this_build_writes_has_a_driver_and_reads_observable() {
+        // This is `support`'s exactness claim, checked directly: every tag this build ever
+        // writes reads back as a known kind, that kind has a driver, and a record of it at the
+        // schema version this build writes reads `Observable`.
+        for tag in kinds::ALL {
+            let kind = kind_of_tag(tag);
+            assert_ne!(kind, OperationKind::Unknown, "{tag}");
+            assert!(driver_for(kind).is_some(), "{tag}");
+            let raw = RawOperationKind {
+                kind: tag.to_owned(),
+                module: None,
+                schema_version: Some(kind.readable_state_schema()),
+            };
+            assert_eq!(
+                support_of(kind, &raw),
+                OperationSupport::Observable,
+                "{tag}"
+            );
+        }
+        // The one kind this claim does not cover, because it names no driver by design.
+        assert!(driver_for(OperationKind::Unknown).is_none());
     }
 
     #[test]
@@ -2870,38 +2899,38 @@ mod tests {
 
     #[test]
     fn this_build_observes_the_kinds_it_has_a_driver_for_and_no_others() {
-        // Ecash, lightning, on-chain and recovery are all real drivers now: every tag in
-        // `kinds` has one.
+        // Ecash, lightning, on-chain and recovery are all real drivers now: every kind but
+        // `Unknown` has one.
         assert!(matches!(
-            driver_for(kinds::ECASH_SEND),
+            driver_for(OperationKind::EcashSend),
             Some(ErasedDriver::EcashSend(_))
         ));
         assert!(matches!(
-            driver_for(kinds::ECASH_RECEIVE),
+            driver_for(OperationKind::EcashReceive),
             Some(ErasedDriver::EcashReceive(_))
         ));
         assert!(matches!(
-            driver_for(kinds::LN_SEND),
+            driver_for(OperationKind::LnSend),
             Some(ErasedDriver::LnSend(_))
         ));
         assert!(matches!(
-            driver_for(kinds::LN_RECEIVE),
+            driver_for(OperationKind::LnReceive),
             Some(ErasedDriver::LnReceive(_))
         ));
         assert!(matches!(
-            driver_for(kinds::ONCHAIN_SEND),
+            driver_for(OperationKind::OnchainSend),
             Some(ErasedDriver::OnchainSend(_))
         ));
         assert!(matches!(
-            driver_for(kinds::ONCHAIN_RECEIVE),
+            driver_for(OperationKind::OnchainReceive),
             Some(ErasedDriver::OnchainReceive(_))
         ));
         assert!(matches!(
-            driver_for(kinds::RECOVERY),
+            driver_for(OperationKind::Recovery),
             Some(ErasedDriver::Recovery(_))
         ));
-        // A tag this build does not know is not a lookup failure either.
-        assert!(driver_for("something_else").is_none());
+        // The one kind this build does not know how to observe.
+        assert!(driver_for(OperationKind::Unknown).is_none());
         // Backfillers are a list rather than a lookup: one is asked about an upstream module
         // kind, and one module kind can produce several of the SDK's kinds.
         let backfillers = backfillers();

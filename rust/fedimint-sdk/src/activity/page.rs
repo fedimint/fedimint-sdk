@@ -129,13 +129,12 @@ async fn row(
     let any = AnyOperation::from_record(inner.clone());
     let kind = any.kind();
 
+    // `driver_for` names a driver for every kind but `Unknown` (see its doc), so this is `None`
+    // only when the record itself is not observable: an unrecognised kind, or a state schema
+    // newer than this build reads. Either way `unreadable` below is the fallback.
     let driver = (any.support() == OperationSupport::Observable)
-        .then(|| driver_for(&inner.record.kind))
+        .then(|| driver_for(kind))
         .flatten();
-    // A kind this build knows but has no driver for (`driver_for` answers `None`: ecash receive,
-    // on-chain, recovery until T7, T9, T12 land) falls through to `unreadable` below. Nothing
-    // then records a final state for it, so its row keeps `is_final == false` even after the
-    // operation finishes; the gap closes the moment that kind's arm in `driver_for` lands.
     let Some(driver) = driver else {
         return Ok(unreadable(id, &inner.record, kind));
     };
@@ -151,8 +150,8 @@ async fn row(
     }
 }
 
-/// The row for a record this build cannot observe as a typed state: an unrecognised kind, a
-/// state schema newer than this build reads, or a kind with no driver yet.
+/// The row for a record this build cannot observe as a typed state: an unrecognised kind, or a
+/// state schema newer than this build reads.
 fn unreadable(
     id: UpstreamOperationId,
     record: &OperationRecord,
