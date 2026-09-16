@@ -131,14 +131,20 @@ grab() {
 }
 
 # Pays a bolt11 invoice from a node outside the federation: the counterparty for a receive.
+# Fails the run through die, naming <name>, if the faucet's own HTTP call fails.
 pay_invoice() {
-  curl -sS -X POST --data "$1" "http://localhost:$FM_PORT_FAUCET/pay" >/dev/null
+  local name="$1" invoice="$2"
+  curl -sS --fail-with-body -X POST --data "$invoice" "http://localhost:$FM_PORT_FAUCET/pay" \
+    >/dev/null || die "$name"
 }
 
 # Issues a bolt11 invoice for <msats> millisatoshis from outside the federation, printed for
-# the caller to pass to a send.
+# the caller to pass to a send. Fails the run through die, naming <name>, if the faucet's own
+# HTTP call fails.
 new_invoice() {
-  curl -sS -X POST --data "$1" "http://localhost:$FM_PORT_FAUCET/invoice"
+  local name="$1" msats="$2"
+  curl -sS --fail-with-body -X POST --data "$msats" "http://localhost:$FM_PORT_FAUCET/invoice" \
+    || die "$name"
 }
 
 # Runs one bitcoin-cli command against devimint's regtest node, on the wallet devimint funds
@@ -170,11 +176,11 @@ mine_blocks() {
 run_walkthrough() {
   local log="$root/walkthrough.log"
   local invoice
-  invoice="$(new_invoice 50000)"
+  invoice="$(new_invoice walkthrough 50000)"
   start_example walkthrough "$log" "$wallet_a" "$invite" "$invoice"
   local fund
   fund="$(grab "$log" "invoice:" "$pid")" || die walkthrough
-  pay_invoice "$fund"
+  pay_invoice walkthrough "$fund"
   finish walkthrough "$pid" "$log"
 }
 
@@ -184,9 +190,12 @@ run_lightning() {
   start_example lightning "$receive_log" "$wallet_a" "$invite" receive 200000 "an example"
   local invoice
   invoice="$(grab "$receive_log" "invoice:" "$pid")" || die lightning
-  pay_invoice "$invoice"
+  pay_invoice lightning "$invoice"
   finish lightning "$pid" "$receive_log"
-  run_example lightning "$root/lightning-send.log" "$wallet_a" "$invite" send "$(new_invoice 50000)"
+
+  local send_invoice
+  send_invoice="$(new_invoice lightning 50000)"
+  run_example lightning "$root/lightning-send.log" "$wallet_a" "$invite" send "$send_invoice"
 }
 
 # The ecash example has no subcommand of its own that funds a wallet, so it is funded the same
@@ -198,7 +207,7 @@ run_ecash() {
   start_example lightning "$fund_log" "$wallet_a" "$invite" receive 200000 "an example"
   local invoice
   invoice="$(grab "$fund_log" "invoice:" "$pid")" || die ecash
-  pay_invoice "$invoice"
+  pay_invoice ecash "$invoice"
   finish ecash "$pid" "$fund_log"
 
   local send_log="$root/ecash-send.log"
