@@ -169,6 +169,7 @@
             pkgs.which
             pkgs.go
             pkgs.libclang
+            pkgs.cmake
             playwrightBrowsers
           ];
 
