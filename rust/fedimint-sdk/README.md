@@ -27,3 +27,35 @@ copy that can drift.
 The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the
 RFC this crate implements.
+
+## Examples
+
+`examples/` has four runnable examples, one per facade:
+
+- `walkthrough`: the crate documentation's walkthrough, made runnable.
+- `ecash`: sending and redeeming out-of-band ecash.
+- `lightning`: receiving and sending a lightning payment.
+- `onchain`: depositing bitcoin into the federation and withdrawing it back
+  out.
+
+Each one joins a federation devimint stands up, funds itself, does its work,
+and prints what happened. Like the integration tests, they need the
+`.#wasm-tests` dev shell, the only one with devimint and the rest of the
+federation's binaries on PATH. Run all four against a fresh federation with:
+
+```
+scripts/run-sdk-examples.sh
+```
+
+or a single one by name, optionally on a specific module shape:
+
+```
+scripts/run-sdk-examples.sh v2 lightning
+```
+
+The default and recommended shape is `v2`. On `v1`, the pinned fedimint
+revision's lnv1 client cannot decode a successful send's preimage
+([fedimint/fedimint#8969](https://github.com/fedimint/fedimint/issues/8969)),
+so the `walkthrough` and `lightning` examples end with an `Internal` error
+after the payment has actually gone through; `ecash` and `onchain` are
+unaffected.
