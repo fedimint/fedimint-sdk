@@ -89,7 +89,9 @@ async fn main() -> fedimint_sdk::Result<()> {
             let outcome = send.await_final().await?;
             println!("state: {outcome:?}");
             if let OnchainSendState::Succeeded { txid } = outcome {
-                println!("confirmed on chain, txid {txid}");
+                // The federation has broadcast the withdrawal; the SDK does not track
+                // confirmations on it, so this is not yet a confirmed on-chain payment.
+                println!("broadcast, txid {txid}");
             }
             println!("balance: {}", federation.balance().await?);
         }
