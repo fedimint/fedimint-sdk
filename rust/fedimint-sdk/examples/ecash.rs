@@ -56,9 +56,13 @@ async fn main() -> fedimint_sdk::Result<()> {
         details.notes_value, details.fee, details.net_credit,
     );
 
-    // Now that the notes have been redeemed, the send settles too.
+    // The sender does not hear about the redemption on its own: a send stays in limbo until a
+    // reclaim is attempted, by the automatic timer past the record's `reclaim_at` or by asking
+    // for one now. Only the federation decides who won, and here the receiver already has,
+    // so the request settles the send as `Redeemed` rather than taking the notes back.
+    sent.operation.request_cancel().await?;
     match sent.operation.await_final().await? {
-        EcashSendState::Redeemed => println!("the sender's notes were redeemed"),
+        EcashSendState::Redeemed => println!("the receiver got there first; nothing to reclaim"),
         other => println!("{other:?}"),
     }
 
