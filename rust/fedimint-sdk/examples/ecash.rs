@@ -15,7 +15,7 @@
 
 mod common;
 
-use fedimint_sdk::{Amount, EcashSendState, Notes, OperationId};
+use fedimint_sdk::{Amount, EcashReceiveState, EcashSendState, Notes, OperationId};
 
 const USAGE: &str = "usage: ecash <data-dir> <invite-code> send <amount-msats>\n       \
     ecash <data-dir> <invite-code> receive <notes>\n       \
@@ -64,14 +64,24 @@ async fn main() -> fedimint_sdk::Result<()> {
         Action::Receive { notes } => {
             let received = ecash.receive(&notes).await?;
             let mut updates = received.updates();
+            let mut last_state = None;
             while let Some(state) = updates.next().await? {
                 println!("state: {state:?}");
+                last_state = Some(state);
             }
-            let details = received.details().await?;
-            println!(
-                "redeemed {} of notes minus {} fee ({} credited)",
-                details.notes_value, details.fee, details.net_credit,
-            );
+            // `Done` is the only terminal state whose notes became spendable: `Failed`
+            // means they were already spent or reclaimed by whoever sent them, so
+            // there is no receipt to show.
+            match last_state {
+                Some(EcashReceiveState::Done) => {
+                    let details = received.details().await?;
+                    println!(
+                        "redeemed {} of notes minus {} fee ({} credited)",
+                        details.notes_value, details.fee, details.net_credit,
+                    );
+                }
+                other => println!("did not redeem the notes: {other:?}"),
+            }
             println!("balance: {}", federation.balance().await?);
         }
         Action::Cancel { id } => {

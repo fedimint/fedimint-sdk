@@ -14,7 +14,7 @@
 
 mod common;
 
-use fedimint_sdk::{Amount, Bolt11Invoice, Federation, Lightning, LnSendState};
+use fedimint_sdk::{Amount, Bolt11Invoice, Federation, Lightning, LnReceiveState, LnSendState};
 
 const USAGE: &str = "usage: lightning <data-dir> <invite-code> receive <amount-msats> \
     [description]\n       lightning <data-dir> <invite-code> send <invoice>";
@@ -90,11 +90,21 @@ async fn receive(
     println!("invoice: {}", receive.invoice);
     println!("pay this invoice");
     let mut updates = receive.operation.updates();
+    let mut last_state = None;
     while let Some(state) = updates.next().await? {
         println!("state: {state:?}");
+        last_state = Some(state);
     }
-    let details = receive.operation.details().await?;
-    println!("received {}", details.net_credit);
+    // `Claimed` is the only terminal state whose amount landed in the balance:
+    // `Canceled`, `Expired` and `Failed` all mean nothing arrived, so there is no
+    // receipt to show.
+    match last_state {
+        Some(LnReceiveState::Claimed) => {
+            let details = receive.operation.details().await?;
+            println!("received {}", details.net_credit);
+        }
+        other => println!("did not receive the payment: {other:?}"),
+    }
     println!("balance: {}", federation.balance().await?);
     Ok(())
 }

@@ -14,7 +14,7 @@
 
 mod common;
 
-use fedimint_sdk::{Address, OnchainSendState, Sats};
+use fedimint_sdk::{Address, OnchainReceiveState, OnchainSendState, Sats};
 
 const USAGE: &str = "usage: onchain <data-dir> <invite-code> receive\n       \
     onchain <data-dir> <invite-code> send <address> <sats>";
@@ -48,20 +48,30 @@ async fn main() -> fedimint_sdk::Result<()> {
             println!("address: {}", receive.address);
             println!("send a deposit to this address");
             let mut updates = receive.operation.updates();
+            let mut last_state = None;
             while let Some(state) = updates.next().await? {
                 println!("state: {state:?}");
+                last_state = Some(state);
             }
-            let details = receive.operation.details().await?;
-            println!(
-                "{} gross, {} fee, {} credited",
-                details
-                    .gross_deposited
-                    .expect("a claimed deposit knows what arrived"),
-                details.fee.expect("a claimed deposit knows its fee"),
-                details
-                    .net_credit
-                    .expect("a claimed deposit knows its net credit"),
-            );
+            // `Claimed` is the only terminal state whose deposit was actually credited:
+            // `Failed` carries no transaction and no amount even when one was seen, so
+            // there is no receipt to show.
+            match last_state {
+                Some(OnchainReceiveState::Claimed { .. }) => {
+                    let details = receive.operation.details().await?;
+                    println!(
+                        "{} gross, {} fee, {} credited",
+                        details
+                            .gross_deposited
+                            .expect("a claimed deposit knows what arrived"),
+                        details.fee.expect("a claimed deposit knows its fee"),
+                        details
+                            .net_credit
+                            .expect("a claimed deposit knows its net credit"),
+                    );
+                }
+                other => println!("did not receive a deposit: {other:?}"),
+            }
             println!("balance: {}", federation.balance().await?);
         }
         Action::Send { address, sats } => {
