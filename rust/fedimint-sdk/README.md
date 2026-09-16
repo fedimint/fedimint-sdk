@@ -30,18 +30,35 @@ RFC this crate implements.
 
 ## Examples
 
-`examples/` has four runnable examples, one per facade:
+`examples/` has four runnable examples, one per facade. Each is an ordinary command-line
+program: `<data-dir> <invite-code>` first, then a subcommand of its own. It works against any
+federation the invite code names, does its work, and prints what a person or another program
+needs to act on next (an invoice, an address, some notes, an operation id), then waits.
 
-- `walkthrough`: the crate documentation's walkthrough, made runnable.
-- `ecash`: sending and redeeming out-of-band ecash.
-- `lightning`: receiving and sending a lightning payment.
-- `onchain`: depositing bitcoin into the federation and withdrawing it back
-  out.
+- `walkthrough <data-dir> <invite-code> [invoice]`: the crate documentation's walkthrough, made
+  runnable.
+- `ecash <data-dir> <invite-code> send <amount-msats>`, `... receive <notes>`,
+  `... cancel <operation-id>`: sending and redeeming out-of-band ecash.
+- `lightning <data-dir> <invite-code> receive <amount-msats> [description]`,
+  `... send <invoice>`: receiving and sending a lightning payment.
+- `onchain <data-dir> <invite-code> receive`, `... send <address> <sats>`: depositing bitcoin
+  into the federation and withdrawing it back out.
 
-Each one joins a federation devimint stands up, funds itself, does its work,
-and prints what happened. Like the integration tests, they need the
-`.#wasm-tests` dev shell, the only one with devimint and the rest of the
-federation's binaries on PATH. Run all four against a fresh federation with:
+The data directory is created if it does not exist and is meant to be reused across runs: the
+first run generates a seed and joins the federation, and every later run over the same directory
+reopens it, which is how a send finds the balance an earlier receive brought in, and how an
+operation id a previous run printed can be picked up again by a later one. Run one by hand
+against any federation you already have an invite code for, for example:
+
+```
+cargo run --example lightning -- ./wallet <invite-code> receive 100000
+```
+
+`scripts/run-sdk-examples.sh` runs all four against a federation it stands up with devimint,
+playing every counterparty itself: paying and issuing invoices through devimint's faucet, and
+depositing to and confirming with devimint's bitcoind. Like the integration tests, it needs the
+`.#wasm-tests` dev shell, the only one with devimint and the rest of the federation's binaries on
+PATH. Run all four against a fresh federation with:
 
 ```
 scripts/run-sdk-examples.sh
