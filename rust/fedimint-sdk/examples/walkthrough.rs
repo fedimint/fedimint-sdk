@@ -1,30 +1,36 @@
 //! The crate documentation's walkthrough, made runnable.
 //!
-//! Run it with `scripts/run-sdk-examples.sh`, which starts a federation through devimint first:
-//! this example builds an instance over a fresh temporary directory, joins that federation, funds
-//! itself through devimint's faucet, then spends and receives the way `src/lib.rs` describes.
+//! Usage: `walkthrough <data-dir> <invite-code> [invoice]`
+//!
+//! Builds an instance over `<data-dir>`, joining `<invite-code>` the first time and
+//! reopening the same federation on every later run, then works through the walkthrough end
+//! to end: preview the federation, read the balance, look at its capabilities, fund the
+//! wallet with a lightning invoice if the balance is still zero, send some ecash, pay
+//! `invoice` if one was given, reattach to the ecash send by the id it printed, list one page
+//! of activity, and shut down.
+//!
+//! `scripts/run-sdk-examples.sh` runs this example against a federation it starts with
+//! devimint, playing every counterparty itself.
 
-use devimint_support::{Devimint, faucet};
-use fedimint_sdk::{Amount, Bolt11Invoice, InviteCode, LnSendState, OperationKind, Sdk, Storage};
+mod common;
+
+use fedimint_sdk::{Amount, Bolt11Invoice, InviteCode, LnSendState, OperationKind};
 
 #[tokio::main]
 async fn main() -> fedimint_sdk::Result<()> {
-    let devimint = Devimint::detect()
-        .expect("no devimint federation found; run this example via scripts/run-sdk-examples.sh");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let usage = "usage: walkthrough <data-dir> <invite-code> [invoice]";
+    let (data_dir, invite, invoice) = match args.as_slice() {
+        [data_dir, invite] => (data_dir.as_str(), invite.as_str(), None),
+        [data_dir, invite, invoice] => (data_dir.as_str(), invite.as_str(), Some(invoice.as_str())),
+        _ => common::usage(usage),
+    };
 
-    // One storage, one seed, as many federations as the user joins. Leaving `.mnemonic(..)` off
-    // entirely uses the seed already in this storage, or, since a fresh temporary directory is
-    // always empty, generates a new one, which `build` reports as `ErrorCode::Entropy` in the
-    // rare case the platform's random source fails.
-    let storage = tempfile::tempdir().expect("a temporary directory");
-    let path = storage.path().to_str().expect("a utf-8 path");
-    let sdk = Sdk::builder().storage(Storage::at(path)?).build().await?;
-    // This is what an application would back up: the words are the only way to restore this
-    // wallet.
-    println!("seed phrase: {}", sdk.export_mnemonic().words().join(" "));
+    let (sdk, federation) = common::open(data_dir, invite).await?;
 
-    // Show the user what they are about to join, before joining it.
-    let invite: InviteCode = devimint.invite.parse()?;
+    // What a "join this federation?" screen would show. `common::open` above already decided
+    // whether to join or reopen; this is shown here purely to demonstrate the preview call.
+    let invite: InviteCode = invite.parse()?;
     let preview = sdk.preview(&invite).await?;
     println!(
         "{} on {:?}, {} guardians, modules {:?}",
@@ -37,65 +43,58 @@ async fn main() -> fedimint_sdk::Result<()> {
         println!("{welcome}");
     }
 
-    let federation = sdk.join(&invite).await?;
-    println!("balance: {}", federation.balance().await?);
+    let balance = federation.balance().await?;
+    println!("balance: {balance}");
 
     // What a federation can do is a value to branch on, never an error to
     // provoke: `capabilities()` to lay out a screen, the facade accessors
     // to actually do the work.
-    let capabilities = federation.capabilities();
-    println!("{capabilities:?}");
+    println!("{:?}", federation.capabilities());
 
-    // A runnable walkthrough needs a balance to spend from, which the doc version could skip.
-    // The faucet stands in for any payer: it pays an invoice this SDK issues, the way a customer
-    // or a friend would.
-    let lightning = federation.lightning().expect(
-        "devimint runs a lightning module; run this example via scripts/run-sdk-examples.sh",
-    );
-    let receive = lightning
-        .receive(Amount::from_msats(200_000), "funding")
-        .await?;
-    faucet("POST", "/pay", &receive.invoice.to_string())
-        .expect("the faucet pays the invoice; run this example via scripts/run-sdk-examples.sh");
-    receive.operation.await_final().await?;
-    println!("balance: {}", federation.balance().await?);
+    // A fresh wallet has nothing to spend from yet: issue an invoice and wait for it to be
+    // paid, the way any first payment into this wallet would arrive.
+    if balance.msats() == 0 {
+        let lightning = federation
+            .lightning()
+            .expect("this federation has no lightning module");
+        let receive = lightning
+            .receive(Amount::from_msats(200_000), "funding")
+            .await?;
+        println!("invoice: {}", receive.invoice);
+        println!("pay this invoice to fund the wallet");
+        receive.operation.await_final().await?;
+    }
 
     // Ecash: notes to hand over out of band, plus an operation that says
     // whether they were redeemed or came back. Quote first here too. The
     // mint rounds the request up to a denomination it can issue, and note
     // selection can cost a fee, so the debit is not the amount asked for.
-    let mut ecash_send_id = None;
-    if let Some(ecash) = federation.ecash() {
-        let quote = ecash.quote(Amount::from_msats(50_000)).await?;
-        println!(
-            "{} of notes plus {} fee ({} debited), good until {}",
-            quote.notes_value(),
-            quote.fee(),
-            quote.total(),
-            quote.expires_at(),
-        );
-        let sent = ecash.send(quote).await?;
-        println!("give these to the receiver: {}", sent.notes);
-        // Worth persisting, though not required: the notes are readable
-        // again from `Operation::details` after a restart, and the id is
-        // all it takes to find this send.
-        println!("resume with {}", sent.operation.id());
-        ecash_send_id = Some(sent.operation.id());
-    }
+    let ecash = federation
+        .ecash()
+        .expect("this federation has no mint module");
+    let quote = ecash.quote(Amount::from_msats(50_000)).await?;
+    println!(
+        "{} of notes plus {} fee ({} debited), good until {}",
+        quote.notes_value(),
+        quote.fee(),
+        quote.total(),
+        quote.expires_at(),
+    );
+    let sent = ecash.send(quote).await?;
+    println!("notes: {}", sent.notes);
+    // Worth persisting, though not required: the notes are readable
+    // again from `Operation::details` after a restart, and the id is
+    // all it takes to find this send.
+    println!("operation: {}", sent.operation.id());
+    let ecash_send_id = sent.operation.id();
 
     // Lightning: quote first, so the user sees the expected cost before
     // agreeing to it, and `send` refuses a quote whose terms have moved.
-    // What finally left the balance is read from the operation's details.
-    if let Some(lightning) = federation.lightning() {
-        // An invoice from the faucet stands in for one a real payee would hand over.
-        let invoice: Bolt11Invoice = faucet("POST", "/invoice", "50000")
-            .expect(
-                "the faucet issues an invoice; run this example via scripts/run-sdk-examples.sh",
-            )
-            .trim()
-            .parse()?;
-        // An invoice states its own amount. One that does not cannot be
-        // paid at all, so there is nothing to override here.
+    if let Some(invoice) = invoice {
+        let invoice: Bolt11Invoice = invoice.parse()?;
+        let lightning = federation
+            .lightning()
+            .expect("this federation has no lightning module");
         let quote = lightning.quote(&invoice).await?;
         println!(
             "pay {} plus {} fee ({} total) via {:?}, good until {}",
@@ -117,41 +116,39 @@ async fn main() -> fedimint_sdk::Result<()> {
                 LnSendState::Success { preimage, fee, .. } => {
                     // The fee the quote bound, and therefore the fee that
                     // was charged.
-                    println!("paid, fee {fee}, preimage {preimage}");
+                    println!("state: paid, fee {fee}, preimage {preimage}");
                 }
-                // Not an error: the payment did not go through, and the
-                // money is back in the balance.
-                LnSendState::Refunded => println!("refunded"),
-                other => println!("{other:?}"),
+                // A payment that does not succeed is not an error: `Refunded` means the
+                // money is safe in the balance, `Failed` means it did not resolve into a
+                // clean refund. Neither is the call failing, so both print as an ordinary
+                // observed state.
+                other => println!("state: {other:?}"),
             }
         }
     }
 
-    // Reattaching after a restart: the operation kept running without us. This example
-    // reattaches to the ecash send from a moment ago, standing in for an id kept from a
-    // previous run.
-    if let Some(id) = ecash_send_id {
-        match federation.operation(&id).await? {
-            Some(operation) => match operation.kind() {
-                // The kind says which typed handle to ask for; the handle reads
-                // the state the operation reached while nobody was watching.
-                OperationKind::EcashSend => {
-                    if let Some(send) = operation.as_ecash_send() {
-                        println!("the notes are {:?}", send.state().await?);
-                    }
+    // Reattaching after a restart: the operation kept running without us. This looks up the
+    // ecash send from a moment ago by its id, standing in for an id kept from a previous run.
+    match federation.operation(&ecash_send_id).await? {
+        Some(operation) => match operation.kind() {
+            // The kind says which typed handle to ask for; the handle reads
+            // the state the operation reached while nobody was watching.
+            OperationKind::EcashSend => {
+                if let Some(send) = operation.as_ecash_send() {
+                    println!("state: {:?}", send.state().await?);
                 }
-                OperationKind::LnSend => {
-                    if let Some(payment) = operation.as_ln_send() {
-                        println!("still going: {:?}", payment.state().await?);
-                    }
+            }
+            OperationKind::LnSend => {
+                if let Some(payment) = operation.as_ln_send() {
+                    println!("state: {:?}", payment.state().await?);
                 }
-                // Recorded by a version that understood something this one
-                // does not. Still a real row, still listable.
-                OperationKind::Unknown => println!("an operation from another version"),
-                other => println!("{other:?}"),
-            },
-            None => println!("no operation with that id here"),
-        }
+            }
+            // Recorded by a version that understood something this one
+            // does not. Still a real row, still listable.
+            OperationKind::Unknown => println!("an operation from another version"),
+            other => println!("{other:?}"),
+        },
+        None => println!("no operation with that id here"),
     }
 
     // Local history, newest first, one page at a time.

@@ -29,10 +29,12 @@
 //!
 //! # A worked example
 //!
-//! `examples/walkthrough.rs` is this same happy path, runnable end to end
-//! against a real federation with `scripts/run-sdk-examples.sh`. The excerpt
-//! below is its first few steps: build an instance, look at a federation
-//! before committing to it, join, and read the balance.
+//! `examples/walkthrough.rs` is this same happy path, runnable end to end: it
+//! takes a data directory and an invite code on the command line, and
+//! `scripts/run-sdk-examples.sh` runs it against a federation the script
+//! starts with devimint. The excerpt below is its first few steps: build an
+//! instance, look at a federation before committing to it, join, and read
+//! the balance.
 //!
 //! ```no_run
 //! use fedimint_sdk::{InviteCode, Mnemonic, Sdk, Storage};

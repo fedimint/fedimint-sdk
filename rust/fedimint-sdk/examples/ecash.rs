@@ -1,101 +1,111 @@
 //! Sending and redeeming out-of-band ecash.
 //!
-//! Run it with `scripts/run-sdk-examples.sh`, which starts a federation through devimint first:
-//! this example builds two instances over two fresh temporary directories, joins both to that
-//! federation, funds the sender through devimint's faucet, sends it some ecash notes, and
-//! redeems them into the receiver.
+//! Usage:
+//!
+//! `ecash <data-dir> <invite-code> send <amount-msats>`
+//! `ecash <data-dir> <invite-code> receive <notes>`
+//! `ecash <data-dir> <invite-code> cancel <operation-id>`
+//!
+//! Builds an instance over `<data-dir>`, joining `<invite-code>` the first time and
+//! reopening the same federation on every later run, then sends notes, redeems notes handed
+//! to it out of band, or asks a send to be reclaimed.
+//!
+//! `scripts/run-sdk-examples.sh` runs this example twice against a federation it starts with
+//! devimint, once as the sender and once as the receiver, funding the sender itself first.
 
-use devimint_support::{Devimint, faucet};
-use fedimint_sdk::{
-    Amount, EcashReceiveState, EcashSendState, Federation, InviteCode, Lightning, Sdk, Storage,
-};
+mod common;
+
+use fedimint_sdk::{Amount, EcashSendState, Notes, OperationId};
+
+const USAGE: &str = "usage: ecash <data-dir> <invite-code> send <amount-msats>\n       \
+    ecash <data-dir> <invite-code> receive <notes>\n       \
+    ecash <data-dir> <invite-code> cancel <operation-id>";
+
+/// What this run was asked to do, parsed from the command line before anything is opened.
+enum Action {
+    Send { msats: u64 },
+    Receive { notes: Notes },
+    Cancel { id: OperationId },
+}
 
 #[tokio::main]
 async fn main() -> fedimint_sdk::Result<()> {
-    let devimint = Devimint::detect()
-        .expect("no devimint federation found; run this example via scripts/run-sdk-examples.sh");
-    let (_sender_storage, sender_sdk, sender) = join(&devimint).await?;
-    let (_receiver_storage, receiver_sdk, receiver) = join(&devimint).await?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let [data_dir, invite, subcommand, arg] = args.as_slice() else {
+        common::usage(USAGE);
+    };
+    let action = parse_action(subcommand, arg)?;
 
-    let sender_ecash = sender
+    let (sdk, federation) = common::open(data_dir, invite).await?;
+    let ecash = federation
         .ecash()
-        .expect("devimint runs a mint module; run this example via scripts/run-sdk-examples.sh");
-    let receiver_ecash = receiver
-        .ecash()
-        .expect("devimint runs a mint module; run this example via scripts/run-sdk-examples.sh");
-    let lightning = sender.lightning().expect(
-        "devimint runs a lightning module; run this example via scripts/run-sdk-examples.sh",
-    );
-    fund(&lightning, 200_000).await?;
-    println!("sender balance: {}", sender.balance().await?);
+        .expect("this federation has no mint module");
 
-    // Send: quote first. A mint hands out notes in fixed denominations, so the receiver can end
-    // up with slightly more value than asked for, and assembling that value can itself cost a
-    // fee; both are known before anything leaves the balance.
-    let quote = sender_ecash.quote(Amount::from_msats(50_000)).await?;
-    println!(
-        "{} of notes plus {} fee ({} debited), good until {}",
-        quote.notes_value(),
-        quote.fee(),
-        quote.total(),
-        quote.expires_at(),
-    );
-    let sent = sender_ecash.send(quote).await?;
-    println!("give these to the receiver: {}", sent.notes);
-    // Worth persisting: the notes are readable again from the operation's details after a
-    // restart, and the id is all it takes to find this send.
-    println!("resume with {}", sent.operation.id());
-
-    // A real receiver is a separate wallet, reached over a chat message, a QR code or a file:
-    // `receiver` above is exactly that, its own instance over its own storage, joined to the
-    // same federation as the sender.
-    let received = receiver_ecash.receive(&sent.notes).await?;
-    match received.await_final().await? {
-        EcashReceiveState::Done => {}
-        other => panic!("expected the redeemed notes to settle as Done, got {other:?}"),
+    match action {
+        Action::Send { msats } => {
+            // Quote first: a mint hands out notes in fixed denominations, so the receiver
+            // can end up with slightly more value than asked for, and assembling that value
+            // can itself cost a fee; both are known before anything leaves the balance.
+            let quote = ecash.quote(Amount::from_msats(msats)).await?;
+            println!(
+                "{} of notes plus {} fee ({} debited), good until {}",
+                quote.notes_value(),
+                quote.fee(),
+                quote.total(),
+                quote.expires_at(),
+            );
+            let sent = ecash.send(quote).await?;
+            println!("notes: {}", sent.notes);
+            // The send stays open until the notes are redeemed or reclaimed: this id is what
+            // to keep, to check on it later or to cancel it.
+            println!("operation: {}", sent.operation.id());
+        }
+        Action::Receive { notes } => {
+            let received = ecash.receive(&notes).await?;
+            let mut updates = received.updates();
+            while let Some(state) = updates.next().await? {
+                println!("state: {state:?}");
+            }
+            let details = received.details().await?;
+            println!(
+                "redeemed {} of notes minus {} fee ({} credited)",
+                details.notes_value, details.fee, details.net_credit,
+            );
+            println!("balance: {}", federation.balance().await?);
+        }
+        Action::Cancel { id } => {
+            let Some(operation) = federation.operation(&id).await? else {
+                common::usage("no operation with that id here");
+            };
+            let Some(send) = operation.as_ecash_send() else {
+                common::usage("that operation is not an ecash send");
+            };
+            send.request_cancel().await?;
+            // Only the federation decides who won: `Redeemed` means the receiver got there
+            // first, `Canceled` means the notes came back.
+            match send.await_final().await? {
+                EcashSendState::Redeemed => println!("state: Redeemed"),
+                other => println!("state: {other:?}"),
+            }
+            println!("balance: {}", federation.balance().await?);
+        }
     }
-    let details = received.details().await?;
-    println!(
-        "redeemed {} of notes minus {} fee ({} credited)",
-        details.notes_value, details.fee, details.net_credit,
-    );
-    println!("receiver balance: {}", receiver.balance().await?);
 
-    // The sender does not hear about the redemption on its own: a send stays in limbo until a
-    // reclaim is attempted, by the automatic timer past the record's `reclaim_at` or by asking
-    // for one now. Only the federation decides who won, and the receiver got there first, so
-    // the request settles the send as `Redeemed` rather than taking the notes back.
-    sent.operation.request_cancel().await?;
-    match sent.operation.await_final().await? {
-        EcashSendState::Redeemed => println!("the receiver got there first; nothing to reclaim"),
-        other => println!("{other:?}"),
-    }
-
-    println!("sender balance: {}", sender.balance().await?);
-    println!("receiver balance: {}", receiver.balance().await?);
-    sender_sdk.shutdown().await?;
-    receiver_sdk.shutdown().await
+    sdk.shutdown().await
 }
 
-/// Funds the wallet by having the faucet pay an invoice this SDK issues, standing in for a
-/// payment from a customer or a friend.
-async fn fund(lightning: &Lightning, msats: u64) -> fedimint_sdk::Result<()> {
-    let receive = lightning
-        .receive(Amount::from_msats(msats), "funding")
-        .await?;
-    faucet("POST", "/pay", &receive.invoice.to_string())
-        .expect("the faucet pays the invoice; run this example via scripts/run-sdk-examples.sh");
-    receive.operation.await_final().await?;
-    Ok(())
-}
-
-/// Builds an instance over a fresh temporary directory and joins the federation devimint is
-/// running.
-async fn join(devimint: &Devimint) -> fedimint_sdk::Result<(tempfile::TempDir, Sdk, Federation)> {
-    let invite: InviteCode = devimint.invite.parse()?;
-    let storage = tempfile::tempdir().expect("a temporary directory");
-    let path = storage.path().to_str().expect("a utf-8 path");
-    let sdk = Sdk::builder().storage(Storage::at(path)?).build().await?;
-    let federation = sdk.join(&invite).await?;
-    Ok((storage, sdk, federation))
+fn parse_action(subcommand: &str, arg: &str) -> fedimint_sdk::Result<Action> {
+    match subcommand {
+        "send" => {
+            let Ok(msats) = arg.parse::<u64>() else {
+                common::usage(USAGE);
+            };
+            Ok(Action::Send { msats })
+        }
+        "receive" => Ok(Action::Receive {
+            notes: arg.parse()?,
+        }),
+        "cancel" => Ok(Action::Cancel { id: arg.parse()? }),
+        _ => common::usage(USAGE),
+    }
 }
