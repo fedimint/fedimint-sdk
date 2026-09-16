@@ -178,6 +178,7 @@
             export PLAYWRIGHT_BROWSERS_PATH=${playwrightBrowsers}
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             
             # bindgenHook exports a global BINDGEN_EXTRA_CLANG_ARGS which breaks
             # cross-compilation (e.g., wasm32). We capture it and scope it strictly
