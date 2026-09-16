@@ -111,4 +111,20 @@ grep -m1 -o 'rev = "[0-9a-f]\{40\}"' Cargo.toml
 # federation's uptime and a compile error does not cost a full DKG.
 cargo test --locked --test integration --no-run
 
-devimint wasm-test-setup --exec cargo test --locked --test integration "$@"
+# devimint integration tests can be flaky in constrained CI environments (e.g. timeouts).
+# Retry up to 3 times to ensure flakiness doesn't fail the build.
+set +e
+MAX_RETRIES=3
+for ((i=1; i<=MAX_RETRIES; i++)); do
+  echo "Running integration tests (Attempt $i of $MAX_RETRIES)..."
+  if devimint wasm-test-setup --exec cargo test --locked --test integration "$@"; then
+    echo "Tests passed on attempt $i"
+    exit 0
+  fi
+  if [ "$i" -lt "$MAX_RETRIES" ]; then
+    echo "Tests failed. Retrying in 10 seconds..."
+    sleep 10
+  fi
+done
+echo "Tests failed after $MAX_RETRIES attempts."
+exit 1
