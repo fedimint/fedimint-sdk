@@ -1507,22 +1507,44 @@ async fn mintv2_reclaim(
     // here holding it would fail every later close. See `mintv2_receive_outcome`.
     let outcome = mintv2_receive_outcome(client_arc, op_id).await?;
 
-    Ok(match outcome {
-        fedimint_mintv2_client::FinalReceiveOperationState::Success => EcashSendState::Canceled,
-        fedimint_mintv2_client::FinalReceiveOperationState::Rejected => EcashSendState::Redeemed,
-    })
+    match outcome {
+        Mintv2ReceiveOutcome::Done => Ok(EcashSendState::Canceled),
+        Mintv2ReceiveOutcome::Rejected => Ok(EcashSendState::Redeemed),
+        // The reclaim was accepted, but never became spendable, so it settled nothing: the
+        // notes it targeted are still exactly as redeemed or not as they were before this
+        // ran, and the caller needs to know the reclaim itself did not actually happen.
+        Mintv2ReceiveOutcome::NotIssued { cause } => Err(Error::new(
+            ErrorCode::Internal,
+            format!("the reclaim was accepted but its notes could not be issued: {cause}"),
+        )),
+    }
+}
+
+// Redeeming ecash on mintv2 settles in the same two steps a walletv2 claim does (see
+// `claim_from_upstream` in `crate::onchain::v2`, the sibling this mirrors): the federation
+// first accepts the redemption into consensus, and only afterwards does the mint's own output
+// state machine actually issue the fresh notes it promised. `Rejected` and `NotIssued` are
+// both ways a redemption can end without those notes ever becoming spendable; `Done` is the
+// only variant that means they are.
+enum Mintv2ReceiveOutcome {
+    /// The redemption settled and its notes are spendable.
+    Done,
+    /// The federation rejected the redemption.
+    Rejected,
+    /// The redemption was accepted, but the mint could not issue one of its notes.
+    NotIssued { cause: String },
 }
 
 /// Waits for a mintv2 receive operation to reach its final state, holding the client only for
 /// as long as the wait actually runs.
 ///
-/// The wait ends when the federation reaches consensus on the claiming transaction, so it is
-/// unbounded — a federation that is slow, unreachable or simply not asked about again never
-/// ends it — and it needs the client alive throughout. Both callers run inside a driver's
-/// `'static` stream: [`mintv2_reclaim`] is driven by the send subscription, and
-/// [`mintv2_receive_subscription`] is a stream itself. A stream parked here with a
-/// `ClientHandleArc` in its frame would never give it back, because an idle subscriber stops
-/// polling it altogether — which is why the wait is handed to
+/// The wait ends when the federation reaches consensus on the claiming transaction and the
+/// mint finishes issuing whatever it minted, so it is unbounded — a federation that is slow,
+/// unreachable or simply not asked about again never ends it — and it needs the client alive
+/// throughout. Both callers run inside a driver's `'static` stream: [`mintv2_reclaim`] is
+/// driven by the send subscription, and [`mintv2_receive_subscription`] is a stream itself. A
+/// stream parked here with a `ClientHandleArc` in its frame would never give it back, because
+/// an idle subscriber stops polling it altogether — which is why the wait is handed to
 /// [`crate::federation::wait_holding_client`], where the runtime keeps driving it and the
 /// client's own shutdown can reclaim the handle. That function's documentation has the whole
 /// reasoning.
@@ -1533,18 +1555,80 @@ async fn mintv2_reclaim(
 async fn mintv2_receive_outcome(
     client: ClientHandleArc,
     op_id: fedimint_core::core::OperationId,
-) -> Result<fedimint_mintv2_client::FinalReceiveOperationState> {
+) -> Result<Mintv2ReceiveOutcome> {
     let stop = client.task_group().make_handle().make_shutdown_rx();
     crate::federation::wait_holding_client(client, stop, move |client| async move {
-        let mintv2 = client
-            .get_first_module::<fedimint_mintv2_client::MintClientModule>()
-            .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
-        mintv2
-            .await_final_receive_operation_state(op_id)
-            .await
-            .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))
+        mintv2_receive_result(&client, op_id).await
     })
     .await
+}
+
+// The settlement check itself, shared by the unbounded wait above and the driver's bounded
+// `current` path (which polls it with `now_or_never` instead of awaiting it): both need the
+// same two steps, upstream's final state and then the mint's own issuance of whatever it
+// minted, they only differ in how long each is willing to wait for the second one.
+async fn mintv2_receive_result(
+    client: &Client,
+    id: fedimint_core::core::OperationId,
+) -> Result<Mintv2ReceiveOutcome> {
+    let mintv2 = client
+        .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+        .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
+
+    let final_state = mintv2
+        .await_final_receive_operation_state(id)
+        .await
+        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+
+    if final_state == fedimint_mintv2_client::FinalReceiveOperationState::Rejected {
+        return Ok(Mintv2ReceiveOutcome::Rejected);
+    }
+
+    // `Success` only means the redemption was accepted into consensus. The change outpoints
+    // its own metadata recorded are exactly the outputs the mint still has to issue, the same
+    // `change_outpoint_range` a walletv2 claim's `ReceiveMeta` carries for the same reason.
+    let entry = client
+        .operation_log()
+        .get_operation(id)
+        .await
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "the receive is no longer in the operation log",
+            )
+        })?;
+    let meta: fedimint_mintv2_client::MintOperationMeta = entry.try_meta().map_err(|err| {
+        Error::new(
+            ErrorCode::Internal,
+            format!("could not read the receive's terms: {err}"),
+        )
+    })?;
+    let fedimint_mintv2_client::MintOperationMeta::Receive {
+        change_outpoint_range,
+        ..
+    } = meta
+    else {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            "the receive operation's own metadata is not a receive",
+        ));
+    };
+
+    match client
+        .await_primary_bitcoin_module_outputs(id, change_outpoint_range.into_iter().collect())
+        .await
+    {
+        Ok(()) => Ok(Mintv2ReceiveOutcome::Done),
+        Err(fedimint_client_module::TransactionSubmitError::PrimaryModule(cause)) => {
+            Ok(Mintv2ReceiveOutcome::NotIssued {
+                cause: cause.to_string(),
+            })
+        }
+        Err(err) => Err(Error::new(
+            ErrorCode::Internal,
+            format!("could not wait for the received notes to be issued: {err}"),
+        )),
+    }
 }
 
 fn decode_send_wire(details: &str) -> Result<EcashSendDetailsWire> {
@@ -1741,14 +1825,15 @@ fn mintv2_receive_subscription(
         drop(client);
 
         match mintv2_receive_outcome(handle, id).await? {
-            fedimint_mintv2_client::FinalReceiveOperationState::Success => {
-                Ok(EcashReceiveState::Done)
-            }
-            fedimint_mintv2_client::FinalReceiveOperationState::Rejected => {
-                Ok(EcashReceiveState::Failed {
-                    reason: "Transaction was rejected".to_string(),
-                })
-            }
+            Mintv2ReceiveOutcome::Done => Ok(EcashReceiveState::Done),
+            Mintv2ReceiveOutcome::Rejected => Ok(EcashReceiveState::Failed {
+                reason: "Transaction was rejected".to_string(),
+            }),
+            Mintv2ReceiveOutcome::NotIssued { cause } => Ok(EcashReceiveState::Failed {
+                reason: format!(
+                    "the redemption was accepted but its notes could not be issued: {cause}"
+                ),
+            }),
         }
     });
 
@@ -1779,7 +1864,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
             };
 
             if record.module == "mintv2" {
-                let mintv2 = client
+                client
                     .get_first_module::<fedimint_mintv2_client::MintClientModule>()
                     .map_err(|_| Error::new(ErrorCode::NotSupported, "mintv2 module not found"))?;
 
@@ -1787,20 +1872,26 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     return Ok(EcashReceiveState::Issuing);
                 }
 
+                // `mintv2_receive_result` also waits for the mint to issue whatever the
+                // redemption minted, and that wait is a federation round trip, not a local
+                // check `has_active_states` above already covers. `now_or_never` still keeps
+                // this path bounded: a redemption accepted but not yet issued reports
+                // `Issuing` here, exactly as it would if consensus itself were still pending.
                 use futures::FutureExt as _;
-                return match mintv2
-                    .await_final_receive_operation_state(id)
-                    .now_or_never()
-                {
-                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Success)) => {
-                        Ok(EcashReceiveState::Done)
-                    }
-                    Some(Ok(fedimint_mintv2_client::FinalReceiveOperationState::Rejected)) => {
+                return match mintv2_receive_result(&client, id).now_or_never() {
+                    Some(Ok(Mintv2ReceiveOutcome::Done)) => Ok(EcashReceiveState::Done),
+                    Some(Ok(Mintv2ReceiveOutcome::Rejected)) => Ok(EcashReceiveState::Failed {
+                        reason: "Transaction was rejected".to_string(),
+                    }),
+                    Some(Ok(Mintv2ReceiveOutcome::NotIssued { cause })) => {
                         Ok(EcashReceiveState::Failed {
-                            reason: "Transaction was rejected".to_string(),
+                            reason: format!(
+                                "the redemption was accepted but its notes could not be \
+                                 issued: {cause}"
+                            ),
                         })
                     }
-                    Some(Err(err)) => Err(Error::new(ErrorCode::Internal, err.to_string())),
+                    Some(Err(err)) => Err(err),
                     None => Ok(EcashReceiveState::Issuing),
                 };
             }
