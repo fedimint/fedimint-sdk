@@ -94,11 +94,15 @@ start_example() {
   pid=$!
 }
 
-# Waits for <pid> (a pid start_example returned) and stops the run, naming <name>, if the
-# example it belongs to exited with a failure.
+# Waits for <pid> (a pid start_example returned), prints the example's output from <log> once it
+# has ended, since a backgrounded example writes only there, and stops the run, naming <name>,
+# if the example exited with a failure.
 finish() {
-  local name="$1" pid="$2"
-  wait "$pid" || die "$name"
+  local name="$1" pid="$2" log="$3"
+  local status=0
+  wait "$pid" || status=$?
+  cat "$log"
+  [ "$status" -eq 0 ] || die "$name"
 }
 
 # Polls <log> once a second, up to $grab_timeout seconds, for the first line starting with
@@ -171,7 +175,7 @@ run_walkthrough() {
   local fund
   fund="$(grab "$log" "invoice:" "$pid")" || die walkthrough
   pay_invoice "$fund"
-  finish walkthrough "$pid"
+  finish walkthrough "$pid" "$log"
 }
 
 # Receives a payment, then sends a fresh faucet invoice back out.
@@ -181,7 +185,7 @@ run_lightning() {
   local invoice
   invoice="$(grab "$receive_log" "invoice:" "$pid")" || die lightning
   pay_invoice "$invoice"
-  finish lightning "$pid"
+  finish lightning "$pid" "$receive_log"
   run_example lightning "$root/lightning-send.log" "$wallet_a" "$invite" send "$(new_invoice 50000)"
 }
 
@@ -195,7 +199,7 @@ run_ecash() {
   local invoice
   invoice="$(grab "$fund_log" "invoice:" "$pid")" || die ecash
   pay_invoice "$invoice"
-  finish ecash "$pid"
+  finish ecash "$pid" "$fund_log"
 
   local send_log="$root/ecash-send.log"
   run_example ecash "$send_log" "$wallet_a" "$invite" send 50000
@@ -218,7 +222,7 @@ run_onchain() {
   address="$(grab "$receive_log" "address:" "$pid")" || die onchain
   send_to_address "$address" 100000
   mine_blocks 21
-  finish onchain "$pid"
+  finish onchain "$pid" "$receive_log"
 
   run_example onchain "$root/onchain-send.log" "$wallet_a" "$invite" \
     send "$(bitcoin_cli getnewaddress)" 20000
