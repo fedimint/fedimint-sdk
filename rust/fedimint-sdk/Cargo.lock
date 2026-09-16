@@ -1444,10 +1444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "devimint-support"
-version = "0.1.0"
-
-[[package]]
 name = "diatomic-waker"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2393,7 +2389,6 @@ dependencies = [
  "async-compat",
  "bip39",
  "cc",
- "devimint-support",
  "fd-lock",
  "fedimint-bip39",
  "fedimint-client",

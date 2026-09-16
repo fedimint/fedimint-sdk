@@ -1,7 +1,0 @@
-[package]
-name = "devimint-support"
-version = "0.1.0"
-edition = "2024"
-publish = false
-license = "MIT"
-description = "The devimint federation, faucet and bitcoind as fedimint-sdk's tests and examples reach them"
