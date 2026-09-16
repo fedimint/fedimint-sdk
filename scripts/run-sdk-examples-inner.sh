@@ -182,6 +182,10 @@ run_walkthrough() {
   fund="$(grab "$log" "invoice:" "$pid")" || die walkthrough
   pay_invoice walkthrough "$fund"
   finish walkthrough "$pid" "$log"
+  # The walkthrough pays the invoice handed to it above and then sends ecash of its own;
+  # both are visible in its log if it actually ran to completion.
+  grep -q '^state: paid, ' "$log" || die walkthrough
+  grep -q '^notes: ' "$log" || die walkthrough
 }
 
 # Receives a payment, then sends a fresh faucet invoice back out.
@@ -192,10 +196,13 @@ run_lightning() {
   invoice="$(grab "$receive_log" "invoice:" "$pid")" || die lightning
   pay_invoice lightning "$invoice"
   finish lightning "$pid" "$receive_log"
+  grep -q '^state: Claimed$' "$receive_log" || die lightning
 
+  local send_log="$root/lightning-send.log"
   local send_invoice
   send_invoice="$(new_invoice lightning 50000)"
-  run_example lightning "$root/lightning-send.log" "$wallet_a" "$invite" send "$send_invoice"
+  run_example lightning "$send_log" "$wallet_a" "$invite" send "$send_invoice"
+  grep -q '^state: paid, ' "$send_log" || die lightning
 }
 
 # The ecash example has no subcommand of its own that funds a wallet, so it is funded the same
@@ -209,6 +216,7 @@ run_ecash() {
   invoice="$(grab "$fund_log" "invoice:" "$pid")" || die ecash
   pay_invoice ecash "$invoice"
   finish ecash "$pid" "$fund_log"
+  grep -q '^state: Claimed$' "$fund_log" || die ecash
 
   local send_log="$root/ecash-send.log"
   run_example ecash "$send_log" "$wallet_a" "$invite" send 50000
@@ -216,7 +224,9 @@ run_ecash() {
   notes="$(grab "$send_log" "notes:")" || die ecash
   operation="$(grab "$send_log" "operation:")" || die ecash
 
-  run_example ecash "$root/ecash-receive.log" "$wallet_b" "$invite" receive "$notes"
+  local receive_log="$root/ecash-receive.log"
+  run_example ecash "$receive_log" "$wallet_b" "$invite" receive "$notes"
+  grep -q '^state: Done$' "$receive_log" || die ecash
 
   local cancel_log="$root/ecash-cancel.log"
   run_example ecash "$cancel_log" "$wallet_a" "$invite" cancel "$operation"
@@ -232,9 +242,12 @@ run_onchain() {
   send_to_address "$address" 100000
   mine_blocks 21
   finish onchain "$pid" "$receive_log"
+  grep -q '^state: Claimed' "$receive_log" || die onchain
 
-  run_example onchain "$root/onchain-send.log" "$wallet_a" "$invite" \
+  local send_log="$root/onchain-send.log"
+  run_example onchain "$send_log" "$wallet_a" "$invite" \
     send "$(bitcoin_cli getnewaddress)" 20000
+  grep -q '^state: Succeeded' "$send_log" || die onchain
 }
 
 examples=("$@")
