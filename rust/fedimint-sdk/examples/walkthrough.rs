@@ -49,13 +49,14 @@ async fn main() -> fedimint_sdk::Result<()> {
     // A runnable walkthrough needs a balance to spend from, which the doc version could skip.
     // The faucet stands in for any payer: it pays an invoice this SDK issues, the way a customer
     // or a friend would.
-    let lightning = federation
-        .lightning()
-        .expect("devimint runs a lightning module");
+    let lightning = federation.lightning().expect(
+        "devimint runs a lightning module; run this example via scripts/run-sdk-examples.sh",
+    );
     let receive = lightning
         .receive(Amount::from_msats(200_000), "funding")
         .await?;
-    faucet("POST", "/pay", &receive.invoice.to_string()).expect("the faucet pays the invoice");
+    faucet("POST", "/pay", &receive.invoice.to_string())
+        .expect("the faucet pays the invoice; run this example via scripts/run-sdk-examples.sh");
     receive.operation.await_final().await?;
     println!("balance: {}", federation.balance().await?);
 
@@ -88,7 +89,9 @@ async fn main() -> fedimint_sdk::Result<()> {
     if let Some(lightning) = federation.lightning() {
         // An invoice from the faucet stands in for one a real payee would hand over.
         let invoice: Bolt11Invoice = faucet("POST", "/invoice", "50000")
-            .expect("the faucet issues an invoice")
+            .expect(
+                "the faucet issues an invoice; run this example via scripts/run-sdk-examples.sh",
+            )
             .trim()
             .parse()?;
         // An invoice states its own amount. One that does not cannot be
@@ -130,6 +133,13 @@ async fn main() -> fedimint_sdk::Result<()> {
     if let Some(id) = ecash_send_id {
         match federation.operation(&id).await? {
             Some(operation) => match operation.kind() {
+                // The kind says which typed handle to ask for; the handle reads
+                // the state the operation reached while nobody was watching.
+                OperationKind::EcashSend => {
+                    if let Some(send) = operation.as_ecash_send() {
+                        println!("the notes are {:?}", send.state().await?);
+                    }
+                }
                 OperationKind::LnSend => {
                     if let Some(payment) = operation.as_ln_send() {
                         println!("still going: {:?}", payment.state().await?);
