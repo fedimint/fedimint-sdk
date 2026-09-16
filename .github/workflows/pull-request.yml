@@ -262,6 +262,7 @@ jobs:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: 'Run integration tests (${{ matrix.shape }})'
+        id: run-tests
         timeout-minutes: 35
         shell: bash
         run: |
@@ -272,12 +273,12 @@ jobs:
             scripts/run-sdk-integration-tests.sh ${{ matrix.shape }}
 
       - name: 'Upload devimint logs'
-        if: failure()
+        if: ${{ !cancelled() && steps.run-tests.outcome == 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: devimint-logs-${{ matrix.shape }}-${{ github.run_id }}
           path: |
-            devimint-logs/devimint-*/**/*.log
-            devimint-logs/devimint-*/FM_*
+            devimint-logs/**/*.log
+            devimint-logs/**/FM_*
           retention-days: 7
           if-no-files-found: ignore

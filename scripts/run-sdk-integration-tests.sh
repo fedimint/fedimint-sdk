@@ -113,16 +113,28 @@ cargo test --locked --test integration --no-run
 
 # devimint integration tests can be flaky in constrained CI environments (e.g. timeouts).
 # Retry up to 3 times to ensure flakiness doesn't fail the build.
-set +e
 MAX_RETRIES=3
+BASE_TEST_DIR="${FM_TEST_DIR:-/tmp/devimint-tests}"
+
 for ((i=1; i<=MAX_RETRIES; i++)); do
   echo "Running integration tests (Attempt $i of $MAX_RETRIES)..."
-  if devimint wasm-test-setup --exec cargo test --locked --test integration "$@"; then
+
+  # Devimint uses the exact path in FM_TEST_DIR. We must give each attempt
+  # a completely clean directory, otherwise bitcoind wallet state from the
+  # failed attempt will corrupt the retry.
+  export FM_TEST_DIR="$BASE_TEST_DIR/attempt-$i"
+  mkdir -p "$FM_TEST_DIR"
+  export TMPDIR="$FM_TEST_DIR"
+
+  rc=0
+  devimint wasm-test-setup --exec cargo test --locked --test integration "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     echo "Tests passed on attempt $i"
     exit 0
   fi
+  echo "Attempt $i failed with exit code $rc."
   if [ "$i" -lt "$MAX_RETRIES" ]; then
-    echo "Tests failed. Retrying in 10 seconds..."
+    echo "Retrying in 10 seconds..."
     sleep 10
   fi
 done
