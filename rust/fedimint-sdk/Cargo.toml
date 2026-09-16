@@ -8,6 +8,12 @@ description = "High-level Fedimint client SDK: one ergonomic API over fedimint-c
 repository = "https://github.com/fedimint/fedimint-sdk"
 publish = false   # flip when the name is reserved and the API settles
 
+[workspace]
+# The support crate the integration tests and the examples share; the SDK stays this
+# workspace's default member, so every `cargo` invocation without `--workspace` means what
+# it always did.
+members = ["devimint-support"]
+
 [lib]
 # `cdylib` is the shared library a mobile host loads, and the file
 # uniffi-bindgen reads its metadata back out of to generate Kotlin/Swift;
@@ -185,5 +191,8 @@ panic = "abort"
 strip = "debuginfo"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# The devimint harness the integration tests and (later) the examples share: finding the
+# federation, talking to the faucet, driving bitcoind.
+devimint-support = { path = "devimint-support" }
 tempfile = "3.20.0"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "time"] }
