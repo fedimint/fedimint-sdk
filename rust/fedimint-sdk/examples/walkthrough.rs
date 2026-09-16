@@ -26,12 +26,10 @@ async fn main() -> fedimint_sdk::Result<()> {
         _ => common::usage(usage),
     };
 
-    let (sdk, federation) = common::open(data_dir, invite).await?;
+    let sdk = common::build(data_dir).await?;
 
-    // What a "join this federation?" screen would show. `common::open` above already decided
-    // whether to join or reopen; this is shown here purely to demonstrate the preview call.
-    let invite: InviteCode = invite.parse()?;
-    let preview = sdk.preview(&invite).await?;
+    // Show the user what they are about to join, before joining it.
+    let preview = sdk.preview(&invite.parse::<InviteCode>()?).await?;
     println!(
         "{} on {:?}, {} guardians, modules {:?}",
         preview.name.as_deref().unwrap_or("unnamed federation"),
@@ -43,6 +41,7 @@ async fn main() -> fedimint_sdk::Result<()> {
         println!("{welcome}");
     }
 
+    let federation = common::open(&sdk, invite).await?;
     let balance = federation.balance().await?;
     println!("balance: {balance}");
 

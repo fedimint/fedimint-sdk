@@ -33,7 +33,8 @@ async fn main() -> fedimint_sdk::Result<()> {
     };
     let action = parse_action(rest)?;
 
-    let (sdk, federation) = common::open(data_dir, invite).await?;
+    let sdk = common::build(data_dir).await?;
+    let federation = common::open(&sdk, invite).await?;
     let onchain = federation
         .onchain()
         .expect("this federation has no wallet module");

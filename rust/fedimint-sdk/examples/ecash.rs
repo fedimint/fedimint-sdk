@@ -36,7 +36,8 @@ async fn main() -> fedimint_sdk::Result<()> {
     };
     let action = parse_action(subcommand, arg)?;
 
-    let (sdk, federation) = common::open(data_dir, invite).await?;
+    let sdk = common::build(data_dir).await?;
+    let federation = common::open(&sdk, invite).await?;
     let ecash = federation
         .ecash()
         .expect("this federation has no mint module");
