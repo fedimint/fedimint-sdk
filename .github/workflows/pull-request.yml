@@ -240,10 +240,10 @@ jobs:
     # promoting it to a required check.
     continue-on-error: true
     concurrency:
-      # Global lock per shape: serializes all devimint runs on the
-      # self-hosted runner regardless of which PR triggered them, so two
-      # concurrent PRs cannot collide on ports or state.
-      group: devimint-integration-${{ matrix.shape }}
+      # Global lock: serializes all devimint runs on the
+      # self-hosted runner regardless of which PR or matrix leg triggered them, 
+      # so two concurrent jobs cannot collide on ports or state.
+      group: devimint-integration
       cancel-in-progress: false
     strategy:
       fail-fast: false
