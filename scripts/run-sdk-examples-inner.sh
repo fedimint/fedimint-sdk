@@ -22,8 +22,11 @@ if [ "${FM_SDK_SHAPE:-}" = v2 ]; then
   # --our-id 0: the harness always runs a single guardian (FM_FED_SIZE=1). pass is the admin
   # password devimint sets everywhere.
   #
-  # FM_MINT_CLIENT is a ready-to-run command line, so it is deliberately left unquoted below to
-  # split it into a program and its arguments, the same way the tests' Rust harness does.
+  # FM_MINT_CLIENT is a ready-to-run command line, so it is deliberately left unquoted below:
+  # the expansion splits it into a program and its arguments on whitespace, like the tests'
+  # Rust harness does with `split_whitespace`. Bash's unquoted expansion also glob-expands
+  # each word, but devimint's client command line never contains a glob character, so that
+  # extra step changes nothing here.
   # shellcheck disable=SC2086
   listed="$($FM_MINT_CLIENT --our-id 0 --password pass module lnv2 gateways list)"
   lnd_needle=":${FM_PORT_GW_LND}/"
