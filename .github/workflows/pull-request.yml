@@ -24,6 +24,7 @@ jobs:
       react-native: ${{ steps.filter.outputs.react-native }}
       docs: ${{ steps.filter.outputs.docs }}
       cli: ${{ steps.filter.outputs.cli }}
+      rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +49,7 @@ jobs:
           react_native=false
           docs=false
           cli=false
+          rust_sdk=false
 
           enable_all() {
             core=true
@@ -55,6 +57,7 @@ jobs:
             react_native=true
             docs=true
             cli=true
+            rust_sdk=true
           }
 
           emit_outputs() {
@@ -64,6 +67,7 @@ jobs:
               echo "react-native=$react_native"
               echo "docs=$docs"
               echo "cli=$cli"
+              echo "rust-sdk=$rust_sdk"
             } >> "$GITHUB_OUTPUT"
           }
 
@@ -146,6 +150,10 @@ jobs:
               flake.nix|flake.lock)
                 web=true
                 react_native=true
+                rust_sdk=true
+                ;;
+              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh)
+                rust_sdk=true
                 ;;
               js/docs/*|docs/*)
                 docs=true
@@ -221,3 +229,56 @@ jobs:
       - uses: ./.github/actions/build-rn-ios
         with:
           device-only: 'true'
+
+  integration-test-sdk:
+    name: 'Integration test SDK (${{ matrix.shape }})'
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.rust-sdk == 'true') }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 45
+    # Non-blocking on day one: let the suite build a track record before
+    # promoting it to a required check.
+    continue-on-error: true
+    concurrency:
+      # Global lock per shape: serializes all devimint runs on the
+      # self-hosted runner regardless of which PR triggered them, so two
+      # concurrent PRs cannot collide on ports or state.
+      group: devimint-integration-${{ matrix.shape }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        shape: [v1, v2]
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Setup Nix'
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: 'Run integration tests (${{ matrix.shape }})'
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/devimint-logs"
+          export FM_TEST_DIR="$GITHUB_WORKSPACE/devimint-logs"
+          export TMPDIR="$GITHUB_WORKSPACE/devimint-logs"
+          nix develop --accept-flake-config .#wasm-tests --command \
+            scripts/run-sdk-integration-tests.sh ${{ matrix.shape }}
+
+      - name: 'Upload devimint logs'
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devimint-logs-${{ matrix.shape }}-${{ github.run_id }}
+          path: |
+            devimint-logs/devimint-*/**/*.log
+            devimint-logs/devimint-*/FM_*
+          retention-days: 7
+          if-no-files-found: ignore
+
