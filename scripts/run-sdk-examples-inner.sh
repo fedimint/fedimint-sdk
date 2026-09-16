@@ -191,8 +191,8 @@ run_lightning() {
 
 # The ecash example has no subcommand of its own that funds a wallet, so it is funded the same
 # way the lightning receive above is: any receive that credits the balance will do. Wallet a
-# then sends notes wallet b redeems, and wallet a cancels a second send the same receiver never
-# got to redeem.
+# then sends notes that wallet b redeems, and afterwards asks to cancel that same send, which
+# settles it as redeemed because the receiver got there first.
 run_ecash() {
   local fund_log="$root/ecash-fund.log"
   start_example lightning "$fund_log" "$wallet_a" "$invite" receive 200000 "an example"
