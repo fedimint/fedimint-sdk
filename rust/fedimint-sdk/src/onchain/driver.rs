@@ -97,13 +97,26 @@ impl Driver<OnchainSendState> for OnchainSendDriver {
             if let Some(encoded) = &record.final_state {
                 return wire::decode_send_state(encoded);
             }
-            match record.module.as_str() {
-                "wallet" => first_state(self.subscribe(federation, id, record).await?).await,
-                // walletv2 has no incremental subscription to settle: `current_send` is the
-                // module's own bounded final-state await, already capped to the 500 ms rule.
-                "walletv2" => v2::current_send(federation, id).await,
-                other => Err(unknown_module(other)),
-            }
+            // Both generations reach their current state the same way, through the first item
+            // of their own subscription. `settled` is what makes that a bounded read: it yields
+            // the first item as it comes and then drains for as long as the states keep being
+            // non-final, one `CURRENT_STATE_SETTLE` window at a time.
+            //
+            // walletv2 used to have a separate path here, its module's own final-state await
+            // under a timeout. That could not see past a funding rejection: upstream's cached
+            // outcome stays `Aborted` however the recovery ended, so the rejection had to be
+            // reported as still running, and an application that only ever polled
+            // `Operation::state()` never left `Created` — no subscription ran to settle the
+            // rejection, and with no ending nothing was persisted to read back, across restarts
+            // included. Going through the subscription puts the settle gate on this path too:
+            // a recovery still running still reports `Created`, because the drain times out on
+            // the gate's pending state, and one that has finished reports the ending it
+            // established, because the gate has it ready.
+            //
+            // The unknown-module check lives in `subscribe`, which makes it before taking a
+            // client, so a record naming a module this build cannot observe still fails here
+            // without one.
+            first_state(self.subscribe(federation, id, record).await?).await
         })
     }
 
@@ -331,6 +344,79 @@ mod tests {
             .expect_err("the error is forwarded");
         assert_eq!(err.code, ErrorCode::Internal);
         assert_eq!(err.message, "upstream went wrong");
+    }
+
+    /// What a `current` read does with a recovery that has already settled.
+    ///
+    /// This is the composition `OnchainSendDriver::current` is, for both generations: a fresh
+    /// subscription per read, through `settled`, taking the first item. The states here are what
+    /// the gate produces once a rejection has been settled — the pending state, then the ending
+    /// — so what is under test is that a read finds the ending rather than stopping at the
+    /// pending state in front of it.
+    ///
+    /// Read twice, because that is how an application that never subscribes observes an
+    /// operation: each read builds its own stream and nothing is retained between them, so the
+    /// second must answer exactly as the first did. Nothing is persisted by either, which is
+    /// what makes a `current` that could not see past the rejection stay pending for ever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_current_read_sees_a_recovery_that_has_already_settled() {
+        let restored = || -> BoxStream<'static, Result<OnchainSendState>> {
+            Box::pin(futures::stream::iter([
+                Ok(OnchainSendState::Created),
+                Ok(OnchainSendState::Created),
+                Ok(OnchainSendState::Refunded {
+                    reason: a_rejection(),
+                }),
+            ]))
+        };
+        for read in 1..=2 {
+            let state = first_state(settled(restored())).await.expect("a state");
+            assert_eq!(
+                state,
+                OnchainSendState::Refunded {
+                    reason: a_rejection(),
+                },
+                "read {read} did not see the established restoration"
+            );
+        }
+
+        // The other ending a settled recovery can establish reads back the same way.
+        let unproven = || -> BoxStream<'static, Result<OnchainSendState>> {
+            Box::pin(futures::stream::iter([
+                Ok(OnchainSendState::Created),
+                Ok(OnchainSendState::Created),
+                Ok(OnchainSendState::Failed {
+                    reason: "a recovery output never issued its notes".to_owned(),
+                }),
+            ]))
+        };
+        for read in 1..=2 {
+            let state = first_state(settled(unproven())).await.expect("a state");
+            assert_eq!(
+                state,
+                OnchainSendState::Failed {
+                    reason: "a recovery output never issued its notes".to_owned(),
+                },
+                "read {read} did not see the failed recovery"
+            );
+        }
+    }
+
+    /// And a recovery still running reads as pending, which is the half the bounded-read rule is
+    /// about: the gate's pending state is there, the ending is not yet, and the drain gives up on
+    /// it rather than waiting out a recovery measured in consensus rounds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_current_read_of_a_running_recovery_reports_pending() {
+        let stream: BoxStream<'static, Result<OnchainSendState>> = Box::pin(
+            futures::stream::iter([Ok(OnchainSendState::Created), Ok(OnchainSendState::Created)])
+                .chain(futures::stream::pending()),
+        );
+        let state = first_state(settled(stream)).await.expect("a state");
+        assert_eq!(state, OnchainSendState::Created);
+        assert!(
+            !state.is_final(),
+            "a withdrawal whose recovery is still running was reported as finished"
+        );
     }
 
     /// The two endings a settled recovery can establish, and which reason each carries.

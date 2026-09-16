@@ -249,8 +249,8 @@ pub(super) async fn send(
 }
 
 // walletv2 `FinalSendOperationState` onto `OnchainSendState`. There is no separate broadcast
-// step and no `Created` to map here: that state is reported directly by `current_send` and
-// `subscribe_send` before this ever runs. Upstream documents `Failure` itself as "a programming
+// step and no `Created` to map here: `subscribe_send` reports that state itself before this
+// ever runs. Upstream documents `Failure` itself as "a programming
 // error has occurred or the federation is malicious"
 // (`modules/fedimint-walletv2-client/src/lib.rs:104`), which is why it maps to `Failed` rather
 // than the ordinary `Refunded` ending `Aborted` gets.
@@ -276,45 +276,6 @@ pub(super) fn map_final_send(state: &FinalSendOperationState) -> SendStep {
         FinalSendOperationState::Failure => SendStep::State(OnchainSendState::Failed {
             reason: "the funding was accepted but no transaction came of it".to_owned(),
         }),
-    }
-}
-
-/// The current state of a walletv2 withdrawal: the final await bounded to 500 ms, `Created` when
-/// it does not resolve in time.
-///
-/// This is the generation's own path to the current state, taken instead of the first item of a
-/// subscription, so the settle gate has to be honoured here too. It is honoured by reporting the
-/// pending state rather than by running the gate: `current` is a bounded read by contract, and
-/// the recovery it would have to wait for is unbounded. A withdrawal whose funding was rejected
-/// is therefore [`OnchainSendState::Created`] here — still running, which is the truth — and a
-/// subscription is what carries it to the ending the recovery establishes.
-pub(super) async fn current_send(
-    federation: &FederationInner,
-    id: OperationId,
-) -> Result<OnchainSendState> {
-    let client = federation.client(false).await?;
-    let module = module_of(&client)?;
-    match fedimint_core::runtime::timeout(
-        CURRENT_STATE_SETTLE,
-        module.await_final_send_operation_state(id),
-    )
-    .await
-    {
-        Ok(Ok(state)) => Ok(current_of(&state)),
-        Ok(Err(err)) => Err(subscribe_error(err)),
-        Err(_) => Ok(OnchainSendState::Created),
-    }
-}
-
-/// What [`current_send`] reports for a final state upstream has already recorded.
-///
-/// Split out from the client call so the one decision it makes can be tested on its own: a
-/// funding rejection is not an ending, and this path cannot run the gate that turns it into
-/// one, so it reports the withdrawal as still running.
-fn current_of(state: &FinalSendOperationState) -> OnchainSendState {
-    match map_final_send(state) {
-        SendStep::State(state) => state,
-        SendStep::FundingRejected { .. } => OnchainSendState::Created,
     }
 }
 
@@ -1265,7 +1226,7 @@ mod tests {
     use fedimint_core::bitcoin::address::NetworkUnchecked;
 
     use super::*;
-    use crate::{Amount, OperationState as _, Timestamp};
+    use crate::{Amount, Timestamp};
 
     fn a_bitcoin_txid() -> bitcoin::Txid {
         "0000000000000000000000000000000000000000000000000000000000000000"
@@ -1355,30 +1316,6 @@ mod tests {
         for (upstream, expected) in cases {
             assert_eq!(map_final_send(&upstream), expected, "{upstream:?}");
         }
-    }
-
-    /// walletv2 reaches its current state through `current_send` rather than through the first
-    /// item of a subscription, so the gate has to be honoured on that path too. A cached
-    /// `Aborted` — what upstream hands back for a withdrawal whose rejection it has already
-    /// recorded, including after a restart — must not come back as a final `Refunded`, because
-    /// nothing here has established that the value came back.
-    #[test]
-    fn a_cached_rejection_is_still_running_on_the_current_path() {
-        let current = current_of(&FinalSendOperationState::Aborted);
-        assert_eq!(current, OnchainSendState::Created);
-        assert!(
-            !current.is_final(),
-            "a withdrawal whose inputs are still being recovered was reported as finished"
-        );
-
-        // The endings that are endings still come straight back.
-        assert_eq!(
-            current_of(&FinalSendOperationState::Success(a_bitcoin_txid())),
-            OnchainSendState::Succeeded {
-                txid: Txid::from_upstream(a_bitcoin_txid()),
-            }
-        );
-        assert!(current_of(&FinalSendOperationState::Failure).is_final());
     }
 
     #[test]
