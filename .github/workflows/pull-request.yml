@@ -241,7 +241,7 @@ jobs:
     continue-on-error: true
     concurrency:
       # Global lock: serializes all devimint runs on the
-      # self-hosted runner regardless of which PR or matrix leg triggered them, 
+      # self-hosted runner regardless of which PR or matrix leg triggered them,
       # so two concurrent jobs cannot collide on ports or state.
       group: devimint-integration
       cancel-in-progress: false
