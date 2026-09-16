@@ -15,7 +15,7 @@ use fedimint_lnv2_common::gateway_api::{PaymentFee, RoutingInfo};
 use fedimint_lnv2_common::{Bolt11InvoiceDescription, LightningInvoice};
 use futures::StreamExt;
 
-use super::driver::{LnReceiveDriver, LnSendDriver, until_final};
+use super::driver::{LnReceiveDriver, LnSendDriver, SendStep, through_settle, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
@@ -30,39 +30,47 @@ use crate::{
     Result, Timestamp,
 };
 
-// lnv2 `SendOperationState` onto `LnSendState`. `Failure` means two things: the funding
-// transaction was refused (before `Funded`, nothing debited, so `Refunded`) or the refund of a
-// funded contract failed (after it, so `Failed`). After a restart the persisted phase is what
-// tells them apart. `Refunding` is in progress, not final.
+// lnv2 `SendOperationState` onto a `SendStep`. `Failure` means two things: the funding
+// transaction was refused (before `Funded`) or the refund of a funded contract failed (after it,
+// so `Failed`). After a restart the persisted phase is what tells them apart. `Refunding` is in
+// progress, not final.
 //
-// | upstream        | phase reached   | here       |
-// | --------------- | --------------- | ---------- |
-// | `Funding`       | any             | `Created`  |
-// | `Funded`        | any             | `Funded`   |
-// | `Refunding`     | any             | `Funded`   |
-// | `Success`       | any             | `Success`  |
-// | `Refunded`      | any             | `Refunded` |
-// | `Failure`       | before `Funded` | `Refunded` |
-// | `Failure`       | at/after        | `Failed`   |
+// The funding-refused half is not an ending here. The transaction that was refused had already
+// selected the notes that were to pay for the contract, and putting them back is a later
+// transaction of the mint's own, so the send stays non-final until that settles and the ending
+// comes from what it established. `Refunded` is the contract's own refund, which lnv2 reports
+// only once it went through, so that one ends the send directly.
+//
+// | upstream        | phase reached   | here                        |
+// | --------------- | --------------- | --------------------------- |
+// | `Funding`       | any             | `Created`                   |
+// | `Funded`        | any             | `Funded`                    |
+// | `Refunding`     | any             | `Funded`                    |
+// | `Success`       | any             | `Success`                   |
+// | `Refunded`      | any             | `Refunded`                  |
+// | `Failure`       | before `Funded` | settle the inputs, then end |
+// | `Failure`       | at/after        | `Failed`                    |
 pub(super) fn map_send(
     state: &SendOperationState,
     funded_before: bool,
     fee: Amount,
     route: &LightningRoute,
-) -> LnSendState {
+) -> SendStep {
     match state {
-        SendOperationState::Funding => LnSendState::Created,
-        SendOperationState::Funded | SendOperationState::Refunding => LnSendState::Funded,
-        SendOperationState::Success(preimage) => LnSendState::Success {
+        SendOperationState::Funding => SendStep::State(LnSendState::Created),
+        SendOperationState::Funded | SendOperationState::Refunding => {
+            SendStep::State(LnSendState::Funded)
+        }
+        SendOperationState::Success(preimage) => SendStep::State(LnSendState::Success {
             preimage: Preimage::from_bytes(*preimage),
             fee,
             route: route.clone(),
-        },
-        SendOperationState::Refunded => LnSendState::Refunded,
-        SendOperationState::Failure if funded_before => LnSendState::Failed {
+        }),
+        SendOperationState::Refunded => SendStep::State(LnSendState::Refunded),
+        SendOperationState::Failure if funded_before => SendStep::State(LnSendState::Failed {
             reason: "the payment's contract could not be refunded".to_owned(),
-        },
-        SendOperationState::Failure => LnSendState::Refunded,
+        }),
+        SendOperationState::Failure => SendStep::FundingRejected,
     }
 }
 
@@ -108,7 +116,7 @@ pub(super) async fn subscribe_send(
     let db = federation.db();
     let fee = details.fee;
     let route = details.route.clone();
-    let stream = upstream.scan((phase, db), move |(phase, db), state| {
+    let steps = upstream.scan((phase, db), move |(phase, db), state| {
         let reached = send_phase(&state);
         let advance = reached > *phase;
         if advance {
@@ -123,6 +131,9 @@ pub(super) async fn subscribe_send(
             Some(Ok(mapped))
         }
     });
+    // The stream is `'static` and outlives this call, so it carries the way back to the
+    // federation rather than the federation itself; see `through_settle`.
+    let stream = through_settle(steps, federation.sdk.clone(), federation.id, id);
     Ok(until_final(stream))
 }
 
@@ -735,21 +746,35 @@ mod tests {
         for (upstream, funded_before, expected) in cases {
             assert_eq!(
                 map_send(&upstream, funded_before, fee(), &route()),
-                expected
+                SendStep::State(expected)
             );
         }
     }
 
+    /// `Failure` before funding is the rejected funding transaction, which is where the
+    /// recovery of the notes it selected starts; ending on `Refunded` here would promise they
+    /// are spendable again before anything has established it. After funding it is the
+    /// contract's refund having failed, which nothing later will mend.
     #[test]
-    fn a_failure_before_funding_is_a_refund_and_after_it_is_a_failure() {
+    fn a_failure_before_funding_settles_and_after_it_is_a_failure() {
         assert_eq!(
             map_send(&SendOperationState::Failure, false, fee(), &route()),
-            LnSendState::Refunded
+            SendStep::FundingRejected
         );
         assert!(matches!(
             map_send(&SendOperationState::Failure, true, fee(), &route()),
-            LnSendState::Failed { .. }
+            SendStep::State(LnSendState::Failed { .. })
         ));
+    }
+
+    /// lnv2 reports `Refunded` only once the contract's refund went through, so it needs no
+    /// settle of its own.
+    #[test]
+    fn a_contract_refund_ends_the_send_without_settling() {
+        assert_eq!(
+            map_send(&SendOperationState::Refunded, true, fee(), &route()),
+            SendStep::State(LnSendState::Refunded)
+        );
     }
 
     #[test]

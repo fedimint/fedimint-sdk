@@ -16,6 +16,7 @@ use fedimint_wallet_client::{
 use fedimint_wallet_common::PegOutFees;
 use futures::StreamExt;
 
+use super::driver::{SendStep, through_settle};
 use super::{
     OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
     check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
@@ -231,23 +232,25 @@ pub(super) async fn send(
         .await
 }
 
-// Upstream v1 `WithdrawState` onto `OnchainSendState`. `Failed` is only ever the funding
-// transaction being rejected before anything left the balance
-// (`modules/fedimint-wallet-client/src/withdraw.rs`), so it maps to `Refunded`, not `Failed`;
-// there is no upstream state this build maps to `OnchainSendState::Failed` at all.
+// Upstream v1 `WithdrawState` onto this SDK's own send lifecycle. `Failed` is only ever the
+// funding transaction being rejected before anything left the balance
+// (`modules/fedimint-wallet-client/src/withdraw.rs`), so it is not an ending here: it is the
+// rejection that sends the withdrawal to the settle gate, which chooses `Refunded` or `Failed`
+// from what the recovery of the notes it removed establishes. No upstream state maps straight
+// onto either of those two.
 //
-// | upstream           | here                  |
-// | ------------------ | --------------------- |
-// | `Created`          | `Created`              |
-// | `Succeeded(txid)`  | `Succeeded { txid }`   |
-// | `Failed(reason)`   | `Refunded { reason }`  |
-pub(super) fn map_withdraw(state: &WithdrawState) -> OnchainSendState {
+// | upstream           | here                       |
+// | ------------------ | -------------------------- |
+// | `Created`          | `Created`                   |
+// | `Succeeded(txid)`  | `Succeeded { txid }`        |
+// | `Failed(reason)`   | `FundingRejected { reason }` |
+pub(super) fn map_withdraw(state: &WithdrawState) -> SendStep {
     match state {
-        WithdrawState::Created => OnchainSendState::Created,
-        WithdrawState::Succeeded(txid) => OnchainSendState::Succeeded {
+        WithdrawState::Created => SendStep::State(OnchainSendState::Created),
+        WithdrawState::Succeeded(txid) => SendStep::State(OnchainSendState::Succeeded {
             txid: Txid::from_upstream(*txid),
-        },
-        WithdrawState::Failed(reason) => OnchainSendState::Refunded {
+        }),
+        WithdrawState::Failed(reason) => SendStep::FundingRejected {
             reason: reason.clone(),
         },
     }
@@ -266,7 +269,15 @@ pub(super) async fn subscribe_withdraw(
         .await
         .map_err(subscribe_error)?
         .into_stream();
-    Ok(until_final(upstream.map(|state| Ok(map_withdraw(&state)))))
+    // The stream is `'static` and outlives this call, so it carries the way back to the
+    // federation rather than the federation itself; see `through_settle`.
+    let stream = through_settle(
+        upstream.map(|state| Ok(map_withdraw(&state))),
+        federation.sdk.clone(),
+        federation.id,
+        id,
+    );
+    Ok(until_final(stream))
 }
 
 /// Allocates a fresh v1 deposit address and records it.
@@ -635,16 +646,21 @@ mod tests {
     fn withdraw_states_fold_onto_the_send_lifecycle() {
         let txid = a_bitcoin_txid();
         let cases = [
-            (WithdrawState::Created, OnchainSendState::Created),
             (
-                WithdrawState::Succeeded(txid),
-                OnchainSendState::Succeeded {
-                    txid: Txid::from_upstream(txid),
-                },
+                WithdrawState::Created,
+                SendStep::State(OnchainSendState::Created),
             ),
             (
+                WithdrawState::Succeeded(txid),
+                SendStep::State(OnchainSendState::Succeeded {
+                    txid: Txid::from_upstream(txid),
+                }),
+            ),
+            // Not `Refunded`: a rejected funding is a step towards an ending, not one. Which
+            // ending it becomes is the settle gate's to say.
+            (
                 WithdrawState::Failed("the funding transaction was rejected".to_owned()),
-                OnchainSendState::Refunded {
+                SendStep::FundingRejected {
                     reason: "the funding transaction was rejected".to_owned(),
                 },
             ),

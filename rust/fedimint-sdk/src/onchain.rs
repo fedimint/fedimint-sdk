@@ -398,12 +398,24 @@ impl OnchainQuote {
     /// This is the number to show as "you will pay", and it is exact.
     ///
     /// It is also the debit execution is authorised to make, exactly, not a
-    /// ceiling or a prediction: [`Onchain::send`] debits this or does not
-    /// run. A withdrawal that would cost anything else by the time it
-    /// executes is refused with
-    /// [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so the user
-    /// re-approves a new number instead of quietly paying a different one.
-    /// This is the figure [`OnchainSendDetails::total`] records.
+    /// ceiling or a prediction: nothing else is ever debited than this. A
+    /// withdrawal that would cost anything else by the time it executes is
+    /// refused with [`QuoteChanged`](crate::ErrorCode::QuoteChanged), so the
+    /// user re-approves a new number instead of quietly paying a different
+    /// one. This is the figure [`OnchainSendDetails::total`] records.
+    ///
+    /// That exactness is about the authorised debit, not about what the
+    /// balance does moment to moment. Executing the quote submits a
+    /// transaction, and submitting one takes the notes that are to fund it
+    /// out of the spendable set before the federation has accepted anything,
+    /// so a funding attempt the federation then rejects can remove value and
+    /// restore it afterwards.
+    ///
+    /// Nothing else is ever debited than this total. What becomes of it when
+    /// the withdrawal does not happen is the ending's to say rather than the
+    /// quote's: [`OnchainSendState::Refunded`] is the one that promises no
+    /// lasting debit, reported only once the value is spendable again, and
+    /// [`OnchainSendState::Failed`] is the one that cannot promise it.
     pub fn total(&self) -> Amount {
         self.inner.plan.total
     }
@@ -530,14 +542,25 @@ pub enum OnchainSendState {
         /// The transaction id, for receipts and block explorers.
         txid: Txid,
     },
-    /// Final: the withdrawal did not happen and the funds are in the
-    /// spendable balance.
+    /// Final: the withdrawal did not happen and the value it was authorised
+    /// for is spendable again.
     ///
     /// The federation rejected the transaction that would have funded the
-    /// withdrawal, so nothing was debited. Like
-    /// [`LnSendState::Refunded`](crate::LnSendState::Refunded) this is a
-    /// success from the SDK's point of view: the money is safe, and the user
-    /// quotes again.
+    /// withdrawal, and the value that transaction removed has come back.
+    /// Like [`LnSendState::Refunded`](crate::LnSendState::Refunded) this is
+    /// a success from the SDK's point of view: no part of the authorised
+    /// total is still standing against the balance, and the user quotes
+    /// again.
+    ///
+    /// The two halves of that are separate events and this state waits for
+    /// the second. Funding selects the notes that are to pay for the
+    /// withdrawal before consensus has accepted anything, so the rejection
+    /// leaves value that is neither spent nor yet spendable, and returning
+    /// it is a later transaction of the mint's own. The withdrawal stays
+    /// non-final while that runs, and reports this state only once it has
+    /// settled in a way that establishes the value came back. A recovery
+    /// that settles without establishing it ends in
+    /// [`Failed`](Self::Failed) instead.
     Refunded {
         /// Human-readable explanation. Diagnostic only, not a stable
         /// contract, and not something to match on.
@@ -546,11 +569,12 @@ pub enum OnchainSendState {
     /// Final: the withdrawal failed in a way that did not resolve into a
     /// clean return.
     ///
-    /// The funding was accepted and no transaction came of it, so this
-    /// state cannot say where the funds are. Render it as an error the user
-    /// should report, and read the balance for the rest; it is not the
-    /// ordinary "rejected, try again" ending, which is
-    /// [`Refunded`](Self::Refunded).
+    /// Either the funding was accepted and no transaction came of it, or it
+    /// was rejected and the value it removed could not be established as
+    /// spendable again. Either way this state cannot say where the funds
+    /// are. Render it as an error the user should report, and read the
+    /// balance for the rest; it is not the ordinary "rejected, try again"
+    /// ending, which is [`Refunded`](Self::Refunded).
     Failed {
         /// Human-readable explanation. Diagnostic only, not a stable
         /// contract, and not something to match on.
@@ -623,8 +647,9 @@ pub struct OnchainSendDetails {
     ///
     /// A term, not an outcome: it is what a
     /// [`Succeeded`](OnchainSendState::Succeeded) withdrawal debited, and
-    /// what a [`Refunded`](OnchainSendState::Refunded) one never debited at
-    /// all. The state says which; this record says how much was at stake.
+    /// what a [`Refunded`](OnchainSendState::Refunded) one leaves no lasting
+    /// debit of. The state says which; this record says how much was at
+    /// stake.
     pub total: Amount,
     /// When the withdrawal was started, by this device's clock.
     ///
