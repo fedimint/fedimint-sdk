@@ -5,10 +5,12 @@
 #
 #   scripts/run-sdk-examples.sh [v1|v2] [example ...]
 #
-# Defaults to shape v2 and to running all four examples: walkthrough, ecash, lightning, onchain.
-# v1 stays selectable, but on it the pinned fedimint revision's lnv1 client cannot decode a
-# successful send's preimage, so the walkthrough and lightning examples end with an Internal
-# error after the payment has actually gone through, while ecash and onchain are unaffected.
+# The shape is optional and defaults to v2; every other argument (including a leading one that
+# is not v1 or v2) is an example name. Defaults to running all four examples: walkthrough, ecash,
+# lightning, onchain. v1 stays selectable, but on it the pinned fedimint revision's lnv1 client
+# cannot decode a successful send's preimage, so the walkthrough and lightning examples end with
+# an Internal error after the payment has actually gone through, while ecash and onchain are
+# unaffected.
 #
 # Must run inside `nix develop --accept-flake-config .#wasm-tests`: that is the
 # only dev shell with devimint, fedimintd, gatewayd, bitcoind, lnd, esplora and
@@ -16,8 +18,11 @@
 
 set -euo pipefail
 
-shape="${1:-v2}"
-[ $# -gt 0 ] && shift
+shape=v2
+if [ $# -gt 0 ] && { [ "$1" = v1 ] || [ "$1" = v2 ]; }; then
+  shape="$1"
+  shift
+fi
 
 # shellcheck source=scripts/devimint-shape.sh
 . "$(dirname "${BASH_SOURCE[0]}")/devimint-shape.sh" "$shape"
