@@ -174,7 +174,29 @@
             export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
             export NDK_HOME=$ANDROID_NDK_ROOT
             export ROCKSDB_STATIC=1
-            
+
+            # pkgs.libclang (needed for bindgen) puts its unwrapped clang/clang++
+            # ahead of the properly wrapped host compiler on $PATH, so host-target
+            # builds (e.g. `cargo check`, or any build.rs compiled for the native
+            # target rather than an Android target) pick a clang with no macOS SDK
+            # header search paths and fail with "'cstdint' file not found". Pin
+            # CC/CXX to the wrapped compiler explicitly; cargo-ndk sets its own
+            # per-target CC_*/CXX_* when actually cross-compiling, so this only
+            # affects host-target builds.
+            export CC="${pkgs.stdenv.cc}/bin/cc"
+            export CXX="${pkgs.stdenv.cc}/bin/c++"
+
+            # fedimint-core/fedimint-connectors enable aws-lc-sys's "bindgen"
+            # feature, which makes aws-lc-sys skip its pregenerated bindings and
+            # fall back to a full CMake source build. That CMakeLists.txt
+            # unconditionally references the `tool/`, `tool-openssl/` directories
+            # and `util/go_tests.txt`, none of which the published crates.io
+            # tarball actually ships, so the CMake configure step fails. Force
+            # aws-lc-sys's alternate cc-only builder instead, which compiles the
+            # same sources directly via the `cc` crate and never touches those
+            # missing paths; bindgen itself still runs fine off of libclang.
+            export AWS_LC_SYS_CMAKE_BUILDER=0
+
             # Dynamically determine host tag (darwin-x86_64 or linux-x86_64)
             NDK_PREBUILT=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt
             HOST_TAG=$(ls $NDK_PREBUILT | head -n 1)
