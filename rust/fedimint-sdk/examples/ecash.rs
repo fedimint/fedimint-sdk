@@ -69,9 +69,10 @@ async fn main() -> fedimint_sdk::Result<()> {
                 println!("state: {state:?}");
                 last_state = Some(state);
             }
-            // `Done` is the only terminal state whose notes became spendable: `Failed`
-            // means they were already spent or reclaimed by whoever sent them, so
-            // there is no receipt to show.
+            // `Done` is the only terminal state whose notes became spendable. `Failed`
+            // means the receive produced no spendable notes, most often because they
+            // were already spent or reclaimed by whoever sent them, so there is no
+            // receipt to show.
             match last_state {
                 Some(EcashReceiveState::Done) => {
                     let details = received.details().await?;
