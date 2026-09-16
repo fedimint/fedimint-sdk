@@ -1539,12 +1539,12 @@ enum Mintv2ReceiveOutcome {
 /// as long as the wait actually runs.
 ///
 /// The wait ends when the federation reaches consensus on the claiming transaction and the
-/// mint finishes issuing whatever it minted, so it is unbounded — a federation that is slow,
-/// unreachable or simply not asked about again never ends it — and it needs the client alive
+/// mint finishes issuing whatever it minted, so it is unbounded (a federation that is slow,
+/// unreachable or simply not asked about again never ends it), and it needs the client alive
 /// throughout. Both callers run inside a driver's `'static` stream: [`mintv2_reclaim`] is
 /// driven by the send subscription, and [`mintv2_receive_subscription`] is a stream itself. A
 /// stream parked here with a `ClientHandleArc` in its frame would never give it back, because
-/// an idle subscriber stops polling it altogether — which is why the wait is handed to
+/// an idle subscriber stops polling it altogether. That is why the wait is handed to
 /// [`crate::federation::wait_holding_client`], where the runtime keeps driving it and the
 /// client's own shutdown can reclaim the handle. That function's documentation has the whole
 /// reasoning.
@@ -1824,17 +1824,9 @@ fn mintv2_receive_subscription(
         // across the wait below, which ends only when the federation reaches consensus.
         drop(client);
 
-        match mintv2_receive_outcome(handle, id).await? {
-            Mintv2ReceiveOutcome::Done => Ok(EcashReceiveState::Done),
-            Mintv2ReceiveOutcome::Rejected => Ok(EcashReceiveState::Failed {
-                reason: "Transaction was rejected".to_string(),
-            }),
-            Mintv2ReceiveOutcome::NotIssued { cause } => Ok(EcashReceiveState::Failed {
-                reason: format!(
-                    "the redemption was accepted but its notes could not be issued: {cause}"
-                ),
-            }),
-        }
+        Ok(mintv2_receive_state(
+            mintv2_receive_outcome(handle, id).await?,
+        ))
     });
 
     until_final(Box::pin(futures::stream::iter(initial).chain(final_stream)))
@@ -1879,18 +1871,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                 // `Issuing` here, exactly as it would if consensus itself were still pending.
                 use futures::FutureExt as _;
                 return match mintv2_receive_result(&client, id).now_or_never() {
-                    Some(Ok(Mintv2ReceiveOutcome::Done)) => Ok(EcashReceiveState::Done),
-                    Some(Ok(Mintv2ReceiveOutcome::Rejected)) => Ok(EcashReceiveState::Failed {
-                        reason: "Transaction was rejected".to_string(),
-                    }),
-                    Some(Ok(Mintv2ReceiveOutcome::NotIssued { cause })) => {
-                        Ok(EcashReceiveState::Failed {
-                            reason: format!(
-                                "the redemption was accepted but its notes could not be \
-                                 issued: {cause}"
-                            ),
-                        })
-                    }
+                    Some(Ok(outcome)) => Ok(mintv2_receive_state(outcome)),
                     Some(Err(err)) => Err(err),
                     None => Ok(EcashReceiveState::Issuing),
                 };
@@ -2013,6 +1994,22 @@ fn parse_receive_state(s: &str) -> Option<EcashReceiveState> {
             .map(|reason| EcashReceiveState::Failed {
                 reason: reason.to_string(),
             }),
+    }
+}
+
+// Shared by `mintv2_receive_subscription` and `EcashReceiveDriver::current`'s bounded read, so
+// the two cannot drift apart on what a mintv2 receive outcome means.
+fn mintv2_receive_state(outcome: Mintv2ReceiveOutcome) -> EcashReceiveState {
+    match outcome {
+        Mintv2ReceiveOutcome::Done => EcashReceiveState::Done,
+        Mintv2ReceiveOutcome::Rejected => EcashReceiveState::Failed {
+            reason: "Transaction was rejected".to_string(),
+        },
+        Mintv2ReceiveOutcome::NotIssued { cause } => EcashReceiveState::Failed {
+            reason: format!(
+                "the redemption was accepted but its notes could not be issued: {cause}"
+            ),
+        },
     }
 }
 
