@@ -5,7 +5,7 @@
 //! the faucet pay an invoice it issues, then pays an invoice the faucet issues back.
 
 use devimint_support::{Devimint, faucet};
-use fedimint_sdk::{Amount, Bolt11Invoice, Federation, InviteCode, Sdk, Storage};
+use fedimint_sdk::{Amount, Bolt11Invoice, Federation, InviteCode, LnSendState, Sdk, Storage};
 
 #[tokio::main]
 async fn main() -> fedimint_sdk::Result<()> {
@@ -50,7 +50,15 @@ async fn main() -> fedimint_sdk::Result<()> {
     let payment = lightning.send(quote).await?;
     let mut updates = payment.updates();
     while let Some(state) = updates.next().await? {
-        println!("{state:?}");
+        match state {
+            LnSendState::Success { preimage, fee, .. } => {
+                println!("paid, fee {fee}, preimage {preimage}");
+            }
+            // Not an error: the payment did not go through, and the money is back in the
+            // balance.
+            LnSendState::Refunded => println!("refunded"),
+            other => println!("{other:?}"),
+        }
     }
 
     println!("balance: {}", federation.balance().await?);
