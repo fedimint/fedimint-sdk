@@ -1510,9 +1510,10 @@ async fn mintv2_reclaim(
     match outcome {
         Mintv2ReceiveOutcome::Done => Ok(EcashSendState::Canceled),
         Mintv2ReceiveOutcome::Rejected => Ok(EcashSendState::Redeemed),
-        // The reclaim was accepted, but never became spendable, so it settled nothing: the
-        // notes it targeted are still exactly as redeemed or not as they were before this
-        // ran, and the caller needs to know the reclaim itself did not actually happen.
+        // The reclaim was accepted, but never became spendable, so it settled nothing: acceptance
+        // already spent the notes it targeted, and only the replacement notes' issuance failed.
+        // The value is neither back in the balance nor still reclaimable, and the error is what
+        // tells the caller that.
         Mintv2ReceiveOutcome::NotIssued { cause } => Err(Error::new(
             ErrorCode::Internal,
             format!("the reclaim was accepted but its notes could not be issued: {cause}"),
@@ -1864,11 +1865,14 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
                     return Ok(EcashReceiveState::Issuing);
                 }
 
-                // `mintv2_receive_result` also waits for the mint to issue whatever the
-                // redemption minted, and that wait is a federation round trip, not a local
-                // check `has_active_states` above already covers. `now_or_never` still keeps
-                // this path bounded: a redemption accepted but not yet issued reports
-                // `Issuing` here, exactly as it would if consensus itself were still pending.
+                // `mintv2_receive_result` also waits for the mint to issue whatever the redemption
+                // minted, and that wait is local: it resolves from the output state machine's own
+                // success notification, not a federation round trip. `has_active_states` above is
+                // the bound's guard, since this branch is reached only once it reports nothing
+                // active for the operation. `now_or_never` only guards against that local wait not
+                // being immediately ready, not against consensus latency: a redemption accepted
+                // but not yet issued still reports `Issuing` here, exactly as it would if
+                // consensus itself were still pending.
                 use futures::FutureExt as _;
                 return match mintv2_receive_result(&client, id).now_or_never() {
                     Some(Ok(outcome)) => Ok(mintv2_receive_state(outcome)),
