@@ -297,13 +297,15 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
-// Skeleton-phase allowances: remove both once the last facade is implemented. Parameters
-// are deliberately named (they are rustdoc-visible API contract) but unused, and
-// the private placeholder `inner` fields are never constructed or read while
-// every body is unimplemented!(). CI builds this crate through
-// actions-rust-lang/setup-rust-toolchain, which defaults RUSTFLAGS to
-// "-D warnings", so these must be in-source allows rather than warnings
-// tolerated at the command line:
+// These attributes stay: dropping them does not surface leftover skeleton work, it surfaces
+// real warnings under CI's default RUSTFLAGS of "-D warnings" (actions-rust-lang/setup-rust-
+// toolchain), so they must be in-source allows rather than warnings tolerated at the command
+// line. `unused_variables` covers parameters an implemented body does not read because they
+// exist for symmetry with a sibling arm (v1 vs v2, send vs receive), for example
+// `lightning::v1::terms_for`'s `invoice` and `onchain::v2::plan`'s `address`. `dead_code`
+// covers a mix of items only this crate's own tests exercise (`db::read_federation`,
+// `operation::kinds::ALL`) and items reserved for work this build does not yet exercise, such
+// as `db.rs`'s recovery and config-meta key prefixes and `Mnemonic::from_upstream`.
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
