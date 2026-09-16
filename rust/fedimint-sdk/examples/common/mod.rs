@@ -22,9 +22,11 @@ pub async fn build(data_dir: &str) -> Result<Sdk> {
     // An empty list of stored federations is the cheapest way to tell "this run just
     // generated a fresh seed" from "this run reopened a wallet that already existed": an
     // application backs up the mnemonic exactly once, the first time it is generated, and
-    // this is that moment.
+    // this is that moment. The phrase itself, which `Sdk::export_mnemonic` returns, is not
+    // printed: the output of a program like this ends up in logs and wrapper output, where a
+    // real seed must not land.
     if sdk.stored_federations().is_empty() {
-        println!("mnemonic: {}", sdk.export_mnemonic().words().join(" "));
+        eprintln!("new wallet in {data_dir}: back up the phrase Sdk::export_mnemonic returns");
     }
     Ok(sdk)
 }
