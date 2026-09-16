@@ -52,7 +52,10 @@ use fedimint_client::Client;
 use fedimint_client_module::transaction::{TxSubmissionStates, TxSubmissionStatesSM};
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
+use fedimint_core::task::MaybeSend;
+use fedimint_core::util::BoxStream;
 use fedimint_core::{OutPoint, TransactionId};
+use futures::StreamExt as _;
 
 use crate::Result;
 use crate::sdk::SdkInner;
@@ -134,6 +137,82 @@ pub(crate) async fn settle(
         Ok(restoration_of(&client, id).await)
     })
     .await
+}
+
+/// One step of a send's lifecycle, before the gate below turns it into a state.
+///
+/// `S` is the send's own state enum. `R` is whatever its rejection carries and its ending
+/// needs: nothing for a lightning send, whose `Refunded` has no fields, and the wallet module's
+/// own reason for an on-chain one.
+pub(crate) enum Step<S, R> {
+    /// Hand this state out as it is.
+    State(S),
+    /// The funding transaction was rejected. Report the send as still running, settle the
+    /// inputs it removed, then end on what that establishes.
+    FundingRejected(R),
+}
+
+/// Turns a stream of steps into one of states, settling a rejected funding before ending on it.
+///
+/// This is the gate every send of every module generation goes through, shared so that the two
+/// facades cannot drift on what a rejection means. A rejection becomes **two** items: the
+/// non-final `pending` state the operation is actually in, and then, once [`settle`] finishes,
+/// the ending `ending` chooses from what it established.
+///
+/// Yielding the first before waiting is load-bearing rather than cosmetic. Upstream hands back
+/// a single cached outcome for an operation whose ending it has already recorded
+/// (`ClientContext::outcome_or_updates`), so a send reattached after a restart can have the
+/// rejection as the *only* step there is; and `settled`, which every subscription and every
+/// `current` goes through, awaits its first item with no timeout. A stream that waited for the
+/// settle before yielding anything would hang `Operation::state()` and a new subscriber's first
+/// update for as long as the recovery ran, which on a stalled recovery is for ever.
+///
+/// `pending` repeats a state the send has usually reported already, which the engine's
+/// `same_state` dedup drops on a live stream.
+///
+/// `sdk` and `federation_id` are carried rather than a federation or a client, because the
+/// stream outlives the call that built it.
+//
+// `unfold` rather than `flat_map` over boxed sub-streams: boxing a stream needs `Send`, which
+// this crate cannot require (`MaybeSend`, `wasm32`), and the state machine here is small enough
+// that spelling it out costs less than working around that.
+pub(crate) fn through_settle<S, R, F>(
+    steps: impl futures::Stream<Item = Result<Step<S, R>>> + MaybeSend + 'static,
+    sdk: Weak<SdkInner>,
+    federation_id: FederationId,
+    id: OperationId,
+    pending: S,
+    ending: F,
+) -> BoxStream<'static, Result<S>>
+where
+    S: Clone + MaybeSend + 'static,
+    R: MaybeSend + 'static,
+    F: Fn(R, Restoration) -> S + MaybeSend + 'static,
+{
+    Box::pin(futures::stream::unfold(
+        (Box::pin(steps), sdk, pending, ending, None::<R>),
+        move |(mut steps, sdk, pending, ending, rejected)| async move {
+            if let Some(carried) = rejected {
+                let ended = match settle(sdk.clone(), federation_id, id).await {
+                    Ok(restoration) => Ok(ending(carried, restoration)),
+                    Err(err) => Err(err),
+                };
+                return Some((ended, (steps, sdk, pending, ending, None)));
+            }
+            let item = match steps.next().await? {
+                Err(err) => Err(err),
+                Ok(Step::State(state)) => Ok(state),
+                // The pending state now, the ending on the next pull.
+                Ok(Step::FundingRejected(carried)) => {
+                    return Some((
+                        Ok(pending.clone()),
+                        (steps, sdk, pending, ending, Some(carried)),
+                    ));
+                }
+            };
+            Some((item, (steps, sdk, pending, ending, None)))
+        },
+    ))
 }
 
 /// How one of the operation's transactions ended, as its submission state machine records it.

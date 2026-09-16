@@ -22,6 +22,7 @@ use fedimint_walletv2_common::KIND;
 use fedimint_walletv2_common::config::WalletClientConfig;
 use futures::StreamExt as _;
 
+use super::driver::{SendStep, through_settle};
 use super::{
     OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
     check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
@@ -254,27 +255,39 @@ pub(super) async fn send(
 // (`modules/fedimint-walletv2-client/src/lib.rs:104`), which is why it maps to `Failed` rather
 // than the ordinary `Refunded` ending `Aborted` gets.
 //
+// `Aborted` is the funding rejection, so it is not an ending here: it is the step that sends the
+// withdrawal to the settle gate, which chooses `Refunded` or `Failed` from what the recovery of
+// the notes it removed establishes. `Failure` is unrelated to that recovery and stays an ending
+// of its own.
+//
 // | upstream    | here                                                          |
 // | ----------- | ------------------------------------------------------------- |
 // | `Success`   | `Succeeded { txid }`                                            |
-// | `Aborted`   | `Refunded { reason: "the federation rejected ..." }`             |
+// | `Aborted`   | `FundingRejected { reason: "the federation rejected ..." }`      |
 // | `Failure`   | `Failed { reason: "the funding was accepted but ..." }`          |
-pub(super) fn map_final_send(state: &FinalSendOperationState) -> OnchainSendState {
+pub(super) fn map_final_send(state: &FinalSendOperationState) -> SendStep {
     match state {
-        FinalSendOperationState::Success(txid) => OnchainSendState::Succeeded {
+        FinalSendOperationState::Success(txid) => SendStep::State(OnchainSendState::Succeeded {
             txid: Txid::from_upstream(*txid),
-        },
-        FinalSendOperationState::Aborted => OnchainSendState::Refunded {
+        }),
+        FinalSendOperationState::Aborted => SendStep::FundingRejected {
             reason: "the federation rejected the funding transaction".to_owned(),
         },
-        FinalSendOperationState::Failure => OnchainSendState::Failed {
+        FinalSendOperationState::Failure => SendStep::State(OnchainSendState::Failed {
             reason: "the funding was accepted but no transaction came of it".to_owned(),
-        },
+        }),
     }
 }
 
 /// The current state of a walletv2 withdrawal: the final await bounded to 500 ms, `Created` when
 /// it does not resolve in time.
+///
+/// This is the generation's own path to the current state, taken instead of the first item of a
+/// subscription, so the settle gate has to be honoured here too. It is honoured by reporting the
+/// pending state rather than by running the gate: `current` is a bounded read by contract, and
+/// the recovery it would have to wait for is unbounded. A withdrawal whose funding was rejected
+/// is therefore [`OnchainSendState::Created`] here — still running, which is the truth — and a
+/// subscription is what carries it to the ending the recovery establishes.
 pub(super) async fn current_send(
     federation: &FederationInner,
     id: OperationId,
@@ -287,9 +300,21 @@ pub(super) async fn current_send(
     )
     .await
     {
-        Ok(Ok(state)) => Ok(map_final_send(&state)),
+        Ok(Ok(state)) => Ok(current_of(&state)),
         Ok(Err(err)) => Err(subscribe_error(err)),
         Err(_) => Ok(OnchainSendState::Created),
+    }
+}
+
+/// What [`current_send`] reports for a final state upstream has already recorded.
+///
+/// Split out from the client call so the one decision it makes can be tested on its own: a
+/// funding rejection is not an ending, and this path cannot run the gate that turns it into
+/// one, so it reports the withdrawal as still running.
+fn current_of(state: &FinalSendOperationState) -> OnchainSendState {
+    match map_final_send(state) {
+        SendStep::State(state) => state,
+        SendStep::FundingRejected { .. } => OnchainSendState::Created,
     }
 }
 
@@ -308,7 +333,7 @@ pub(super) async fn subscribe_send(
     let handle = client.handle();
     drop(client);
     let stop = handle.task_group().make_handle().make_shutdown_rx();
-    let created = futures::stream::once(async { Ok(OnchainSendState::Created) });
+    let created = futures::stream::once(async { Ok(SendStep::State(OnchainSendState::Created)) });
     let finished = futures::stream::once(async move {
         let state = wait_holding_client(handle, stop, move |client| async move {
             let module = module_of(&client)?;
@@ -320,7 +345,15 @@ pub(super) async fn subscribe_send(
         .await?;
         Ok(map_final_send(&state))
     });
-    Ok(until_final(created.chain(finished)))
+    // The stream is `'static` and outlives this call, so it carries the way back to the
+    // federation rather than the federation itself; see `through_settle`.
+    let stream = through_settle(
+        created.chain(finished),
+        federation.sdk.clone(),
+        federation.id,
+        id,
+    );
+    Ok(until_final(stream))
 }
 
 /// Allocates a fresh walletv2 deposit address and records it.
@@ -1232,7 +1265,7 @@ mod tests {
     use fedimint_core::bitcoin::address::NetworkUnchecked;
 
     use super::*;
-    use crate::{Amount, Timestamp};
+    use crate::{Amount, OperationState as _, Timestamp};
 
     fn a_bitcoin_txid() -> bitcoin::Txid {
         "0000000000000000000000000000000000000000000000000000000000000000"
@@ -1298,26 +1331,54 @@ mod tests {
         let cases = [
             (
                 FinalSendOperationState::Success(txid),
-                OnchainSendState::Succeeded {
+                SendStep::State(OnchainSendState::Succeeded {
                     txid: Txid::from_upstream(txid),
-                },
+                }),
             ),
+            // Not `Refunded`: a rejected funding is a step towards an ending, not one. Which
+            // ending it becomes is the settle gate's to say.
             (
                 FinalSendOperationState::Aborted,
-                OnchainSendState::Refunded {
+                SendStep::FundingRejected {
                     reason: "the federation rejected the funding transaction".to_owned(),
                 },
             ),
+            // `Failure` is not a funding rejection and has no recovery to wait for, so it stays
+            // an ending of its own.
             (
                 FinalSendOperationState::Failure,
-                OnchainSendState::Failed {
+                SendStep::State(OnchainSendState::Failed {
                     reason: "the funding was accepted but no transaction came of it".to_owned(),
-                },
+                }),
             ),
         ];
         for (upstream, expected) in cases {
             assert_eq!(map_final_send(&upstream), expected, "{upstream:?}");
         }
+    }
+
+    /// walletv2 reaches its current state through `current_send` rather than through the first
+    /// item of a subscription, so the gate has to be honoured on that path too. A cached
+    /// `Aborted` — what upstream hands back for a withdrawal whose rejection it has already
+    /// recorded, including after a restart — must not come back as a final `Refunded`, because
+    /// nothing here has established that the value came back.
+    #[test]
+    fn a_cached_rejection_is_still_running_on_the_current_path() {
+        let current = current_of(&FinalSendOperationState::Aborted);
+        assert_eq!(current, OnchainSendState::Created);
+        assert!(
+            !current.is_final(),
+            "a withdrawal whose inputs are still being recovered was reported as finished"
+        );
+
+        // The endings that are endings still come straight back.
+        assert_eq!(
+            current_of(&FinalSendOperationState::Success(a_bitcoin_txid())),
+            OnchainSendState::Succeeded {
+                txid: Txid::from_upstream(a_bitcoin_txid()),
+            }
+        );
+        assert!(current_of(&FinalSendOperationState::Failure).is_final());
     }
 
     #[test]

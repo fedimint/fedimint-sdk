@@ -38,57 +38,45 @@ pub(super) enum SendStep {
     FundingRejected,
 }
 
+/// The ending a settled recovery establishes for a payment whose funding was rejected.
+///
+/// [`LnSendState::Refunded`] promises the value is spendable again, so it is reported only for
+/// a restoration that was actually established; anything the evidence leaves undecided is
+/// [`LnSendState::Failed`], carrying the reason the recovery could not be proven clean.
+fn ending_of((): (), restoration: Restoration) -> LnSendState {
+    match restoration {
+        Restoration::Restored => LnSendState::Refunded,
+        Restoration::Unproven(reason) => LnSendState::Failed { reason },
+    }
+}
+
 /// Turns a stream of steps into one of states, settling a rejected funding before ending.
 ///
-/// A rejection becomes **two** items: the non-final state the operation is actually in, and
-/// then, once the settle finishes, the ending it established. Yielding the first before
-/// waiting is load-bearing rather than cosmetic. Upstream hands back a single cached outcome
-/// for an operation whose ending it has already recorded (`ClientContext::outcome_or_updates`),
-/// so a send reattached after a restart can have the rejection as the *only* step there is;
-/// and `settled`, which every subscription and every `current` goes through, awaits its first
-/// item with no timeout. A stream that waited for the settle before yielding anything would
-/// hang `Operation::state()` and a new subscriber's first update for as long as the recovery
-/// ran, which on a stalled recovery is for ever.
+/// The mechanism, and the reasoning for the two items a rejection becomes, is
+/// [`crate::inputs::through_settle`]; this names the two ends of it for a lightning send.
 ///
-/// `Created` is the state to report there: the funding was rejected, so the payment never
-/// reached `Funded`, and it is still running while its inputs are recovered. On a live stream
-/// that repeats the `Created` the payment already reported, which the engine's `same_state`
-/// dedup drops.
-///
-/// `sdk` and `federation_id` are carried rather than a federation or a client, because the
-/// stream outlives the call that built it.
-//
-// `unfold` rather than `flat_map` over boxed sub-streams: boxing a stream needs `Send`, which
-// this crate cannot require (`MaybeSend`, `wasm32`), and the state machine here is small
-// enough that spelling it out costs less than working around that.
+/// [`LnSendState::Created`] is the pending state to report: the funding was rejected, so the
+/// payment never reached [`Funded`](LnSendState::Funded), and it is still running while its
+/// inputs are recovered.
 pub(super) fn through_settle(
     stream: impl futures::Stream<Item = Result<SendStep>> + MaybeSend + 'static,
     sdk: Weak<SdkInner>,
     federation_id: FederationId,
     id: OperationId,
 ) -> BoxStream<'static, Result<LnSendState>> {
-    Box::pin(futures::stream::unfold(
-        (Box::pin(stream), sdk, false),
-        move |(mut steps, sdk, settle_next)| async move {
-            if settle_next {
-                let ending = match crate::inputs::settle(sdk.clone(), federation_id, id).await {
-                    Ok(Restoration::Restored) => Ok(LnSendState::Refunded),
-                    Ok(Restoration::Unproven(reason)) => Ok(LnSendState::Failed { reason }),
-                    Err(err) => Err(err),
-                };
-                return Some((ending, (steps, sdk, false)));
-            }
-            let item = match steps.next().await? {
-                Err(err) => Err(err),
-                Ok(SendStep::State(state)) => Ok(state),
-                // The pending state now, the ending on the next pull.
-                Ok(SendStep::FundingRejected) => {
-                    return Some((Ok(LnSendState::Created), (steps, sdk, true)));
-                }
-            };
-            Some((item, (steps, sdk, false)))
-        },
-    ))
+    crate::inputs::through_settle(
+        stream.map(|step| {
+            step.map(|step| match step {
+                SendStep::State(state) => crate::inputs::Step::State(state),
+                SendStep::FundingRejected => crate::inputs::Step::FundingRejected(()),
+            })
+        }),
+        sdk,
+        federation_id,
+        id,
+        LnSendState::Created,
+        ending_of,
+    )
 }
 
 /// Observes an outgoing lightning payment of either generation, chosen by the record's module.
