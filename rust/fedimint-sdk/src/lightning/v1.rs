@@ -23,9 +23,9 @@ use futures::{StreamExt, stream};
 use super::driver::{LnReceiveDriver, LnSendDriver, SendStep, through_settle, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
-    from_upstream, gateway_unavailable, insufficient, internal, network_refusal, now, plan_of,
-    quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Shortfall, Terms, add, amount_too_small, balance_of,
+    fee_quote_failure, from_upstream, gateway_unavailable, insufficient, internal, network_refusal,
+    now, plan_of, quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{
@@ -646,6 +646,7 @@ async fn terms_for(
             return Err(fee_quote_failure(
                 client,
                 err.as_ref(),
+                Shortfall::Balance,
                 contract_amount,
                 "could not quote the funding fee",
             )
@@ -913,15 +914,17 @@ pub(super) async fn receive(
         .map_err(gateway_unavailable)?;
     // v1 takes no gateway fee on the way in: the gateway funds the contract for the invoice's
     // amount and the only deduction is the federation's fee for claiming it.
-    // Same as in `terms_for`: a dry run of the primary module's balancing fails when the notes
-    // on hand cannot cover the contract, which is reported as the balance problem it is, on
-    // either mint generation.
+    // receive_fee_quote (`fedimint-ln-client/src/lib.rs:1846`) quotes the contract as the
+    // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
+    // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount
+    // problem, not a balance one.
     let quote = match module.receive_fee_quote(to_upstream(amount)).await {
         Ok(quote) => quote,
         Err(err) => {
             return Err(fee_quote_failure(
                 client,
                 err.as_ref(),
+                Shortfall::Amount,
                 amount,
                 "could not quote the claim fee",
             )
@@ -929,12 +932,10 @@ pub(super) async fn receive(
         }
     };
     let fee = from_upstream(quote.total().get_bitcoin());
-    let net_credit = amount.checked_sub(fee).ok_or_else(|| {
-        Error::new(
-            ErrorCode::InvalidInput,
-            "the amount does not cover the receive-side fee",
-        )
-    })?;
+    // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
+    // (the wallet was funded), so the net credit going negative here is the same amount problem
+    // seen from the other side.
+    let net_credit = amount.checked_sub(fee).ok_or_else(amount_too_small)?;
     // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
     // between upstream's commit and the SDK's write (`federation.create_operation` below) has
     // the exact quoted terms, not the zero fee the log entry gives on its own. The invoice is

@@ -18,9 +18,9 @@ use futures::StreamExt;
 use super::driver::{LnReceiveDriver, LnSendDriver, SendStep, through_settle, until_final};
 use super::wire::{self, PHASE_FUNDED};
 use super::{
-    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Terms, add, balance_of, fee_quote_failure,
-    from_upstream, gateway_unavailable, insufficient, internal, network_refusal, now, plan_of,
-    quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
+    INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Shortfall, Terms, add, amount_too_small, balance_of,
+    fee_quote_failure, from_upstream, gateway_unavailable, insufficient, internal, network_refusal,
+    now, plan_of, quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, custom_meta, from_custom_meta, kinds, record_phase_in};
@@ -240,6 +240,7 @@ async fn terms_for(
             return Err(fee_quote_failure(
                 client,
                 err.as_ref(),
+                Shortfall::Balance,
                 contract_amount,
                 "could not quote the funding fee",
             )
@@ -549,12 +550,17 @@ async fn receive_terms(
     receive_fee: PaymentFee,
 ) -> Result<(Amount, Amount)> {
     let (contract_amount, gateway_fee) = receive_contract_and_gateway_fee(amount, receive_fee)?;
+    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1146`) quotes the contract as the
+    // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
+    // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount problem,
+    // not a balance one.
     let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
         Ok(quote) => quote,
         Err(err) => {
             return Err(fee_quote_failure(
                 client,
                 err.as_ref(),
+                Shortfall::Amount,
                 contract_amount,
                 "could not quote the claim fee",
             )
@@ -562,12 +568,10 @@ async fn receive_terms(
         }
     };
     let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
-    let net_credit = amount.checked_sub(fee).ok_or_else(|| {
-        Error::new(
-            ErrorCode::InvalidInput,
-            "the amount does not cover the receive-side fee",
-        )
-    })?;
+    // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
+    // (the wallet was funded), so the net credit going negative here is the same amount problem
+    // seen from the other side.
+    let net_credit = amount.checked_sub(fee).ok_or_else(amount_too_small)?;
     Ok((fee, net_credit))
 }
 
@@ -596,10 +600,7 @@ fn receive_error(err: ReceiveError) -> Error {
         | ReceiveError::GatewayFeeExceedsLimit
         | ReceiveError::InvalidInvoice
         | ReceiveError::IncorrectInvoiceAmount => gateway_unavailable(err),
-        ReceiveError::AmountTooSmall => Error::new(
-            ErrorCode::InvalidInput,
-            "the amount is too small to cover the fees of claiming it",
-        ),
+        ReceiveError::AmountTooSmall => amount_too_small(),
         // The expiry is this facade's own constant, well under the module's cap.
         ReceiveError::InvoiceExpiryTooLong => internal(err),
     }

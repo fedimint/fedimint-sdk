@@ -220,8 +220,9 @@ impl Lightning {
     ///
     /// # Errors
     ///
-    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount
-    /// or a description the invoice format cannot carry,
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount, a
+    /// description the invoice format cannot carry, or an amount too small
+    /// to cover the fee of claiming it,
     /// [`GatewayUnavailable`](crate::ErrorCode::GatewayUnavailable),
     /// [`Recovering`](crate::ErrorCode::Recovering) while the federation's
     /// recovery is incomplete,
@@ -978,27 +979,49 @@ fn chain_text(err: &(dyn std::error::Error + 'static)) -> String {
         .join(": ")
 }
 
+/// What an insufficient-balance refusal means at a fee-quote call site.
+///
+/// Funding a send is a balance problem: the wallet cannot cover the payment. Funding a
+/// receive's claim fee is an amount problem instead: the wallet being asked to front the
+/// shortfall is itself the symptom that the claim fee exceeds the amount being received.
+pub(super) enum Shortfall {
+    /// Report the refusal as
+    /// [`ErrorCode::InsufficientBalance`](crate::ErrorCode::InsufficientBalance).
+    Balance,
+    /// Report the refusal as [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput).
+    Amount,
+}
+
 /// Turns a fee-quote dry run's failure into the [`Error`] it represents, for the four call sites
 /// (v1's and v2's `terms_for` and `receive`) that run one.
 ///
-/// `required` is the amount the failed quote was for, used to report the shortfall when the
-/// mint's answer carries no amounts of its own. `context` names the quote for the fallback
-/// message, when neither mint's refusal is found anywhere in `err`'s chain.
+/// `shortfall` says what an insufficient-balance refusal means at the caller's call site.
+/// `required` is the amount the failed quote was for, used to report the shortfall when
+/// `shortfall` is [`Shortfall::Balance`] and the mint's answer carries no amounts of its own.
+/// `context` names the quote for the fallback message, when neither mint's refusal is found
+/// anywhere in `err`'s chain.
 pub(super) async fn fee_quote_failure(
     client: &Client,
     err: &(dyn std::error::Error + 'static),
+    shortfall: Shortfall,
     required: Amount,
     context: &str,
 ) -> Error {
     match classify_fee_quote_failure(err) {
-        Some(FeeQuoteFailure::Typed { requested, total }) => insufficient(requested, total),
-        Some(FeeQuoteFailure::Text) => {
-            // Neither mint's text names amounts, so the balance is read again here. A
-            // failed read must not mask the real refusal that was already found, so it
-            // falls back to zero rather than turning this into an unrelated error.
-            let available = balance_of(client).await.unwrap_or(Amount::from_msats(0));
-            insufficient(required, available)
-        }
+        Some(FeeQuoteFailure::Typed { requested, total }) => match shortfall {
+            Shortfall::Balance => insufficient(requested, total),
+            Shortfall::Amount => amount_too_small(),
+        },
+        Some(FeeQuoteFailure::Text) => match shortfall {
+            Shortfall::Balance => {
+                // Neither mint's text names amounts, so the balance is read again here. A
+                // failed read must not mask the real refusal that was already found, so it
+                // falls back to zero rather than turning this into an unrelated error.
+                let available = balance_of(client).await.unwrap_or(Amount::from_msats(0));
+                insufficient(required, available)
+            }
+            Shortfall::Amount => amount_too_small(),
+        },
         None => internal(format!("{context}: {}", chain_text(err))),
     }
 }
@@ -1059,6 +1082,14 @@ pub(super) fn insufficient(required: Amount, available: Amount) -> Error {
             required,
             available,
         },
+    )
+}
+
+/// A receive whose claim fee would exceed the amount being received.
+pub(super) fn amount_too_small() -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        "the amount is too small to cover the fees of claiming it",
     )
 }
 
