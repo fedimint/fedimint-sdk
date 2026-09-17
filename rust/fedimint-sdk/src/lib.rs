@@ -19,37 +19,35 @@
 //!
 //! # Status
 //!
-//! This crate is currently an **API skeleton**. The types, the signatures,
-//! and the contract documented throughout are real; the bodies behind them
-//! are `unimplemented!()`. The `fedimint-*` client crates it is built on
-//! are already declared, tracking fedimint `master` at one pinned revision.
-//! Implementation lands module by module behind this surface. The example
-//! below is compiled by the test suite, and must never be run.
+//! The surface documented throughout this crate is implemented behind every
+//! facade: [`Ecash`], [`Lightning`], [`Onchain`], [`Meta`], and recovery on
+//! [`Sdk`]. This crate tracks fedimint `master` at one pinned revision, the
+//! same one the repo's `flake.nix` pins for devimint and the wasm client, so
+//! the SDK and the federation its tests run against always come from one
+//! commit. What remains is the language bindings: the Swift, Kotlin and
+//! JavaScript SDKs this surface is meant to generate.
 //!
 //! # A worked example
 //!
-//! The happy path, end to end: build an instance, look at a federation before
-//! committing to it, join, spend ecash, pay an invoice through a quote,
-//! follow the payment as it progresses, pick up an operation left over from a
-//! previous run, and read a page of history.
+//! `examples/walkthrough.rs` is this same happy path, runnable end to end: it
+//! takes a data directory and an invite code on the command line, and
+//! `scripts/run-sdk-examples.sh` runs it against a federation the script
+//! starts with devimint. The excerpt below is its first few steps: build an
+//! instance, look at a federation before committing to it, join, and read
+//! the balance.
 //!
 //! ```no_run
-//! use fedimint_sdk::{
-//!     Amount, Bolt11Invoice, InviteCode, LnSendState, Mnemonic, OperationId, OperationKind,
-//!     Sdk, Storage,
-//! };
+//! use fedimint_sdk::{InviteCode, Mnemonic, Sdk, Storage};
 //!
 //! async fn walkthrough(
 //!     data_dir: &str,
 //!     phrase: &str,
 //!     invite_code: &str,
-//!     invoice: &str,
-//!     unfinished: Option<&str>,
 //! ) -> fedimint_sdk::Result<()> {
 //!     // One storage, one seed, as many federations as the user joins.
 //!     // Parsing the phrase validates it; leaving `.mnemonic(..)` off
-//!     // entirely would use the seed already in this storage, or — if the
-//!     // storage is empty — generate a fresh one, which `build` reports as
+//!     // entirely would use the seed already in this storage, or, if the
+//!     // storage is empty, generate a fresh one, which `build` reports as
 //!     // `ErrorCode::Entropy` in the rare case the platform's random source
 //!     // fails.
 //!     let mnemonic: Mnemonic = phrase.parse()?;
@@ -69,105 +67,9 @@
 //!         preview.guardians,
 //!         preview.modules,
 //!     );
-//!     if let Some(welcome) = preview.meta.get("welcome_message") {
-//!         println!("{welcome}");
-//!     }
 //!
 //!     let federation = sdk.join(&invite).await?;
 //!     println!("balance: {}", federation.balance().await?);
-//!
-//!     // What a federation can do is a value to branch on, never an error to
-//!     // provoke: `capabilities()` to lay out a screen, the facade accessors
-//!     // to actually do the work.
-//!     let capabilities = federation.capabilities();
-//!     println!("{capabilities:?}");
-//!
-//!     // Ecash: notes to hand over out of band, plus an operation that says
-//!     // whether they were redeemed or came back. Quote first here too — the
-//!     // mint rounds the request up to a denomination it can issue, and note
-//!     // selection can cost a fee, so the debit is not the amount asked for.
-//!     if let Some(ecash) = federation.ecash() {
-//!         let quote = ecash.quote(Amount::from_msats(50_000)).await?;
-//!         println!(
-//!             "{} of notes plus {} fee ({} debited), good until {}",
-//!             quote.notes_value(),
-//!             quote.fee(),
-//!             quote.total(),
-//!             quote.expires_at(),
-//!         );
-//!         let sent = ecash.send(quote).await?;
-//!         println!("give these to the receiver: {}", sent.notes);
-//!         // Worth persisting, though not required: the notes are readable
-//!         // again from `Operation::details` after a restart, and the id is
-//!         // all it takes to find this send.
-//!         println!("resume with {}", sent.operation.id());
-//!     }
-//!
-//!     // Lightning: quote first, so the user sees the expected cost before
-//!     // agreeing to it, and `send` refuses a quote whose terms have moved.
-//!     // What finally left the balance is read from the operation's details.
-//!     if let Some(lightning) = federation.lightning() {
-//!         let invoice: Bolt11Invoice = invoice.parse()?;
-//!         // An invoice states its own amount. One that does not cannot be
-//!         // paid at all, so there is nothing to override here.
-//!         let quote = lightning.quote(&invoice).await?;
-//!         println!(
-//!             "pay {} plus {} fee ({} total) via {:?}, good until {}",
-//!             quote.invoice_amount(),
-//!             quote.fee(),
-//!             quote.total(),
-//!             quote.route(),
-//!             quote.expires_at(),
-//!         );
-//!
-//!         // `send` takes the quote by value: one quote, one payment.
-//!         let payment = lightning.send(quote).await?;
-//!
-//!         // The subscriber yields the current state first, then every
-//!         // transition, then `None` once a final state has been seen.
-//!         let mut updates = payment.updates();
-//!         while let Some(state) = updates.next().await? {
-//!             match state {
-//!                 LnSendState::Success { preimage, fee, .. } => {
-//!                     // The fee the quote bound, and therefore the fee that
-//!                     // was charged.
-//!                     println!("paid, fee {fee}, preimage {preimage}");
-//!                 }
-//!                 // Not an error: the payment did not go through, and the
-//!                 // money is back in the balance.
-//!                 LnSendState::Refunded => println!("refunded"),
-//!                 other => println!("{other:?}"),
-//!             }
-//!         }
-//!     }
-//!
-//!     // Reattaching after a restart: the operation kept running without us.
-//!     if let Some(unfinished) = unfinished {
-//!         let id: OperationId = unfinished.parse()?;
-//!         match federation.operation(&id).await? {
-//!             Some(operation) => match operation.kind() {
-//!                 OperationKind::LnSend => {
-//!                     if let Some(payment) = operation.as_ln_send() {
-//!                         println!("still going: {:?}", payment.state().await?);
-//!                     }
-//!                 }
-//!                 // Recorded by a version that understood something this one
-//!                 // does not — still a real row, still listable.
-//!                 OperationKind::Unknown => println!("an operation from another version"),
-//!                 other => println!("{other:?}"),
-//!             },
-//!             None => println!("no operation with that id here"),
-//!         }
-//!     }
-//!
-//!     // Local history, newest first, one page at a time.
-//!     let page = federation.activity(None, 20).await?;
-//!     for item in &page.items {
-//!         println!("{} {:?} {:?}", item.time, item.kind, item.status);
-//!     }
-//!     if let Some(cursor) = page.next {
-//!         let _older = federation.activity(Some(cursor), 20).await?;
-//!     }
 //!
 //!     sdk.shutdown().await
 //! }
@@ -397,13 +299,15 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
-// Skeleton-phase allowances: remove both once the last facade is implemented. Parameters
-// are deliberately named (they are rustdoc-visible API contract) but unused, and
-// the private placeholder `inner` fields are never constructed or read while
-// every body is unimplemented!(). CI builds this crate through
-// actions-rust-lang/setup-rust-toolchain, which defaults RUSTFLAGS to
-// "-D warnings", so these must be in-source allows rather than warnings
-// tolerated at the command line:
+// These attributes stay: dropping them does not surface leftover skeleton work, it surfaces
+// real warnings under CI's default RUSTFLAGS of "-D warnings" (actions-rust-lang/setup-rust-
+// toolchain), so they must be in-source allows rather than warnings tolerated at the command
+// line. `unused_variables` covers parameters an implemented body does not read because they
+// exist for symmetry with a sibling arm (v1 vs v2, send vs receive), for example
+// `lightning::v1::terms_for`'s `invoice` and `onchain::v2::plan`'s `address`. `dead_code`
+// covers a mix of items only this crate's own tests exercise (`db::read_federation`,
+// `operation::kinds::ALL`) and items reserved for work this build does not yet exercise, such
+// as `db.rs`'s recovery and config-meta key prefixes and `Mnemonic::from_upstream`.
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
