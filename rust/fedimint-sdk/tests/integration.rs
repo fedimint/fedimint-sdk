@@ -587,6 +587,45 @@ async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
     reopened.shutdown().await.expect("shuts down");
 }
 
+/// A receive whose claim fee would exceed the amount is refused as invalid input, not funded by
+/// the mint and not reported as an opaque internal failure. lnv2's federation fee has a
+/// mandatory base per transaction, so 200 msat can never cover it; v1's has no such floor, so
+/// the same amount is not too small there and the receive is expected to succeed instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn lightning_receive_below_the_claim_fee_is_refused_as_invalid_input() {
+    use fedimint_sdk::Amount;
+
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    pin_lnv2_gateway_to_lnd(&devimint);
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let lightning = federation
+        .lightning()
+        .expect("devimint runs a lightning module");
+
+    match lightning
+        .receive(Amount::from_msats(200), "too small to claim")
+        .await
+    {
+        Ok(_) => {
+            assert_eq!(
+                devimint.shape, "v1",
+                "only walletv1 lets this amount through"
+            );
+        }
+        Err(err) => {
+            eprintln!("the receive was refused: {err}");
+            assert_eq!(devimint.shape, "v2", "only walletv2 refuses: {err}");
+            assert_eq!(err.code, ErrorCode::InvalidInput, "{err}");
+        }
+    }
+
+    sdk.shutdown().await.expect("shuts down");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn lightning_send_pays_an_invoice_from_outside_the_federation() {
     use fedimint_sdk::{Amount, LightningRoute, LnSendState, OperationKind};

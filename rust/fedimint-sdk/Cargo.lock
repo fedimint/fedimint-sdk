@@ -2386,6 +2386,7 @@ dependencies = [
 name = "fedimint-sdk"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "anyhow",
  "async-compat",
  "bip39",
  "cc",
