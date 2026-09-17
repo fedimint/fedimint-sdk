@@ -10,7 +10,7 @@
 #   scripts/run-sdk-examples-inner.sh [example|shell ...]
 #
 # Defaults to running all four examples in order: walkthrough, lightning, ecash, onchain. The
-# name `shell` instead hands the federation to an interactive shell, for running the examples
+# name `shell` instead hands the federation to the user's own shell, for running the examples
 # by hand, and tears it down when that shell exits.
 
 set -euo pipefail
@@ -132,21 +132,27 @@ grab() {
   return 1
 }
 
-# Pays a bolt11 invoice from a node outside the federation: the counterparty for a receive.
-# Fails the run through die, naming <name>, if the faucet's own HTTP call fails.
+# One call to devimint's faucet, a lightning node outside the federation: posts <data> to its
+# <endpoint> (`pay` with a bolt11 invoice to pay it, `invoice` with an msat amount to be
+# issued one) and fails on an HTTP error.
+faucet() {
+  local endpoint="$1" data="$2"
+  curl -sS --fail-with-body -X POST --data "$data" "http://localhost:$FM_PORT_FAUCET/$endpoint"
+}
+
+# Pays a bolt11 invoice from outside the federation: the counterparty for a receive. Fails the
+# run through die, naming <name>, if the faucet call fails.
 pay_invoice() {
   local name="$1" invoice="$2"
-  curl -sS --fail-with-body -X POST --data "$invoice" "http://localhost:$FM_PORT_FAUCET/pay" \
-    >/dev/null || die "$name"
+  faucet pay "$invoice" >/dev/null || die "$name"
 }
 
 # Issues a bolt11 invoice for <msats> millisatoshis from outside the federation, printed for
-# the caller to pass to a send. Fails the run through die, naming <name>, if the faucet's own
-# HTTP call fails.
+# the caller to pass to a send. Fails the run through die, naming <name>, if the faucet call
+# fails.
 new_invoice() {
   local name="$1" msats="$2"
-  curl -sS --fail-with-body -X POST --data "$msats" "http://localhost:$FM_PORT_FAUCET/invoice" \
-    || die "$name"
+  faucet invoice "$msats" || die "$name"
 }
 
 # Runs one bitcoin-cli command against devimint's regtest node, on the wallet devimint funds
@@ -252,14 +258,27 @@ run_onchain() {
   grep -q '^state: Succeeded' "$send_log" || die onchain
 }
 
-# Hands the federation to an interactive shell instead of an example. The invite code and a
-# fresh wallet directory are in its environment, the bitcoind helpers above are functions in
-# it, and the banner says how to play the counterparty by hand. The federation stays up until
-# the shell exits. The faucet helpers are not exported because they stop the run through die,
-# which would end the shell on the first failed call.
+# Hands the federation to the user's own shell instead of an example: FM_SDK_SHELL, which the
+# outer script records from SHELL before nix develop replaces it. The invite code and a fresh
+# wallet directory are in its environment, and the counterparty helpers above are on its PATH
+# as commands, since functions cannot be handed to a shell that is not bash: each command is a
+# script carrying the function definitions and calling one of them. The federation stays up
+# until the shell exits.
 run_shell() {
+  local bin="$root/bin"
+  local helper
+  mkdir -p "$bin"
+  for helper in faucet bitcoin_cli send_to_address mine_blocks; do
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'set -euo pipefail'
+      declare -f faucet bitcoin_cli send_to_address mine_blocks
+      echo "$helper \"\$@\""
+    } > "$bin/$helper"
+    chmod +x "$bin/$helper"
+  done
+  export PATH="$bin:$PATH"
   export FM_SDK_INVITE_CODE="$invite" FM_SDK_WALLET_DIR="$wallet_a"
-  export -f bitcoin_cli send_to_address mine_blocks
   cat <<BANNER
 
 The federation is up, on shape ${FM_SDK_SHAPE:-v1}. In this shell:
@@ -269,17 +288,15 @@ The federation is up, on shape ${FM_SDK_SHAPE:-v1}. In this shell:
 
   run an example:   cargo run --example lightning -- \\
                       "\$FM_SDK_WALLET_DIR" "\$FM_SDK_INVITE_CODE" receive 100000
-  pay an invoice:   curl -sS --fail-with-body -X POST --data <invoice> \\
-                      http://localhost:$FM_PORT_FAUCET/pay
-  get an invoice:   curl -sS --fail-with-body -X POST --data <msats> \\
-                      http://localhost:$FM_PORT_FAUCET/invoice
+  pay an invoice:   faucet pay <invoice>
+  get an invoice:   faucet invoice <msats>
   fund an address:  send_to_address <address> <sats>; mine_blocks 21
   bitcoin-cli:      bitcoin_cli <command ...>
 
 Exit the shell to tear the federation down.
 
 BANNER
-  bash -i || true
+  "${FM_SDK_SHELL:-bash}" || true
 }
 
 examples=("$@")

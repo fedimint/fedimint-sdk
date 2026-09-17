@@ -7,8 +7,9 @@
 #
 # The shape is optional and defaults to v2; every other argument (including a leading one that is
 # not v1 or v2) is an example name. Defaults to running all four examples: walkthrough, ecash,
-# lightning, onchain. The name `shell` instead hands the federation to an interactive shell for
-# running the examples by hand. v1 stays selectable, but on it the pinned fedimint revision's lnv1
+# lightning, onchain. The name `shell` instead hands the federation to the caller's own shell
+# (SHELL, or FM_SDK_SHELL to pick another) for running the examples by hand. v1 stays
+# selectable, but on it the pinned fedimint revision's lnv1
 # client cannot decode a successful send's preimage, so the walkthrough and lightning examples end
 # with an Internal error after the payment has actually gone through, while ecash and onchain are
 # unaffected.
@@ -18,6 +19,10 @@
 # enters it itself when started from outside it, so a plain shell will do.
 
 set -euo pipefail
+
+# The shell the `shell` mode launches. Recorded here because nix develop below replaces SHELL
+# with its own bash.
+export FM_SDK_SHELL="${FM_SDK_SHELL:-${SHELL:-bash}}"
 
 shape=v2
 if [ $# -gt 0 ] && { [ "$1" = v1 ] || [ "$1" = v2 ]; }; then

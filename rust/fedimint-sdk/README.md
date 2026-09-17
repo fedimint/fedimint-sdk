@@ -70,8 +70,8 @@ or a single one by name, optionally on a specific module shape:
 scripts/run-sdk-examples.sh v2 lightning
 ```
 
-or hand the federation to an interactive shell instead, to run the examples by hand against it
-with the invite code, a fresh data directory and the counterparty commands in the environment:
+or hand the federation to your own shell instead, to run the examples by hand against it with
+the invite code, a fresh data directory and the counterparty commands in the environment:
 
 ```
 scripts/run-sdk-examples.sh v2 shell
