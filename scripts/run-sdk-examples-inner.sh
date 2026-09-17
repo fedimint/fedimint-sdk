@@ -7,9 +7,11 @@
 # the environment devimint's wasm-test-setup exports (FM_CLIENT_DIR, FM_PORT_FAUCET,
 # FM_BTC_CLIENT and the rest). It assumes the examples are already built.
 #
-#   scripts/run-sdk-examples-inner.sh [example ...]
+#   scripts/run-sdk-examples-inner.sh [example|shell ...]
 #
-# Defaults to running all four examples in order: walkthrough, lightning, ecash, onchain.
+# Defaults to running all four examples in order: walkthrough, lightning, ecash, onchain. The
+# name `shell` instead hands the federation to an interactive shell, for running the examples
+# by hand, and tears it down when that shell exits.
 
 set -euo pipefail
 
@@ -250,6 +252,36 @@ run_onchain() {
   grep -q '^state: Succeeded' "$send_log" || die onchain
 }
 
+# Hands the federation to an interactive shell instead of an example. The invite code and a
+# fresh wallet directory are in its environment, the bitcoind helpers above are functions in
+# it, and the banner says how to play the counterparty by hand. The federation stays up until
+# the shell exits. The faucet helpers are not exported because they stop the run through die,
+# which would end the shell on the first failed call.
+run_shell() {
+  export FM_SDK_INVITE_CODE="$invite" FM_SDK_WALLET_DIR="$wallet_a"
+  export -f bitcoin_cli send_to_address mine_blocks
+  cat <<BANNER
+
+The federation is up, on shape ${FM_SDK_SHAPE:-v1}. In this shell:
+
+  \$FM_SDK_INVITE_CODE   its invite code
+  \$FM_SDK_WALLET_DIR    a fresh data directory (any other directory works too)
+
+  run an example:   cargo run --example lightning -- \\
+                      "\$FM_SDK_WALLET_DIR" "\$FM_SDK_INVITE_CODE" receive 100000
+  pay an invoice:   curl -sS --fail-with-body -X POST --data <invoice> \\
+                      http://localhost:$FM_PORT_FAUCET/pay
+  get an invoice:   curl -sS --fail-with-body -X POST --data <msats> \\
+                      http://localhost:$FM_PORT_FAUCET/invoice
+  fund an address:  send_to_address <address> <sats>; mine_blocks 21
+  bitcoin-cli:      bitcoin_cli <command ...>
+
+Exit the shell to tear the federation down.
+
+BANNER
+  bash -i || true
+}
+
 examples=("$@")
 [ ${#examples[@]} -eq 0 ] && examples=(walkthrough lightning ecash onchain)
 
@@ -260,8 +292,9 @@ for name in "${examples[@]}"; do
     lightning) run_lightning ;;
     ecash) run_ecash ;;
     onchain) run_onchain ;;
+    shell) run_shell ;;
     *)
-      echo "usage: run-sdk-examples-inner.sh [walkthrough|lightning|ecash|onchain ...]" >&2
+      echo "usage: run-sdk-examples-inner.sh [walkthrough|lightning|ecash|onchain|shell ...]" >&2
       exit 2
       ;;
   esac

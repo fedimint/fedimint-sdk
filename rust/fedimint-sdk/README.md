@@ -70,6 +70,13 @@ or a single one by name, optionally on a specific module shape:
 scripts/run-sdk-examples.sh v2 lightning
 ```
 
+or hand the federation to an interactive shell instead, to run the examples by hand against it
+with the invite code, a fresh data directory and the counterparty commands in the environment:
+
+```
+scripts/run-sdk-examples.sh v2 shell
+```
+
 The default and recommended shape is `v2`. On `v1`, the pinned fedimint
 revision's lnv1 client cannot decode a successful send's preimage
 ([fedimint/fedimint#8969](https://github.com/fedimint/fedimint/issues/8969)),

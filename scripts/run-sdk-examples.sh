@@ -3,13 +3,14 @@
 # Stand up a devimint federation of the requested module shape and run the
 # fedimint-sdk examples against it.
 #
-#   scripts/run-sdk-examples.sh [v1|v2] [example ...]
+#   scripts/run-sdk-examples.sh [v1|v2] [example|shell ...]
 #
-# The shape is optional and defaults to v2; every other argument (including a leading one that
-# is not v1 or v2) is an example name. Defaults to running all four examples: walkthrough, ecash,
-# lightning, onchain. v1 stays selectable, but on it the pinned fedimint revision's lnv1 client
-# cannot decode a successful send's preimage, so the walkthrough and lightning examples end with
-# an Internal error after the payment has actually gone through, while ecash and onchain are
+# The shape is optional and defaults to v2; every other argument (including a leading one that is
+# not v1 or v2) is an example name. Defaults to running all four examples: walkthrough, ecash,
+# lightning, onchain. The name `shell` instead hands the federation to an interactive shell for
+# running the examples by hand. v1 stays selectable, but on it the pinned fedimint revision's lnv1
+# client cannot decode a successful send's preimage, so the walkthrough and lightning examples end
+# with an Internal error after the payment has actually gone through, while ecash and onchain are
 # unaffected.
 #
 # Runs inside the .#wasm-tests dev shell, the only one with devimint, fedimintd,
