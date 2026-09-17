@@ -133,6 +133,9 @@ jobs:
               js/web/react/*|packages/react/*)
                 core=true
                 ;;
+              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh)
+                rust_sdk=true
+                ;;
               js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
                 web=true
                 ;;
@@ -150,9 +153,6 @@ jobs:
               flake.nix|flake.lock)
                 web=true
                 react_native=true
-                rust_sdk=true
-                ;;
-              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh)
                 rust_sdk=true
                 ;;
               js/docs/*|docs/*)
@@ -245,6 +245,7 @@ jobs:
       # so two concurrent jobs cannot collide on ports or state.
       group: devimint-integration
       cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: false
       matrix:

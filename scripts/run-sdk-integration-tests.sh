@@ -114,7 +114,11 @@ cargo test --locked --test integration --no-run
 # devimint integration tests can be flaky in constrained CI environments (e.g. timeouts).
 # Retry up to 3 times to ensure flakiness doesn't fail the build.
 MAX_RETRIES=3
-BASE_TEST_DIR="${FM_TEST_DIR:-/tmp/devimint-tests}"
+if [ -z "${FM_TEST_DIR:-}" ]; then
+  BASE_TEST_DIR="$(mktemp -d)"
+else
+  BASE_TEST_DIR="$FM_TEST_DIR"
+fi
 
 for ((i=1; i<=MAX_RETRIES; i++)); do
   echo "Running integration tests (Attempt $i of $MAX_RETRIES)..."
