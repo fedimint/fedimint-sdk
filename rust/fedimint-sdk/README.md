@@ -56,9 +56,9 @@ cargo run --example lightning -- ./wallet <invite-code> receive 100000
 
 `scripts/run-sdk-examples.sh` runs all four against a federation it stands up with devimint,
 playing every counterparty itself: paying and issuing invoices through devimint's faucet, and
-depositing to and confirming with devimint's bitcoind. Like the integration tests, it needs the
-`.#wasm-tests` dev shell, the only one with devimint and the rest of the federation's binaries on
-PATH. Run all four against a fresh federation with:
+depositing to and confirming with devimint's bitcoind. It enters the `.#wasm-tests` dev shell
+itself, the only one with devimint and the rest of the federation's binaries on PATH, so it can
+be started from a plain shell. Run all four against a fresh federation with:
 
 ```
 scripts/run-sdk-examples.sh

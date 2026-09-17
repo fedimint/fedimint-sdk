@@ -12,9 +12,9 @@
 # an Internal error after the payment has actually gone through, while ecash and onchain are
 # unaffected.
 #
-# Must run inside `nix develop --accept-flake-config .#wasm-tests`: that is the
-# only dev shell with devimint, fedimintd, gatewayd, bitcoind, lnd, esplora and
-# the recurringd binaries on PATH.
+# Runs inside the .#wasm-tests dev shell, the only one with devimint, fedimintd,
+# gatewayd, bitcoind, lnd, esplora and the recurringd binaries on PATH, and
+# enters it itself when started from outside it, so a plain shell will do.
 
 set -euo pipefail
 
@@ -27,12 +27,15 @@ fi
 # shellcheck source=scripts/devimint-shape.sh
 . "$(dirname "${BASH_SOURCE[0]}")/devimint-shape.sh" "$shape"
 
-if ! command -v devimint >/dev/null; then
-  echo "error: devimint not on PATH; run inside the .#wasm-tests dev shell" >&2
-  exit 1
-fi
-
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# devimint missing from PATH means this is a plain shell: re-run this script, with the same
+# arguments, inside the dev shell that has the federation's binaries. In there devimint is on
+# PATH and this branch is skipped, so the re-run cannot loop.
+if ! command -v devimint >/dev/null; then
+  exec nix develop --accept-flake-config "$repo_root#wasm-tests" \
+    --command "$repo_root/scripts/run-sdk-examples.sh" "$shape" "$@"
+fi
 cd "$repo_root/rust/fedimint-sdk"
 
 # Record what is being driven against what. The flake's devimint and the client
