@@ -24,6 +24,7 @@ jobs:
       react-native: ${{ steps.filter.outputs.react-native }}
       docs: ${{ steps.filter.outputs.docs }}
       cli: ${{ steps.filter.outputs.cli }}
+      rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +49,7 @@ jobs:
           react_native=false
           docs=false
           cli=false
+          rust_sdk=false
 
           enable_all() {
             core=true
@@ -55,6 +57,7 @@ jobs:
             react_native=true
             docs=true
             cli=true
+            rust_sdk=true
           }
 
           emit_outputs() {
@@ -64,6 +67,7 @@ jobs:
               echo "react-native=$react_native"
               echo "docs=$docs"
               echo "cli=$cli"
+              echo "rust-sdk=$rust_sdk"
             } >> "$GITHUB_OUTPUT"
           }
 
@@ -129,6 +133,9 @@ jobs:
               js/web/react/*|packages/react/*)
                 core=true
                 ;;
+              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh)
+                rust_sdk=true
+                ;;
               js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
                 web=true
                 ;;
@@ -146,6 +153,7 @@ jobs:
               flake.nix|flake.lock)
                 web=true
                 react_native=true
+                rust_sdk=true
                 ;;
               js/docs/*|docs/*)
                 docs=true
@@ -221,3 +229,57 @@ jobs:
       - uses: ./.github/actions/build-rn-ios
         with:
           device-only: 'true'
+
+  integration-test-sdk:
+    name: 'Integration test SDK (${{ matrix.shape }})'
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.rust-sdk == 'true') }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 45
+    # Non-blocking on day one: let the suite build a track record before
+    # promoting it to a required check.
+    continue-on-error: true
+    concurrency:
+      # Global lock: serializes all devimint runs on the
+      # self-hosted runner regardless of which PR or matrix leg triggered them,
+      # so two concurrent jobs cannot collide on ports or state.
+      group: devimint-integration
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      matrix:
+        shape: [v1, v2]
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Setup Nix'
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: 'Run integration tests (${{ matrix.shape }})'
+        id: run-tests
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/devimint-logs"
+          export FM_TEST_DIR="$GITHUB_WORKSPACE/devimint-logs"
+          export TMPDIR="$GITHUB_WORKSPACE/devimint-logs"
+          nix develop --accept-flake-config .#wasm-tests --command \
+            scripts/run-sdk-integration-tests.sh ${{ matrix.shape }}
+
+      - name: 'Upload devimint logs'
+        if: ${{ !cancelled() && steps.run-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: devimint-logs-${{ matrix.shape }}-${{ github.run_id }}
+          path: |
+            devimint-logs/**/*.log
+            devimint-logs/**/FM_*
+          retention-days: 7
+          if-no-files-found: ignore
