@@ -133,7 +133,7 @@ jobs:
               js/web/react/*|packages/react/*)
                 core=true
                 ;;
-              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh)
+              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh)
                 rust_sdk=true
                 ;;
               js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
