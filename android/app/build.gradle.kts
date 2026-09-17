@@ -42,7 +42,7 @@ android {
 
 dependencies {
     // The SDK under test, as a project dependency rather than the published
-    // AAR, so a change to the Rust is one `generate-android-so.sh` away.
+    // AAR, so a change to the Rust is one `build-android-sdk.sh` away.
     implementation(project(":fedimint-sdk"))
 
     implementation(libs.androidx.core.ktx)

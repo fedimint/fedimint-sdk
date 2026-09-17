@@ -33,10 +33,12 @@ The seed is established by `createFedimintSdk`: pass a `Mnemonic` to restore, or
 `null` to load the seed the directory already holds — or, over an empty
 directory, generate and persist a fresh one. `sdk.exportMnemonic()` reads it back.
 
-Balances, ecash, Lightning, on-chain and history are **not** here. The
-`Federation` that `join` returns is an **opaque handle with no methods yet** —
-those facades are still `unimplemented!()` in the Rust crate and land in a later
-stage. Hold it (and `close()` it when done); there is nothing to call on it now.
+The `Federation` that `join` returns carries the rest of the surface: `balance()`,
+`capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
+`lightning()` and `onchain()` facades (each `null` when the federation lacks that
+module), whose `quote` → `send` and `receive` calls return operation handles to
+observe with `state()`, `updates()` and `awaitFinal()`. The demo app
+(`android/app`) drives each of them once.
 
 ## Using it
 
@@ -60,8 +62,9 @@ println("${preview.name ?: "unnamed"} on ${preview.network}")   // Network enum
 println("${preview.guardians} guardians, modules ${preview.modules}")
 preview.meta["welcome_message"]?.let(::println)
 
-// 4. Join. `federation` is opaque for now — hold it for a later stage.
+// 4. Join, then use the facades it offers.
 val federation: Federation = sdk.join(invite)
+val balanceMsats: ULong = federation.balance()
 
 // 5. Release the handles and the lock on dataDir.
 federation.close()
@@ -99,7 +102,9 @@ An exception always means _the call_ failed. It never means value moved badly �
 that distinction is the core convention of the Rust crate.
 
 `FederationId` is a `String` typealias; `Mnemonic`, `InviteCode`, `Sdk` and
-`Federation` are opaque handle classes; `FederationPreview` is a data class and
+`Federation` are opaque handle classes, and so is `Notes`: ecash notes are a
+bearer token, so they come out only through `display()` and never through a
+record's `toString()`; `FederationPreview` is a data class and
 `Network` / `ErrorCode` are plain enums — all regenerated from the crate.
 
 `ErrorCode` is `#[non_exhaustive]` in Rust, so a binding pinned to an older SDK
@@ -135,8 +140,8 @@ CI runs those same two scripts as two workflows —
 and generates the Kotlin from the artifact — so the shared, costly half is
 built once and any binding generator added later starts from the same binary.
 
-Non-Nix escape hatch: `just build-android-local` (`scripts/generate-android-so.sh`
-via `cargo-ndk` in the `.#android` shell).
+Non-Nix escape hatch: `just build-android-local` (`scripts/build-android-sdk.sh
+--local`, via `cargo-ndk` in the `.#android` shell).
 
 Gradle needs a host JDK 17.
 
@@ -157,12 +162,7 @@ android/
 
 ## What's not here yet
 
-`Federation` is an opaque handle — its facades (`balance`, `ecash`, `lightning`,
-`onchain`, `meta`, `activity`) are `unimplemented!()` in the Rust crate and land
-in a later stage. The value types those methods use (`Amount`, `Bolt11Invoice`,
-`Address`, `Notes`, `Txid`, `OperationId`, `Cursor`, `Timestamp`) get their FFI
-mapping when the facade that returns them is exported. iOS bindings are a
-separate follow-up off the same `uniffi` feature.
+iOS bindings are a separate follow-up off the same `uniffi` feature.
 
 ## Publishing
 

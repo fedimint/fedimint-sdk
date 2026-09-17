@@ -316,6 +316,8 @@ mod db;
 mod ecash;
 mod error;
 mod federation;
+#[cfg(feature = "uniffi")]
+mod ffi;
 mod inputs;
 mod lightning;
 mod meta;
@@ -328,8 +330,9 @@ mod storage;
 mod types;
 
 // Generates the per-crate UniFFI scaffolding every `#[uniffi::export]` block
-// (`sdk.rs`, `error.rs`, `types/mnemonic.rs`, `types/invite.rs`) and every type
-// derive (`error.rs`, `federation.rs`, `types/`) relies on. Behind the `uniffi`
+// (on `Sdk`, `Federation`, the facades, operations, recovery and the handle
+// types in `types/`) and every type derive relies on; `ffi.rs` holds the
+// machinery those exports share. Behind the `uniffi`
 // feature; the wasm and plain-Rust builds never see it.
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -361,7 +364,7 @@ pub use recovery::{Recovery, RecoveryState};
 pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, SdkBuilder};
 // The UniFFI entry point a mobile host calls to open an instance. Native, behind
 // the `uniffi` feature; the rest of the surface is `#[uniffi::export]` methods on
-// `Sdk` / `Mnemonic` / `InviteCode` / `Error` and derives on the value types.
+// `Sdk`, `Federation` and what they hand out, and derives on the value types.
 #[cfg(feature = "uniffi")]
 pub use sdk::create_fedimint_sdk;
 pub use storage::Storage;

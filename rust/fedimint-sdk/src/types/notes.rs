@@ -32,7 +32,15 @@ use crate::{Error, ErrorCode};
 /// it is what logging, crash reporters and `assert!` failures reach for, and
 /// a struct holding a `Notes` (such as [`EcashSend`](crate::EcashSend))
 /// would otherwise print the token merely by being logged.
+// Crosses a UniFFI boundary as an opaque object, not a bare `String`, for the
+// same reason `Debug` is redacted: a generated Kotlin/Swift record prints every
+// field in its automatic `toString`, so a string would put the token into any
+// log line that mentions the record holding it. As an object it prints as a
+// handle, and the token comes out only through `display()`, as an
+// `InviteCode`'s does. Records that hold notes cross through `Arc<Notes>`
+// projections next to them (see `ecash.rs`). Behind the `uniffi` feature.
 #[derive(Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Notes {
     notes: NotesInner,
 }
@@ -43,6 +51,7 @@ enum NotesInner {
     V2 { ecash: ECash, encoded: String },
 }
 
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl Notes {
     /// Returns the total value carried by these notes.
     ///
@@ -57,6 +66,26 @@ impl Notes {
         }
     }
 
+    /// Parses and validates ecash notes from their canonical string form.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value.
+    #[cfg_attr(feature = "uniffi", uniffi::constructor)]
+    pub fn parse(notes: String) -> crate::Result<Notes> {
+        notes.parse()
+    }
+
+    /// The notes in their canonical string form, for handing to the receiver.
+    ///
+    /// This is the deliberate way to get the token out; see the type-level
+    /// documentation for why [`Debug`] is not.
+    pub fn display(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl Notes {
     /// Wraps already-parsed out-of-band ecash notes.
     ///
     /// Crate-internal: this performs no validation of its own, so it is not

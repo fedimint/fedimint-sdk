@@ -173,7 +173,7 @@ js/react-native/react-native-bindings/src/generated/
 js/react-native/react-native-bindings/android/cpp-adapter.cpp.rej
 js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 
-# android/: both are produced by scripts/generate-android-so.sh
+# android/: both are produced by scripts/build-android-sdk.sh
 # (run it inside `nix develop .#android`) and must never be committed — a
 # stale checked-in binding is worse than no binding at all.
 android/fedimint-sdk/src/main/jniLibs

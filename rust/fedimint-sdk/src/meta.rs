@@ -86,10 +86,12 @@ const CONSENSUS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// stores it, which is what to read for anything that depends on the
 /// document's structure, its scalar types, or its precise bytes.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Meta {
     inner: Arc<MetaInner>,
 }
 
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Meta {
     /// Looks up one key in the merged view.
     ///
@@ -195,7 +197,9 @@ impl Meta {
             value: mcv.value.as_slice().to_vec(),
         }))
     }
+}
 
+impl Meta {
     /// Builds the facade for one federation. Handed out by `Federation::meta`.
     pub(crate) fn new(federation: Arc<crate::federation::FederationInner>) -> Meta {
         Meta {
@@ -254,6 +258,7 @@ fn apply_consensus_bytes(
 /// revisions is how an application detects a change without diffing the
 /// document.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct ConsensusMetadata {
     /// The revision number of this metadata. Monotonically increasing;

@@ -57,10 +57,19 @@ pub(crate) const FACADE_ECASH_SEND_RECLAIM: &str = "ecash_send_reclaim";
 /// discovered is not safe to spend from, since a note the rescan never
 /// reached can be double-spent.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Ecash {
     inner: Arc<EcashInner>,
 }
 
+// `quote` is exported under its own name, unchanged: `EcashQuote` is a
+// UniFFI object (see below), and a bare object returned through `Result<T>`
+// crosses the boundary with no adapter needed. `send` and `receive` still
+// need one, in the block below `new`: `send`'s real parameter is an owned
+// `EcashQuote`, which an object can never cross as (only `Arc<EcashQuote>`
+// can), and `receive`'s real return type names the generic
+// `Operation<EcashReceiveState>`, which cannot cross at all.
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Ecash {
     /// Plans an out-of-band send and returns an executable quote for it.
     ///
@@ -283,20 +292,20 @@ impl Ecash {
         let expires_at = Timestamp::from_epoch_millis(now + 60_000);
         let balance_snapshot_msats = balance.msats();
 
-        Ok(EcashQuote {
-            inner: EcashQuoteInner {
-                requested_amount: amount,
-                notes_value,
-                fee,
-                total,
-                expires_at,
-                balance_snapshot_msats,
-                federation_id: self.inner.federation.id,
-                module_id,
-            },
-        })
+        Ok(EcashQuote::new(EcashQuoteInner {
+            requested_amount: amount,
+            notes_value,
+            fee,
+            total,
+            expires_at,
+            balance_snapshot_msats,
+            federation_id: self.inner.federation.id,
+            module_id,
+        }))
     }
+}
 
+impl Ecash {
     /// Executes a quoted send, taking its value out of the balance as
     /// out-of-band notes.
     ///
@@ -358,6 +367,16 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
+        self.send_authorized(&quote).await
+    }
+
+    /// The body of [`Ecash::send`], taking the quote by reference so the
+    /// UniFFI-facing `send` (which can only ever hold a shared `Arc<EcashQuote>`,
+    /// never an owned one) can call it too, after checking the quote's
+    /// single-use flag itself. Never reads or writes that flag: whether a
+    /// quote has already been sent is a UniFFI-only concern, checked once at
+    /// the boundary before this runs.
+    async fn send_authorized(&self, quote: &EcashQuote) -> Result<EcashSend> {
         self.inner.federation.ensure_open()?;
         let now_millis = crate::db::now_millis();
         let now = Timestamp::from_epoch_millis(now_millis);
@@ -671,6 +690,32 @@ impl Ecash {
     }
 }
 
+// The UniFFI view of `send`/`receive` above, under their real names but
+// different Rust identifiers: `send`'s real parameter is an owned
+// `EcashQuote`, which can only ever cross the boundary as `Arc<EcashQuote>`
+// (see `EcashQuote`'s own `#[uniffi::export]` block for how it enforces
+// single use), and `receive`'s real return type names the generic
+// `Operation<EcashReceiveState>`, which cannot cross at all — its UniFFI
+// view is `EcashReceiveOperation`, defined below. `quote` needs no such
+// adapter: see the export attribute directly on it, above.
+#[cfg(feature = "uniffi")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Ecash {
+    /// See [`Ecash::send`]. Fails with
+    /// [`ErrorCode::QuoteExpired`] if `quote` was already sent.
+    #[uniffi::method(name = "send")]
+    pub async fn ffi_send(&self, quote: Arc<EcashQuote>) -> Result<EcashSendHandle> {
+        quote.used.claim(quote.expires_at())?;
+        Ok(self.send_authorized(&quote).await?.into())
+    }
+
+    /// See [`Ecash::receive`].
+    #[uniffi::method(name = "receive")]
+    pub async fn ffi_receive(&self, notes: &Notes) -> Result<EcashReceiveOperation> {
+        Ok(self.receive(notes).await?.into())
+    }
+}
+
 /// A frozen, executable plan for one out-of-band ecash send.
 ///
 /// Produced by [`Ecash::quote`] and consumed by [`Ecash::send`]. As with
@@ -690,10 +735,36 @@ impl Ecash {
 /// [`EcashSendDetails`] copies its terms from, for the whole life of the
 /// operation and after a restart.
 #[derive(Debug)]
+// Crosses a UniFFI boundary as an opaque object rather than a plain record:
+// a record crosses by value, so nothing would stop a caller from passing
+// the same field values into `send` twice and issuing notes twice. `used`
+// gives it real interior state instead, checked and set once by `send`'s
+// colocated adapter, so a second attempt fails with `QuoteExpired` the same
+// way it is a compile error in plain Rust (`send` takes the quote by
+// value). Behind the `uniffi` feature; absent from every other build,
+// including plain Rust, where the type system already enforces single use.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
+    #[cfg(feature = "uniffi")]
+    used: crate::ffi::QuoteClaim,
 }
 
+impl EcashQuote {
+    /// Wraps a frozen plan in a fresh, unclaimed quote.
+    fn new(inner: EcashQuoteInner) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "uniffi")]
+            used: crate::ffi::QuoteClaim::default(),
+        }
+    }
+}
+
+// Exported as-is: every accessor here is already FFI-safe, so unlike
+// `Ecash::send` (see its own colocated adapter), nothing here needs a
+// different name or a wrapper type.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl EcashQuote {
     /// The amount [`Ecash::quote`] was asked for.
     ///
@@ -920,6 +991,10 @@ async fn forward_cancel_request(
 // distinction (asked for vs. timer fired; won against an explicit cancel vs. no
 // cancel at all) is about why, not about what happened to the money.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Fieldless, so UniFFI maps it onto a plain Kotlin/Swift enum. Not additive
+// for a generated binding; regenerate with the SDK. Behind the `uniffi`
+// feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum EcashSendState {
     /// The notes have been issued and handed to the caller. The value has
@@ -1042,6 +1117,10 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 /// `Failed(String)`); the only change is carrying the failure reason as a
 /// named field rather than a positional tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// UniFFI maps this onto a Kotlin/Swift sealed class, since `Failed` carries
+// a field. Not additive for a generated binding; regenerate with the SDK.
+// Behind the `uniffi` feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum EcashReceiveState {
     /// The redemption has been accepted locally and is about to be
@@ -2178,6 +2257,151 @@ fn mint_module(client: &Client) -> Result<MintModule<'_>> {
     ))
 }
 
+// The UniFFI views of `Operation<EcashSendState>` and
+// `Operation<EcashReceiveState>`: `Operation<S>` is generic and UniFFI
+// objects cannot be, so `crate::ffi::ffi_operation!` monomorphises
+// one newtype object per state, forwarding every method to the real
+// handle. See that macro's documentation in `ffi.rs`.
+#[cfg(feature = "uniffi")]
+crate::ffi::ffi_operation!(
+    EcashSendOperation,
+    EcashSendOperationUpdates,
+    EcashSendState,
+    details: FfiEcashSendDetails
+);
+#[cfg(feature = "uniffi")]
+crate::ffi::ffi_operation!(
+    EcashReceiveOperation,
+    EcashReceiveOperationUpdates,
+    EcashReceiveState,
+    details: FfiEcashReceiveDetails
+);
+
+/// Forwards [`Operation::<EcashSendState>::request_cancel`], the one
+/// inherent method that exists on only this instantiation of `Operation<S>`
+/// (see above) — cancelling out-of-band ecash is the one place a
+/// cancellation is a real protocol action.
+#[cfg(feature = "uniffi")]
+#[uniffi::export(async_runtime = "tokio")]
+impl EcashSendOperation {
+    /// See [`Operation::<EcashSendState>::request_cancel`].
+    pub async fn request_cancel(&self) -> Result<()> {
+        self.0.request_cancel().await
+    }
+}
+
+/// The result of [`Ecash::send`], with `operation` crossing as
+/// [`EcashSendOperation`] rather than the generic `Operation<EcashSendState>`
+/// the real [`EcashSend`] carries.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Record)]
+pub struct EcashSendHandle {
+    /// See [`EcashSend::notes`].
+    pub notes: Arc<Notes>,
+    /// See [`EcashSend::operation`].
+    pub operation: Arc<EcashSendOperation>,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<EcashSend> for EcashSendHandle {
+    fn from(send: EcashSend) -> Self {
+        Self {
+            notes: Arc::new(send.notes),
+            operation: Arc::new(send.operation.into()),
+        }
+    }
+}
+
+/// The UniFFI view of [`EcashSendDetails`], with `notes` crossing as
+/// `Arc<Notes>`: [`Notes`] is a UniFFI object, and an object can sit in a
+/// record only behind an `Arc`. Exported as `EcashSendDetails`; the real type
+/// never crosses.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Record)]
+#[uniffi(name = "EcashSendDetails")]
+pub struct FfiEcashSendDetails {
+    /// See [`EcashSendDetails::notes`].
+    pub notes: Arc<Notes>,
+    /// See [`EcashSendDetails::requested_amount`].
+    pub requested_amount: Amount,
+    /// See [`EcashSendDetails::notes_value`].
+    pub notes_value: Amount,
+    /// See [`EcashSendDetails::fee`].
+    pub fee: Amount,
+    /// See [`EcashSendDetails::total_debited`].
+    pub total_debited: Amount,
+    /// See [`EcashSendDetails::reclaim_at`].
+    pub reclaim_at: Timestamp,
+    /// See [`EcashSendDetails::created_at`].
+    pub created_at: Timestamp,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<EcashSendDetails> for FfiEcashSendDetails {
+    fn from(details: EcashSendDetails) -> Self {
+        // Destructured with no `..`, so a field added to `EcashSendDetails` fails to compile
+        // here until this projection carries it too.
+        let EcashSendDetails {
+            notes,
+            requested_amount,
+            notes_value,
+            fee,
+            total_debited,
+            reclaim_at,
+            created_at,
+        } = details;
+        Self {
+            notes: Arc::new(notes),
+            requested_amount,
+            notes_value,
+            fee,
+            total_debited,
+            reclaim_at,
+            created_at,
+        }
+    }
+}
+
+/// The UniFFI view of [`EcashReceiveDetails`], with `notes` crossing as
+/// `Option<Arc<Notes>>`, for the same reason as the send projection above.
+/// Exported as `EcashReceiveDetails`.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Record)]
+#[uniffi(name = "EcashReceiveDetails")]
+pub struct FfiEcashReceiveDetails {
+    /// See [`EcashReceiveDetails::notes`].
+    pub notes: Option<Arc<Notes>>,
+    /// See [`EcashReceiveDetails::notes_value`].
+    pub notes_value: Amount,
+    /// See [`EcashReceiveDetails::fee`].
+    pub fee: Amount,
+    /// See [`EcashReceiveDetails::net_credit`].
+    pub net_credit: Amount,
+    /// See [`EcashReceiveDetails::created_at`].
+    pub created_at: Timestamp,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<EcashReceiveDetails> for FfiEcashReceiveDetails {
+    fn from(details: EcashReceiveDetails) -> Self {
+        // Exhaustive for the same reason as the send projection above.
+        let EcashReceiveDetails {
+            notes,
+            notes_value,
+            fee,
+            net_credit,
+            created_at,
+        } = details;
+        Self {
+            notes: notes.map(Arc::new),
+            notes_value,
+            fee,
+            net_credit,
+            created_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2362,18 +2586,16 @@ mod tests {
     fn ecash_quote_accessors() {
         let upstream_id = fedimint_core::config::FederationId::dummy();
         let expected_fed_id = crate::FederationId::from_upstream(upstream_id);
-        let quote = EcashQuote {
-            inner: EcashQuoteInner {
-                requested_amount: Amount::from_msats(750),
-                notes_value: Amount::from_msats(1_000),
-                fee: Amount::from_msats(50),
-                total: Amount::from_msats(1_050),
-                expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
-                balance_snapshot_msats: 100_000,
-                federation_id: upstream_id,
-                module_id: 0,
-            },
-        };
+        let quote = EcashQuote::new(EcashQuoteInner {
+            requested_amount: Amount::from_msats(750),
+            notes_value: Amount::from_msats(1_000),
+            fee: Amount::from_msats(50),
+            total: Amount::from_msats(1_050),
+            expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
+            balance_snapshot_msats: 100_000,
+            federation_id: upstream_id,
+            module_id: 0,
+        });
         assert_eq!(quote.requested_amount(), Amount::from_msats(750));
         assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
         assert_eq!(quote.fee(), Amount::from_msats(50));

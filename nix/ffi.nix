@@ -64,8 +64,8 @@ let
   # NOTE: at the pinned flakebox rev, `mkStdTargets` only uses `androidSdk`'s
   # presence to gate the `android-*` target attrs — the cross-compile env it
   # generates comes from flakebox's own default Android SDK (NDK 25.2, API 24),
-  # not the NDK 27.1 the `.#android` dev shell / `scripts/build-android-so.sh`
-  # use. The `.so` still runs on API 28+ (forward compatible); the 16 KB
+  # not the NDK 27.1 the `.#android` dev shell / `scripts/build-android-sdk.sh
+  # --local` use. The `.so` still runs on API 28+ (forward compatible); the 16 KB
   # page-align link args in `rust/fedimint-sdk/.cargo/config.toml` are applied
   # regardless (lld honours them). Aligning this build to NDK 27.1 is a
   # separate, build-affecting change.
@@ -122,7 +122,13 @@ let
     }:
     let
       target = stdTargets.${targetKey} { };
-      commonArgs = target.args // {
+      commonArgs = target.args // lib.optionalAttrs pkgs.stdenv.isDarwin {
+        # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to the
+        # cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what makes
+        # `cc -liconv` resolve in the host build-script link step on macOS
+        # 14+ (where iconv lives only in the Apple SDK).
+        buildInputs = [ pkgs.libiconv ];
+      } // {
         inherit src;
         pname = "fedimint-sdk-android-${rustTarget}";
         version = "0.1.0-alpha.1";

@@ -722,10 +722,17 @@ async fn until_closed<T>(
 /// [`Internal`](crate::ErrorCode::Internal) from [`Operation::state`], not as
 /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct AnyOperation {
     inner: Arc<AnyOperationInner>,
 }
 
+// `id`, `kind`, `support`, `supported_kind` and `raw_kind` are exported
+// as-is: every return type is already FFI-safe. The `as_*` downcasts and
+// `from_record` stay in the second, unexported `impl AnyOperation` block
+// below, since `uniffi::export` on an impl block requires every item in it
+// to be exportable and `from_record` is `pub(crate)`.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl AnyOperation {
     /// This operation's id.
     pub fn id(&self) -> OperationId {
@@ -812,7 +819,9 @@ impl AnyOperation {
     pub fn raw_kind(&self) -> RawOperationKind {
         self.inner.raw.clone()
     }
+}
 
+impl AnyOperation {
     /// Recovers a typed handle if this is an out-of-band ecash send.
     ///
     /// `None` for any other kind, for a record this build cannot interpret,
@@ -913,7 +922,60 @@ impl AnyOperation {
             _ => None,
         }
     }
+}
 
+// The UniFFI view of the seven `as_*` downcasts above: same names, same
+// `None`-on-mismatch behaviour, but returning this crate's monomorphised
+// `*Operation` wrapper (defined next to each facade via
+// `ffi_operation!`, below) instead of the generic `Operation<S>` a UniFFI
+// object cannot carry directly.
+#[cfg(feature = "uniffi")]
+#[uniffi::export]
+impl AnyOperation {
+    /// See [`AnyOperation::as_ecash_send`].
+    #[uniffi::method(name = "as_ecash_send")]
+    pub fn ffi_as_ecash_send(&self) -> Option<Arc<crate::ecash::EcashSendOperation>> {
+        self.as_ecash_send().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_ecash_receive`].
+    #[uniffi::method(name = "as_ecash_receive")]
+    pub fn ffi_as_ecash_receive(&self) -> Option<Arc<crate::ecash::EcashReceiveOperation>> {
+        self.as_ecash_receive().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_ln_send`].
+    #[uniffi::method(name = "as_ln_send")]
+    pub fn ffi_as_ln_send(&self) -> Option<Arc<crate::lightning::LnSendOperation>> {
+        self.as_ln_send().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_ln_receive`].
+    #[uniffi::method(name = "as_ln_receive")]
+    pub fn ffi_as_ln_receive(&self) -> Option<Arc<crate::lightning::LnReceiveOperation>> {
+        self.as_ln_receive().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_onchain_send`].
+    #[uniffi::method(name = "as_onchain_send")]
+    pub fn ffi_as_onchain_send(&self) -> Option<Arc<crate::onchain::OnchainSendOperation>> {
+        self.as_onchain_send().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_onchain_receive`].
+    #[uniffi::method(name = "as_onchain_receive")]
+    pub fn ffi_as_onchain_receive(&self) -> Option<Arc<crate::onchain::OnchainReceiveOperation>> {
+        self.as_onchain_receive().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_recovery`].
+    #[uniffi::method(name = "as_recovery")]
+    pub fn ffi_as_recovery(&self) -> Option<Arc<crate::recovery::RecoveryOperation>> {
+        self.as_recovery().map(|op| Arc::new(op.into()))
+    }
+}
+
+impl AnyOperation {
     /// Builds a type-erased handle over a record that has already been read.
     ///
     /// The whole support decision is made here, once, so that the four questions the type
@@ -970,6 +1032,7 @@ impl AnyOperation {
 /// [`OperationKind`], [`OperationSupport`] and
 /// [`AnyOperation::supported_kind`] for control flow instead.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct RawOperationKind {
     /// The operation-kind tag as persisted, verbatim and unnormalised.
@@ -1011,6 +1074,7 @@ pub struct RawOperationKind {
 /// variant every binding already has, so a kind added later is reported
 /// through it rather than left undecodable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OperationKind {
     /// Ecash spent out of band, tracked by
@@ -1070,6 +1134,7 @@ pub enum OperationKind {
 /// control flow, but a log line, a support ticket, or a message shown to a
 /// user should use this type instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OperationSupport {
     /// This build can observe the operation's typed state: the kind is one it

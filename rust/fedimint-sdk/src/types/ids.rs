@@ -151,6 +151,12 @@ impl core::str::FromStr for OperationId {
     }
 }
 
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(OperationId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<OperationId>().map_err(Into::into),
+});
+
 /// Identifies a lightning gateway registered with a federation.
 ///
 /// Used to report which gateway routed a payment (see the lightning facade's
@@ -203,6 +209,12 @@ impl core::str::FromStr for GatewayId {
         Ok(Self { id })
     }
 }
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(GatewayId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<GatewayId>().map_err(Into::into),
+});
 
 /// A Bitcoin transaction id, used for on-chain peg-in and peg-out receipts.
 ///
@@ -258,6 +270,12 @@ impl core::str::FromStr for Txid {
         Ok(Self { id })
     }
 }
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Txid, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<Txid>().map_err(Into::into),
+});
 
 /// An opaque pagination token for paginated activity history.
 ///
@@ -357,6 +375,12 @@ impl core::str::FromStr for Cursor {
         })
     }
 }
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Cursor, String, {
+    lower: |cursor| cursor.to_string(),
+    try_lift: |s| s.parse::<Cursor>().map_err(Into::into),
+});
 
 #[cfg(test)]
 mod tests {

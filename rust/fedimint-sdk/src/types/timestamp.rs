@@ -40,6 +40,12 @@ impl core::fmt::Display for Timestamp {
     }
 }
 
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Timestamp, u64, {
+    lower: |ts| ts.epoch_millis(),
+    try_lift: |millis| Ok(Timestamp::from_epoch_millis(millis)),
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;

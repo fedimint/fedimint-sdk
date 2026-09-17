@@ -174,13 +174,17 @@ pub async fn create_fedimint_sdk(
     Ok(Arc::new(builder.build().await?))
 }
 
-/// The UniFFI surface, which is these three methods exactly as the rest of the
-/// crate calls them — the attribute exports them, it does not wrap them.
+/// The first of `Sdk`'s UniFFI-exported blocks: these methods exactly as the
+/// rest of the crate calls them — the attribute exports them, it does not wrap
+/// them.
 ///
 /// `preview` / `join` take an [`InviteCode`] handle (a UniFFI object a binding
 /// builds with [`InviteCode::parse`]), an error crosses as
 /// [`Error`](crate::Error), and the handles they return are [`Mnemonic`] /
-/// [`Federation`]. The rest of `Sdk` stays Rust-only for now.
+/// [`Federation`]. The lifecycle calls further down (status, reopen, close,
+/// forget, shutdown) and recovery (`recovery.rs`) are exported too, in their
+/// own blocks; where a real signature cannot cross as-is, a colocated `ffi_*`
+/// adapter exports it under the real name.
 ///
 /// `async_runtime = "tokio"` puts a Tokio context around each poll, which
 /// `fedimint-client` needs for its timers and transport. That context has to be
@@ -481,7 +485,34 @@ impl Sdk {
             .filter(|federation| federation.is_open())
             .map(Federation::new)
     }
+}
 
+// The UniFFI view of `federations`/`federation` above, under their real
+// names but different Rust identifiers so they can wrap each `Federation`
+// in `Arc`: a UniFFI object nested in `Vec`/`Option` has to cross as
+// `Arc<T>` (see `Federation`'s own `#[uniffi::export]` block for the one
+// return shape that doesn't need this), and the real methods stay free of
+// it since nothing about the plain-Rust API needs it. `federation` returns
+// `Result` although the real one cannot fail: `id` is lifted from a string,
+// and only a `Result`-returning export turns a malformed one into this
+// crate's `InvalidInput` error rather than UniFFI's internal error.
+#[cfg(feature = "uniffi")]
+#[uniffi::export]
+impl Sdk {
+    /// See [`Sdk::federations`].
+    #[uniffi::method(name = "federations")]
+    pub fn ffi_federations(&self) -> Vec<Arc<Federation>> {
+        self.federations().into_iter().map(Arc::new).collect()
+    }
+
+    /// See [`Sdk::federation`].
+    #[uniffi::method(name = "federation")]
+    pub fn ffi_federation(&self, id: &FederationId) -> Result<Option<Arc<Federation>>> {
+        Ok(self.federation(id).map(Arc::new))
+    }
+}
+
+impl Sdk {
     /// Every federation this instance's storage holds, running or not, each
     /// with its current [`FederationStatus`].
     ///
@@ -553,7 +584,15 @@ impl Sdk {
             .federation_inner(&id.inner())
             .map(|federation| federation.status())
     }
+}
 
+// `federation_status_updates` is exported under its own name, unchanged:
+// `FederationStatusUpdates` is a UniFFI object (see its own definition),
+// and a bare object return crosses the boundary with no adapter needed —
+// unlike `stored_federations`/`federation_status` above, which still name
+// the `Diagnostic`-embedding `FederationStatus` directly.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl Sdk {
     /// Opens a new, independent subscription to every federation's status.
     ///
     /// A status can change without the application having asked for
@@ -592,7 +631,35 @@ impl Sdk {
             }),
         }
     }
+}
 
+// The UniFFI view of `stored_federations`/`federation_status`, under their
+// real names but different Rust identifiers so they can return the `Ffi*`
+// projections defined next to `FederationStatus`/`FederationInfo` instead
+// of the real `FederationStatus`-bearing types (see the note above).
+// `federation_status` returns `Result` for the same reason `federation`
+// does: a malformed `id` string must surface as `InvalidInput`.
+#[cfg(feature = "uniffi")]
+#[uniffi::export]
+impl Sdk {
+    /// See [`Sdk::stored_federations`].
+    #[uniffi::method(name = "stored_federations")]
+    pub fn ffi_stored_federations(&self) -> Vec<FfiFederationInfo> {
+        self.stored_federations()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// See [`Sdk::federation_status`].
+    #[uniffi::method(name = "federation_status")]
+    pub fn ffi_federation_status(&self, id: &FederationId) -> Result<Option<FfiFederationStatus>> {
+        Ok(self.federation_status(id).map(Into::into))
+    }
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+impl Sdk {
     /// Starts a stored federation running again, without an invite code.
     ///
     /// This is the way back from [`Closed`](FederationStatus::Closed) and
@@ -1177,7 +1244,12 @@ impl Sdk {
         }
         Ok(())
     }
+}
 
+// Crate-internal helpers, kept out of the exported block above since
+// `uniffi::export` on an impl block requires every item in it to be `pub`
+// and FFI-safe.
+impl Sdk {
     /// The shared state behind this handle, for the crate's own internals.
     pub(crate) fn inner(&self) -> &Arc<SdkInner> {
         &self.inner
@@ -1551,6 +1623,58 @@ pub enum FederationStatus {
     Forgotten,
 }
 
+/// The UniFFI view of [`FederationStatus`], with
+/// [`Quarantined`](FederationStatus::Quarantined)'s
+/// [`Diagnostic`](crate::Diagnostic) flattened to its `code`/`message` — the
+/// same pair [`Error`](crate::Error) itself exposes across this boundary
+/// (see `error.rs`), rather than the
+/// [`DetailEnvelope`](crate::DetailEnvelope) this crate's own documentation
+/// says must never be the type a binding decodes directly off the wire.
+/// Exported as `FederationStatus`: the real type never crosses, so the name
+/// is free.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Enum)]
+#[uniffi(name = "FederationStatus")]
+pub enum FfiFederationStatus {
+    /// See [`FederationStatus::Running`].
+    Running,
+    /// See [`FederationStatus::Recovering`].
+    Recovering,
+    /// See [`FederationStatus::Quarantined`].
+    Quarantined {
+        /// [`Diagnostic::code`](crate::Diagnostic::code).
+        code: crate::ErrorCode,
+        /// [`Diagnostic::message`](crate::Diagnostic::message).
+        message: String,
+    },
+    /// See [`FederationStatus::Closed`].
+    Closed,
+    /// See [`FederationStatus::Forgetting`].
+    Forgetting,
+    /// See [`FederationStatus::Forgotten`].
+    Forgotten,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<FederationStatus> for FfiFederationStatus {
+    fn from(status: FederationStatus) -> Self {
+        match status {
+            FederationStatus::Running => Self::Running,
+            FederationStatus::Recovering => Self::Recovering,
+            FederationStatus::Quarantined { diagnostic } => Self::Quarantined {
+                code: diagnostic.code,
+                message: diagnostic.message,
+            },
+            FederationStatus::Closed => Self::Closed,
+            FederationStatus::Forgetting => Self::Forgetting,
+            FederationStatus::Forgotten => Self::Forgotten,
+            // `FederationStatus` is `#[non_exhaustive]` within this crate too (the attribute
+            // binds only outside it), so a variant added later needs an arm here before it
+            // compiles — there is no wildcard to silently fall back on.
+        }
+    }
+}
+
 /// A stored federation, described without a live handle.
 ///
 /// [`Sdk::stored_federations`] returns these and
@@ -1587,6 +1711,35 @@ pub struct FederationInfo {
     pub status: FederationStatus,
 }
 
+/// The UniFFI view of [`FederationInfo`], with `status` crossing as the
+/// flattened projection above instead of the real [`FederationStatus`].
+/// Exported as `FederationInfo`, for the same reason.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Record)]
+#[uniffi(name = "FederationInfo")]
+pub struct FfiFederationInfo {
+    /// See [`FederationInfo::id`].
+    pub id: FederationId,
+    /// See [`FederationInfo::name`].
+    pub name: Option<String>,
+    /// See [`FederationInfo::network`].
+    pub network: Network,
+    /// See [`FederationInfo::status`].
+    pub status: FfiFederationStatus,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<FederationInfo> for FfiFederationInfo {
+    fn from(info: FederationInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            network: info.network,
+            status: info.status.into(),
+        }
+    }
+}
+
 /// One independent subscription to every federation's status.
 ///
 /// Obtained from [`Sdk::federation_status_updates`]. Not `Clone`, for the
@@ -1594,6 +1747,7 @@ pub struct FederationInfo {
 /// single cursor, and a second consumer should have a second subscription.
 /// Dropping it stops only this subscription and never any work.
 #[derive(Debug)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct FederationStatusUpdates {
     inner: Arc<FederationStatusUpdatesInner>,
 }
@@ -1626,6 +1780,15 @@ impl FederationStatusUpdates {
     /// [`Storage`](crate::ErrorCode::Storage) or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<FederationInfo> {
+        self.next_shared().await
+    }
+
+    /// The body of [`FederationStatusUpdates::next`], taking `&self`: every
+    /// field it touches is already behind `self.inner.cursor`'s own lock,
+    /// so the UniFFI-facing `next` (which can only ever hold a shared
+    /// `Arc<FederationStatusUpdates>`, never an exclusive one) can call it
+    /// too.
+    async fn next_shared(&self) -> Result<FederationInfo> {
         let mut cursor = self.inner.cursor.lock().await;
         loop {
             if *cursor.shutdown.borrow_and_update() {
@@ -1672,6 +1835,22 @@ impl FederationStatusUpdates {
                 }
             }
         }
+    }
+}
+
+// The UniFFI view of `next` above, under its real name but a different
+// Rust identifier: the real signature takes `&mut self`, which a shared
+// `Arc<FederationStatusUpdates>` can never provide, so this calls the same
+// `next_shared` body through `&self` instead, and projects the yielded
+// `FederationInfo` through the same `FfiFederationInfo` conversion
+// `Sdk::stored_federations`/`Sdk::federation_status` use.
+#[cfg(feature = "uniffi")]
+#[uniffi::export(async_runtime = "tokio")]
+impl FederationStatusUpdates {
+    /// See [`FederationStatusUpdates::next`].
+    #[uniffi::method(name = "next")]
+    pub async fn ffi_next(&self) -> Result<FfiFederationInfo> {
+        self.next_shared().await.map(Into::into)
     }
 }
 

@@ -31,10 +31,19 @@ pub(crate) use driver::{LnBackfiller, LnReceiveDriver, LnSendDriver};
 /// problem is therefore an error from the call that started the operation,
 /// not a failure halfway through it.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Lightning {
     inner: Arc<LightningInner>,
 }
 
+// `quote` is exported under its own name, unchanged: `LnQuote` is a UniFFI
+// object (see below), and a bare object returned through `Result<T>`
+// crosses the boundary with no adapter needed. `send` and `receive` still
+// need one, in the block below `new`: `send`'s real parameter is an owned
+// `LnQuote`, which an object can never cross as (only `Arc<LnQuote>` can),
+// and `receive`'s real return type names the generic
+// `Operation<LnReceiveState>`, which cannot cross at all.
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Lightning {
     /// Plans a payment and returns an executable quote for it.
     ///
@@ -111,17 +120,17 @@ impl Lightning {
                 .saturating_add(QUOTE_VALIDITY_MILLIS)
                 .min(invoice.expires_at().epoch_millis()),
         );
-        Ok(LnQuote {
-            inner: LnQuoteInner {
-                federation_id: federation.id,
-                invoice: invoice.clone(),
-                invoice_amount,
-                plan,
-                expires_at,
-            },
-        })
+        Ok(LnQuote::new(LnQuoteInner {
+            federation_id: federation.id,
+            invoice: invoice.clone(),
+            invoice_amount,
+            plan,
+            expires_at,
+        }))
     }
+}
 
+impl Lightning {
     /// Executes a quoted payment.
     ///
     /// The quote is consumed. Execution follows it exactly, same amount, same
@@ -161,15 +170,25 @@ impl Lightning {
     /// does not expect, which indicates a bug, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: LnQuote) -> Result<Operation<LnSendState>> {
+        self.send_authorized(&quote).await
+    }
+
+    /// The body of [`Lightning::send`], taking the quote by reference so the
+    /// UniFFI-facing `send` (which can only ever hold a shared `Arc<LnQuote>`,
+    /// never an owned one) can call it too, after checking the quote's
+    /// single-use flag itself. Never reads or writes that flag: whether a
+    /// quote has already been paid is a UniFFI-only concern, checked once at
+    /// the boundary before this runs.
+    async fn send_authorized(&self, quote: &LnQuote) -> Result<Operation<LnSendState>> {
         let federation = &self.inner.federation;
-        let quote = quote.inner;
-        ensure_executable(&quote, federation.id, crate::db::now_millis())?;
+        let quote = &quote.inner;
+        ensure_executable(quote, federation.id, crate::db::now_millis())?;
         // The guard is held across the re-check, the funding and the record write, which is what
         // `create_operation` requires of its caller.
         let client = federation.client(true).await?;
         match (module(&client)?, &quote.plan.terms) {
             (LnModule::V1(module), Terms::V1 { gateway }) => {
-                v1::send(federation, &client, &module, &quote, gateway.clone()).await
+                v1::send(federation, &client, &module, quote, gateway.clone()).await
             }
             (
                 LnModule::V2(module),
@@ -183,7 +202,7 @@ impl Lightning {
                     federation,
                     &client,
                     &module,
-                    &quote,
+                    quote,
                     gateway.clone(),
                     *send_fee,
                     *expiration_delta,
@@ -261,16 +280,65 @@ impl Lightning {
     }
 }
 
+// The UniFFI view of `send`/`receive` above, under their real names but
+// different Rust identifiers: `send`'s real parameter is an owned
+// `LnQuote`, which can only ever cross the boundary as `Arc<LnQuote>` (see
+// `LnQuote`'s own `#[uniffi::export]` block for how it enforces single
+// use), and `receive`'s real return type names the generic
+// `Operation<LnReceiveState>`, which cannot cross at all — its UniFFI view
+// is `LnReceiveHandle`, defined below. `quote` needs no such adapter: see
+// the export attribute directly on it, above.
+#[cfg(feature = "uniffi")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Lightning {
+    /// See [`Lightning::send`]. Fails with
+    /// [`ErrorCode::QuoteExpired`] if `quote` was already sent.
+    #[uniffi::method(name = "send")]
+    pub async fn ffi_send(&self, quote: Arc<LnQuote>) -> Result<LnSendOperation> {
+        quote.used.claim(quote.expires_at())?;
+        Ok(self.send_authorized(&quote).await?.into())
+    }
+
+    /// See [`Lightning::receive`].
+    #[uniffi::method(name = "receive")]
+    pub async fn ffi_receive(&self, amount: Amount, description: &str) -> Result<LnReceiveHandle> {
+        Ok(self.receive(amount, description).await?.into())
+    }
+}
+
 /// A frozen, executable plan for one lightning payment.
 ///
 /// Produced by [`Lightning::quote`] and consumed by [`Lightning::send`], whose
 /// docs say exactly what is guaranteed to hold at execution. Everything a
 /// user needs to approve is readable through the accessors below.
 #[derive(Debug)]
+// Crosses a UniFFI boundary as an opaque object rather than a plain record:
+// a record crosses by value, so nothing would stop a caller from passing
+// the same field values into `send` twice and paying twice. `used` gives it
+// real interior state instead, checked and set once by `send`'s colocated
+// adapter, so a second attempt fails with `QuoteExpired` the same way it is
+// a compile error in plain Rust (`send` takes the quote by value). Behind
+// the `uniffi` feature; absent from every other build, including plain
+// Rust, where the type system already enforces single use.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct LnQuote {
     inner: LnQuoteInner,
+    #[cfg(feature = "uniffi")]
+    used: crate::ffi::QuoteClaim,
 }
 
+impl LnQuote {
+    /// Wraps a frozen plan in a fresh, unclaimed quote.
+    fn new(inner: LnQuoteInner) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "uniffi")]
+            used: crate::ffi::QuoteClaim::default(),
+        }
+    }
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl LnQuote {
     /// The invoice's amount: what reaches the payee if the payment succeeds.
     pub fn invoice_amount(&self) -> Amount {
@@ -355,6 +423,7 @@ impl LnQuote {
 /// component always is. Zero components are reported as zero rather than
 /// omitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct LnFeeBreakdown {
     /// The gateway's own charge for carrying the payment out to the lightning
@@ -380,6 +449,7 @@ pub struct LnFeeBreakdown {
 /// no gateway, and "this stayed inside the federation" is meaningful privacy
 /// information.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum LightningRoute {
     /// The payee holds their invoice in this same federation, so the
@@ -422,6 +492,7 @@ pub struct LnReceive {
 /// did not resolve into either. A payment has no cancellation: once sent it
 /// runs to one of those endings.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum LnSendState {
     /// The payment has been accepted and is being funded.
@@ -501,6 +572,7 @@ impl OperationState for LnSendState {
 /// payment picked up after a restart, or one that was refunded or failed,
 /// still has an invoice, amounts, a fee and a route to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct LnSendDetails {
     /// The invoice this payment was authorised to pay.
@@ -562,6 +634,7 @@ impl crate::operation::DetailedOperationState for LnSendState {
 /// was funded; and [`Failed`](Self::Failed), a payment got past "nobody paid"
 /// and still produced no credit. Only the last warrants alarming a user.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum LnReceiveState {
     /// The invoice is being created and registered with the gateway.
@@ -638,6 +711,7 @@ impl OperationState for LnReceiveState {
 /// All three amounts are recorded so a caller can render "you asked for X,
 /// the payer pays Y, you receive Z" without doing the arithmetic.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct LnReceiveDetails {
     /// The invoice that was issued, the same value [`LnReceive::invoice`]
@@ -1153,6 +1227,48 @@ pub(super) async fn balance_of(client: &Client) -> Result<Amount> {
 
 pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
+}
+
+// The UniFFI views of `Operation<LnSendState>` and `Operation<LnReceiveState>`:
+// `Operation<S>` is generic and UniFFI objects cannot be, so
+// `crate::ffi::ffi_operation!` monomorphises one newtype object per
+// state, forwarding every method to the real handle. See that macro's
+// documentation in `ffi.rs`.
+#[cfg(feature = "uniffi")]
+crate::ffi::ffi_operation!(
+    LnSendOperation,
+    LnSendOperationUpdates,
+    LnSendState,
+    details: LnSendDetails
+);
+#[cfg(feature = "uniffi")]
+crate::ffi::ffi_operation!(
+    LnReceiveOperation,
+    LnReceiveOperationUpdates,
+    LnReceiveState,
+    details: LnReceiveDetails
+);
+
+/// The result of [`Lightning::receive`], with `operation` crossing as
+/// [`LnReceiveOperation`] rather than the generic `Operation<LnReceiveState>`
+/// the real [`LnReceive`] carries.
+#[cfg(feature = "uniffi")]
+#[derive(Debug, uniffi::Record)]
+pub struct LnReceiveHandle {
+    /// See [`LnReceive::invoice`].
+    pub invoice: Bolt11Invoice,
+    /// See [`LnReceive::operation`].
+    pub operation: Arc<LnReceiveOperation>,
+}
+
+#[cfg(feature = "uniffi")]
+impl From<LnReceive> for LnReceiveHandle {
+    fn from(receive: LnReceive) -> Self {
+        Self {
+            invoice: receive.invoice,
+            operation: Arc::new(receive.operation.into()),
+        }
+    }
 }
 
 /// Realistic lightning records for other modules' tests, so a test elsewhere does not have to
@@ -1700,7 +1816,7 @@ mod tests {
 
     #[test]
     fn quote_accessors_read_the_frozen_plan() {
-        let quote = LnQuote { inner: a_quote(5) };
+        let quote = LnQuote::new(a_quote(5));
         assert_eq!(quote.invoice_amount(), Amount::from_msats(100_000));
         assert_eq!(quote.fee(), Amount::from_msats(0));
         assert_eq!(quote.total(), Amount::from_msats(100_000));

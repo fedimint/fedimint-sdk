@@ -1,6 +1,8 @@
 set shell := ["bash", "-c"]
 
-# Native libraries only (.so). Shared by every binding generator.
+# Native libraries only (.so), via Nix. Shared by every binding generator,
+# and what the two-job CI split (android-native.yaml, kotlin-sdk.yaml) uses
+# so a binding job can read an artifact instead of rebuilding.
 build-android-so:
     ./scripts/nix-build-android-so.sh
 
@@ -8,9 +10,8 @@ build-android-so:
 build-kotlin-bindings:
     ./scripts/generate-kotlin-bindings.sh
 
-# Both halves: native libraries, then the Kotlin generated from them.
 build-kotlin:
-    ./scripts/nix-build-kotlin.sh
+    ./scripts/build-android-sdk.sh
 
 # Compile the library and the demo app against the freshly generated bindings.
 test-kotlin: build-kotlin
@@ -23,7 +24,7 @@ build-android-aar: build-kotlin
 # Non-nix escape hatch: cross-compile + generate locally with cargo-ndk.
 # Needs the `.#android` shell (NDK, cargo-ndk, cmake/go for aws-lc-sys).
 build-android-local:
-    nix develop --accept-flake-config .#android -c ./scripts/generate-android-so.sh
+    nix develop --accept-flake-config .#android -c ./scripts/build-android-sdk.sh --local
 
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test

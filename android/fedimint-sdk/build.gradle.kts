@@ -5,7 +5,7 @@ plugins {
 
 // Publishing (maven-publish / signing / the Maven Central publication) is not
 // wired up yet — this module only builds the AAR and is verified by
-// .github/workflows/android-sdk.yaml. `libs.versions.fedimintSdk` still names
+// .github/workflows/kotlin-sdk.yaml. `libs.versions.fedimintSdk` still names
 // the version for whenever it is.
 
 android {
@@ -20,7 +20,7 @@ android {
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        // Keep in sync with MIN_SDK in scripts/generate-android-so.sh, which
+        // Keep in sync with MIN_SDK in scripts/build-android-sdk.sh, which
         // passes it to cargo-ndk as the native library's target platform.
         minSdk = 28
 
@@ -54,7 +54,7 @@ android {
     }
 
     // src/main/jniLibs is AGP's default JNI location, so the .so files the Nix
-    // build (or scripts/nix-build-kotlin.sh) places there are packaged with no
+    // build (or scripts/build-android-sdk.sh) places there are packaged with no
     // extra configuration. They are build outputs and are gitignored.
 }
 
