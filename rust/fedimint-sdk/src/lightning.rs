@@ -1002,7 +1002,7 @@ pub(super) enum Shortfall {
 /// anywhere in `err`'s chain.
 pub(super) async fn fee_quote_failure(
     client: &Client,
-    err: &(dyn std::error::Error + 'static),
+    err: &(dyn std::error::Error + Send + Sync + 'static),
     shortfall: Shortfall,
     required: Amount,
     context: &str,
@@ -1903,5 +1903,20 @@ mod tests {
             operation.state().await.expect("state"),
             LnReceiveState::Claimed
         );
+    }
+
+    // The three futures are awaited from spawned tasks by applications, so each must stay
+    // `Send`. The check is done by the type checker: `check` is never called, only named, and
+    // a non-`Send` future fails to compile it. `fee_quote_failure` once took a trait object
+    // without `Send + Sync`, which made every one of these futures non-`Send`.
+    #[test]
+    fn quote_send_and_receive_futures_are_send() {
+        fn assert_send<T: Send>(_: T) {}
+        fn check(lightning: &Lightning, invoice: &Bolt11Invoice, quote: LnQuote, amount: Amount) {
+            assert_send(lightning.quote(invoice));
+            assert_send(lightning.send(quote));
+            assert_send(lightning.receive(amount, ""));
+        }
+        let _: fn(&Lightning, &Bolt11Invoice, LnQuote, Amount) = check;
     }
 }
