@@ -124,12 +124,6 @@ impl core::str::FromStr for Address {
     }
 }
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Address, String, {
-    lower: |address| address.to_string(),
-    try_lift: |s| s.parse::<Address>().map_err(Into::into),
-});
-
 #[cfg(test)]
 mod tests {
     use super::*;

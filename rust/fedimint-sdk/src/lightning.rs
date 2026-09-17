@@ -39,7 +39,7 @@ pub struct Lightning {
 // `quote` is exported under its own name, unchanged: `LnQuote` is a UniFFI
 // object (see below), and a bare object returned through `Result<T>`
 // crosses the boundary with no adapter needed. `send` and `receive` still
-// need one, in the block below `new`: `send`'s real parameter is an owned
+// need one, in `ffi/lightning.rs`: `send`'s real parameter is an owned
 // `LnQuote`, which an object can never cross as (only `Arc<LnQuote>` can),
 // and `receive`'s real return type names the generic
 // `Operation<LnReceiveState>`, which cannot cross at all.
@@ -179,7 +179,7 @@ impl Lightning {
     /// single-use flag itself. Never reads or writes that flag: whether a
     /// quote has already been paid is a UniFFI-only concern, checked once at
     /// the boundary before this runs.
-    async fn send_authorized(&self, quote: &LnQuote) -> Result<Operation<LnSendState>> {
+    pub(crate) async fn send_authorized(&self, quote: &LnQuote) -> Result<Operation<LnSendState>> {
         let federation = &self.inner.federation;
         let quote = &quote.inner;
         ensure_executable(quote, federation.id, crate::db::now_millis())?;
@@ -280,32 +280,6 @@ impl Lightning {
     }
 }
 
-// The UniFFI view of `send`/`receive` above, under their real names but
-// different Rust identifiers: `send`'s real parameter is an owned
-// `LnQuote`, which can only ever cross the boundary as `Arc<LnQuote>` (see
-// `LnQuote`'s own `#[uniffi::export]` block for how it enforces single
-// use), and `receive`'s real return type names the generic
-// `Operation<LnReceiveState>`, which cannot cross at all — its UniFFI view
-// is `LnReceiveHandle`, defined below. `quote` needs no such adapter: see
-// the export attribute directly on it, above.
-#[cfg(feature = "uniffi")]
-#[uniffi::export(async_runtime = "tokio")]
-impl Lightning {
-    /// See [`Lightning::send`]. Fails with
-    /// [`ErrorCode::QuoteExpired`] if `quote` was already sent.
-    #[uniffi::method(name = "send")]
-    pub async fn ffi_send(&self, quote: Arc<LnQuote>) -> Result<LnSendOperation> {
-        quote.used.claim(quote.expires_at())?;
-        Ok(self.send_authorized(&quote).await?.into())
-    }
-
-    /// See [`Lightning::receive`].
-    #[uniffi::method(name = "receive")]
-    pub async fn ffi_receive(&self, amount: Amount, description: &str) -> Result<LnReceiveHandle> {
-        Ok(self.receive(amount, description).await?.into())
-    }
-}
-
 /// A frozen, executable plan for one lightning payment.
 ///
 /// Produced by [`Lightning::quote`] and consumed by [`Lightning::send`], whose
@@ -315,16 +289,17 @@ impl Lightning {
 // Crosses a UniFFI boundary as an opaque object rather than a plain record:
 // a record crosses by value, so nothing would stop a caller from passing
 // the same field values into `send` twice and paying twice. `used` gives it
-// real interior state instead, checked and set once by `send`'s colocated
-// adapter, so a second attempt fails with `QuoteExpired` the same way it is
-// a compile error in plain Rust (`send` takes the quote by value). Behind
-// the `uniffi` feature; absent from every other build, including plain
-// Rust, where the type system already enforces single use.
+// real interior state instead, claimed once through `claim` by the
+// UniFFI `send` adapter in `ffi/lightning.rs`, so a second attempt fails
+// with `QuoteExpired` the same way it is a compile error in plain Rust
+// (`send` takes the quote by value). Behind the `uniffi` feature; absent
+// from every other build, including plain Rust, where the type system
+// already enforces single use.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct LnQuote {
     inner: LnQuoteInner,
     #[cfg(feature = "uniffi")]
-    used: crate::ffi::QuoteClaim,
+    pub(crate) used: crate::ffi::QuoteClaim,
 }
 
 impl LnQuote {
@@ -1227,48 +1202,6 @@ pub(super) async fn balance_of(client: &Client) -> Result<Amount> {
 
 pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
-}
-
-// The UniFFI views of `Operation<LnSendState>` and `Operation<LnReceiveState>`:
-// `Operation<S>` is generic and UniFFI objects cannot be, so
-// `crate::ffi::ffi_operation!` monomorphises one newtype object per
-// state, forwarding every method to the real handle. See that macro's
-// documentation in `ffi.rs`.
-#[cfg(feature = "uniffi")]
-crate::ffi::ffi_operation!(
-    LnSendOperation,
-    LnSendOperationUpdates,
-    LnSendState,
-    details: LnSendDetails
-);
-#[cfg(feature = "uniffi")]
-crate::ffi::ffi_operation!(
-    LnReceiveOperation,
-    LnReceiveOperationUpdates,
-    LnReceiveState,
-    details: LnReceiveDetails
-);
-
-/// The result of [`Lightning::receive`], with `operation` crossing as
-/// [`LnReceiveOperation`] rather than the generic `Operation<LnReceiveState>`
-/// the real [`LnReceive`] carries.
-#[cfg(feature = "uniffi")]
-#[derive(Debug, uniffi::Record)]
-pub struct LnReceiveHandle {
-    /// See [`LnReceive::invoice`].
-    pub invoice: Bolt11Invoice,
-    /// See [`LnReceive::operation`].
-    pub operation: Arc<LnReceiveOperation>,
-}
-
-#[cfg(feature = "uniffi")]
-impl From<LnReceive> for LnReceiveHandle {
-    fn from(receive: LnReceive) -> Self {
-        Self {
-            invoice: receive.invoice,
-            operation: Arc::new(receive.operation.into()),
-        }
-    }
 }
 
 /// Realistic lightning records for other modules' tests, so a test elsewhere does not have to

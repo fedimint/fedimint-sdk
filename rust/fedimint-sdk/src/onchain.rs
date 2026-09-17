@@ -181,8 +181,8 @@ impl Onchain {
 
 // `quote` is exported under its own name, unchanged: `OnchainQuote` is a
 // UniFFI object (see below), and a bare object returned through `Result<T>`
-// crosses the boundary with no adapter needed. `receive` above and `send`
-// below still need one: `receive`'s real return type names the generic
+// crosses the boundary with no adapter needed. `receive` and `send` still
+// need one, in `ffi/onchain.rs`: `receive`'s real return type names the generic
 // `Operation<OnchainReceiveState>`, which cannot cross at all, and `send`'s
 // real parameter is an owned `OnchainQuote`, which an object can never
 // cross as (only `Arc<OnchainQuote>` can).
@@ -300,7 +300,10 @@ impl Onchain {
     /// checking the quote's single-use flag itself. Never reads or writes
     /// that flag: whether a quote has already been spent is a UniFFI-only
     /// concern, checked once at the boundary before this runs.
-    async fn send_authorized(&self, quote: &OnchainQuote) -> Result<Operation<OnchainSendState>> {
+    pub(crate) async fn send_authorized(
+        &self,
+        quote: &OnchainQuote,
+    ) -> Result<Operation<OnchainSendState>> {
         let federation = &self.inner.federation;
         let quote = &quote.inner;
         ensure_executable(quote, federation.id, crate::db::now_millis())?;
@@ -361,32 +364,6 @@ impl Onchain {
     }
 }
 
-// The UniFFI view of `receive`/`send` above, under their real names but
-// different Rust identifiers: `receive`'s real return type names the
-// generic `Operation<OnchainReceiveState>`, which cannot cross at all —
-// its UniFFI view is `OnchainReceiveHandle`, defined below — and `send`'s
-// real parameter is an owned `OnchainQuote`, which can only ever cross the
-// boundary as `Arc<OnchainQuote>` (see `OnchainQuote`'s own
-// `#[uniffi::export]` block for how it enforces single use). `quote` needs
-// no such adapter: see the export attribute directly on it, above.
-#[cfg(feature = "uniffi")]
-#[uniffi::export(async_runtime = "tokio")]
-impl Onchain {
-    /// See [`Onchain::receive`].
-    #[uniffi::method(name = "receive")]
-    pub async fn ffi_receive(&self) -> Result<OnchainReceiveHandle> {
-        Ok(self.receive().await?.into())
-    }
-
-    /// See [`Onchain::send`]. Fails with
-    /// [`ErrorCode::QuoteExpired`] if `quote` was already sent.
-    #[uniffi::method(name = "send")]
-    pub async fn ffi_send(&self, quote: Arc<OnchainQuote>) -> Result<OnchainSendOperation> {
-        quote.used.claim(quote.expires_at())?;
-        Ok(self.send_authorized(&quote).await?.into())
-    }
-}
-
 /// A frozen, executable plan for one on-chain withdrawal.
 ///
 /// Produced by [`Onchain::quote`] and consumed by [`Onchain::send`]. The
@@ -400,16 +377,17 @@ impl Onchain {
 // Crosses a UniFFI boundary as an opaque object rather than a plain record:
 // a record crosses by value, so nothing would stop a caller from passing
 // the same field values into `send` twice and broadcasting twice. `used`
-// gives it real interior state instead, checked and set once by `send`'s
-// colocated adapter, so a second attempt fails with `QuoteExpired` the same
-// way it is a compile error in plain Rust (`send` takes the quote by
-// value). Behind the `uniffi` feature; absent from every other build,
-// including plain Rust, where the type system already enforces single use.
+// gives it real interior state instead, claimed once through `claim` by
+// the UniFFI `send` adapter in `ffi/onchain.rs`, so a second attempt fails
+// with `QuoteExpired` the same way it is a compile error in plain Rust
+// (`send` takes the quote by value). Behind the `uniffi` feature; absent
+// from every other build, including plain Rust, where the type system
+// already enforces single use.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct OnchainQuote {
     inner: OnchainQuoteInner,
     #[cfg(feature = "uniffi")]
-    used: crate::ffi::QuoteClaim,
+    pub(crate) used: crate::ffi::QuoteClaim,
 }
 
 impl OnchainQuote {
@@ -1698,48 +1676,6 @@ pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
     wire::decode_receive_wire(details)
         .ok()
         .map(|wire| wire.address)
-}
-
-// The UniFFI views of `Operation<OnchainSendState>` and
-// `Operation<OnchainReceiveState>`: `Operation<S>` is generic and UniFFI
-// objects cannot be, so `crate::ffi::ffi_operation!` monomorphises
-// one newtype object per state, forwarding every method to the real
-// handle. See that macro's documentation in `ffi.rs`.
-#[cfg(feature = "uniffi")]
-crate::ffi::ffi_operation!(
-    OnchainSendOperation,
-    OnchainSendOperationUpdates,
-    OnchainSendState,
-    details: OnchainSendDetails
-);
-#[cfg(feature = "uniffi")]
-crate::ffi::ffi_operation!(
-    OnchainReceiveOperation,
-    OnchainReceiveOperationUpdates,
-    OnchainReceiveState,
-    details: OnchainReceiveDetails
-);
-
-/// The result of [`Onchain::receive`], with `operation` crossing as
-/// [`OnchainReceiveOperation`] rather than the generic
-/// `Operation<OnchainReceiveState>` the real [`OnchainReceive`] carries.
-#[cfg(feature = "uniffi")]
-#[derive(Debug, uniffi::Record)]
-pub struct OnchainReceiveHandle {
-    /// See [`OnchainReceive::address`].
-    pub address: Address,
-    /// See [`OnchainReceive::operation`].
-    pub operation: Arc<OnchainReceiveOperation>,
-}
-
-#[cfg(feature = "uniffi")]
-impl From<OnchainReceive> for OnchainReceiveHandle {
-    fn from(receive: OnchainReceive) -> Self {
-        Self {
-            address: receive.address,
-            operation: Arc::new(receive.operation.into()),
-        }
-    }
 }
 
 #[cfg(test)]

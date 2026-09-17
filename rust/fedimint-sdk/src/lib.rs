@@ -330,10 +330,10 @@ mod storage;
 mod types;
 
 // Generates the per-crate UniFFI scaffolding every `#[uniffi::export]` block
-// (on `Sdk`, `Federation`, the facades, operations, recovery and the handle
-// types in `types/`) and every type derive relies on; `ffi.rs` holds the
-// machinery those exports share. Behind the `uniffi`
-// feature; the wasm and plain-Rust builds never see it.
+// and every type derive relies on. The derives sit on the real types, here in
+// `sdk.rs`, `federation.rs`, the facades and `types/`; everything else — every
+// adapter block, projection and conversion — lives in the `ffi` module.
+// Behind the `uniffi` feature; the wasm and plain-Rust builds never see it.
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
 
@@ -366,7 +366,7 @@ pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, Sd
 // the `uniffi` feature; the rest of the surface is `#[uniffi::export]` methods on
 // `Sdk`, `Federation` and what they hand out, and derives on the value types.
 #[cfg(feature = "uniffi")]
-pub use sdk::create_fedimint_sdk;
+pub use ffi::create_fedimint_sdk;
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,

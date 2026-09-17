@@ -38,7 +38,7 @@ use crate::{Error, ErrorCode};
 // log line that mentions the record holding it. As an object it prints as a
 // handle, and the token comes out only through `display()`, as an
 // `InviteCode`'s does. Records that hold notes cross through `Arc<Notes>`
-// projections next to them (see `ecash.rs`). Behind the `uniffi` feature.
+// projections (see `ffi/ecash.rs`). Behind the `uniffi` feature.
 #[derive(Clone)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Notes {

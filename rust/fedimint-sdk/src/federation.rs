@@ -85,9 +85,10 @@ pub struct Federation {
     inner: Arc<FederationInner>,
 }
 
-// Every method on `Federation` is exported under its real name, across the
-// blocks below: this one and the `meta`/`activity` one directly, and
-// `ecash`/`lightning`/`onchain`/`operation` through a renamed adapter.
+// Every method on `Federation` is exported under its real name: this block
+// and the `meta`/`activity` one below directly, and
+// `ecash`/`lightning`/`onchain`/`operation` through the renamed adapters in
+// `ffi/federation.rs`.
 // `async_runtime = "tokio"` applies to whichever methods are `async` and is
 // simply unused by the synchronous ones, exactly as `Sdk`'s own exported
 // block already mixes `export_mnemonic` (sync) with `preview`/`join` (async).
@@ -198,7 +199,7 @@ impl Federation {
 // plain-Rust shape (an object nested in `Option`/`Result<Option<_>>`,
 // never `Arc`) rather than paying that cost in the API every caller reads,
 // native and wasm included, for a constraint that is only ever UniFFI's:
-// see the renamed, Arc-wrapping adapter right after this block.
+// see the renamed, Arc-wrapping adapters in `ffi/federation.rs`.
 impl Federation {
     /// The ecash facade, or `None` if this federation has no mint module.
     ///
@@ -265,38 +266,6 @@ impl Federation {
     pub async fn operation(&self, id: &OperationId) -> Result<Option<AnyOperation>> {
         self.inner.ensure_open()?;
         self.inner.operation(id.upstream()).await
-    }
-}
-
-// The UniFFI view of `ecash`/`lightning`/`onchain`/`operation` above,
-// under their real names but different Rust identifiers so they can wrap
-// each object in `Arc`: a UniFFI object nested in `Option`/
-// `Result<Option<_>>` has to cross as `Arc<T>`.
-#[cfg(feature = "uniffi")]
-#[uniffi::export(async_runtime = "tokio")]
-impl Federation {
-    /// See [`Federation::ecash`].
-    #[uniffi::method(name = "ecash")]
-    pub fn ffi_ecash(&self) -> Option<Arc<Ecash>> {
-        self.ecash().map(Arc::new)
-    }
-
-    /// See [`Federation::lightning`].
-    #[uniffi::method(name = "lightning")]
-    pub fn ffi_lightning(&self) -> Option<Arc<Lightning>> {
-        self.lightning().map(Arc::new)
-    }
-
-    /// See [`Federation::onchain`].
-    #[uniffi::method(name = "onchain")]
-    pub fn ffi_onchain(&self) -> Option<Arc<Onchain>> {
-        self.onchain().map(Arc::new)
-    }
-
-    /// See [`Federation::operation`].
-    #[uniffi::method(name = "operation")]
-    pub async fn ffi_operation(&self, id: &OperationId) -> Result<Option<Arc<AnyOperation>>> {
-        Ok(self.operation(id).await?.map(Arc::new))
     }
 }
 
@@ -379,9 +348,9 @@ pub struct Capabilities {
 // mutation all happens through `self.inner.cursor`, already a `tokio::sync
 // ::Mutex` reached through the shared `Arc<BalanceUpdatesInner>` above, so
 // `&mut self` on `next` is a plain-Rust API discipline ("one subscriber, one
-// cursor"), not a genuine requirement of the implementation — the colocated
-// `#[uniffi::export]` block below calls the same body through `&self`
-// instead of wrapping this type in another lock.
+// cursor"), not a genuine requirement of the implementation — the
+// `#[uniffi::export]` block in `ffi/federation.rs` calls the same body
+// through `&self` instead of wrapping this type in another lock.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct BalanceUpdates {
     inner: Arc<BalanceUpdatesInner>,
@@ -413,7 +382,7 @@ impl BalanceUpdates {
     /// touches is already behind `self.inner.cursor`'s own lock, so the
     /// UniFFI-facing `next` (which can only ever hold a shared
     /// `Arc<BalanceUpdates>`, never an exclusive one) can call it too.
-    async fn next_shared(&self) -> Result<Amount> {
+    pub(crate) async fn next_shared(&self) -> Result<Amount> {
         let mut cursor = self.inner.cursor.lock().await;
         let mut closed = self.inner.federation.closed();
         loop {
@@ -501,20 +470,6 @@ impl BalanceUpdates {
             cursor.last = Some(balance);
             return Ok(balance);
         }
-    }
-}
-
-// The UniFFI view of `next` above, under its real name but a different
-// Rust identifier: the real signature takes `&mut self`, which a shared
-// `Arc<BalanceUpdates>` can never provide, so this calls the same
-// `next_shared` body through `&self` instead.
-#[cfg(feature = "uniffi")]
-#[uniffi::export(async_runtime = "tokio")]
-impl BalanceUpdates {
-    /// See [`BalanceUpdates::next`].
-    #[uniffi::method(name = "next")]
-    pub async fn ffi_next(&self) -> Result<Amount> {
-        self.next_shared().await
     }
 }
 

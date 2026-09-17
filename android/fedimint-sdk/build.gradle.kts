@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
@@ -45,17 +47,22 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-
-    kotlinOptions {
-        jvmTarget = "11"
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     // src/main/jniLibs is AGP's default JNI location, so the .so files the Nix
     // build (or scripts/build-android-sdk.sh) places there are packaged with no
     // extra configuration. They are build outputs and are gitignored.
+}
+
+// The Kotlin side of `compileOptions` above, and it must agree with it. Set through the Kotlin
+// plugin's own `compilerOptions` rather than AGP's `android.kotlinOptions`, which Kotlin 2.x
+// deprecates.
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
+    }
 }
 
 dependencies {

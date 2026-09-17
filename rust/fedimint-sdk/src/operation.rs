@@ -728,10 +728,10 @@ pub struct AnyOperation {
 }
 
 // `id`, `kind`, `support`, `supported_kind` and `raw_kind` are exported
-// as-is: every return type is already FFI-safe. The `as_*` downcasts and
-// `from_record` stay in the second, unexported `impl AnyOperation` block
-// below, since `uniffi::export` on an impl block requires every item in it
-// to be exportable and `from_record` is `pub(crate)`.
+// as-is: every return type is already FFI-safe. The `as_*` downcasts stay
+// in the unexported `impl AnyOperation` block below and are exported
+// through the adapters in `ffi/operation.rs`, since each returns a generic
+// `Operation<S>` a UniFFI object cannot carry.
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl AnyOperation {
     /// This operation's id.
@@ -921,57 +921,6 @@ impl AnyOperation {
             ErasedDriver::Recovery(driver) => self.typed(OperationKind::Recovery, driver),
             _ => None,
         }
-    }
-}
-
-// The UniFFI view of the seven `as_*` downcasts above: same names, same
-// `None`-on-mismatch behaviour, but returning this crate's monomorphised
-// `*Operation` wrapper (defined next to each facade via
-// `ffi_operation!`, below) instead of the generic `Operation<S>` a UniFFI
-// object cannot carry directly.
-#[cfg(feature = "uniffi")]
-#[uniffi::export]
-impl AnyOperation {
-    /// See [`AnyOperation::as_ecash_send`].
-    #[uniffi::method(name = "as_ecash_send")]
-    pub fn ffi_as_ecash_send(&self) -> Option<Arc<crate::ecash::EcashSendOperation>> {
-        self.as_ecash_send().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_ecash_receive`].
-    #[uniffi::method(name = "as_ecash_receive")]
-    pub fn ffi_as_ecash_receive(&self) -> Option<Arc<crate::ecash::EcashReceiveOperation>> {
-        self.as_ecash_receive().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_ln_send`].
-    #[uniffi::method(name = "as_ln_send")]
-    pub fn ffi_as_ln_send(&self) -> Option<Arc<crate::lightning::LnSendOperation>> {
-        self.as_ln_send().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_ln_receive`].
-    #[uniffi::method(name = "as_ln_receive")]
-    pub fn ffi_as_ln_receive(&self) -> Option<Arc<crate::lightning::LnReceiveOperation>> {
-        self.as_ln_receive().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_onchain_send`].
-    #[uniffi::method(name = "as_onchain_send")]
-    pub fn ffi_as_onchain_send(&self) -> Option<Arc<crate::onchain::OnchainSendOperation>> {
-        self.as_onchain_send().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_onchain_receive`].
-    #[uniffi::method(name = "as_onchain_receive")]
-    pub fn ffi_as_onchain_receive(&self) -> Option<Arc<crate::onchain::OnchainReceiveOperation>> {
-        self.as_onchain_receive().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_recovery`].
-    #[uniffi::method(name = "as_recovery")]
-    pub fn ffi_as_recovery(&self) -> Option<Arc<crate::recovery::RecoveryOperation>> {
-        self.as_recovery().map(|op| Arc::new(op.into()))
     }
 }
 

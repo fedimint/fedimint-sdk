@@ -130,12 +130,6 @@ impl core::str::FromStr for Amount {
     }
 }
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Amount, u64, {
-    lower: |amount| amount.msats(),
-    try_lift: |msats| Ok(Amount::from_msats(msats)),
-});
-
 /// A whole-satoshi amount, used for on-chain (peg-in/peg-out) operations.
 ///
 /// Bitcoin's on-chain protocol has no sub-satoshi unit, so on-chain-facing
@@ -155,12 +149,6 @@ uniffi::custom_type!(Amount, u64, {
 /// `BigInt`, never a native JS `number`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sats(u64);
-
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Sats, u64, {
-    lower: |sats| sats.sats(),
-    try_lift: |sats| Ok(Sats::from_sats(sats)),
-});
 
 impl Sats {
     /// Constructs an amount directly from a whole-satoshi count.

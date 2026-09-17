@@ -173,12 +173,6 @@ impl core::str::FromStr for Bolt11Invoice {
     }
 }
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Bolt11Invoice, String, {
-    lower: |invoice| invoice.to_string(),
-    try_lift: |s| s.parse::<Bolt11Invoice>().map_err(Into::into),
-});
-
 impl PartialEq for Bolt11Invoice {
     /// Equal when the bolt11 encodings are equal. The in-memory form is not canonical: an
     /// invoice built by a module and the same invoice parsed back from its string differ in

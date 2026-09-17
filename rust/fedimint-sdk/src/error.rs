@@ -49,8 +49,8 @@ use crate::{Amount, Network, Timestamp};
 // UniFFI carries `Error` across the boundary as an opaque *error interface*: it
 // already implements `core::error::Error` + `Display`, so `#[uniffi::export]`
 // methods that return `crate::Result<T>` throw it directly. Foreign code reads
-// `code()` / `reason()` (below) rather than the fields, which stay `pub` for
-// in-crate use and are invisible over FFI. The Kotlin backend maps the name to
+// `code()` / `reason()` (exported from `ffi/error.rs`) rather than the fields,
+// which stay `pub` for in-crate use and are invisible over FFI. The Kotlin backend maps the name to
 // `Exception` (it does that to every `*Error`); a binding imports it aliased.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 #[non_exhaustive]
@@ -212,25 +212,6 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-/// FFI accessors for the opaque error interface. Foreign callers cannot read
-/// the struct fields off the handle, so these mirror them: `code()` is the
-/// stable value to branch on, `reason()` is the human-readable message.
-/// `reason` rather than `message` so it does not collide with the message
-/// property every foreign exception base class already has.
-#[cfg(feature = "uniffi")]
-#[uniffi::export]
-impl Error {
-    /// The stable [`ErrorCode`] for this failure.
-    pub fn code(&self) -> ErrorCode {
-        self.code
-    }
-
-    /// The human-readable message. Never parse it; branch on [`code`](Self::code).
-    pub fn reason(&self) -> String {
-        self.message.clone()
-    }
-}
-
 /// A failure described as a **value to read** rather than an error to raise: a
 /// stable [`ErrorCode`], a human-readable message, and the same optional
 /// [`DetailEnvelope`] an [`Error`] carries.
@@ -262,6 +243,7 @@ impl Error {
 /// `#[non_exhaustive]`; build one with [`Diagnostic::new`], [`Diagnostic::with_details`] or
 /// [`Diagnostic::with_raw_details`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct Diagnostic {
     /// Stable, machine-readable failure category: the same taxonomy, with
@@ -500,6 +482,11 @@ impl From<Diagnostic> for Error {
 ///   would throw away details this build understands perfectly well.
 ///   `version` is for saying how far ahead the producer is.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// Crosses a UniFFI boundary as a plain record, and is the *only* detail shape that does:
+// `DetailEnvelope` carries the growing `ErrorDetails`, so this type is what the contract above
+// calls the boundary shape. Every field is FFI-safe (`payload` crosses as bytes). The adapters
+// that hand it over live in `ffi/error.rs` and `ffi/sdk.rs`.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RawErrorDetails {
     /// The envelope version the producing side declared it speaks, normally
     /// that side's own [`CURRENT_VERSION`](RawErrorDetails::CURRENT_VERSION).

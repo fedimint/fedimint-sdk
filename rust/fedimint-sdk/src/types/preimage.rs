@@ -69,12 +69,6 @@ impl core::str::FromStr for Preimage {
     }
 }
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Preimage, String, {
-    lower: |preimage| preimage.to_string(),
-    try_lift: |s| s.parse::<Preimage>().map_err(Into::into),
-});
-
 #[cfg(test)]
 mod tests {
     use super::*;
