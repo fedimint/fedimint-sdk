@@ -643,12 +643,9 @@ async fn terms_for(
     let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
         Ok(quote) => quote,
         Err(err) => {
-            let text = err.to_string();
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
             return Err(fee_quote_failure(
                 client,
-                short,
-                &text,
+                err.as_ref(),
                 contract_amount,
                 "could not quote the funding fee",
             )
@@ -922,12 +919,9 @@ pub(super) async fn receive(
     let quote = match module.receive_fee_quote(to_upstream(amount)).await {
         Ok(quote) => quote,
         Err(err) => {
-            let text = err.to_string();
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
             return Err(fee_quote_failure(
                 client,
-                short,
-                &text,
+                err.as_ref(),
                 amount,
                 "could not quote the claim fee",
             )

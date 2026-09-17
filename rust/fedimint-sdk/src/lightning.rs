@@ -906,37 +906,76 @@ pub(super) fn plan_of(
 
 /// What a fee-quote dry run's failure means, before either mint's answer is turned into an
 /// [`Error`].
-///
-/// The dry run balances the funding transaction against the real notes and fails inside the
-/// primary module when they cannot cover it. The v1 mint (`fedimint-mint-client`) reports that
-/// with the typed [`fedimint_mint_client::InsufficientBalanceError`], which already carries the
-/// amounts that were short; the v2 mint (`fedimint-mintv2-client`) reports the same condition as
-/// a plain-text `anyhow` context, `"Insufficient funds"`
-/// (`fedimint-mintv2-client/src/lib.rs:503`), with no amounts of its own.
+// The dry run balances the funding transaction against the real notes and fails inside the
+// primary module when they cannot cover it. The v2 mint (`fedimint-mintv2-client`) reports
+// that as a plain-text context, `"Insufficient funds"` (`fedimint-mintv2-client/src/lib.rs:503`).
+// The v1 mint (`fedimint-mint-client`) reports it as the typed
+// `fedimint_mint_client::InsufficientBalanceError`, which carries the amounts that were short,
+// but by the time this SDK sees it that type can no longer be recovered (see
+// `classify_fee_quote_failure`'s comment), so it is recognized the same way as the v2 mint's
+// refusal: by its own fixed message, `"Insufficient balance"`, with no amounts of its own.
 #[derive(Debug)]
 enum FeeQuoteFailure {
-    /// The v1 mint's typed error, carrying its own requested and total amounts.
+    /// The v1 mint's typed error, carrying its own requested and total amounts. Kept for the
+    /// day the client stops re-boxing the primary module's error through `anyhow`, at which
+    /// point the type survives and this arm starts firing again.
     Typed { requested: Amount, total: Amount },
-    /// The v2 mint's plain-text refusal, which names no amounts.
+    /// Either mint's refusal recognized by its own message, naming no amounts.
     Text,
 }
 
-/// Recognizes either mint's insufficient-balance refusal from a fee-quote failure, or reports
-/// neither is a match. Pure so the mapping can be checked without a live `Client`.
-fn classify_fee_quote_failure(
-    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
-    text: &str,
-) -> Option<FeeQuoteFailure> {
-    if let Some(short) = short {
+/// Walks an error and every one of its `source()`s, outermost first. The chain-walking
+/// counterpart of `anyhow::Error::chain`, over the plain [`std::error::Error`] this crate can
+/// name without depending on a foreign error-type crate itself.
+fn error_chain<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> impl Iterator<Item = &'a (dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(err), |err| err.source())
+}
+
+/// Recognizes either mint's insufficient-balance refusal anywhere in a fee-quote failure's
+/// error chain, or reports neither is a match. Pure so the mapping can be checked without a
+/// live `Client`.
+// By the time a call site sees this failure it is already wrapped as
+// `fedimint_client_module::TransactionSubmitError::PrimaryModule`, whose own `Display` is just
+// "The primary module failed": neither mint's refusal survives in the outer error's own
+// message, so both are looked for through the whole chain instead of reading only the top.
+//
+// The typed downcast is tried first and kept even though it cannot succeed on the shape the
+// client actually produces today: the client builds that wrapper from the mint's `anyhow`
+// error via `anyhow::Error::into_boxed_dyn_error`, which reattaches the original error's own
+// `Display`/`source` but not its `Any` identity (anyhow's own docs on that method say exactly
+// this: the result "can no longer downcast"). So `InsufficientBalanceError` survives this
+// boundary only as text, the same as the v2 mint's refusal, and is matched that way below.
+fn classify_fee_quote_failure(err: &(dyn std::error::Error + 'static)) -> Option<FeeQuoteFailure> {
+    if let Some(short) = error_chain(err)
+        .find_map(|cause| cause.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>())
+    {
         return Some(FeeQuoteFailure::Typed {
             requested: from_upstream(short.requested_amount),
             total: from_upstream(short.total_amount),
         });
     }
-    if text.contains("Insufficient funds") {
+    if error_chain(err).any(|cause| {
+        let text = cause.to_string();
+        text.contains("Insufficient funds") || text.contains("Insufficient balance")
+    }) {
         return Some(FeeQuoteFailure::Text);
     }
     None
+}
+
+/// Joins every cause in `err`'s chain with `": "`, outermost first.
+///
+/// `err`'s own type is never named in this crate (see `classify_fee_quote_failure`'s comment),
+/// so its real `Display` (`anyhow::Error`'s, which joins its own chain in alternate mode) is not
+/// reachable through the `std::error::Error` reference this crate holds instead; this rebuilds
+/// the same joined text by hand, one cause's own message at a time.
+fn chain_text(err: &(dyn std::error::Error + 'static)) -> String {
+    error_chain(err)
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 /// Turns a fee-quote dry run's failure into the [`Error`] it represents, for the four call sites
@@ -944,25 +983,23 @@ fn classify_fee_quote_failure(
 ///
 /// `required` is the amount the failed quote was for, used to report the shortfall when the
 /// mint's answer carries no amounts of its own. `context` names the quote for the fallback
-/// message, when `short` is absent and `text` does not match either mint's wording for "the
-/// notes on hand are short".
+/// message, when neither mint's refusal is found anywhere in `err`'s chain.
 pub(super) async fn fee_quote_failure(
     client: &Client,
-    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
-    text: &str,
+    err: &(dyn std::error::Error + 'static),
     required: Amount,
     context: &str,
 ) -> Error {
-    match classify_fee_quote_failure(short, text) {
+    match classify_fee_quote_failure(err) {
         Some(FeeQuoteFailure::Typed { requested, total }) => insufficient(requested, total),
         Some(FeeQuoteFailure::Text) => {
-            // The v2 mint's text names no amounts, so the balance is read again here. A
+            // Neither mint's text names amounts, so the balance is read again here. A
             // failed read must not mask the real refusal that was already found, so it
             // falls back to zero rather than turning this into an unrelated error.
             let available = balance_of(client).await.unwrap_or(Amount::from_msats(0));
             insufficient(required, available)
         }
-        None => internal(format!("{context}: {text}")),
+        None => internal(format!("{context}: {}", chain_text(err))),
     }
 }
 
@@ -1146,6 +1183,8 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
+    use fedimint_client_module::TransactionSubmitError;
+
     use super::*;
     use crate::operation::DetailedOperationState;
 
@@ -1675,15 +1714,30 @@ mod tests {
         );
     }
 
+    /// A minimal cause for a flat (unwrapped) error chain in a test, without needing a real
+    /// mint error for messages that name no amounts of their own.
+    #[derive(Debug)]
+    struct Cause(&'static str);
+
+    impl std::fmt::Display for Cause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Cause {}
+
     #[test]
     fn fee_quote_failure_is_classified_before_either_mint_is_asked() {
-        // The v1 mint's typed error wins even when the accompanying text also happens to
-        // mention the v2 mint's wording; the typed case is unambiguous and checked first.
+        // The typed case is checked across the whole chain before the text is, so it wins even
+        // if a chain somehow carried both. This is only reachable when the typed error is not
+        // itself hidden behind `anyhow`'s type erasure, which the real wrapper always does
+        // today (see the test below); this covers the classifier's own logic in isolation.
         let typed = fedimint_mint_client::InsufficientBalanceError {
             requested_amount: fedimint_core::Amount::from_msats(10),
             total_amount: fedimint_core::Amount::from_msats(3),
         };
-        match classify_fee_quote_failure(Some(&typed), "Insufficient funds") {
+        match classify_fee_quote_failure(&typed) {
             Some(FeeQuoteFailure::Typed { requested, total }) => {
                 assert_eq!(requested, Amount::from_msats(10));
                 assert_eq!(total, Amount::from_msats(3));
@@ -1692,11 +1746,62 @@ mod tests {
         }
         // The v2 mint's plain-text refusal, with no typed error at all.
         assert!(matches!(
-            classify_fee_quote_failure(None, "Insufficient funds"),
+            classify_fee_quote_failure(&Cause("Insufficient funds")),
+            Some(FeeQuoteFailure::Text)
+        ));
+        // The v1 mint's own wording, recognized the same way once its type is unrecoverable.
+        assert!(matches!(
+            classify_fee_quote_failure(&Cause("Insufficient balance: requested 10 but only 3")),
             Some(FeeQuoteFailure::Text)
         ));
         // Neither mint's wording: not this crate's problem to interpret.
-        assert!(classify_fee_quote_failure(None, "the federation timed out").is_none());
+        assert!(classify_fee_quote_failure(&Cause("the federation timed out")).is_none());
+    }
+
+    #[test]
+    fn fee_quote_failure_is_recognised_through_the_transaction_submit_wrapper() {
+        // The real shape the client produces: `Client::fee_quote` converts the mint's own
+        // `anyhow::Error` into a `Box<dyn Error + Send + Sync>` (`anyhow::Error::into`, called
+        // `into_boxed_dyn_error` on stable) and wraps that box as
+        // `TransactionSubmitError::PrimaryModule`; the SDK then converts that whole
+        // `TransactionSubmitError` into another `anyhow::Error` in turn (upstream's own
+        // `send_fee_quote`/`receive_fee_quote` do this via `map_err(anyhow::Error::from)`) and
+        // hands this crate `.as_ref()` of it, exactly as the four call sites do below. That
+        // double conversion is what drops `InsufficientBalanceError`'s own type, so both
+        // refusals must be found by text through it, not just when they are the outermost
+        // error.
+        let typed = fedimint_mint_client::InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(10),
+            total_amount: fedimint_core::Amount::from_msats(3),
+        };
+        let mint_v1_refusal = anyhow::Error::from(TransactionSubmitError::PrimaryModule(
+            anyhow::Error::from(typed).into(),
+        ));
+        assert!(matches!(
+            classify_fee_quote_failure(mint_v1_refusal.as_ref()),
+            Some(FeeQuoteFailure::Text)
+        ));
+
+        let mint_v2_refusal = anyhow::Error::from(TransactionSubmitError::PrimaryModule(
+            anyhow::anyhow!("select_funding_input")
+                .context("Insufficient funds")
+                .into(),
+        ));
+        assert!(matches!(
+            classify_fee_quote_failure(mint_v2_refusal.as_ref()),
+            Some(FeeQuoteFailure::Text)
+        ));
+
+        // An unrelated failure inside the same wrapper is still not this crate's problem to
+        // interpret, and the fallback message for it still carries the whole chain by hand,
+        // since neither this crate nor `TransactionSubmitError`'s own `Display` can print it.
+        let unrelated = anyhow::Error::from(TransactionSubmitError::PrimaryModule(
+            anyhow::anyhow!("the federation timed out").into(),
+        ));
+        assert!(classify_fee_quote_failure(unrelated.as_ref()).is_none());
+        let joined = chain_text(unrelated.as_ref());
+        assert!(joined.contains("The primary module failed"), "{joined}");
+        assert!(joined.contains("the federation timed out"), "{joined}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
