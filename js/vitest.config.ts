@@ -63,7 +63,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           environment: 'node',
-          include: ['shared/core/**/*.test.ts'],
+          include: ['shared/core/**/*.test.ts', 'web/sdk-web/src/**/*.test.ts'],
+          exclude: ['**/*.browser.test.ts'],
         },
         resolve: {
           alias: {
