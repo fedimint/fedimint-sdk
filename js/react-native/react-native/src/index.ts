@@ -1,33 +1,59 @@
-import { ReactNativeTransport } from './ReactNativeTransport'
 import {
-  WalletDirector as BaseWalletDirector,
-  TransportClient,
-} from '@fedimint/core'
-import type { FedimintWallet } from '@fedimint/core'
+  InviteCode,
+  Mnemonic,
+  Notes,
+  createFedimintSdk,
+  type MnemonicLike,
+  type SdkLike,
+} from '@fedimint/react-native-bindings'
 
-/**
- * WalletDirector for React Native.
- * Automatically uses ReactNativeTransport under the hood.
- *
- * @example
- * ```typescript
- * import WalletDirector from '@fedimint/react-native';
- * import RNFS from 'react-native-fs';
- *
- * const dbPath = `${RNFS.DocumentDirectoryPath}/fedimint_db`;
- * const director = new WalletDirector(dbPath);
- * ```
- */
-export class WalletDirector extends BaseWalletDirector {
-  constructor(dbPath: string, lazy: boolean = false) {
-    const transport = new ReactNativeTransport(dbPath)
-    super(transport, dbPath, lazy)
-  }
+export * from '@fedimint/react-native-bindings'
+
+export interface OpenOptions {
+  /** Directory the SDK keeps its data in; the app's documents directory is the usual choice. */
+  dataDir: string
+  /**
+   * Seed words to establish; omit to use the stored seed, or to generate one over an empty
+   * directory.
+   */
+  mnemonic?: string[]
 }
 
-// Default export for simple usage: import WalletDirector from '@fedimint/react-native'
-export default WalletDirector
+export interface SdkSession {
+  sdk: SdkLike
+  InviteCode: { parse: typeof InviteCode.parse }
+  Notes: { parse: typeof Notes.parse }
+  Mnemonic: {
+    fromWords: typeof Mnemonic.fromWords
+    generate: typeof Mnemonic.generate
+  }
+  /**
+   * Shuts the SDK down. Every object from this session is dead after; a second call does
+   * nothing.
+   */
+  close(): Promise<void>
+}
 
-// Named exports for advanced users
-export { ReactNativeTransport, TransportClient }
-export type { FedimintWallet }
+/** Opens the SDK over `options.dataDir`. */
+export async function openSdk(options: OpenOptions): Promise<SdkSession> {
+  const mnemonic: MnemonicLike | undefined = options.mnemonic
+    ? Mnemonic.fromWords(options.mnemonic)
+    : undefined
+  const sdk = await createFedimintSdk(options.dataDir, mnemonic)
+  let closed = false
+  return {
+    sdk,
+    InviteCode: { parse: (code) => InviteCode.parse(code) },
+    Notes: { parse: (notes) => Notes.parse(notes) },
+    Mnemonic: {
+      fromWords: (words) => Mnemonic.fromWords(words),
+      generate: () => Mnemonic.generate(),
+    },
+    async close() {
+      // A second close is a no-op rather than a rejection: the SDK is already gone.
+      if (closed) return
+      closed = true
+      await sdk.shutdown()
+    },
+  }
+}

@@ -116,17 +116,13 @@ export default defineConfig({
         },
         resolve: {
           alias: {
-            // The real bindings module is ubrn-generated and needs a compiled
-            // native library; unit tests run against a stub instead. Types are
-            // aliased to source so no workspace build is needed beforehand.
+            // The real bindings module is ubrn-generated and needs a compiled native library;
+            // unit tests run against a stub instead.
             '@fedimint/react-native-bindings': fileURLToPath(
               new URL(
-                './react-native/react-native/src/__tests__/rpc-handler-stub.ts',
+                './react-native/react-native/src/__tests__/bindings-stub.ts',
                 import.meta.url,
               ),
-            ),
-            '@fedimint/types': fileURLToPath(
-              new URL('./shared/types/src/index.ts', import.meta.url),
             ),
           },
         },

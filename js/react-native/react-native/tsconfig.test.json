@@ -4,13 +4,9 @@
     "noEmit": true,
     "declaration": false,
     "declarationMap": false,
-    "rootDir": "../..",
     "paths": {
-      "@fedimint/react-native-bindings": [
-        "./src/__tests__/rpc-handler-stub.ts"
-      ],
-      "@fedimint/types": ["../../shared/types/src/index.ts"]
+      "@fedimint/react-native-bindings": ["./src/__tests__/bindings-stub.ts"]
     }
   },
-  "include": ["src/ReactNativeTransport.ts", "src/__tests__"]
+  "include": ["src"]
 }

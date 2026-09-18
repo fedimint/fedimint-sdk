@@ -1,10 +1,13 @@
 # @fedimint/react-native
 
-React Native SDK for Fedimint - the easiest way to integrate Fedimint into your React Native app.
+The Fedimint SDK for React Native: `rust/fedimint-sdk` through its JSI turbo-module bindings
+(`@fedimint/react-native-bindings`), the same API `@fedimint/sdk-web` exposes over a worker, but
+called directly since there is no worker boundary to cross here.
 
 ## Implementation Options
 
-Depending on your project setup, you can use the SDK with or without Expo. Choose the option below that fits your environment.
+Depending on your project setup, you can use the SDK with or without Expo. Choose the option
+below that fits your environment.
 
 ### Option 1: Without Expo (Bare React Native)
 
@@ -18,7 +21,7 @@ yarn add @fedimint/react-native
 pnpm add @fedimint/react-native
 ```
 
-You'll also need `react-native-fs` for database storage:
+You'll also need `react-native-fs` for a documents directory to store data in:
 
 ```bash
 npm install react-native-fs
@@ -27,23 +30,23 @@ npm install react-native-fs
 #### Usage
 
 ```typescript
-import WalletDirector from '@fedimint/react-native'
+import { openSdk, Exception } from '@fedimint/react-native'
 import RNFS from 'react-native-fs'
 
-// Create a wallet director with a database path
-const dbPath = `${RNFS.DocumentDirectoryPath}/fedimint_db`
-const director = new WalletDirector(dbPath)
+const dataDir = `${RNFS.DocumentDirectoryPath}/fedimint`
+const { sdk, InviteCode, close } = await openSdk({ dataDir })
 
-// Generate a mnemonic
-const words = await director.generateMnemonic()
-console.log('Mnemonic:', words.join(' '))
-
-// Create a wallet and join a federation
-const wallet = await director.createWallet()
-await wallet.joinFederation(inviteCode)
-
-// Use wallet methods
-const balance = await wallet.balance.getBalance()
+try {
+  const federation = await sdk.join(InviteCode.parse(inviteCode))
+  // ... use `federation` and the rest of the generated API.
+} catch (error) {
+  if (error instanceof Exception) {
+    console.error(error.code(), error.reason(), error.details())
+  }
+  throw error
+} finally {
+  await close()
+}
 ```
 
 ### Option 2: With Expo
@@ -78,28 +81,15 @@ npx expo run:android
 #### Usage
 
 ```typescript
-import WalletDirector from '@fedimint/react-native'
+import { openSdk } from '@fedimint/react-native'
 import { Paths } from 'expo-file-system'
 
-// Prepare Database Path
-const dbUriPath = Paths.document.uri // e.g. file:///data/...
-// Strip the file:// scheme to get the plain filesystem path for Rust
-const dbPath = dbUriPath + 'fedimint_db'
-const rustPath = dbPath.replace(/^file:\/\//, '')
+// Strip the file:// scheme from the documents directory URI to get a plain
+// filesystem path for Rust.
+const dataDir = Paths.document.uri.replace(/^file:\/\//, '') + 'fedimint'
 
-// Create a wallet director with a database path
-const director = new WalletDirector(rustPath)
-
-// Generate a mnemonic
-const words = await director.generateMnemonic()
-console.log('Mnemonic:', words.join(' '))
-
-// Create a wallet and join a federation
-const wallet = await director.createWallet()
-await wallet.joinFederation(inviteCode)
-
-// Use wallet methods
-const balance = await wallet.balance.getBalance()
+const { sdk, InviteCode, close } = await openSdk({ dataDir })
+const federation = await sdk.join(InviteCode.parse(inviteCode))
 ```
 
 #### Plugin Options
@@ -123,7 +113,8 @@ This is required for Expo managed workflow.
 
 ### Building from Source
 
-You can choose to build the SDK from scratch (recompile from source) and skip the automatic binary download during installation by:
+You can choose to build the SDK from scratch (recompile from source) and skip the automatic
+binary download during installation by:
 
 1. **Using an environment variable:**
 
@@ -153,22 +144,21 @@ This is useful when you want to handle binary downloads manually or are building
 | 52+      | ✅ With plugins  |
 | Expo Go  | ❌ Not supported |
 
-## Exports
+## API
 
-```typescript
-// Default export - simplified WalletDirector
-import WalletDirector from '@fedimint/react-native'
+`openSdk({ dataDir, mnemonic? })` returns `{ sdk, InviteCode, Notes, Mnemonic, close }`. `sdk`
+and everything reachable from it (federations, operations, quotes, and so on) is the generated
+API of `@fedimint/react-native-bindings`: every class, enum and method it exports, called
+directly since JSI calls need no round trip. This package re-exports that whole module, so any
+type or function documented there (`InviteCode`, `Notes`, `Mnemonic`, tagged enums such as
+`LnReceiveState`, and so on) is available from `@fedimint/react-native` directly.
 
-// Named exports for advanced usage
-import {
-  WalletDirector, // Class with built-in transport
-  ReactNativeTransport, // Transport layer (for custom setups)
-  TransportClient, // Low-level client
-} from '@fedimint/react-native'
+Failures surface as `Exception`, with `code()` giving the stable error code to branch on,
+`reason()` a human-readable message (never parsed, only logged), and `details()` structured
+detail where the failure has any.
 
-// Types
-import type { FedimintWallet } from '@fedimint/react-native'
-```
+`close()` shuts the SDK down; every object obtained from the session is dead afterward. A second
+call does nothing.
 
 ## License
 

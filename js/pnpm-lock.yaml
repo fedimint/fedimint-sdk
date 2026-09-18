@@ -328,15 +328,9 @@ importers:
 
   react-native/react-native:
     dependencies:
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native-bindings':
         specifier: workspace:*
         version: link:../react-native-bindings
-      '@fedimint/types':
-        specifier: workspace:*
-        version: link:../../shared/types
       react:
         specifier: '>=18.0.0'
         version: 19.2.4
