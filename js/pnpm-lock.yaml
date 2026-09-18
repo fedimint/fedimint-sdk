@@ -362,9 +362,12 @@ importers:
 
   react-native/react-native-bindings:
     dependencies:
+      '@ubjs/core':
+        specifier: 0.31.0-5
+        version: 0.31.0-5
       uniffi-bindgen-react-native:
-        specifier: 0.29.3-1
-        version: 0.29.3-1
+        specifier: 0.31.0-5
+        version: 0.31.0-5
     devDependencies:
       '@babel/preset-env':
         specifier: ^7.29.0
@@ -9791,8 +9794,8 @@ packages:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
 
-  uniffi-bindgen-react-native@0.29.3-1:
-    resolution: {integrity: sha512-o6gXZsAh55yuvhwF2WSFdIHV4phyfWcCmg4DuyfJWJ7CvUz1UcIz2S4u9SmXAz1jsuqvu6Xc9hexrRBB0a5osg==}
+  uniffi-bindgen-react-native@0.31.0-5:
+    resolution: {integrity: sha512-YtL3gTe+RVXAQx/2P2Iuypic/CunRZC65Cs47v//YRfwWNYU4Ufd1jT3rqxSrH5b5QFCYblP89Nf/9ssZRvNgg==}
     hasBin: true
 
   union@0.5.0:
@@ -21416,7 +21419,7 @@ snapshots:
 
   unicorn-magic@0.3.0: {}
 
-  uniffi-bindgen-react-native@0.29.3-1: {}
+  uniffi-bindgen-react-native@0.31.0-5: {}
 
   union@0.5.0:
     dependencies:

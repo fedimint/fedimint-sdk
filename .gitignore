@@ -174,10 +174,6 @@ js/react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcfra
 js/react-native/react-native-bindings/ios-artifacts.zip
 js/react-native/react-native-bindings/android-artifacts.zip
 js/react-native/react-native-bindings/ReactNativeBindings.podspec.orig
-js/react-native/react-native-bindings/cpp/generated/
-js/react-native/react-native-bindings/src/generated/
-js/react-native/react-native-bindings/android/cpp-adapter.cpp.rej
-js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 
 # android/: both are produced by scripts/build-android-sdk.sh
 # (run it inside `nix develop .#android`) and must never be committed — a
