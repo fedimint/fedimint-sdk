@@ -90,6 +90,25 @@
           cmdLineToolsVersion = "13.0";
         };
 
+        # Xcode wrapper to expose system tools in the impure Nix shell.
+        xcode-wrapper = pkgs.stdenv.mkDerivation {
+          name = "xcode-wrapper-impure";
+          # Fails in sandbox. Use `--option sandbox relaxed` or `--option sandbox false`.
+          __noChroot = true;
+          buildCommand = ''
+            mkdir -p $out/bin
+            ln -s /usr/bin/ld $out/bin/ld
+            ln -s /usr/bin/clang $out/bin/clang
+            ln -s /usr/bin/clang++ $out/bin/clang++
+            # ln -s /usr/bin/xcodebuild $out/bin/xcodebuild
+            ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
+            ln -s /usr/bin/xcrun $out/bin/xcrun
+            ln -s /usr/bin/xcode-select $out/bin/xcode-select
+            ln -s /usr/bin/security $out/bin/security
+            ln -s /usr/bin/codesign $out/bin/codesign
+          '';
+        };
+
         # The wasm2 binding generator and the wasm-bindgen version it shells out to. See
         # nix/web-bindgen.nix.
         webBindgen = import ./nix/web-bindgen.nix { inherit pkgs; };
@@ -108,6 +127,14 @@
         androidToolchain = mkToolchain [
           "aarch64-linux-android"
           "x86_64-linux-android"
+        ];
+
+        # The three slices `ubrn build ios` assembles into the xcframework: a device build plus
+        # both simulator architectures.
+        iosToolchain = mkToolchain [
+          "aarch64-apple-ios"
+          "aarch64-apple-ios-sim"
+          "x86_64-apple-ios"
         ];
 
         wasmToolchain = mkToolchain [
@@ -224,6 +251,85 @@
             fi
 
           '';
+
+          iosShellHook = ''
+            export PATH=${xcode-wrapper}/bin:$PATH
+
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                unset SDKROOT
+                unset NIX_CFLAGS_COMPILE
+                unset NIX_LDFLAGS
+
+                # Unset generic compiler variables to avoid Nix wrapper.
+                unset CC CXX LD AR NM RANLIB
+
+                # Force usage of system tools found in PATH (via xcode-wrapper).
+                export AR=/usr/bin/ar
+                export CC=clang
+                export CXX=clang++
+
+                # Explicitly set compilers for targets to system clang.
+                export CC_aarch64_apple_ios=clang
+                export CC_x86_64_apple_ios=clang
+                export CC_aarch64_apple_darwin=clang
+                export CC_x86_64_apple_darwin=clang
+
+                export CXX_aarch64_apple_ios=clang++
+                export CXX_x86_64_apple_ios=clang++
+                export CXX_aarch64_apple_darwin=clang++
+                export CXX_x86_64_apple_darwin=clang++
+
+                # Bypass Nix's cc-wrapper for host builds: it hardcodes --sysroot to an
+                # incompatible apple-sdk-11 store path that lacks libSystem.dylib on modern
+                # macOS runners, causing "symbol not found" errors for _writev, _sysconf, etc.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+
+                unset CC_aarch64_apple_ios_sim
+                unset CC_x86_64_apple_ios_sim
+                unset LD_aarch64_apple_ios LD_aarch64_apple_darwin LD_aarch64_apple_ios_sim
+                unset LD_x86_64_apple_ios LD_x86_64_apple_ios_sim LD_x86_64_apple_darwin
+
+                # Unset Nix include paths to prevent interference with system SDK.
+                unset CPATH
+                unset C_INCLUDE_PATH
+                unset CPLUS_INCLUDE_PATH
+                unset OBJC_INCLUDE_PATH
+
+                # Force usage of system Xcode.
+                export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+                # Do NOT set SDKROOT globally; let xcrun/rustc find the correct one (iphoneos
+                # vs iphonesimulator).
+                unset SDKROOT
+
+                export SNAPPY_STATIC=1
+
+                # Set deployment targets.
+                export MACOSX_DEPLOYMENT_TARGET="15.0"
+                export IPHONEOS_DEPLOYMENT_TARGET="15.0"
+
+                # Force bindgen to use Xcode clang instead of any Homebrew/system LLVM. This
+                # prevents aws-lc-sys build failures when Homebrew LLVM is installed.
+                export CLANG_PATH=$(xcrun --find clang 2>/dev/null || which clang)
+
+                # Set BINDGEN_EXTRA_CLANG_ARGS for iOS cross-compilation targets.
+                IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
+                SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)
+                if [ -n "$IOS_SDKROOT" ]; then
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
+                fi
+                if [ -n "$SIM_SDKROOT" ]; then
+                  # x86_64 and aarch64-sim need the simulator SDK (iPhoneOS SDK is ARM-only).
+                  export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
+                  # aws-lc-sys bundles an older bindgen that passes "aarch64-apple-ios-sim" to
+                  # clang, but clang expects "aarch64-apple-ios-simulator". Override the target
+                  # explicitly. See https://github.com/rust-lang/rust-bindgen/pull/3182.
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--sysroot=$SIM_SDKROOT --target=arm64-apple-ios-simulator"
+                fi
+
+            fi
+          '';
         in {
           default = pkgs.mkShell {
             nativeBuildInputs = commonNativeBuildInputs;
@@ -247,6 +353,24 @@
               androidToolchain
             ];
             shellHook = commonShellHook + androidShellHook;
+          };
+
+          # macOS only. Cargo cross-compiles rust/fedimint-sdk for the three iOS slices with
+          # Xcode's toolchain; ubrn assembles the xcframework and regenerates the bindings
+          # (just build-rn-ios).
+          ios = pkgs.mkShellNoCC {
+            # Set as derivation env var so it can't be overridden by user shell profiles
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+               pkgs.cmake
+               pkgs.go
+               pkgs.libclang # Needed for bindgen (aws-lc-sys etc.)
+               iosToolchain
+               webBindgen.ubrn
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+               xcode-wrapper
+            ];
+            shellHook = commonShellHook + iosShellHook;
           };
 
           wasm-tests = pkgs.mkShell {

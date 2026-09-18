@@ -1,0 +1,40 @@
+name: Build RN iOS
+description:
+  Cross-compiles rust/fedimint-sdk for iOS inside the flake's ios shell, assembles the
+  xcframework and regenerates js/react-native/react-native-bindings from it.
+inputs:
+  device-only:
+    description: |
+      Build only the aarch64-apple-ios (device) slice instead of all three. Roughly halves the
+      cross-compile time on macos-latest; pull requests use it, pushes to main leave it false so
+      the xcframework carries the simulator slices too.
+    required: false
+    default: 'false'
+runs:
+  using: 'composite'
+  steps:
+    - name: Build iOS
+      # `NIX_CONFIG` serialises the build: one derivation at a time and single-threaded rustc/cc,
+      # or rocksdb and aws-lc-sys exhaust macos-latest's memory.
+      shell: bash
+      env:
+        UBRN_IOS_TARGETS: ${{ inputs.device-only == 'true' && 'aarch64-apple-ios' || '' }}
+      run: nix develop --accept-flake-config --command just build-rn-ios
+
+    - name: Compress the xcframework
+      shell: bash
+      working-directory: js/react-native/react-native-bindings
+      run: |
+        zip -9 -r ios-artifacts.zip FedimintReactNativeBindingsFramework.xcframework
+        echo "### iOS artifact" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Size: $(du -h ios-artifacts.zip | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the xcframework and the generated bindings
+      uses: actions/upload-artifact@v4
+      with:
+        name: react-native-ios
+        path: |
+          js/react-native/react-native-bindings/ios-artifacts.zip
+          js/react-native/react-native-bindings/src/generated
+          js/react-native/react-native-bindings/cpp/generated
+        if-no-files-found: error
