@@ -1,10 +1,12 @@
-# Cross-compiled Android build of `rust/fedimint-sdk`'s `uniffi` feature,
+# Cross-compiled Android and wasm builds of `rust/fedimint-sdk`'s `uniffi` feature,
 # exposed as cacheable Nix derivations, plus the host tool that turns one into
 # language bindings.
 #
 #   .#fedimint-sdk-android-<triple>        the cross-compiled cdylib
 #   .#fedimint-sdk-android-<triple>-deps   crane deps-only build (cache seed)
 #   .#fedimint-sdk-android-jni             jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so
+#   .#fedimint-sdk-wasm                    the wasm32-unknown-unknown module (lib/fedimint_sdk.wasm)
+#   .#fedimint-sdk-wasm-deps               crane deps-only build (cache seed)
 #   .#fedimint-uniffi-bindgen              host build of rust/uniffi-bindgen
 #
 # Note that nothing depends on `.#fedimint-uniffi-bindgen` today:
@@ -83,6 +85,7 @@ let
       "default"
       "aarch64-android"
       "x86_64-android"
+      "wasm32-unknown"
     ] stdTargets;
   };
 
@@ -112,16 +115,19 @@ let
       name = "fedimint-sdk-source";
     };
 
-  # Build `rust/fedimint-sdk --features uniffi` for one Android target.
+  # Build `rust/fedimint-sdk --features uniffi` for one target (an Android ABI or wasm32).
   # Exposes `deps` on its own so CI can push it to Cachix: a source edit then
   # only recompiles the crate, not the whole cross-compiled dependency tree.
   buildOne =
     {
+      pname,
       targetKey,
       rustTarget,
     }:
     let
-      target = stdTargets.${targetKey} { };
+      # `extraRustFlags` has no default on `wasm32-unknown`'s target function (unlike the
+      # Android ones), so it is always supplied here rather than only where it is needed.
+      target = stdTargets.${targetKey} { extraRustFlags = ""; };
       commonArgs = target.args // lib.optionalAttrs pkgs.stdenv.isDarwin {
         # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to the
         # cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what makes
@@ -129,8 +135,7 @@ let
         # 14+ (where iconv lives only in the Apple SDK).
         buildInputs = [ pkgs.libiconv ];
       } // {
-        inherit src;
-        pname = "fedimint-sdk-android-${rustTarget}";
+        inherit src pname;
         version = "0.1.0-alpha.1";
         cargoExtraArgs = "--locked --target ${rustTarget} --lib --features uniffi";
         CARGO_BUILD_TARGET = rustTarget;
@@ -172,9 +177,26 @@ let
 
   perTarget = lib.listToAttrs (
     map (
-      t: lib.nameValuePair t.rustTarget (buildOne { inherit (t) targetKey rustTarget; })
+      t:
+      lib.nameValuePair t.rustTarget (
+        buildOne {
+          pname = "fedimint-sdk-android-${t.rustTarget}";
+          inherit (t) targetKey rustTarget;
+        }
+      )
     ) androidShipped
   );
+
+  # `rust/fedimint-sdk --features uniffi` for the browser: the module the web binding
+  # (js/web/sdk-web) is generated from and ships. Same shape as the Android targets above:
+  # the costly build is cached here, and reading the bindings out of it is a separate, cheap
+  # step (scripts/generate-sdk-web-bindings.sh). The crate's release profile already sets
+  # `opt-level = "z"`, `lto` and `panic = "abort"`.
+  wasm = buildOne {
+    pname = "fedimint-sdk-wasm";
+    targetKey = "wasm32-unknown";
+    rustTarget = "wasm32-unknown-unknown";
+  };
 
   # The `.so` payload, ABI-laid-out for AGP's default `src/main/jniLibs`. This
   # is the artifact every binding generator reads — nothing Kotlin here.
@@ -214,6 +236,8 @@ in
 {
   fedimint-sdk-android-jni = androidJni;
   fedimint-uniffi-bindgen = uniffiBindgen;
+  fedimint-sdk-wasm = wasm.lib;
+  fedimint-sdk-wasm-deps = wasm.deps;
 }
 // lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}" b.lib) perTarget
 // lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}-deps" b.deps) perTarget
