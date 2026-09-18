@@ -19,19 +19,18 @@ publish = false   # flip when the name is reserved and the API settles
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [features]
-# `uniffi/tokio` is what makes `#[uniffi::export(async_runtime = "tokio")]`
-# available; it pulls in `async-compat`, whose fallback runtime wraps every
-# exported async fn. `async-compat/multi-thread` then makes that fallback a
-# multi-threaded scheduler — see the `async-compat` entry below for why the
-# crate does not work without it.
-#
-# Never combine this with `--target wasm32-unknown-unknown`, including via
-# `--all-features`: `uniffi/tokio` needs tokio's `net` feature, which tokio's
-# own wasm feature-compat check hard-rejects with a `compile_error!`. This is
-# why the feature stays off by default rather than living in a separate
-# `fedimint-sdk-ffi` crate — see rust/uniffi-bindgen/DECISION.md for the
-# tradeoff this was weighed against.
-uniffi = ["dep:uniffi", "uniffi/tokio", "async-compat/multi-thread"]
+# The UniFFI surface: `#[uniffi::export]` on the real methods plus the adapters in
+# `src/ffi/`. Off by default so plain-Rust users compile none of it. The `uniffi` crate is
+# declared once per target below, because the two hosts drive an exported `async fn`
+# differently: a mobile host polls it from a foreign thread, so native needs `uniffi/tokio`
+# (an `async-compat` context around every poll; see that entry) and the exports say
+# `async_runtime = "tokio"`; a JavaScript host drives UniFFI's own future ABI from its event
+# loop on a single thread, so wasm needs `wasm-unstable-single-threaded` (which drops the
+# `Send + Sync` bounds the wasm client types cannot meet) and the exports carry no runtime.
+# `uniffi-runtime-wasm` is the allocator and panic hook the wasm player calls into.
+# `dep:async-compat` is what turns that entry (and its `multi-thread` feature) on: left out, the
+# fallback runtime is current-thread and the first RocksDB transaction aborts the process.
+uniffi = ["dep:uniffi", "dep:async-compat", "dep:uniffi-runtime-wasm"]
 
 [dependencies]
 # The SDK tracks fedimint `master`, not a published release. Every fedimint
@@ -94,15 +93,15 @@ futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["arbitrary_precision"] }
 tracing = "0.1.44"
-# Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the
-# `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata
-# this version bakes into the built `.so`, so a mismatch fails codegen. Behind
-# the `uniffi` feature, which also turns on its `tokio` feature — see there.
-uniffi = { version = "0.32.0", optional = true }
 
-# Never named in the source: it is here only so the `uniffi` feature can turn on
-# its `multi-thread` feature, which cargo unifies onto the copy `uniffi_core`
-# depends on.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the `uniffi` that
+# `rust/uniffi-bindgen` builds: the generator reads the metadata this version bakes into the
+# built library, so a mismatch fails codegen. `tokio` is what makes
+# `#[uniffi::export(async_runtime = "tokio")]` available.
+uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
+# Never named in the source: it is here only to turn on its `multi-thread` feature, which cargo
+# unifies onto the copy `uniffi_core` depends on.
 #
 # UniFFI polls an exported async fn on whichever foreign thread drives the call,
 # inside an `async_compat::Compat` that enters a process-wide fallback runtime.
@@ -116,9 +115,7 @@ uniffi = { version = "0.32.0", optional = true }
 # Pinned exactly: `multi-thread` first exists in 0.2.6, and this whole
 # arrangement is temporary — it goes away with the pending uniffi change, at
 # which point the dependency can be dropped rather than bumped.
-async-compat = { version = "=0.2.6", optional = true }
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+async-compat = { version = "=0.2.6", optional = true, features = ["multi-thread"] }
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
 # lock: this one is the SDK's single-opener claim, and it has to fail fast on
 # contention rather than block. See src/storage.rs.
@@ -139,6 +136,11 @@ tokio = { version = "1.48.0", features = [
 socket2 = { version = "0.5", features = ["all"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# Same version as the native entry above; see the `uniffi` feature for the split.
+uniffi = { version = "0.32.0", optional = true, features = ["wasm-unstable-single-threaded"] }
+# Exports `__ubrn_alloc`/`__ubrn_free` and the panic hook the wasm player installs before any
+# SDK code runs. Nothing here calls it, so `src/lib.rs` force-links it with `extern crate`.
+uniffi-runtime-wasm = { version = "0.31.0-5", optional = true }
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 js-sys = "0.3.83"
 # `macros` is not about tests here: `tokio::select!` lives behind it, and both

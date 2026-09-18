@@ -164,15 +164,19 @@ pub struct Sdk {
 /// `ffi/recovery.rs`, for the recovery calls) exports it under the real
 /// name.
 ///
-/// `async_runtime = "tokio"` puts a Tokio context around each poll, which
-/// `fedimint-client` needs for its timers and transport. That context has to be
-/// a *multi-threaded* one: the client spawns a long-lived `sm-executor` task,
-/// every database transaction it opens goes through `fedimint-rocksdb`, and
-/// that offloads its blocking calls with `tokio::task::block_in_place`, which
-/// aborts the process on a current-thread runtime. `async-compat`'s fallback
-/// runtime is current-thread by default, so `Cargo.toml` turns on its
-/// `multi-thread` feature — see the note there.
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+/// `async_runtime = "tokio"` puts a Tokio context around each poll, which `fedimint-client` needs
+/// for its timers and transport. That context has to be a *multi-threaded* one: the client spawns a
+/// long-lived `sm-executor` task, every database transaction it opens goes through
+/// `fedimint-rocksdb`, and that offloads its blocking calls with `tokio::task::block_in_place`,
+/// which aborts the process on a current-thread runtime. `async-compat`'s fallback runtime is
+/// current-thread by default, so `Cargo.toml` turns on its `multi-thread` feature; see the note
+/// there. On wasm the attribute carries no runtime: the JavaScript host drives the future from its
+/// own event loop.
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Sdk {
     /// Returns this instance's seed phrase, for the user to write down.
     ///
@@ -593,7 +597,11 @@ impl Sdk {
     }
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Sdk {
     /// Starts a stored federation running again, without an invite code.
     ///

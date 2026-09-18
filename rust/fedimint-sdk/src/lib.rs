@@ -288,9 +288,6 @@
 //! screen with no way out and no diagnostic.
 //
 // Implementation notes (delete once implemented):
-// - The wasm entry point must install a panic hook on its very first line, before anything
-//   else runs, so a panic during initialisation surfaces as a message and stack position
-//   instead of a bare `unreachable` trap with nothing to debug from.
 // - The UniFFI response path is built with `panic = "abort"`, so it must keep a strict
 //   no-panic discipline: every value crossing back out is produced without unwrapping,
 //   indexing, or slicing something that could be absent, since a panic there takes the whole
@@ -336,6 +333,11 @@ mod types;
 // Behind the `uniffi` feature; the wasm and plain-Rust builds never see it.
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
+
+// The wasm player calls this crate's allocator and panic hook; nothing here references it, so
+// without this line the linker drops it and the module fails to open.
+#[cfg(all(feature = "uniffi", target_family = "wasm"))]
+extern crate uniffi_runtime_wasm as _;
 
 pub use activity::{ActivityItem, ActivityPage, ActivityStatus, Direction};
 pub use ecash::{

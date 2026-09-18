@@ -15,12 +15,13 @@ federation its tests run against always come from one commit. What remains
 is the language bindings: the Swift, Kotlin and JavaScript SDKs this surface
 is meant to generate.
 
-The wasm layer is not wired up to this crate yet. The UniFFI layer is,
-behind the `uniffi` feature: a `#[uniffi::export]` block in `src/sdk.rs`
-exposes the calls whose bodies are real (open an instance, show its
-mnemonic, preview a federation, join one), and [the Android SDK](../../android)
-is generated from them. The exports hand out this crate's own types
-(`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`,
+The UniFFI layer is implemented, behind the `uniffi` feature: a
+`#[uniffi::export]` block in `src/sdk.rs` exposes the calls whose bodies are
+real (open an instance, show its mnemonic, preview a federation, join one),
+and [the Android SDK](../../android) is generated from them. The same
+feature compiles for `wasm32-unknown-unknown`, which is what the browser
+binding is generated from. The exports hand out this crate's own
+types (`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`,
 `Error`, `ErrorCode`), so a binding is a view of this API rather than a
 copy that can drift.
 

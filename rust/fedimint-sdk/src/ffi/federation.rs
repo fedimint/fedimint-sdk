@@ -10,7 +10,8 @@ use crate::{
 // The UniFFI view of `Federation::ecash`/`lightning`/`onchain`/`operation`, under their real names
 // but different Rust identifiers so they can wrap each object in `Arc`: a UniFFI object nested in
 // `Option`/`Result<Option<_>>` has to cross as `Arc<T>`.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Federation {
     /// See [`Federation::ecash`].
     #[uniffi::method(name = "ecash")]
@@ -40,7 +41,8 @@ impl Federation {
 // The UniFFI view of `BalanceUpdates::next`, under its real name but a different Rust identifier:
 // the real signature takes `&mut self`, which a shared `Arc<BalanceUpdates>` can never provide, so
 // this calls the same `next_shared` body through `&self` instead.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl BalanceUpdates {
     /// See [`BalanceUpdates::next`].
     #[uniffi::method(name = "next")]
