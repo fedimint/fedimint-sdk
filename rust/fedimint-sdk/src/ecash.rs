@@ -57,10 +57,19 @@ pub(crate) const FACADE_ECASH_SEND_RECLAIM: &str = "ecash_send_reclaim";
 /// discovered is not safe to spend from, since a note the rescan never
 /// reached can be double-spent.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Ecash {
     inner: Arc<EcashInner>,
 }
 
+// `quote` is exported under its own name, unchanged: `EcashQuote` is a
+// UniFFI object (see below), and a bare object returned through `Result<T>`
+// crosses the boundary with no adapter needed. `send` and `receive` still
+// need one, in `ffi/ecash.rs`: `send`'s real parameter is an owned
+// `EcashQuote`, which an object can never cross as (only `Arc<EcashQuote>`
+// can), and `receive`'s real return type names the generic
+// `Operation<EcashReceiveState>`, which cannot cross at all.
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Ecash {
     /// Plans an out-of-band send and returns an executable quote for it.
     ///
@@ -283,20 +292,20 @@ impl Ecash {
         let expires_at = Timestamp::from_epoch_millis(now + 60_000);
         let balance_snapshot_msats = balance.msats();
 
-        Ok(EcashQuote {
-            inner: EcashQuoteInner {
-                requested_amount: amount,
-                notes_value,
-                fee,
-                total,
-                expires_at,
-                balance_snapshot_msats,
-                federation_id: self.inner.federation.id,
-                module_id,
-            },
-        })
+        Ok(EcashQuote::new(EcashQuoteInner {
+            requested_amount: amount,
+            notes_value,
+            fee,
+            total,
+            expires_at,
+            balance_snapshot_msats,
+            federation_id: self.inner.federation.id,
+            module_id,
+        }))
     }
+}
 
+impl Ecash {
     /// Executes a quoted send, taking its value out of the balance as
     /// out-of-band notes.
     ///
@@ -358,6 +367,16 @@ impl Ecash {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: EcashQuote) -> Result<EcashSend> {
+        self.send_authorized(&quote).await
+    }
+
+    /// The body of [`Ecash::send`], taking the quote by reference so the
+    /// UniFFI-facing `send` (which can only ever hold a shared `Arc<EcashQuote>`,
+    /// never an owned one) can call it too, after checking the quote's
+    /// single-use flag itself. Never reads or writes that flag: whether a
+    /// quote has already been sent is a UniFFI-only concern, checked once at
+    /// the boundary before this runs.
+    pub(crate) async fn send_authorized(&self, quote: &EcashQuote) -> Result<EcashSend> {
         self.inner.federation.ensure_open()?;
         let now_millis = crate::db::now_millis();
         let now = Timestamp::from_epoch_millis(now_millis);
@@ -690,10 +709,37 @@ impl Ecash {
 /// [`EcashSendDetails`] copies its terms from, for the whole life of the
 /// operation and after a restart.
 #[derive(Debug)]
+// Crosses a UniFFI boundary as an opaque object rather than a plain record:
+// a record crosses by value, so nothing would stop a caller from passing
+// the same field values into `send` twice and issuing notes twice. `used`
+// gives it real interior state instead, claimed once through `claim` by
+// the UniFFI `send` adapter in `ffi/ecash.rs`, so a second attempt fails
+// with `QuoteExpired` the same way it is a compile error in plain Rust
+// (`send` takes the quote by value). Behind the `uniffi` feature; absent
+// from every other build, including plain Rust, where the type system
+// already enforces single use.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct EcashQuote {
     inner: EcashQuoteInner,
+    #[cfg(feature = "uniffi")]
+    pub(crate) used: crate::ffi::QuoteClaim,
 }
 
+impl EcashQuote {
+    /// Wraps a frozen plan in a fresh, unclaimed quote.
+    fn new(inner: EcashQuoteInner) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "uniffi")]
+            used: crate::ffi::QuoteClaim::default(),
+        }
+    }
+}
+
+// Exported as-is: every accessor here is already FFI-safe, so unlike
+// `Ecash::send` (see its adapter in `ffi/ecash.rs`), nothing here needs a
+// different name or a wrapper type.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl EcashQuote {
     /// The amount [`Ecash::quote`] was asked for.
     ///
@@ -920,6 +966,10 @@ async fn forward_cancel_request(
 // distinction (asked for vs. timer fired; won against an explicit cancel vs. no
 // cancel at all) is about why, not about what happened to the money.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Fieldless, so UniFFI maps it onto a plain Kotlin/Swift enum. Not additive
+// for a generated binding; regenerate with the SDK. Behind the `uniffi`
+// feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum EcashSendState {
     /// The notes have been issued and handed to the caller. The value has
@@ -1042,6 +1092,10 @@ impl crate::operation::DetailedOperationState for EcashSendState {
 /// `Failed(String)`); the only change is carrying the failure reason as a
 /// named field rather than a positional tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// UniFFI maps this onto a Kotlin/Swift sealed class, since `Failed` carries
+// a field. Not additive for a generated binding; regenerate with the SDK.
+// Behind the `uniffi` feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum EcashReceiveState {
     /// The redemption has been accepted locally and is about to be
@@ -2362,18 +2416,16 @@ mod tests {
     fn ecash_quote_accessors() {
         let upstream_id = fedimint_core::config::FederationId::dummy();
         let expected_fed_id = crate::FederationId::from_upstream(upstream_id);
-        let quote = EcashQuote {
-            inner: EcashQuoteInner {
-                requested_amount: Amount::from_msats(750),
-                notes_value: Amount::from_msats(1_000),
-                fee: Amount::from_msats(50),
-                total: Amount::from_msats(1_050),
-                expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
-                balance_snapshot_msats: 100_000,
-                federation_id: upstream_id,
-                module_id: 0,
-            },
-        };
+        let quote = EcashQuote::new(EcashQuoteInner {
+            requested_amount: Amount::from_msats(750),
+            notes_value: Amount::from_msats(1_000),
+            fee: Amount::from_msats(50),
+            total: Amount::from_msats(1_050),
+            expires_at: Timestamp::from_epoch_millis(1_700_000_060_000),
+            balance_snapshot_msats: 100_000,
+            federation_id: upstream_id,
+            module_id: 0,
+        });
         assert_eq!(quote.requested_amount(), Amount::from_msats(750));
         assert_eq!(quote.notes_value(), Amount::from_msats(1_000));
         assert_eq!(quote.fee(), Amount::from_msats(50));

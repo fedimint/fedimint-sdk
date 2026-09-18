@@ -11,7 +11,7 @@
 # keeps the linker from padding between them as if pages were still 4 KB.
 #
 # This only applies when fedimint-sdk is the directory cargo is invoked from,
-# which is what scripts/generate-android-so.sh does. Verify the result with:
+# which is what scripts/build-android-sdk.sh does. Verify the result with:
 #   llvm-readelf -l libfedimint_sdk.so | grep LOAD
 # where every alignment should read 0x4000.
 [target.'cfg(target_os = "android")']

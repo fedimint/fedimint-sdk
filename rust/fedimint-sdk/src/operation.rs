@@ -722,10 +722,17 @@ async fn until_closed<T>(
 /// [`Internal`](crate::ErrorCode::Internal) from [`Operation::state`], not as
 /// [`UnsupportedOperation`](crate::ErrorCode::UnsupportedOperation).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct AnyOperation {
     inner: Arc<AnyOperationInner>,
 }
 
+// `id`, `kind`, `support`, `supported_kind` and `raw_kind` are exported
+// as-is: every return type is already FFI-safe. The `as_*` downcasts stay
+// in the unexported `impl AnyOperation` block below and are exported
+// through the adapters in `ffi/operation.rs`, since each returns a generic
+// `Operation<S>` a UniFFI object cannot carry.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl AnyOperation {
     /// This operation's id.
     pub fn id(&self) -> OperationId {
@@ -812,7 +819,9 @@ impl AnyOperation {
     pub fn raw_kind(&self) -> RawOperationKind {
         self.inner.raw.clone()
     }
+}
 
+impl AnyOperation {
     /// Recovers a typed handle if this is an out-of-band ecash send.
     ///
     /// `None` for any other kind, for a record this build cannot interpret,
@@ -913,7 +922,9 @@ impl AnyOperation {
             _ => None,
         }
     }
+}
 
+impl AnyOperation {
     /// Builds a type-erased handle over a record that has already been read.
     ///
     /// The whole support decision is made here, once, so that the four questions the type
@@ -970,6 +981,7 @@ impl AnyOperation {
 /// [`OperationKind`], [`OperationSupport`] and
 /// [`AnyOperation::supported_kind`] for control flow instead.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct RawOperationKind {
     /// The operation-kind tag as persisted, verbatim and unnormalised.
@@ -1011,6 +1023,7 @@ pub struct RawOperationKind {
 /// variant every binding already has, so a kind added later is reported
 /// through it rather than left undecodable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OperationKind {
     /// Ecash spent out of band, tracked by
@@ -1070,6 +1083,7 @@ pub enum OperationKind {
 /// control flow, but a log line, a support ticket, or a message shown to a
 /// user should use this type instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OperationSupport {
     /// This build can observe the operation's typed state: the kind is one it

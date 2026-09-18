@@ -85,6 +85,16 @@ pub struct Federation {
     inner: Arc<FederationInner>,
 }
 
+// Every method on `Federation` is exported under its real name: this block
+// and the `meta`/`activity` one below directly, and
+// `ecash`/`lightning`/`onchain`/`operation` through the renamed adapters in
+// `ffi/federation.rs`.
+// `async_runtime = "tokio"` applies to whichever methods are `async` and is
+// simply unused by the synchronous ones, exactly as `Sdk`'s own exported
+// block already mixes `export_mnemonic` (sync) with `preview`/`join` (async).
+// `new`, below all of this, stays in its own unexported block since it is
+// `pub(crate)`.
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
 impl Federation {
     /// This federation's id.
     pub fn id(&self) -> FederationId {
@@ -183,7 +193,14 @@ impl Federation {
     pub fn capabilities(&self) -> Capabilities {
         self.inner.record().capabilities.into()
     }
+}
 
+// `ecash`, `lightning`, `onchain` and `operation` below keep their
+// plain-Rust shape (an object nested in `Option`/`Result<Option<_>>`,
+// never `Arc`) rather than paying that cost in the API every caller reads,
+// native and wasm included, for a constraint that is only ever UniFFI's:
+// see the renamed, Arc-wrapping adapters in `ffi/federation.rs`.
+impl Federation {
     /// The ecash facade, or `None` if this federation has no mint module.
     ///
     /// `None` means exactly one thing: this federation has no mint module. It does not mean
@@ -214,17 +231,6 @@ impl Federation {
         self.capabilities()
             .onchain
             .then(|| Onchain::new(self.inner.clone()))
-    }
-
-    /// The metadata facade.
-    ///
-    /// Unconditional, unlike the three capability facades above: every
-    /// federation has configuration metadata, so there is always something
-    /// to read. A federation without a meta module simply has no consensus
-    /// metadata, which [`Meta`] reports as an absent value rather than as a
-    /// missing facade.
-    pub fn meta(&self) -> Meta {
-        Meta::new(self.inner.clone())
     }
 
     /// Looks up an operation by id, whatever kind it is.
@@ -261,6 +267,20 @@ impl Federation {
         self.inner.ensure_open()?;
         self.inner.operation(id.upstream()).await
     }
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+impl Federation {
+    /// The metadata facade.
+    ///
+    /// Unconditional, unlike the three capability facades above: every
+    /// federation has configuration metadata, so there is always something
+    /// to read. A federation without a meta module simply has no consensus
+    /// metadata, which [`Meta`] reports as an absent value rather than as a
+    /// missing facade.
+    pub fn meta(&self) -> Meta {
+        Meta::new(self.inner.clone())
+    }
 
     /// Reads a page of local activity history, newest first.
     ///
@@ -285,7 +305,9 @@ impl Federation {
     pub async fn activity(&self, cursor: Option<Cursor>, limit: u16) -> Result<ActivityPage> {
         crate::activity::page(&self.inner, cursor, limit).await
     }
+}
 
+impl Federation {
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
         Federation { inner }
@@ -302,6 +324,9 @@ impl Federation {
 /// `#[non_exhaustive]` like every data type here: a federation gaining a
 /// new kind of capability must be an additive change, not a breaking one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// A plain record of three bools: every field is FFI-safe as-is. Behind the
+// `uniffi` feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct Capabilities {
     /// Whether [`Federation::ecash`] is available.
@@ -319,6 +344,14 @@ pub struct Capabilities {
 /// single cursor, and a second consumer should have a second subscription.
 /// Dropping it stops only this subscription.
 #[derive(Debug)]
+// Crosses a UniFFI boundary as an opaque object directly: `next`'s real
+// mutation all happens through `self.inner.cursor`, already a `tokio::sync
+// ::Mutex` reached through the shared `Arc<BalanceUpdatesInner>` above, so
+// `&mut self` on `next` is a plain-Rust API discipline ("one subscriber, one
+// cursor"), not a genuine requirement of the implementation — the
+// `#[uniffi::export]` block in `ffi/federation.rs` calls the same body
+// through `&self` instead of wrapping this type in another lock.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct BalanceUpdates {
     inner: Arc<BalanceUpdatesInner>,
 }
@@ -342,6 +375,14 @@ impl BalanceUpdates {
     /// [`Storage`](crate::ErrorCode::Storage) or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<Amount> {
+        self.next_shared().await
+    }
+
+    /// The body of [`BalanceUpdates::next`], taking `&self`: every field it
+    /// touches is already behind `self.inner.cursor`'s own lock, so the
+    /// UniFFI-facing `next` (which can only ever hold a shared
+    /// `Arc<BalanceUpdates>`, never an exclusive one) can call it too.
+    pub(crate) async fn next_shared(&self) -> Result<Amount> {
         let mut cursor = self.inner.cursor.lock().await;
         let mut closed = self.inner.federation.closed();
         loop {

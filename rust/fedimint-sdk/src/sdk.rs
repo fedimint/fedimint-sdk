@@ -143,44 +143,26 @@ use crate::{
 /// whole plan.
 #[derive(Debug, Clone)]
 // Crosses a UniFFI boundary as an opaque object: a mobile host holds an
-// `Arc<Sdk>` handle and calls the `#[uniffi::export]` methods below. Behind the
-// `uniffi` feature; the wasm and plain-Rust builds are untouched.
+// `Arc<Sdk>` handle and calls the `#[uniffi::export]` methods below and the
+// adapters in `ffi/sdk.rs` and `ffi/recovery.rs`. Behind the `uniffi`
+// feature; the wasm and plain-Rust builds are untouched.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Sdk {
     inner: Arc<SdkInner>,
 }
 
-/// Opens an instance over `data_dir` — the entry point a mobile host calls.
-///
-/// Pass a `mnemonic` ([`Mnemonic::from_words`] / [`Mnemonic::generate`]) to
-/// establish that seed. Pass `None` to use the seed the storage already holds,
-/// or, over storage proven empty, to generate and persist a fresh one. The
-/// failure modes are exactly those of [`SdkBuilder::build`].
-///
-/// The flattened form of [`SdkBuilder`], which cannot itself cross the FFI: a
-/// builder hands out `Self` by value, and UniFFI objects cross as `Arc`.
-#[cfg(feature = "uniffi")]
-#[uniffi::export(async_runtime = "tokio")]
-pub async fn create_fedimint_sdk(
-    data_dir: String,
-    mnemonic: Option<Arc<Mnemonic>>,
-) -> crate::Result<Arc<Sdk>> {
-    let mut builder = Sdk::builder().storage(Storage::at(&data_dir)?);
-    if let Some(mnemonic) = mnemonic {
-        // `Mnemonic` crosses as an opaque object, so the binding hands over an
-        // `Arc`; the builder wants it by value and `Mnemonic` is a cheap clone.
-        builder = builder.mnemonic(Mnemonic::clone(&mnemonic));
-    }
-    Ok(Arc::new(builder.build().await?))
-}
-
-/// The UniFFI surface, which is these three methods exactly as the rest of the
-/// crate calls them — the attribute exports them, it does not wrap them.
+/// The first of `Sdk`'s UniFFI-exported blocks: these methods exactly as the
+/// rest of the crate calls them — the attribute exports them, it does not wrap
+/// them.
 ///
 /// `preview` / `join` take an [`InviteCode`] handle (a UniFFI object a binding
 /// builds with [`InviteCode::parse`]), an error crosses as
 /// [`Error`](crate::Error), and the handles they return are [`Mnemonic`] /
-/// [`Federation`]. The rest of `Sdk` stays Rust-only for now.
+/// [`Federation`]. The lifecycle calls further down (status, reopen, close,
+/// forget, shutdown) are exported too, in their own blocks; where a real
+/// signature cannot cross as-is, an `ffi_*` adapter in `ffi/sdk.rs` (or
+/// `ffi/recovery.rs`, for the recovery calls) exports it under the real
+/// name.
 ///
 /// `async_runtime = "tokio"` puts a Tokio context around each poll, which
 /// `fedimint-client` needs for its timers and transport. That context has to be
@@ -481,7 +463,14 @@ impl Sdk {
             .filter(|federation| federation.is_open())
             .map(Federation::new)
     }
+}
 
+// `stored_federations` is exported as-is: `FederationInfo` is a UniFFI record and the
+// `FederationStatus` it carries crosses as itself, so there is nothing to adapt, and the call
+// takes no argument that could fail to lift. `federation_status` below cannot be exported the same
+// way — it takes a `FederationId` lifted from a string — so it keeps its adapter in `ffi/sdk.rs`.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl Sdk {
     /// Every federation this instance's storage holds, running or not, each
     /// with its current [`FederationStatus`].
     ///
@@ -526,7 +515,9 @@ impl Sdk {
             .map(|federation| federation.info())
             .collect()
     }
+}
 
+impl Sdk {
     /// What this instance's storage currently knows about one federation.
     ///
     /// `None` means this storage holds no federation with that id, because
@@ -553,7 +544,15 @@ impl Sdk {
             .federation_inner(&id.inner())
             .map(|federation| federation.status())
     }
+}
 
+// `federation_status_updates` is exported under its own name, unchanged:
+// `FederationStatusUpdates` is a UniFFI object (see its own definition),
+// and a bare object return crosses the boundary with no adapter needed.
+// Its `next` is the one thing that does need one, because the real
+// signature takes `&mut self`; see `ffi/sdk.rs`.
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl Sdk {
     /// Opens a new, independent subscription to every federation's status.
     ///
     /// A status can change without the application having asked for
@@ -592,7 +591,10 @@ impl Sdk {
             }),
         }
     }
+}
 
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+impl Sdk {
     /// Starts a stored federation running again, without an invite code.
     ///
     /// This is the way back from [`Closed`](FederationStatus::Closed) and
@@ -1177,7 +1179,12 @@ impl Sdk {
         }
         Ok(())
     }
+}
 
+// Crate-internal helpers, kept out of the exported block above since
+// `uniffi::export` on an impl block requires every item in it to be `pub`
+// and FFI-safe.
+impl Sdk {
     /// The shared state behind this handle, for the crate's own internals.
     pub(crate) fn inner(&self) -> &Arc<SdkInner> {
         &self.inner
@@ -1439,6 +1446,10 @@ impl core::fmt::Debug for Redacted {
 /// write a wildcard arm, and more detail about a situation arrives as a
 /// new, more specific variant rather than a field grown on an existing one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Crosses a UniFFI boundary as a plain enum, `Quarantined`'s `Diagnostic` included: that type is
+// itself a record over there (see `error.rs`), so nothing here has to be flattened into a separate
+// FFI-only projection.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum FederationStatus {
     /// Open and fully working: workers are running, operations are
@@ -1565,6 +1576,9 @@ pub enum FederationStatus {
 /// `#[non_exhaustive]`: fields may be added, so match it with `..` or by
 /// field access.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Crosses a UniFFI boundary as a plain record: every field is FFI-safe, `status` included, so the
+// real type is what a binding receives.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct FederationInfo {
     /// The federation's id: the key for [`Sdk::federation`],
@@ -1594,6 +1608,7 @@ pub struct FederationInfo {
 /// single cursor, and a second consumer should have a second subscription.
 /// Dropping it stops only this subscription and never any work.
 #[derive(Debug)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct FederationStatusUpdates {
     inner: Arc<FederationStatusUpdatesInner>,
 }
@@ -1626,6 +1641,15 @@ impl FederationStatusUpdates {
     /// [`Storage`](crate::ErrorCode::Storage) or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<FederationInfo> {
+        self.next_shared().await
+    }
+
+    /// The body of [`FederationStatusUpdates::next`], taking `&self`: every
+    /// field it touches is already behind `self.inner.cursor`'s own lock,
+    /// so the UniFFI-facing `next` (which can only ever hold a shared
+    /// `Arc<FederationStatusUpdates>`, never an exclusive one) can call it
+    /// too.
+    pub(crate) async fn next_shared(&self) -> Result<FederationInfo> {
         let mut cursor = self.inner.cursor.lock().await;
         loop {
             if *cursor.shutdown.borrow_and_update() {

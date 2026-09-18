@@ -6,6 +6,12 @@
 //! validating parse is also what lets a foreign-language binding carry these values as
 //! plain strings with no per-language parsing or validation logic of its own: the Rust
 //! side is the only place that knows the format.
+//!
+//! Every id here therefore crosses a UniFFI boundary as its canonical `Display`/`FromStr`
+//! string rather than as an object, through the `custom_type!` conversions in
+//! `ffi/types.rs`. Nothing in this file is gated on the `uniffi` feature: the conversions
+//! live entirely on the other side, and the validating parse they call is the same one
+//! every other caller uses.
 
 use fedimint_core::bitcoin;
 use fedimint_core::bitcoin::hashes::{Hash, sha256};
@@ -72,15 +78,6 @@ impl core::str::FromStr for FederationId {
         Ok(Self { id })
     }
 }
-
-// Crosses a UniFFI boundary as its canonical string, the same form
-// `Display`/`FromStr` use, so a binding carries it as a plain `String` and the
-// validating parse stays here. Behind the `uniffi` feature.
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(FederationId, String, {
-    lower: |id| id.to_string(),
-    try_lift: |s| s.parse::<FederationId>().map_err(Into::into),
-});
 
 /// Identifies one operation (a send, a receive, a recovery, ...) within a
 /// federation.

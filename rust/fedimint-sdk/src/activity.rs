@@ -139,6 +139,7 @@ pub(crate) use page::page;
 /// where it stands. Two numbers and a bucket are what a list needs; a receipt
 /// screen should not be built out of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct ActivityItem {
     /// The operation this row describes.
@@ -240,6 +241,7 @@ pub struct ActivityItem {
 /// balance moves when the operation succeeds, and is the same for a row that
 /// is still pending, was refunded, or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum Direction {
     /// Value comes into this federation's balance.
@@ -325,6 +327,7 @@ pub enum Direction {
 /// of only that something was unrecognised. Render it as an opaque entry,
 /// not as a stalled payment and not as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum ActivityStatus {
     /// Still in flight: the operation has not reached a final state.
@@ -401,6 +404,7 @@ pub enum ActivityStatus {
 /// run newest first; carry [`ActivityPage::next`] into the following call
 /// to continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct ActivityPage {
     /// The rows in this page, newest first. May contain fewer items than

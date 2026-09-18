@@ -670,6 +670,7 @@ pub struct Recovery {
 /// stopped recovery look like a finished one and an incomplete wallet look
 /// spendable. The module documentation states the invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum RecoveryState {
     /// The rescan is running. Spends and receives are refused with

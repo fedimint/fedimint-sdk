@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Every SDK action on one scrolling screen, section by section, mirroring
+     js/examples/vite-core. Each section has its own result line, so the
+     outcome of one action never overwrites another's. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Fedimint Android SDK Demo"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="1. Open the wallet  2. Join a federation  3. Generate an invoice and pay it from the mutinynet faucet (faucet.mutinynet.com)"
+            android:textSize="13sp" />
+
+        <!-- Wallet: createFedimintSdk, exportMnemonic, balanceUpdates -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Wallet Status" />
+
+            <TextView
+                android:id="@+id/walletStatus"
+                style="@style/Result"
+                android:text="SDK not open" />
+
+            <TextView
+                android:id="@+id/balance"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Balance: —"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/restoreWords"
+                style="@style/Input"
+                android:layout_marginTop="8dp"
+                android:hint="recovery words to restore (leave empty to create or load)"
+                android:inputType="textNoSuggestions|textMultiLine" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/openWallet"
+                    style="@style/Action"
+                    android:text="Open wallet" />
+
+                <Button
+                    android:id="@+id/toggleSeed"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Show seed" />
+
+                <Button
+                    android:id="@+id/refreshBalance"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Refresh" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/seed"
+                style="@style/Result"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/walletResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- sdk.preview / sdk.join / sdk.recover -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Join Federation" />
+
+            <EditText
+                android:id="@+id/invite"
+                style="@style/Input"
+                android:hint="invite code (fed1…)" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/preview"
+                    style="@style/Action"
+                    android:text="Preview" />
+
+                <Button
+                    android:id="@+id/join"
+                    style="@style/Action"
+                    android:text="Join" />
+
+                <Button
+                    android:id="@+id/recover"
+                    style="@style/Action"
+                    android:text="Recover" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/joinResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- lightning.receive -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Generate Lightning Invoice" />
+
+            <EditText
+                android:id="@+id/lnReceiveAmount"
+                style="@style/Input"
+                android:hint="amount (msats)"
+                android:inputType="number" />
+
+            <EditText
+                android:id="@+id/lnReceiveDescription"
+                style="@style/Input"
+                android:hint="description" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/lnReceive"
+                    style="@style/Action"
+                    android:text="Generate invoice" />
+
+                <Button
+                    android:id="@+id/lnReceiveCopy"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Copy" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/lnReceiveResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- ecash.receive -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Redeem Ecash" />
+
+            <EditText
+                android:id="@+id/ecashNotes"
+                style="@style/Input"
+                android:hint="long ecash string…"
+                android:inputType="textNoSuggestions|textMultiLine" />
+
+            <Button
+                android:id="@+id/ecashReceive"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Redeem" />
+
+            <TextView
+                android:id="@+id/ecashReceiveResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- ecash.quote / ecash.send -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Send Ecash" />
+
+            <EditText
+                android:id="@+id/ecashSendAmount"
+                style="@style/Input"
+                android:hint="amount (msats)"
+                android:inputType="number" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/ecashSend"
+                    style="@style/Action"
+                    android:text="Send" />
+
+                <Button
+                    android:id="@+id/ecashSendCopy"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Copy notes" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/ecashSendResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- lightning.quote / lightning.send -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Pay Lightning" />
+
+            <EditText
+                android:id="@+id/lnInvoice"
+                style="@style/Input"
+                android:hint="lnbc…"
+                android:inputType="textNoSuggestions|textMultiLine" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/lnQuote"
+                    style="@style/Action"
+                    android:text="Quote" />
+
+                <Button
+                    android:id="@+id/lnPay"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Pay" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/lnPayResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- InviteCode.parse -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Parse Invite Code" />
+
+            <EditText
+                android:id="@+id/parseInvite"
+                style="@style/Input"
+                android:hint="enter invite code…" />
+
+            <Button
+                android:id="@+id/parseInviteButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Parse" />
+
+            <TextView
+                android:id="@+id/parseInviteResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- onchain.receive -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Generate Deposit Address" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/deposit"
+                    style="@style/Action"
+                    android:text="Generate" />
+
+                <Button
+                    android:id="@+id/depositCopy"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Copy" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/depositResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- onchain.quote / onchain.send -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Send Onchain" />
+
+            <EditText
+                android:id="@+id/onchainAmount"
+                style="@style/Input"
+                android:hint="amount (sats)"
+                android:inputType="number" />
+
+            <EditText
+                android:id="@+id/onchainAddress"
+                style="@style/Input"
+                android:hint="onchain address" />
+
+            <LinearLayout style="@style/ActionRow">
+
+                <Button
+                    android:id="@+id/onchainQuote"
+                    style="@style/Action"
+                    android:text="Quote" />
+
+                <Button
+                    android:id="@+id/onchainSend"
+                    style="@style/Action"
+                    android:enabled="false"
+                    android:text="Send" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/onchainSendResult"
+                style="@style/Result" />
+        </LinearLayout>
+
+        <!-- federation.activity -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Activity" />
+
+            <Button
+                android:id="@+id/activity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Load recent activity" />
+
+            <TextView
+                android:id="@+id/activityResult"
+                style="@style/Result" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

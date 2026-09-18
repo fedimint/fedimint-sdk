@@ -1,30 +1,30 @@
 set shell := ["bash", "-c"]
 
-# Build Android bindings using Nix-cached Rust derivations.
-# `ubrn build android --no-cargo` finds pre-placed .so files in the cargo
-# target dir and skips the cross-compile.
-build-android:
-    nix develop --accept-flake-config -c pnpm --dir js install --frozen-lockfile
-    nix develop --accept-flake-config .#android -c pnpm --dir js --filter @fedimint/react-native-bindings run ubrn:nix:android:release
-    nix develop --accept-flake-config -c pnpm --dir js run build:reactnative
+# Native libraries only (.so), via Nix. Shared by every binding generator,
+# and what the two-job CI split (android-native.yaml, kotlin-sdk.yaml) uses
+# so a binding job can read an artifact instead of rebuilding.
+build-android-so:
+    ./scripts/nix-build-android-so.sh
 
-release-android: build-android
+# The Kotlin bindings, read out of an already-built .so.
+build-kotlin-bindings:
+    ./scripts/generate-kotlin-bindings.sh
 
-# Build iOS bindings using Nix-cached Rust derivations. macOS only.
-# Requires the Nix daemon to permit `__noChroot` sandboxing
-# (e.g. `--option sandbox relaxed`) so the iOS derivations can read Xcode.
-#
-# `NIX_CONFIG` serialises the iOS path end-to-end: Nix builds one
-# derivation at a time (`max-jobs = 1`) and rustc/cc inside each
-# derivation use a single thread (`cores = 1`). Heavy native deps
-# (rocksdb, aws-lc-sys) otherwise saturate macos-latest's 7 GB RAM and
-# OOM-kill the linker. Slower wall clock but the run actually finishes.
-build-ios:
-    nix develop --accept-flake-config -c pnpm --dir js install --frozen-lockfile
-    NIX_CONFIG=$'max-jobs = 1\ncores = 1' nix develop --accept-flake-config .#ios -c pnpm --dir js --filter @fedimint/react-native-bindings run ubrn:nix:ios:release
-    nix develop --accept-flake-config -c pnpm --dir js run build:reactnative
+build-kotlin:
+    ./scripts/build-android-sdk.sh
 
-release-ios: build-ios
+# Compile the library and the demo app against the freshly generated bindings.
+test-kotlin: build-kotlin
+    cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
+
+# Assemble the release AAR (publishing is not wired up yet).
+build-android-aar: build-kotlin
+    cd android && ./gradlew :fedimint-sdk:assembleRelease
+
+# Non-nix escape hatch: cross-compile + generate locally with cargo-ndk.
+# Needs the `.#android` shell (NDK, cargo-ndk, cmake/go for aws-lc-sys).
+build-android-local:
+    nix develop --accept-flake-config .#android -c ./scripts/build-android-sdk.sh --local
 
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test

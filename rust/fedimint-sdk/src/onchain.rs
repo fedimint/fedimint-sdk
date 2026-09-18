@@ -73,6 +73,7 @@ pub(crate) use wire::PHASE_SEEN;
 /// reaches completion releases it. There is no acknowledge, no override, and
 /// no way to spend or receive on a partially restored wallet.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Onchain {
     inner: Arc<OnchainInner>,
 }
@@ -176,7 +177,17 @@ impl Onchain {
             }
         }
     }
+}
 
+// `quote` is exported under its own name, unchanged: `OnchainQuote` is a
+// UniFFI object (see below), and a bare object returned through `Result<T>`
+// crosses the boundary with no adapter needed. `receive` and `send` still
+// need one, in `ffi/onchain.rs`: `receive`'s real return type names the generic
+// `Operation<OnchainReceiveState>`, which cannot cross at all, and `send`'s
+// real parameter is an owned `OnchainQuote`, which an object can never
+// cross as (only `Arc<OnchainQuote>` can).
+#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+impl Onchain {
     /// Plans a withdrawal and returns an executable quote for it.
     ///
     /// Like its lightning counterpart, this exists because the cost is only
@@ -232,19 +243,17 @@ impl Onchain {
             return Err(insufficient(plan.total, available));
         }
         let issued = crate::db::now_millis();
-        Ok(OnchainQuote {
-            inner: OnchainQuoteInner {
-                federation_id: federation.id,
-                address: address.clone(),
-                amount,
-                plan,
-                expires_at: Timestamp::from_epoch_millis(
-                    issued.saturating_add(QUOTE_VALIDITY_MILLIS),
-                ),
-            },
-        })
+        Ok(OnchainQuote::new(OnchainQuoteInner {
+            federation_id: federation.id,
+            address: address.clone(),
+            amount,
+            plan,
+            expires_at: Timestamp::from_epoch_millis(issued.saturating_add(QUOTE_VALIDITY_MILLIS)),
+        }))
     }
+}
 
+impl Onchain {
     /// Executes a quoted withdrawal.
     ///
     /// The quote is consumed and executed as quoted, same destination, same
@@ -282,9 +291,22 @@ impl Onchain {
     /// [`Storage`](crate::ErrorCode::Storage), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn send(&self, quote: OnchainQuote) -> Result<Operation<OnchainSendState>> {
+        self.send_authorized(&quote).await
+    }
+
+    /// The body of [`Onchain::send`], taking the quote by reference so the
+    /// UniFFI-facing `send` (which can only ever hold a shared
+    /// `Arc<OnchainQuote>`, never an owned one) can call it too, after
+    /// checking the quote's single-use flag itself. Never reads or writes
+    /// that flag: whether a quote has already been spent is a UniFFI-only
+    /// concern, checked once at the boundary before this runs.
+    pub(crate) async fn send_authorized(
+        &self,
+        quote: &OnchainQuote,
+    ) -> Result<Operation<OnchainSendState>> {
         let federation = &self.inner.federation;
-        let quote = quote.inner;
-        ensure_executable(&quote, federation.id, crate::db::now_millis())?;
+        let quote = &quote.inner;
+        ensure_executable(quote, federation.id, crate::db::now_millis())?;
         // The guard is held across the re-check, the funding and the record write, which is
         // what `create_operation` requires of its caller.
         let client = federation.client(true).await?;
@@ -300,7 +322,7 @@ impl Onchain {
                     federation,
                     &client,
                     &module,
-                    &quote,
+                    quote,
                     *fees,
                     quoted,
                     Arc::new(OnchainSendDriver),
@@ -318,7 +340,7 @@ impl Onchain {
                     federation,
                     &client,
                     &module,
-                    &quote,
+                    quote,
                     *chain_fee,
                     quoted,
                     Arc::new(OnchainSendDriver),
@@ -352,10 +374,34 @@ impl Onchain {
 /// [`Amount`](crate::Amount)s. See the [unit note](Onchain) on this facade
 /// and [`OnchainQuote::fee`] for why.
 #[derive(Debug)]
+// Crosses a UniFFI boundary as an opaque object rather than a plain record:
+// a record crosses by value, so nothing would stop a caller from passing
+// the same field values into `send` twice and broadcasting twice. `used`
+// gives it real interior state instead, claimed once through `claim` by
+// the UniFFI `send` adapter in `ffi/onchain.rs`, so a second attempt fails
+// with `QuoteExpired` the same way it is a compile error in plain Rust
+// (`send` takes the quote by value). Behind the `uniffi` feature; absent
+// from every other build, including plain Rust, where the type system
+// already enforces single use.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct OnchainQuote {
     inner: OnchainQuoteInner,
+    #[cfg(feature = "uniffi")]
+    pub(crate) used: crate::ffi::QuoteClaim,
 }
 
+impl OnchainQuote {
+    /// Wraps a frozen plan in a fresh, unclaimed quote.
+    fn new(inner: OnchainQuoteInner) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "uniffi")]
+            used: crate::ffi::QuoteClaim::default(),
+        }
+    }
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
 impl OnchainQuote {
     /// The amount that will arrive at the destination address.
     ///
@@ -462,6 +508,8 @@ impl OnchainQuote {
 /// also the figure the quote commits to and [`Onchain::send`] is authorised
 /// against.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// A plain record; every field is FFI-safe. Behind the `uniffi` feature.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct OnchainSendFeeBreakdown {
     /// What it costs to put the destination output on chain: the
@@ -529,6 +577,7 @@ pub struct OnchainReceive {
 /// to be renderable for a withdrawal that failed as much as for one that
 /// succeeded. They live on [`OnchainSendDetails`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OnchainSendState {
     /// The withdrawal has been accepted and the federation is assembling
@@ -619,6 +668,7 @@ impl OperationState for OnchainSendState {
 /// stays readable from [`Operation::state`](crate::Operation::state) for the
 /// rest of the operation's life.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct OnchainSendDetails {
     /// The destination the withdrawal pays.
@@ -696,6 +746,7 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// application never needs to have observed an earlier state to describe a
 /// failed deposit.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
     /// The address is being watched and no transaction paying it has been
@@ -822,6 +873,7 @@ impl OperationState for OnchainReceiveState {
 /// for a screen that wants to explain the difference between what was sent
 /// and what was credited rather than merely state it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct OnchainReceiveDetails {
     /// The deposit address this operation watches.
@@ -913,6 +965,7 @@ impl crate::operation::DetailedOperationState for OnchainReceiveState {
 /// [`OnchainReceiveDetails::net_credit`] was actually computed from, so it is
 /// the only one guaranteed to reconcile with the balance movement.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct OnchainReceiveFeeBreakdown {
     /// The federation's own charge for accepting the deposit.
@@ -2056,7 +2109,7 @@ mod tests {
 
     #[test]
     fn quote_accessors_read_the_frozen_plan() {
-        let quote = OnchainQuote { inner: a_quote(5) };
+        let quote = OnchainQuote::new(a_quote(5));
         assert_eq!(quote.amount(), Sats::from_sats(500_000));
         assert_eq!(quote.fee(), Amount::from_msats(1_234_572));
         assert_eq!(quote.total(), Amount::from_msats(501_234_572));
