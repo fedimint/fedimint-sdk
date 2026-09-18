@@ -34,7 +34,7 @@
     "test": "pnpm run test:setup pnpm run test:lib",
     "test:setup": "bash ../scripts/setup_test_shell.sh",
     "test:coverage": "vitest run --coverage",
-    "test:lib": "vitest --project integration-tests",
+    "test:lib": "vitest --project integration-tests --project sdk-web",
     "test:reactnative": "vitest --project react-native",
     "test:unit": "vitest --project unit",
     "test:create": "vitest --watch=false --project cli",

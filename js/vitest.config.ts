@@ -50,6 +50,38 @@ export default defineConfig({
         },
       },
       {
+        plugins: [wasm()],
+        test: {
+          environment: 'happy-dom',
+          name: 'sdk-web',
+          include: ['web/sdk-web/src/**/*.browser.test.ts'],
+          browser: {
+            enabled: true,
+            provider: playwright(),
+            fileParallelism: false,
+            ui: false, // no ui for the core library
+            api: {
+              port: 63315,
+            },
+            screenshotFailures: false,
+            instances: [
+              {
+                browser: 'chromium',
+                headless: true,
+              },
+            ],
+          },
+          env: {
+            // devimint exports the faucet port to the environment of the command it
+            // execs (`pnpm test` runs under `devimint wasm-test-setup --exec`); the
+            // fallback matches devimint's current hard-coded default. `||` so a
+            // set-but-empty variable also falls back, like `:-` in the setup script.
+            FAUCET: `http://localhost:${process.env.FM_PORT_FAUCET || '15243'}`,
+          },
+          testTimeout: 180_000,
+        },
+      },
+      {
         test: {
           name: 'cli',
           environment: 'happy-dom',
