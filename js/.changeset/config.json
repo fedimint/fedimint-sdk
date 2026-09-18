@@ -13,7 +13,11 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@fedimint/react-native", "@fedimint/react-native-bindings"],
+  "ignore": [
+    "@fedimint/react-native",
+    "@fedimint/react-native-bindings",
+    "@fedimint/sdk-web"
+  ],
   "privatePackages": { "version": true, "tag": false },
   "snapshot": {
     "prereleaseTemplate": "{tag}-{commit}"
