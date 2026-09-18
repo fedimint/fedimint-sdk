@@ -90,6 +90,10 @@
           cmdLineToolsVersion = "13.0";
         };
 
+        # The wasm2 binding generator and the wasm-bindgen version it shells out to. See
+        # nix/web-bindgen.nix.
+        webBindgen = import ./nix/web-bindgen.nix { inherit pkgs; };
+
         fenixPkgs = fenix.packages.${system};
         baseToolchain = fenixPkgs.stable.toolchain;
         
@@ -149,6 +153,8 @@
             pkgs.cmake
             pkgs.rustPlatform.bindgenHook
             playwrightBrowsers
+            webBindgen.ubrn
+            webBindgen.wasm-bindgen-cli
           ];
 
           wasmShellHook = ''
@@ -270,6 +276,10 @@
           }
           // {
             wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+            # The wasm2 binding generator and the wasm-bindgen version it shells out to.
+            # See nix/web-bindgen.nix.
+            ubrn = webBindgen.ubrn;
+            wasm-bindgen-cli = webBindgen.wasm-bindgen-cli;
           };
       }
     );
