@@ -35,6 +35,16 @@ generate-sdk-web-bindings:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js install
     nix develop --accept-flake-config .#wasm-tests -c scripts/generate-sdk-web-bindings.sh
 
+# The React Native package's bindings, regenerated from the nix-built Android libraries. Run after
+# any change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-rn-bindings:
+    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js install
+    nix develop --accept-flake-config .#wasm-tests -c scripts/generate-sdk-rn-bindings.sh
+
+# Regenerate, then build the two React Native packages' JavaScript (what CI's Build Android does).
+build-rn-android: generate-sdk-rn-bindings
+    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run build:reactnative
+
 test-coverage:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:coverage
 
