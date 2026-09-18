@@ -29,6 +29,12 @@ build-android-local:
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test
 
+# The browser package's bindings, regenerated from the Nix-built wasm module. Run after any
+# change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-web-bindings:
+    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js install
+    nix develop --accept-flake-config .#wasm-tests -c scripts/generate-sdk-web-bindings.sh
+
 test-coverage:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:coverage
 

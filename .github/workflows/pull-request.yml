@@ -126,8 +126,14 @@ jobs:
                 ;;
               rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh)
                 rust_sdk=true
+                # The web binding is generated from the crate; the freshness check runs in the
+                # web test job.
+                web=true
                 ;;
-              js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
+              js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|js/web/sdk-web/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
+                web=true
+                ;;
+              nix/web-bindgen.nix|nix/ubrn-Cargo.lock|nix/ffi.nix)
                 web=true
                 ;;
               js/vitest.config.ts|js/vitest.workspace.ts)
