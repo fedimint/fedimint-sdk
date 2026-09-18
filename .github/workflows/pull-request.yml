@@ -1,13 +1,16 @@
 name: Pull Request
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # `labeled` lets the ci-ios label start the otherwise gated iOS build.
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # Label events only need to consider the gated iOS lane. Give each one its own group so
+  # ordinary label churn cannot cancel a full verification run.
+  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.run_id || github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -130,6 +133,8 @@ jobs:
                 ;;
               js/react-native/react-native/*|js/react-native/react-native-bindings/*|scripts/generate-sdk-rn-bindings.sh|scripts/build-sdk-rn-ios.sh|Justfile)
                 react_native=true
+                # The Justfile also holds the web binding recipe.
+                web=true
                 ;;
               rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh)
                 rust_sdk=true
@@ -172,6 +177,7 @@ jobs:
   verify:
     name: Verify
     needs: detect-changes
+    if: ${{ github.event.action != 'labeled' }}
     uses: ./.github/workflows/verify.yml
     secrets: inherit
     with:
@@ -209,6 +215,23 @@ jobs:
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - uses: ./.github/actions/build-rn-android
+
+  build-ios:
+    name: Build iOS
+    needs: detect-changes
+    # macOS runners are the scarce and expensive lane, so pull requests only build iOS when asked
+    # to through the `ci-ios` label. Pushes to main and manual runs always build.
+    if: ${{ (github.event.action != 'labeled' || github.event.label.name == 'ci-ios') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')) && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-ios
+        with:
+          device-only: 'true'
 
   integration-test-sdk:
     name: 'Integration test SDK (${{ matrix.shape }})'
