@@ -14,7 +14,8 @@ use crate::{
 // use instead, and `receive`'s real return type names the generic `Operation<EcashReceiveState>`,
 // which cannot cross at all. `Ecash::quote` needs no such adapter, so it keeps the export
 // attribute on the real method in `ecash.rs`.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Ecash {
     /// See [`Ecash::send`]. Fails with
     /// [`ErrorCode::QuoteExpired`](crate::ErrorCode::QuoteExpired) if `quote` was already sent.
@@ -51,7 +52,8 @@ ffi_operation!(
 /// Forwards `Operation::<EcashSendState>::request_cancel`, the one inherent method that exists on
 /// only this instantiation of `Operation<S>` — cancelling out-of-band ecash is the one place a
 /// cancellation is a real protocol action.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl EcashSendOperation {
     /// See `Operation::<EcashSendState>::request_cancel`.
     pub async fn request_cancel(&self) -> Result<()> {

@@ -7,7 +7,8 @@ use crate::{
     Result, Sdk, Storage,
 };
 
-/// Opens an instance over `data_dir` — the entry point a mobile host calls.
+/// Opens an instance over `data_dir`: on native targets a directory path, in a browser the name
+/// of an origin-scoped store (1 to 64 characters of letters, digits, `-`, `_` or `.`).
 ///
 /// Pass a `mnemonic` ([`Mnemonic::from_words`] / [`Mnemonic::generate`]) to establish that seed.
 /// Pass `None` to use the seed the storage already holds, or, over storage proven empty, to
@@ -16,12 +17,17 @@ use crate::{
 ///
 /// The flattened form of [`SdkBuilder`](crate::SdkBuilder), which cannot itself cross the FFI: a
 /// builder hands out `Self` by value, and UniFFI objects cross as `Arc`.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 pub async fn create_fedimint_sdk(
     data_dir: String,
     mnemonic: Option<Arc<Mnemonic>>,
 ) -> Result<Arc<Sdk>> {
-    let mut builder = Sdk::builder().storage(Storage::at(&data_dir)?);
+    #[cfg(not(target_family = "wasm"))]
+    let storage = Storage::at(&data_dir)?;
+    #[cfg(target_family = "wasm")]
+    let storage = Storage::in_browser(&data_dir)?;
+    let mut builder = Sdk::builder().storage(storage);
     if let Some(mnemonic) = mnemonic {
         // `Mnemonic` crosses as an opaque object, so the binding hands over an `Arc`; the builder
         // wants it by value and `Mnemonic` is a cheap clone.
@@ -73,7 +79,8 @@ impl Sdk {
 //
 // `Sdk::federation_status_updates` itself needs no adapter and keeps the export attribute on the
 // real method in `sdk.rs`: a bare object return crosses with nothing to adapt.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl FederationStatusUpdates {
     /// See [`FederationStatusUpdates::next`].
     #[uniffi::method(name = "next")]

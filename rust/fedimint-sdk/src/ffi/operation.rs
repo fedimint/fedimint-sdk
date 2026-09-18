@@ -30,7 +30,8 @@ macro_rules! ffi_operation {
             }
         }
 
-        #[uniffi::export(async_runtime = "tokio")]
+        #[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+        #[cfg_attr(target_family = "wasm", uniffi::export)]
         impl $op {
             /// See [`Operation::id`](crate::Operation::id).
             pub fn id(&self) -> crate::OperationId {
@@ -74,7 +75,8 @@ macro_rules! ffi_operation {
             }
         }
 
-        #[uniffi::export(async_runtime = "tokio")]
+        #[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+        #[cfg_attr(target_family = "wasm", uniffi::export)]
         impl $updates {
             /// See [`OperationUpdates::next`](crate::OperationUpdates::next).
             pub async fn next(&self) -> crate::Result<Option<$state>> {
