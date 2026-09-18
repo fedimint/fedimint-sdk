@@ -265,7 +265,9 @@
           # feature for Android, plus the Kotlin bindings generated from them:
           # `fedimint-sdk-android` (jniLibs + Kotlin), `fedimint-sdk-android-jni`
           # (jniLibs only — the React-Native-reusable half), and per-target
-          # `.so` / `-deps` derivations. See nix/ffi.nix.
+          # `.so` / `-deps` derivations. Also `fedimint-sdk-wasm` (the wasm32
+          # module the web binding is generated from) and its `-deps` build.
+          # See nix/ffi.nix.
           import ./nix/ffi.nix {
             inherit
               system
