@@ -1,0 +1,47 @@
+{
+  "name": "@fedimint/sdk-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The Fedimint SDK for browsers: rust/fedimint-sdk as WebAssembly in a worker",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fedimint/fedimint-sdk.git",
+    "directory": "js/web/sdk-web"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": [
+    "./dist/worker.js"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json && node scripts/copy-wasm.mjs",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "clean:deep": "pnpm run clean && rm -rf node_modules",
+    "generate": "../../../scripts/generate-sdk-web-bindings.sh",
+    "typecheck": "tsc --noEmit",
+    "prepare": "tsc --project tsconfig.build.json"
+  },
+  "dependencies": {
+    "@ubjs/core": "0.31.0-5",
+    "@ubjs/wasm": "0.31.0-5"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
