@@ -1,4 +1,5 @@
 import { AppiumTestBase } from './configs/appium/AppiumTestBase'
+import { InviteCodeService } from './services/InviteCodeService.test'
 import { MnemonicService } from './services/MnemonicService.test'
 
 export type TestClass = (new () => AppiumTestBase) & {
@@ -8,6 +9,7 @@ export type TestClass = (new () => AppiumTestBase) & {
 
 export const availableTests: Record<string, TestClass> = {
   mnemonic: MnemonicService,
+  inviteCode: InviteCodeService,
 }
 
 export type TestName = keyof typeof availableTests

@@ -2,7 +2,8 @@
   "name": "@fedimint/integration-tests-android",
   "private": true,
   "scripts": {
-    "test": "ts-node --project tsconfig.json src/runner.ts"
+    "test": "ts-node --project tsconfig.json src/runner.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "appium": "^3.6.0",

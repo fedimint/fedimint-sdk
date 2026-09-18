@@ -131,7 +131,15 @@ just build-kotlin-bindings   # uniffi-bindgen over that .so   ->  java/ only
 just build-kotlin            # both, in that order
 just build-android-aar       # build-kotlin, then ./gradlew :fedimint-sdk:assembleRelease
 just test-kotlin             # build-kotlin, then compile the library + demo
+just test-android-e2e        # build-kotlin, then drive the demo on an emulator
 ```
+
+`test-android-e2e` is the only one of these that needs a device: it installs the
+demo app on an emulator and drives it with the Appium suite in
+[`js/android/integration-tests`](../js/android/integration-tests), so the
+bindings are loaded and the calls execute rather than merely compiling. It runs
+in the `.#android-tests` shell, which adds the emulator and a system image to
+what `.#android` provides.
 
 CI runs those same two scripts as two workflows —
 [`android-native.yaml`](../.github/workflows/android-native.yaml) builds the
@@ -139,6 +147,9 @@ CI runs those same two scripts as two workflows —
 [`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) calls that workflow
 and generates the Kotlin from the artifact — so the shared, costly half is
 built once and any binding generator added later starts from the same binary.
+`kotlin-sdk.yaml` also calls
+[`android-e2e.yml`](../.github/workflows/android-e2e.yml) off that same
+artifact, which is what runs the demo on an emulator.
 
 Non-Nix escape hatch: `just build-android-local` (`scripts/build-android-sdk.sh
 --local`, via `cargo-ndk` in the `.#android` shell).

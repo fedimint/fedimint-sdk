@@ -17,6 +17,12 @@ build-kotlin:
 test-kotlin: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 
+# Boot an emulator, install the demo app and drive it with the Appium suite
+# (js/android/integration-tests). Builds the SDK payload first unless
+# SKIP_BINDINGS_BUILD=true says it is already in place.
+test-android-e2e:
+    nix develop --accept-flake-config .#android-tests -c scripts/e2e-android/run-android-e2e.sh
+
 # Assemble the release AAR (publishing is not wired up yet).
 build-android-aar: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease

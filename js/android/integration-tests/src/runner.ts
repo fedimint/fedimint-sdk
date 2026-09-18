@@ -89,42 +89,6 @@ async function ensureState(
 
 let anyTestFailed = false
 
-async function waitForMetroBundleComplete(): Promise<void> {
-  const timeout = 180000
-  const startTime = Date.now()
-  console.log('Checking if Metro bundle is complete...')
-
-  return new Promise((resolve, reject) => {
-    const checkInterval = setInterval(async () => {
-      try {
-        const response = await fetch('http://localhost:8081/status')
-        const status = await response.text()
-
-        if (status.includes('packager-status:running')) {
-          const packagerResponse = await fetch(
-            'http://localhost:8081/index.bundle?platform=android&dev=true&minify=false&status=true',
-          )
-          if (packagerResponse.status === 200) {
-            console.log('Bundle is ready!')
-            clearInterval(checkInterval)
-            resolve()
-            return
-          }
-        }
-        if (Date.now() - startTime > timeout) {
-          clearInterval(checkInterval)
-          reject(new Error('Timed out waiting for Metro bundle'))
-        }
-      } catch {
-        if (Date.now() - startTime > timeout) {
-          clearInterval(checkInterval)
-          reject(new Error('Timed out waiting for Metro bundle'))
-        }
-      }
-    }, 5000)
-  })
-}
-
 async function runTests(testNames: string[]): Promise<void> {
   try {
     const validTestNames = testNames.filter((name) =>
@@ -136,14 +100,6 @@ async function runTests(testNames: string[]): Promise<void> {
         'No valid tests selected. Available tests:',
         Object.keys(availableTests).join(', '),
       )
-      anyTestFailed = true
-      return
-    }
-
-    try {
-      await waitForMetroBundleComplete()
-    } catch (error) {
-      console.error('Failed to verify Metro bundle:', error)
       anyTestFailed = true
       return
     }

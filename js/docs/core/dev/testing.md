@@ -54,24 +54,26 @@ When adding new features or fixing bugs, it's important to add test cases to cov
 
 ## Android E2E (Appium)
 
-`js/react-native/integration-tests-android` tests the SDK on a real Android runtime, driven via
-[Appium](https://appium.io/) against `js/examples/react-native/android`. This tests the SDK, not
-the example app — `js/examples/react-native` is a minimal harness for exercising
-`@fedimint/react-native` (which wraps `@fedimint/react-native-bindings`, UniFFI-backed), not a
-product with its own UI surface. Tests are organized by SDK capability (mirroring
-`js/web/integration-tests/src/services/*.test.ts`'s naming), not by UI flow.
+`js/android/integration-tests` tests the SDK on a real Android runtime, driven via
+[Appium](https://appium.io/) against the demo app in `android/app`. This tests the SDK, not
+the demo — `android/app` is one screen that calls every export of `rust/fedimint-sdk`'s
+`uniffi` feature through the generated Kotlin bindings, not a product with its own UI
+surface. What it adds over `kotlin-sdk.yaml`, which compiles the same app, is a running
+device: the bindings load, the native library is mapped, and the calls execute. Tests are
+organized by SDK capability (mirroring `js/web/integration-tests/src/services/*.test.ts`'s
+naming), not by UI flow.
 
-**Why Appium and not Detox/Maestro:** Detox is React-Native-only and synchronizes tightly with
-RN's own bridge/event loop, so it can't be reused if this SDK is ever driven from outside RN.
-Appium/UiAutomator2 drives the Android accessibility tree the same way regardless of what
-produced the view, and covers iOS under the same tool if that's ever revisited. Maestro is a
-legitimate lighter alternative (less boilerplate, YAML flows) but has less programmatic
-flexibility for the state/fixture logic this harness uses, and a smaller ecosystem. iOS is out
-of scope for now.
+**Why Appium and not Espresso/Maestro:** Espresso runs inside the app process and is Android
+only, so a test written against it can never be reused for another platform this SDK is
+driven from. Appium/UiAutomator2 drives the Android accessibility tree from outside the app,
+the same way regardless of what produced the view, and covers iOS under the same tool if that
+is ever revisited. Maestro is a legitimate lighter alternative (less boilerplate, YAML flows)
+but has less programmatic flexibility for the state/fixture logic this harness uses, and a
+smaller ecosystem. iOS is out of scope for now.
 
 **Nix**: run this from the `android-tests` devshell (`nix develop .#android-tests`), which extends
 the plain `android` FFI-build shell with an emulator + system image and wires
 `PATH`/`APPIUM_HOME` around the pnpm-installed `appium` binary — Appium itself is a plain npm
 devDependency, not a Nix package; Nix only supplies the Android SDK/emulator toolchain around
-it. See `js/react-native/integration-tests-android/README.md` for how to run it and
+it. See `js/android/integration-tests/README.md` for how to run it and
 add a new SDK-service test.

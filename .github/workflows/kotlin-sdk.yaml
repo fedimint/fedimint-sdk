@@ -32,8 +32,12 @@ on:
       - 'flake.lock'
       - 'scripts/nix-build-android-so.sh'
       - 'scripts/generate-kotlin-bindings.sh'
+      - 'scripts/build-android-sdk.sh'
+      - 'scripts/e2e-android/**'
+      - 'js/android/integration-tests/**'
       - '.github/workflows/kotlin-sdk.yaml'
       - '.github/workflows/android-native.yaml'
+      - '.github/workflows/android-e2e.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -53,6 +57,19 @@ jobs:
   native:
     name: 'Native library'
     uses: ./.github/workflows/android-native.yaml
+    secrets: inherit
+
+  # Runs the demo app on an emulator and drives it with Appium. Separate from
+  # `kotlin` below, rather than another step of it, because the two answer
+  # different questions off the same artifact — `kotlin` that the bindings
+  # compile and package, this one that they work on a device — and an
+  # emulator run has no business holding up the AAR.
+  e2e:
+    name: 'Drive the demo on a device'
+    needs: native
+    uses: ./.github/workflows/android-e2e.yml
+    with:
+      jni-artifact: ${{ needs.native.outputs.jni-artifact }}
     secrets: inherit
 
   kotlin:

@@ -59,17 +59,32 @@ export class AppiumTestBase {
     )
   }
 
+  /**
+   * Tests name a view by the bare id it carries in the layout XML
+   * (`openWallet`, from android/app/src/main/res/layout/activity_main.xml).
+   * On a native Android view that surfaces as a fully qualified resource-id,
+   * `org.fedimint.demo:id/openWallet`, so the package under test is prepended
+   * here rather than repeated at every call site. A key that already carries
+   * a package is passed through untouched.
+   *
+   * The accessibility-id fallback stays for views identified by a content
+   * description instead of an id.
+   */
   getElementLocatorStrategies(key: string): LocatorStrategy[] {
+    const appPackage = process.env.APP_PACKAGE
+    const resourceId =
+      key.includes(':id/') || !appPackage ? key : `${appPackage}:id/${key}`
+
     return [
       {
-        selector: `accessibility id:${key}`,
+        selector: `android=new UiSelector().resourceId("${resourceId}")`,
         priority: 1,
-        description: 'Accessibility ID',
+        description: `Resource ID (${resourceId})`,
       },
       {
-        selector: `android=new UiSelector().resourceId("${key}")`,
+        selector: `accessibility id:${key}`,
         priority: 2,
-        description: 'Resource ID',
+        description: 'Accessibility ID',
       },
     ]
   }
@@ -573,6 +588,35 @@ export class AppiumTestBase {
     if (text && text.length > 0) return text
     throw new Error(
       `getTextByKey: element with key "${key}" was found but has no readable text`,
+    )
+  }
+
+  /**
+   * Waits for one element's text to contain `expected`.
+   *
+   * Every section of the demo app writes "working…" into its result line
+   * before the SDK call and overwrites it with the outcome, so a test that
+   * read the text once would race the call it is asserting on. Polls instead,
+   * and reports what the line actually said when it times out.
+   */
+  async waitForTextInElement(
+    key: string,
+    expected: string,
+    timeout = DEFAULT_TIMEOUT,
+  ): Promise<string> {
+    const startTime = Date.now()
+    let last = ''
+    while (Date.now() - startTime < timeout) {
+      const element = await this.findElementByKey(key)
+      if (element) {
+        last = await element.getText()
+        if (last.includes(expected)) return last
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    throw new Error(
+      `Element "${key}" never contained "${expected}" within ${timeout}ms` +
+        (last ? ` — last read: "${last}"` : ' — element never appeared'),
     )
   }
 

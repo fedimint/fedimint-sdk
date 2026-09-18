@@ -4,7 +4,7 @@
 # server in the background.
 #
 # Run this inside `nix develop .#android-tests` — that shell puts the
-# pnpm-installed `appium` binary (js/react-native/integration-tests-android's
+# pnpm-installed `appium` binary (js/android/integration-tests's
 # node_modules/.bin, see its package.json) on PATH, sets APPIUM_HOME to a
 # repo-local dir, and provides the Android SDK/emulator/platform-tools.
 # Appium itself is a plain npm devDependency — Nix supplies the Android

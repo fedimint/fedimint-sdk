@@ -1,53 +1,37 @@
 name: Android E2E (Appium)
 
+# Runs the Android demo app (android/app) on an emulator and drives it with
+# Appium, so the generated Kotlin bindings and the native library behind them
+# are exercised at runtime — kotlin-sdk.yaml's `kotlin` job only proves they
+# compile.
+#
+# Called by kotlin-sdk.yaml rather than triggered on `pull_request` of its
+# own, for the reason android-native.yaml spells out: this needs the same
+# cross-compiled `.so` that workflow builds, and a second PR entry point over
+# the same paths would mean two cross-compiles of one commit in two runs that
+# cannot cancel each other. The caller passes the artifact its `native` job
+# produced; on `workflow_dispatch` there is no caller, so the run builds the
+# payload itself (from Cachix, in practice) instead.
+
 on:
-  pull_request:
-    paths:
-      - 'js/examples/react-native/**'
-      - 'js/react-native/react-native/**'
-      - 'js/react-native/react-native-bindings/**'
-      - 'js/react-native/integration-tests-android/**'
-      - 'rust/fedimint-client-uniffi/**'
-      - 'nix/**'
-      - 'flake.nix'
-      - 'flake.lock'
-      - '.github/**'
+  workflow_call:
+    inputs:
+      jni-artifact:
+        description: 'Name of the jniLibs artifact built by android-native.yaml'
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
-  build-android-bindings:
-    name: Build Android Bindings
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 60
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      # Same composite action react-native-pr.yml's own "Build Android" job
-      # uses: builds the native FFI lib + generated Kotlin/JS glue via
-      # `just build-android`, and uploads it as the `generated-bindings-android`
-      # artifact this workflow's second job downloads below.
-      - uses: ./.github/actions/build-rn-android
-
   android-e2e:
     name: Android E2E
-    needs: build-android-bindings
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # No devimint/faucet dependency yet (the v1 mnemonic test is local-only),
-    # so this doesn't join the shared `devimint-tests` concurrency group from
+    # No devimint/faucet dependency yet (both tests are local-only), so this
+    # doesn't join the shared `devimint-tests` concurrency group from
     # verify.yml. The moment a federation-touching test is added here, it
     # will race the wasm job and other PRs' runs of this workflow for
     # devimint's fixed faucet port (see issue #340) — reconsider concurrency
@@ -73,13 +57,28 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Download prebuilt Android bindings
+      # jniLibs is a build output and gitignored, so it has to be put back
+      # before either uniffi-bindgen or Gradle can see it.
+      - name: Download jniLibs
+        if: ${{ inputs.jni-artifact != '' }}
         uses: actions/download-artifact@v4
         with:
-          name: generated-bindings-android
-          path: js/react-native/react-native-bindings/
+          name: ${{ inputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
 
-      - name: Install deps & build the react-native JS wrapper
+      # Generated from the `.so` downloaded above rather than from the crate
+      # source, so the Kotlin driven on the device cannot drift from the
+      # library it loads. `rust/uniffi-bindgen`'s only dependency is `uniffi`
+      # itself — a small host build, no NDK and no Nix (see the script).
+      - name: Set up Rust
+        if: ${{ inputs.jni-artifact != '' }}
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Generate the Kotlin bindings
+        if: ${{ inputs.jni-artifact != '' }}
+        run: ./scripts/generate-kotlin-bindings.sh
+
+      - name: Install workspace deps
         shell: bash
         env:
           FEDIMINT_SKIP_BINARY_DOWNLOAD: 'true'
@@ -87,16 +86,16 @@ jobs:
           nix develop --accept-flake-config -c bash << 'EOF'
             set -euo pipefail
             pnpm --dir js install --frozen-lockfile
-            pnpm --dir js run build:reactnative
           EOF
 
       - name: Run Android E2E tests
         shell: bash
         env:
           TESTS_TO_RUN: all
-          # Bindings came from build-android-bindings above; skip
-          # run-android-e2e.sh's own `just build-android` call.
-          SKIP_BINDINGS_BUILD: 'true'
+          # With an artifact, both halves of the SDK payload are already in
+          # place from the steps above and run-android-e2e.sh skips its own
+          # build-android-sdk.sh call; on a dispatch run it does that build.
+          SKIP_BINDINGS_BUILD: ${{ inputs.jni-artifact != '' }}
         run: |
           nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
             set -euo pipefail
@@ -111,5 +110,5 @@ jobs:
           name: android-e2e-logs
           include-hidden-files: true
           path: |
-            js/react-native/integration-tests-android/.appium/*.log
-            js/react-native/integration-tests-android/screenshots/*
+            js/android/integration-tests/.appium/*.log
+            js/android/integration-tests/screenshots/*

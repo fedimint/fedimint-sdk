@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 #
-# Builds js/examples/react-native's debug APK, picks or boots an Android
-# device, installs the APK, and runs the Appium test runner against it.
+# Builds the Android demo app (android/app) against the generated Kotlin SDK,
+# picks or boots an Android device, installs the APK, and runs the Appium test
+# runner against it.
+#
+# The app under test is the native demo in android/, not a React Native
+# example: the same APK that kotlin-sdk.yaml assembles, driven on a device so
+# the generated bindings and the .so behind them are exercised at runtime
+# rather than merely compiled.
 
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
-EXAMPLE_DIR="$REPO_ROOT/js/examples/react-native"
-PKG_DIR="$REPO_ROOT/js/react-native/integration-tests-android"
+ANDROID_DIR="$REPO_ROOT/android"
+PKG_DIR="$REPO_ROOT/js/android/integration-tests"
 
-required_bins=(adb emulator)
-[[ "${SKIP_BINDINGS_BUILD:-}" == "true" ]] || required_bins+=(just)
-for bin in "${required_bins[@]}"; do
+# jniLibs and the generated Kotlin are both gitignored build outputs, so the
+# two halves of the SDK payload have to be present before Gradle runs.
+JNI_LIBS="$ANDROID_DIR/fedimint-sdk/src/main/jniLibs"
+GENERATED_KT="$ANDROID_DIR/fedimint-sdk/src/main/java/org/fedimint/sdk"
+
+for bin in adb emulator java; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "$bin not found on PATH. Run this inside 'nix develop .#android-tests'."
     exit 1
@@ -22,22 +31,34 @@ echo "=== Android E2E (SDK) tests ==="
 
 cd "$REPO_ROOT"
 if [[ "${SKIP_BINDINGS_BUILD:-}" == "true" ]]; then
-  echo "SKIP_BINDINGS_BUILD=true — assuming bindings + node_modules are already in place."
+  # CI path: android-native.yaml cross-compiled the .so and the workflow
+  # generated the Kotlin from it, both restored into the Gradle project
+  # before this script runs.
+  echo "SKIP_BINDINGS_BUILD=true — expecting jniLibs + generated Kotlin already in place."
+  for dir in "$JNI_LIBS" "$GENERATED_KT"; do
+    if [[ ! -d "$dir" ]] || [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
+      echo "$dir is missing or empty — nothing to build the app against." >&2
+      echo "Unset SKIP_BINDINGS_BUILD to build it here, or restore the artifact first." >&2
+      exit 1
+    fi
+  done
 else
-  # Builds the native FFI library (fedimint-client-uniffi cross-compiled for
-  # Android) and the generated Kotlin/JS glue js/examples/react-native depends on.
-  # Without this, `pnpm install`'s postinstall may leave a stale prebuilt
-  # binary in place (or download a previously-published release) instead of
-  # reflecting the current source tree — see js/react-native/react-native-bindings's
-  # postinstall (scripts/download-binaries.js) and Justfile's build-android
-  # recipe. This also runs `pnpm --dir js install --frozen-lockfile` for the whole
-  # workspace, so it must happen before anything below that needs
-  # node_modules (e.g. the `appium` binary).
-  just build-android
+  # Cross-compiles the .so via Nix (cached) and regenerates the Kotlin from
+  # it — the same two scripts CI runs as android-native.yaml and the bindings
+  # step of kotlin-sdk.yaml, so a local run and CI can never diverge.
+  "$REPO_ROOT/scripts/build-android-sdk.sh"
 fi
 
+# Appium is a plain npm devDependency of the test package; the `android-tests`
+# shell puts its node_modules/.bin on PATH, but the install itself still has
+# to have happened.
 if ! command -v appium >/dev/null 2>&1; then
-  echo "appium not found on PATH. Make sure bindings/deps were built (see SKIP_BINDINGS_BUILD) and js/react-native/integration-tests-android/node_modules/.bin exists."
+  echo "appium not found on PATH — installing workspace deps..."
+  pnpm --dir "$REPO_ROOT/js" install --frozen-lockfile
+fi
+if ! command -v appium >/dev/null 2>&1; then
+  echo "appium still not on PATH. Run this inside 'nix develop .#android-tests'," \
+    "which puts $PKG_DIR/node_modules/.bin on it."
   exit 1
 fi
 
@@ -45,6 +66,15 @@ LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
 mkdir -p "$LOG_DIR"
 
 bash "$REPO_ROOT/scripts/e2e-android/setup-and-start-appium.sh"
+
+# setup-and-start-appium.sh retries on the next port up if 4723 is taken, and
+# records where it landed. Without this the runner would fall back to its
+# 4723 default and talk to nothing.
+if [[ -f "${APPIUM_HOME:-$LOG_DIR}/appium_port.txt" ]]; then
+  APPIUM_PORT=$(cat "${APPIUM_HOME:-$LOG_DIR}/appium_port.txt")
+  export APPIUM_PORT
+  echo "Appium is serving on port $APPIUM_PORT"
+fi
 
 AVD_NAME="fedimint-e2e"
 
@@ -121,15 +151,15 @@ else
   done
 
   if [[ -z "${TESTS_TO_RUN:-}" ]]; then
-    echo "Which tests to run? (mnemonic, all)"
+    echo "Which tests to run? (mnemonic, inviteCode, all)"
     read -r TESTS_TO_RUN
     TESTS_TO_RUN=${TESTS_TO_RUN:-all}
   fi
 fi
 
-echo "Building APK..."
-pushd "$EXAMPLE_DIR/android" >/dev/null
-./gradlew assembleDebug
+echo "Building the demo APK..."
+pushd "$ANDROID_DIR" >/dev/null
+./gradlew :app:assembleDebug
 APK_PATH=$(find "$PWD/app/build/outputs/apk/debug" -name "*.apk" | head -1)
 popd >/dev/null
 
@@ -138,9 +168,9 @@ if [[ ! -f "$APK_PATH" ]]; then
   exit 1
 fi
 
-APP_ID=$(grep applicationId "$EXAMPLE_DIR/android/app/build.gradle" | head -1 | awk -F '"' '{print $2}')
+APP_ID=$(grep 'applicationId' "$ANDROID_DIR/app/build.gradle.kts" | head -1 | awk -F '"' '{print $2}')
 if [[ -z "$APP_ID" ]]; then
-  echo "Could not extract applicationId from build.gradle."
+  echo "Could not extract applicationId from android/app/build.gradle.kts."
   exit 1
 fi
 
@@ -149,13 +179,6 @@ adb -s "$DEVICE_ID" install -r "$APK_PATH"
 
 echo "Clearing app data for a fresh run..."
 adb -s "$DEVICE_ID" shell pm clear "$APP_ID" || true
-
-echo "Starting Metro..."
-pushd "$EXAMPLE_DIR" >/dev/null
-nohup pnpm start >"$LOG_DIR/metro.log" 2>&1 &
-METRO_PID=$!
-popd >/dev/null
-trap 'kill "$METRO_PID" 2>/dev/null || true' EXIT
 
 echo "Launching app..."
 adb -s "$DEVICE_ID" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1
