@@ -227,5 +227,5 @@ jobs:
         run: cargo check --locked --target wasm32-unknown-unknown
 
       - name: 'Check wasm (uniffi feature)'
-        # The same surface the browser binding is generated from.
+        # The same surface the browser binding is generated from; see js/web/sdk-web.
         run: cargo check --locked --target wasm32-unknown-unknown --features uniffi
