@@ -2,7 +2,7 @@
 import { AppiumTestBase } from '../configs/appium/AppiumTestBase'
 
 // Second federation-free test: `InviteCode.parse` + `federationId()`, which
-// the demo exposes in its own section. Parsing an invite code talks to no
+// the example app exposes in its own section. Parsing an invite code talks to no
 // guardian, so this stays offline like MnemonicService — but it covers a
 // different shape of the binding surface: a value type constructed from a
 // string, rather than the SDK handle itself.
@@ -15,7 +15,7 @@ export class InviteCodeService extends AppiumTestBase {
 
     await this.waitForText('Fedimint Android SDK Demo', 0, true, 30000)
 
-    // The demo pre-fills its Join section with a known federation's invite
+    // The example app pre-fills its Join section with a known federation's invite
     // code. Reading it back from there rather than hardcoding one here keeps
     // the code in a single place (MainActivity's TESTNET_FEDERATION_CODE).
     // A ScrollView only renders what is on screen, so scroll it into the tree
@@ -24,7 +24,7 @@ export class InviteCodeService extends AppiumTestBase {
     const inviteCode = (await this.getTextByKey('invite')).trim()
     if (!inviteCode.startsWith('fed1')) {
       throw new Error(
-        `Expected the demo to pre-fill a fed1… invite code, got: "${inviteCode}"`,
+        `Expected the example app to pre-fill a fed1… invite code, got: "${inviteCode}"`,
       )
     }
 

@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 #
-# Builds the Android demo app (android/app) against the generated Kotlin SDK,
-# picks or boots an Android device, installs the APK, and runs the Appium test
-# runner against it.
+# Picks or boots an Android device, installs the example APK (android/app) on it,
+# and runs the Appium test runner against it.
 #
-# The app under test is the native demo in android/, not a React Native
-# example: the same APK that kotlin-sdk.yaml assembles, driven on a device so
-# the generated bindings and the .so behind them are exercised at runtime
-# rather than merely compiled.
+# The app under test is the native example app in android/, not a React Native
+# example: the same app kotlin-sdk.yaml compiles, driven on a device so the
+# generated bindings and the .so behind them are exercised at runtime rather
+# than merely compiled.
+#
+# This script builds nothing. It expects a finished debug APK where Gradle
+# leaves it — built by `just build-android-apk` locally, or by
+# android-apk.yaml on another machine in CI — and stops early if there isn't
+# one. That is deliberate rather than tidy: it runs inside a devimint
+# federation, on a machine that is about to boot an emulator too, and a Gradle
+# build alongside them starved the emulator until Android's own System UI
+# stopped responding and every test failed against that dialog instead of
+# against the app.
 
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 ANDROID_DIR="$REPO_ROOT/android"
 PKG_DIR="$REPO_ROOT/js/android/integration-tests"
-
-# jniLibs and the generated Kotlin are both gitignored build outputs, so the
-# two halves of the SDK payload have to be present before Gradle runs.
-JNI_LIBS="$ANDROID_DIR/fedimint-sdk/src/main/jniLibs"
-GENERATED_KT="$ANDROID_DIR/fedimint-sdk/src/main/java/org/fedimint/sdk"
+APK_DIR="$ANDROID_DIR/app/build/outputs/apk/debug"
 
 for bin in adb emulator java; do
   if ! command -v "$bin" >/dev/null 2>&1; then
@@ -51,23 +55,37 @@ fi
 echo "=== Android E2E (SDK) tests ==="
 
 cd "$REPO_ROOT"
-if [[ "${SKIP_BINDINGS_BUILD:-}" == "true" ]]; then
-  # CI path: android-native.yaml cross-compiled the .so and the workflow
-  # generated the Kotlin from it, both restored into the Gradle project
-  # before this script runs.
-  echo "SKIP_BINDINGS_BUILD=true — expecting jniLibs + generated Kotlin already in place."
-  for dir in "$JNI_LIBS" "$GENERATED_KT"; do
-    if [[ ! -d "$dir" ]] || [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
-      echo "$dir is missing or empty — nothing to build the app against." >&2
-      echo "Unset SKIP_BINDINGS_BUILD to build it here, or restore the artifact first." >&2
-      exit 1
-    fi
-  done
-else
-  # Cross-compiles the .so via Nix (cached) and regenerates the Kotlin from
-  # it — the same two scripts CI runs as android-native.yaml and the bindings
-  # step of kotlin-sdk.yaml, so a local run and CI can never diverge.
-  "$REPO_ROOT/scripts/build-android-sdk.sh"
+
+# Checked before anything slow starts, so a missing APK costs seconds rather
+# than an emulator boot. `find` rather than a fixed name: AGP owns the file's
+# name, and this is the one place that would otherwise have to guess it.
+#
+# `|| true` is what makes the message below reachable at all: with `set -e` and
+# `pipefail`, `find` failing on a directory that does not exist yet — the usual
+# way to get here — would end the script inside this assignment, silently.
+APK_PATH=$(find "$APK_DIR" -maxdepth 1 -name '*.apk' 2>/dev/null | head -1 || true)
+if [[ -z "$APK_PATH" || ! -f "$APK_PATH" ]]; then
+  cat >&2 <<MSG
+No example APK in $APK_DIR.
+
+This script installs a finished APK and never builds one. Build it first:
+
+  just build-android-apk
+
+or run the whole thing, which does that first:
+
+  just test-android-e2e
+
+(CI downloads it from android-apk.yaml's artifact into that same directory.)
+MSG
+  exit 1
+fi
+echo "Using APK: $APK_PATH"
+
+APP_ID=$(grep 'applicationId' "$ANDROID_DIR/app/build.gradle.kts" | head -1 | awk -F '"' '{print $2}')
+if [[ -z "$APP_ID" ]]; then
+  echo "Could not extract applicationId from android/app/build.gradle.kts."
+  exit 1
 fi
 
 # Appium is a plain npm devDependency of the test package; the `android-tests`
@@ -176,23 +194,6 @@ else
     read -r TESTS_TO_RUN
     TESTS_TO_RUN=${TESTS_TO_RUN:-all}
   fi
-fi
-
-echo "Building the demo APK..."
-pushd "$ANDROID_DIR" >/dev/null
-./gradlew :app:assembleDebug
-APK_PATH=$(find "$PWD/app/build/outputs/apk/debug" -name "*.apk" | head -1)
-popd >/dev/null
-
-if [[ ! -f "$APK_PATH" ]]; then
-  echo "APK not found after build!"
-  exit 1
-fi
-
-APP_ID=$(grep 'applicationId' "$ANDROID_DIR/app/build.gradle.kts" | head -1 | awk -F '"' '{print $2}')
-if [[ -z "$APP_ID" ]]; then
-  echo "Could not extract applicationId from android/app/build.gradle.kts."
-  exit 1
 fi
 
 # ── The federation, as seen from inside the emulator ────────────────────

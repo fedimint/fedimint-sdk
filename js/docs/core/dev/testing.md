@@ -55,8 +55,8 @@ When adding new features or fixing bugs, it's important to add test cases to cov
 ## Android E2E (Appium)
 
 `js/android/integration-tests` tests the SDK on a real Android runtime, driven via
-[Appium](https://appium.io/) against the demo app in `android/app`. This tests the SDK, not
-the demo — `android/app` is one screen that calls every export of `rust/fedimint-sdk`'s
+[Appium](https://appium.io/) against the example app in `android/app`. This tests the SDK, not
+the example app — `android/app` is one screen that calls every export of `rust/fedimint-sdk`'s
 `uniffi` feature through the generated Kotlin bindings, not a product with its own UI
 surface. What it adds over `kotlin-sdk.yaml`, which compiles the same app, is a running
 device: the bindings load, the native library is mapped, and the calls execute. Tests are
@@ -78,6 +78,12 @@ emulator reaches guardians and gateways bound to the host's `127.0.0.1` through 
 reverse` — see `js/android/integration-tests/README.md` for why that rather than
 `10.0.2.2`. `just test-android-e2e` is the Android counterpart of `just test`, and the only way in:
 the suite has no federation-free mode, so a local run and CI are the same run.
+
+It builds the APK in a separate step (`just build-android-apk`, in the lean `.#android`
+shell) and the device run installs it without building anything. That is a resource
+decision: a Gradle build on the same machine as an emulator and a devimint federation
+starved the emulator until Android's System UI stopped responding. CI mirrors it as three
+jobs on three machines — native library, APK, device run.
 
 **Nix**: run this from the `android-tests` devshell (`nix develop .#android-tests`), which extends
 the plain `android` FFI-build shell with an emulator + system image and wires

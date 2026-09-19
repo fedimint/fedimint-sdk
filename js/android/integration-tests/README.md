@@ -1,9 +1,9 @@
 # @fedimint/integration-tests-android
 
 Android device-level tests for the fedimint SDK, driven via [Appium](https://appium.io/)
-against the demo app in [`android/app`](../../../android).
+against the example app in [`android/app`](../../../android).
 
-**This tests the SDK, not the demo app.** `android/app` is one scrolling screen that calls
+**This tests the SDK, not the example app.** `android/app` is one scrolling screen that calls
 every export of `rust/fedimint-sdk`'s `uniffi` feature through the generated Kotlin bindings
 — it has no product surface of its own. What these tests add over `kotlin-sdk.yaml`, which
 compiles the same app, is a running device: the bindings are loaded, the native `.so` is
@@ -26,23 +26,42 @@ this package — Nix supplies the Android toolchain around Appium, not Appium it
 just test-android-e2e
 ```
 
-That boots (or lets you pick) a device, builds the SDK payload and the APK,
-starts Appium, and runs the suite inside a devimint federation. There is one
-way to run it on purpose: no federation-free variant, so what CI runs and what
-you can reproduce are the same thing. By hand, inside the shell:
+That builds the example APK, then boots (or lets you pick) a device, starts Appium, and runs
+the suite inside a devimint federation. There is one way to run it on purpose: no
+federation-free variant, so what CI runs and what you can reproduce are the same thing.
+
+### Building and running are separate steps
+
+`just test-android-e2e` is two recipes: `just build-android-apk`, then the run. The script
+that drives the device, `run-android-e2e.sh`, **builds nothing** — it installs a finished APK
+from where Gradle leaves it (`android/app/build/outputs/apk/debug/`) and stops with a message
+if there isn't one.
+
+That is a resource decision, not tidiness. The run happens inside a devimint federation
+(bitcoind, four guardians, two gateways, LND, LDK, esplora) on a machine that is also booting
+an emulator. A cold Gradle build on top of that starved the emulator until Android's own
+System UI stopped responding — every test then failed against the "System UI isn't responding"
+dialog rather than against the app. So the build finishes, daemon and all, before either of
+those starts.
+
+CI makes the same split across machines, as three jobs in `kotlin-sdk.yaml`:
+
+| job      | workflow                            | shell             | produces                                                    |
+| -------- | ----------------------------------- | ----------------- | ----------------------------------------------------------- |
+| `native` | `android-native.yaml` (self-hosted) | —                 | `jniLibs`, the cross-compiled `.so`                         |
+| `apk`    | `android-apk.yaml`                  | `.#android`       | `android-example-apk`, from Kotlin generated off that `.so` |
+| `e2e`    | `android-e2e.yml`                   | `.#android-tests` | the run itself — installs the APK, no Gradle                |
+
+By hand, the two halves:
 
 ```bash
-nix develop .#android-tests
-pnpm --dir js install   # first time only
+just build-android-apk                       # `.#android`: native lib, Kotlin, Gradle
 
+nix develop .#android-tests
+pnpm --dir js install                        # first time only
 bash scripts/e2e-android/setup-and-start-appium.sh   # one-time per shell: installs/starts Appium
 bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 ```
-
-`run-android-e2e.sh` builds the whole Android payload first
-(`scripts/build-android-sdk.sh`: the cross-compiled `.so` via Nix, then the Kotlin generated
-from it) unless `SKIP_BINDINGS_BUILD=true` says both are already in place, which is what CI
-passes after restoring them from the `native` job's artifact.
 
 Or drive the runner directly once Appium is running and a device is configured:
 
@@ -83,7 +102,7 @@ deposit) has to add its port to `reverse_devimint_ports`.
 `walletResult`, `seed`. `AppiumTestBase` qualifies it with `APP_PACKAGE` into the
 `org.fedimint.demo:id/openWallet` resource-id that UiAutomator2 matches on, so a test never
 repeats the package. Prefer these over `clickOnText`/`isTextPresent`: an id is stable across
-copy changes, and several sections of the demo share button labels.
+copy changes, and several sections of the example app share button labels.
 
 Every section writes `working…` into its result line before the SDK call and overwrites it
 with the outcome, so assert on those with `waitForTextInElement(key, expected)` rather than

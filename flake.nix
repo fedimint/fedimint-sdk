@@ -267,6 +267,14 @@
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
             fi
 
+            # ./gradlew needs a JVM, and so do avdmanager and the uiautomator2
+            # driver. Both android shells carry one so that assembling the example app
+            # APK needs nothing from outside the shell: it is what lets CI build
+            # the APK in the lean `android` shell, on a machine that never
+            # boots an emulator or stands a federation up.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
+
           '';
 
           androidShellHook = mkAndroidShellHook androidSdk;
@@ -288,12 +296,6 @@
             mkdir -p "$APPIUM_HOME"
             export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
             mkdir -p "$ANDROID_AVD_HOME"
-
-            # avdmanager, the uiautomator2 driver, and ./gradlew all need a
-            # JVM; the `android` build shell never needed one since it only
-            # cross-compiles Rust, so this is android-tests-only.
-            export JAVA_HOME="${pkgs.jdk17.home}"
-            export PATH="$JAVA_HOME/bin:$PATH"
           '';
         in {
           default = pkgs.mkShell {
@@ -316,6 +318,8 @@
               pkgs.cargo-ndk
               pkgs.libclang # Often needed for bindgen
               androidToolchain
+              # Gradle, for assembling the example APK (see mkAndroidShellHook).
+              pkgs.jdk17
             ];
             shellHook = commonShellHook + androidShellHook;
           };

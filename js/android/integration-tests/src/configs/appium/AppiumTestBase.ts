@@ -16,12 +16,12 @@ import {
 // a test needs them): iOS branches, PWA branches, multi-actor (spawnActor),
 // deep links, in-app webview context switching, long-press.
 
-// The demo is one tall ScrollView — nine sections, several screens' worth — so
+// The example app is one tall ScrollView — nine sections, several screens' worth — so
 // these are sized to cross it: a swipe of 30% of the screen, slow enough that
 // Android reads it as a drag rather than a fling and does not sail past the
 // target, repeated enough times to reach the bottom. (The 10%-per-swipe,
 // 10-attempt default this harness was ported with covers about one screen,
-// which stops short of the lower half of the demo.)
+// which stops short of the lower half of the example app.)
 const DEFAULT_SCROLL_OPTIONS: Required<ScrollOptions> = {
   maxScrolls: 15,
   scrollDirection: 'down',
@@ -472,7 +472,7 @@ export class AppiumTestBase {
       return element
     }
 
-    // Both ways, requested direction first. Tests move up and down the demo's
+    // Both ways, requested direction first. Tests move up and down the example app's
     // one long screen in whatever order their steps need — MintService spends
     // from Ecash Out and then redeems in Ecash In, which sits above it — and a
     // one-way search would simply never find the section behind it. The
@@ -618,7 +618,7 @@ export class AppiumTestBase {
    * Waits for one element's text to contain `expected`, scrolling to it if it
    * is not on screen.
    *
-   * Two things make the naive version wrong. Every section of the demo writes
+   * Two things make the naive version wrong. Every section of the example app writes
    * "working…" into its result line before the SDK call and overwrites it with
    * the outcome, so reading the text once races the call being asserted on —
    * hence the polling. And UiAutomator2 reports only what is currently

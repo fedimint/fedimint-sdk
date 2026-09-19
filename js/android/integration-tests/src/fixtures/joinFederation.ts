@@ -34,7 +34,7 @@ export const joinFederation: Fixture = {
     await t.dismissKeyboard()
     await t.clickElementByKey('join')
 
-    // The demo reports both a fresh join and a reattach to one this storage
+    // The example app reports both a fresh join and a reattach to one this storage
     // already holds; either leaves the federation current, which is all any
     // test downstream needs.
     const result = await t.waitForTextInElement(

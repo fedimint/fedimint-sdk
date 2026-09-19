@@ -88,7 +88,7 @@ export class MintService extends AppiumTestBase {
 /**
  * Pulls the notes out of the send result.
  *
- * The demo prints them under a line of its own, because `Notes` is opaque and
+ * The example app prints them under a line of its own, because `Notes` is opaque and
  * `display()` is the deliberate way to take the token out — so the parse
  * follows that line rather than pattern-matching the token itself, which has
  * no fixed shape.

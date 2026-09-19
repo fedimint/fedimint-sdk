@@ -1,26 +1,30 @@
 name: Android E2E (Appium)
 
-# Runs the Android demo app (android/app) on an emulator and drives it with
+# Runs the Android example app (android/app) on an emulator and drives it with
 # Appium, so the generated Kotlin bindings and the native library behind them
 # are exercised at runtime — kotlin-sdk.yaml's `kotlin` job only proves they
 # compile.
 #
+# This job builds nothing. It installs the APK that android-apk.yaml
+# assembled on another machine, because this one is already carrying a whole
+# devimint federation and an emulator: a Gradle build alongside them starved
+# the emulator until Android's own System UI stopped responding, and every
+# test failed against that dialog instead of against the app.
+#
 # Called by kotlin-sdk.yaml rather than triggered on `pull_request` of its
-# own, for the reason android-native.yaml spells out: this needs the same
-# cross-compiled `.so` that workflow builds, and a second PR entry point over
-# the same paths would mean two cross-compiles of one commit in two runs that
-# cannot cancel each other. The caller passes the artifact its `native` job
-# produced; on `workflow_dispatch` there is no caller, so the run builds the
-# payload itself (from Cachix, in practice) instead.
+# own, for the reason android-native.yaml spells out: the APK it consumes sits
+# at the end of a chain that starts with a cross-compile, and a second PR entry
+# point over the same paths would mean two of those for one commit in two runs
+# that cannot cancel each other. A manual run is kotlin-sdk.yaml's
+# `workflow_dispatch`, which runs the whole chain.
 
 on:
   workflow_call:
     inputs:
-      jni-artifact:
-        description: 'Name of the jniLibs artifact built by android-native.yaml'
+      apk-artifact:
+        description: 'Name of the debug APK artifact built by android-apk.yaml'
         required: true
         type: string
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -56,26 +60,14 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # jniLibs is a build output and gitignored, so it has to be put back
-      # before either uniffi-bindgen or Gradle can see it.
-      - name: Download jniLibs
-        if: ${{ inputs.jni-artifact != '' }}
+      # Put where Gradle would have left it, which is where run-android-e2e.sh
+      # looks: the script neither knows nor cares whether this machine or
+      # another built the file.
+      - name: Download the example APK
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.jni-artifact }}
-          path: android/fedimint-sdk/src/main/jniLibs/
-
-      # Generated from the `.so` downloaded above rather than from the crate
-      # source, so the Kotlin driven on the device cannot drift from the
-      # library it loads. `rust/uniffi-bindgen`'s only dependency is `uniffi`
-      # itself — a small host build, no NDK and no Nix (see the script).
-      - name: Set up Rust
-        if: ${{ inputs.jni-artifact != '' }}
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Generate the Kotlin bindings
-        if: ${{ inputs.jni-artifact != '' }}
-        run: ./scripts/generate-kotlin-bindings.sh
+          name: ${{ inputs.apk-artifact }}
+          path: android/app/build/outputs/apk/debug/
 
       - name: Install workspace deps
         shell: bash
@@ -91,10 +83,6 @@ jobs:
         shell: bash
         env:
           TESTS_TO_RUN: all
-          # With an artifact, both halves of the SDK payload are already in
-          # place from the steps above and run-android-e2e.sh skips its own
-          # build-android-sdk.sh call; on a dispatch run it does that build.
-          SKIP_BINDINGS_BUILD: ${{ inputs.jni-artifact != '' }}
         run: |
           nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
             set -euo pipefail

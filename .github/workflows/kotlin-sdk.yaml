@@ -1,7 +1,7 @@
 name: Kotlin SDK
 
 # Generates the Kotlin bindings from the shared Android native library, then
-# proves the whole chain builds: the AAR, and the demo app compiled against
+# proves the whole chain builds: the AAR, and the example app compiled against
 # the freshly generated bindings.
 #
 # The native `.so` is not built here. `android-native.yaml` builds it once and
@@ -37,6 +37,7 @@ on:
       - 'js/android/integration-tests/**'
       - '.github/workflows/kotlin-sdk.yaml'
       - '.github/workflows/android-native.yaml'
+      - '.github/workflows/android-apk.yaml'
       - '.github/workflows/android-e2e.yml'
 
 concurrency:
@@ -59,21 +60,35 @@ jobs:
     uses: ./.github/workflows/android-native.yaml
     secrets: inherit
 
-  # Runs the demo app on an emulator and drives it with Appium. Separate from
-  # `kotlin` below, rather than another step of it, because the two answer
-  # different questions off the same artifact — `kotlin` that the bindings
-  # compile and package, this one that they work on a device — and an
-  # emulator run has no business holding up the AAR.
-  e2e:
-    name: 'Drive the demo on a device'
+  # Assembles the example APK the E2E job installs, in the lean `.#android` shell
+  # on a machine of its own. Not folded into `e2e`, and not borrowed from
+  # `kotlin` below: a Gradle build on the same four cores as an emulator and a
+  # devimint federation starved the emulator until Android's System UI stopped
+  # responding, so the build happens where nothing else is running.
+  apk:
+    name: 'Assemble the Android example APK'
     needs: native
-    uses: ./.github/workflows/android-e2e.yml
+    uses: ./.github/workflows/android-apk.yaml
     with:
       jni-artifact: ${{ needs.native.outputs.jni-artifact }}
     secrets: inherit
 
+  # Runs the example app on an emulator and drives it with Appium. Separate from
+  # `kotlin` below, rather than another step of it, because the two answer
+  # different questions — `kotlin` that the bindings compile and package, this
+  # one that they work on a device — and an emulator run has no business
+  # holding up the AAR. It installs the APK `apk` built rather than building
+  # its own; see that job for why.
+  e2e:
+    name: 'Drive the Android example app on a device'
+    needs: apk
+    uses: ./.github/workflows/android-e2e.yml
+    with:
+      apk-artifact: ${{ needs.apk.outputs.apk-artifact }}
+    secrets: inherit
+
   kotlin:
-    name: 'Generate the bindings, assemble the AAR + demo'
+    name: 'Generate the bindings, assemble the AAR + Android example app'
     needs: native
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -117,10 +132,10 @@ jobs:
       - name: 'Set up Gradle'
         uses: gradle/actions/setup-gradle@v4
 
-      # The demo app is the reason `:app:assembleDebug` is here: compiling it
+      # The example app is the reason `:app:assembleDebug` is here: compiling it
       # is what proves the generated bindings are usable from ordinary Kotlin,
       # not merely that they parse.
-      - name: 'Assemble the library + compile the demo'
+      - name: 'Assemble the library + compile the example app'
         working-directory: android
         run: ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 

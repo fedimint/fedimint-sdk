@@ -7,14 +7,14 @@ import {
 } from '../configs/appium/AppiumTestBase'
 import { FaucetClient } from '../faucet/FaucetClient'
 
-// Shared ways of driving the demo app, used by both fixtures and tests so the
+// Shared ways of driving the example app, used by both fixtures and tests so the
 // two can never disagree about what "funded" means. The wasm suite keeps the
 // same thing in TestFedimintWallet (`fundWallet`).
 
 /**
  * Reads the balance line as millisatoshis.
  *
- * The demo renders whole sats when the amount is round and
+ * The example app renders whole sats when the amount is round and
  * `"<sats> sat (<msats> msat)"` when it isn't, so the msat form wins when
  * present and the sat form is scaled when it isn't.
  */
@@ -33,7 +33,7 @@ export async function readBalanceMsats(t: AppiumTestBase): Promise<number> {
 /**
  * Waits for the balance line to report more than `previousMsats`.
  *
- * The demo keeps this line live off `federation.balanceUpdates()`, so a
+ * The example app keeps this line live off `federation.balanceUpdates()`, so a
  * receive that settles shows up here without the test tapping anything —
  * which is the point: it proves the subscription delivers over the FFI
  * boundary, not just that a one-shot call returns.
