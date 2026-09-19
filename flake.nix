@@ -157,6 +157,29 @@
           '';
 
           # Dependencies that were previously common, likely for general dev/testing/wasm
+          # The daemons devimint drives, and devimint itself. Shared by the two
+          # shells that stand a federation up: `wasm-tests` runs the browser
+          # client against it, `android-tests` the Android one. Neither list
+          # mentions the other's client, so the Android shell never pulls the
+          # Playwright browser bundles and the wasm shell never pulls an
+          # emulator image.
+          devimintNativeBuildInputs = [
+            pkgs.bitcoind
+            pkgs.electrs
+            pkgs.jq
+            pkgs.lnd
+            pkgs.netcat
+            pkgs.perl
+            pkgs.esplora-electrs
+            pkgs.procps
+            pkgs.which
+            fedimint.packages.${system}.devimint
+            fedimint.packages.${system}.gateway-pkgs
+            fedimint.packages.${system}.fedimint-pkgs
+            fedimint.packages.${system}.fedimint-recurringd
+            fedimint.packages.${system}.fedimint-recurringdv2
+          ];
+
           wasmNativeBuildInputs = commonNativeBuildInputs ++ [
             pkgs.bitcoind
             pkgs.electrs
@@ -298,9 +321,12 @@
           };
 
           # For js/android/integration-tests: everything `android` gives
-          # you, plus a bootable emulator + appium's PATH/APPIUM_HOME wiring.
-          # Kept separate from `android` so the plain FFI build shell doesn't
-          # pay for the emulator system image (gigabytes) it doesn't need.
+          # you, plus a bootable emulator, appium's PATH/APPIUM_HOME wiring,
+          # and devimint, so the suite can run against the same local
+          # federation the wasm tests use (scripts/setup_test_shell.sh execs
+          # the runner inside `devimint wasm-test-setup`). Kept separate from
+          # `android` so the plain FFI build shell doesn't pay for the
+          # emulator system image or the federation daemons it never runs.
           android-tests = pkgs.mkShell {
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
@@ -320,7 +346,7 @@
               # Appium re-encodes what the device's screenrecord produces
               # before handing the run's video back over the wire.
               pkgs.ffmpeg-headless
-            ];
+            ] ++ devimintNativeBuildInputs;
             shellHook = commonShellHook + androidTestsShellHook;
           };
 

@@ -30,13 +30,12 @@ jobs:
     name: Android E2E
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # No devimint/faucet dependency yet (both tests are local-only), so this
-    # doesn't join the shared `devimint-tests` concurrency group from
-    # verify.yml. The moment a federation-touching test is added here, it
-    # will race the wasm job and other PRs' runs of this workflow for
-    # devimint's fixed faucet port (see issue #340) — reconsider concurrency
-    # then, either joining that group (accepting serialization) or waiting on
-    # a dynamic-port fix upstream.
+    # Runs its own devimint federation, and does not join verify.yml's
+    # `devimint-tests` concurrency group: devimint now allocates a free
+    # faucet port per run (issue #340) and its federation ports come from a
+    # range it picks the same way, so two runs on two runners no longer
+    # collide. The `adb reverse` mappings are per-device, so they cannot
+    # collide either.
 
     steps:
       - name: Clone repository
@@ -99,7 +98,11 @@ jobs:
         run: |
           nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
             set -euo pipefail
-            bash scripts/e2e-android/run-android-e2e.sh
+            # Same entry point the wasm suite uses (js/package.json's
+            # `test:setup`): devimint stands a federation up, exports its
+            # ports, and execs the run inside it. The app reaches that
+            # federation through `adb reverse` — see the script.
+            bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
           EOF
 
       - name: Upload logs & screenshots

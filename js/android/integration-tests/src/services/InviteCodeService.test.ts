@@ -1,17 +1,5 @@
 /* eslint-disable no-console */
 import { AppiumTestBase } from '../configs/appium/AppiumTestBase'
-import { ScrollOptions } from '../configs/appium/types'
-
-// The demo is one tall ScrollView — nine sections, several screens' worth.
-// The base class's default swipe covers 10% of the screen and gives up after
-// 10 of them, which is about one screenful and never reaches the lower
-// sections. A longer swipe over a longer duration also keeps Android from
-// reading it as a fling and overshooting the target.
-const SCROLL: ScrollOptions = {
-  scrollPercentage: 60,
-  scrollDuration: 600,
-  maxScrolls: 15,
-}
 
 // Second federation-free test: `InviteCode.parse` + `federationId()`, which
 // the demo exposes in its own section. Parsing an invite code talks to no
@@ -32,7 +20,7 @@ export class InviteCodeService extends AppiumTestBase {
     // the code in a single place (MainActivity's TESTNET_FEDERATION_CODE).
     // A ScrollView only renders what is on screen, so scroll it into the tree
     // before reading rather than assuming a screen tall enough.
-    await this.scrollToElement('invite', SCROLL)
+    await this.scrollToElement('invite')
     const inviteCode = (await this.getTextByKey('invite')).trim()
     if (!inviteCode.startsWith('fed1')) {
       throw new Error(
@@ -42,10 +30,10 @@ export class InviteCodeService extends AppiumTestBase {
 
     // The parse section sits below the fold on a phone-sized screen, and the
     // keyboard covers what is left of it once the field has focus.
-    await this.scrollToElement('parseInvite', SCROLL)
+    await this.scrollToElement('parseInvite')
     await this.typeIntoElementByKey('parseInvite', inviteCode)
     await this.dismissKeyboard()
-    await this.scrollToElement('parseInviteButton', SCROLL)
+    await this.scrollToElement('parseInviteButton')
     await this.clickElementByKey('parseInviteButton')
 
     const result = await this.waitForTextInElement(

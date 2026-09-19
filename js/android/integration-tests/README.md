@@ -23,11 +23,19 @@ separate so that shell doesn't pay for the emulator's multi-gigabyte closure), a
 this package — Nix supplies the Android toolchain around Appium, not Appium itself):
 
 ```bash
+just test-android-e2e          # with a devimint federation behind it
+just test-android-e2e-local    # without one: only the tests that never join
+```
+
+Both boot (or let you pick) a device, build the SDK payload and the APK, start
+Appium and run the suite. By hand, inside the shell:
+
+```bash
 nix develop .#android-tests
 pnpm --dir js install   # first time only
 
 bash scripts/e2e-android/setup-and-start-appium.sh   # one-time per shell: installs/starts Appium
-bash scripts/e2e-android/run-android-e2e.sh          # builds the SDK + APK, picks/boots a device, runs tests
+bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 ```
 
 `run-android-e2e.sh` builds the whole Android payload first
@@ -47,6 +55,25 @@ ts-node --project tsconfig.json src/runner.ts mnemonic
 ```
 
 Pass `all` instead of a test name to run every registered test.
+
+## The federation
+
+`scripts/setup_test_shell.sh` is the same entry point the wasm suite uses
+(`js/package.json`'s `test:setup`): it execs the run inside
+`devimint wasm-test-setup`, which stands up bitcoind, four guardians and two
+gateways, and exports their ports. Tests reach the faucet through
+`src/faucet/FaucetClient.ts` over `FAUCET`, exactly as
+`js/web/integration-tests/src/test/TestingService.ts` does.
+
+The app reaching that federation is the part with a twist. devimint binds
+everything to `127.0.0.1` on the host and the invite code carries those URLs
+verbatim (`ws://127.0.0.1:<port>`), but inside the emulator `127.0.0.1` is the
+emulator. Rewriting the host to `10.0.2.2` is not an option — the URLs are
+sealed inside a bech32m invite code the app parses — so
+`run-android-e2e.sh` runs `adb reverse` over devimint's port window instead,
+and the app joins through the unmodified code like any other client. A test
+that needs a service outside that window (esplora, say, for an on-chain
+deposit) has to add its port to `reverse_devimint_ports`.
 
 ## Naming a view
 
@@ -74,10 +101,9 @@ reading the text once.
    federation), add a fixture under `src/fixtures/` (see `src/fixtures/types.ts`) and declare
    `static prerequisites` on the test class — the runner resolves and caches fixtures across
    adjacent tests that share the same prerequisites.
-5. If the test needs a real federation, use `src/faucet/FaucetClient.ts` to join/pay/invoice
-   against the same devimint-backed faucet the WASM integration tests use (see
-   `scripts/setup_test_shell.sh` for how that federation gets started). The demo's Join
-   section takes an invite code, so a fixture can paste one in rather than the test hardcoding
-   a federation.
+5. If the test needs a real federation, declare `walletOpen` and `joinedFederation` (and
+   `funded` if it spends) in `static prerequisites`; the fixtures in `src/fixtures/` do the
+   rest. Drive the app through the helpers in `src/flows/wallet.ts` rather than repeating a
+   receive or a balance read, and reach the faucet through `src/faucet/FaucetClient.ts`.
 6. If a view the test needs has no id yet, add one in `activity_main.xml` — that is a smaller
    change than matching on text that the next copy edit breaks.

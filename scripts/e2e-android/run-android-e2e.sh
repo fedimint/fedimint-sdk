@@ -174,8 +174,57 @@ if [[ -z "$APP_ID" ]]; then
   exit 1
 fi
 
+# ── The federation, as seen from inside the emulator ────────────────────
+#
+# devimint binds every guardian, gateway and the faucet to 127.0.0.1 on the
+# host, and the invite code it hands out carries those URLs verbatim
+# (`ws://127.0.0.1:<api port>`, see devimint/src/vars.rs's FM_API_URL). Inside
+# the emulator 127.0.0.1 is the emulator, so the app would dial itself. The
+# usual fix of rewriting the host to 10.0.2.2 is not available: the URLs are
+# sealed inside a bech32m invite code the app parses.
+#
+# `adb reverse` instead makes the device's own 127.0.0.1:<port> tunnel out to
+# the host's, so the invite code works unmodified and the app needs no
+# test-only awareness of where the federation is.
+#
+# Cleartext ws:// is fine here: Android's cleartext policy governs the
+# platform HTTP stacks and WebView, not the raw sockets the Rust client opens.
+#
+# Ports, all from what devimint exports into this process:
+#   guardians  FM_FEDERATION_BASE_PORT .. + 4 per peer (PORTS_PER_FEDIMINTD),
+#              covering p2p/api/ui/metrics — the whole window, since reversing
+#              a port nothing listens on is harmless and cheaper than working
+#              out which peer owns which offset.
+#   gateways   FM_PORT_GW_LND / FM_PORT_GW_LDK — the client fetches an invoice
+#              from the gateway's own API, not through the federation.
+#   faucet     FM_PORT_FAUCET, so a test could reach it from the device too;
+#              the runner itself talks to it from the host.
+reverse_devimint_ports() {
+  local base="${FM_FEDERATION_BASE_PORT:-}"
+  if [[ -z "$base" ]]; then
+    echo "No FM_FEDERATION_BASE_PORT in the environment — running without a federation."
+    echo "For federation-backed tests, run under devimint:"
+    echo "  nix develop .#android-tests -c scripts/setup_test_shell.sh bash $0"
+    return
+  fi
+
+  local fed_size="${FM_FED_SIZE:-4}"
+  local ports_per_peer=4
+  local last=$((base + fed_size * ports_per_peer - 1))
+
+  echo "Forwarding devimint ports into the emulator: $base-$last plus gateways/faucet"
+  local port
+  for port in $(seq "$base" "$last") \
+    "${FM_PORT_GW_LND:-}" "${FM_PORT_GW_LDK:-}" "${FM_PORT_FAUCET:-}"; do
+    [[ -n "$port" ]] || continue
+    adb -s "$DEVICE_ID" reverse "tcp:$port" "tcp:$port" >/dev/null
+  done
+}
+
 echo "Installing APK on $DEVICE_ID..."
 adb -s "$DEVICE_ID" install -r "$APK_PATH"
+
+reverse_devimint_ports
 
 echo "Clearing app data for a fresh run..."
 adb -s "$DEVICE_ID" shell pm clear "$APP_ID" || true
@@ -185,9 +234,14 @@ adb -s "$DEVICE_ID" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHE
 
 echo "Running tests: $TESTS_TO_RUN"
 cd "$PKG_DIR"
+# FAUCET is read by src/faucet/FaucetClient.ts, which runs here on the host,
+# so it keeps the host's own port. js/vitest.config.ts builds the same URL the
+# same way for the wasm suite, including the 15243 fallback devimint used
+# before it started allocating a free port per run.
 PLATFORM=android \
   DEVICE_ID="$DEVICE_ID" \
   BUNDLE_PATH="$APK_PATH" \
   APP_PACKAGE="$APP_ID" \
   APP_ACTIVITY="$APP_ID.MainActivity" \
+  FAUCET="${FAUCET:-http://localhost:${FM_PORT_FAUCET:-15243}}" \
   pnpm exec ts-node --project tsconfig.json src/runner.ts $TESTS_TO_RUN

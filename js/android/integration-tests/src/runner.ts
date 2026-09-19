@@ -5,14 +5,21 @@ import path from 'path'
 
 import AppiumManager from './configs/appium/AppiumManager'
 import { AppiumTestBase } from './configs/appium/AppiumTestBase'
+import { fundWallet } from './fixtures/fundWallet'
+import { joinFederation } from './fixtures/joinFederation'
+import { openWallet } from './fixtures/openWallet'
 import { Fixture } from './fixtures/types'
 import { availableTests, resolveTestNames, TestName } from './registry'
 
-// No fixtures registered yet — the v1 MnemonicService test needs none. Add
-// entries here as `{ [fixture.produces]: fixture }` when a test declares a
-// `static prerequisites` state (e.g. "joinedFederation") that isn't the
-// fresh-install default.
-const fixtures: Record<string, Fixture> = {}
+// Keyed by the state each one produces; `resolvePlan` walks `requires` from
+// here, so a test naming "funded" gets the open, join and fund chain without
+// saying so. The federation ones need devimint around the run — see
+// scripts/e2e-android/run-android-e2e.sh.
+const fixtures: Record<string, Fixture> = {
+  [openWallet.produces]: openWallet,
+  [joinFederation.produces]: joinFederation,
+  [fundWallet.produces]: fundWallet,
+}
 
 function captureAndroidLogcat(testName: string) {
   const outDir = path.join(process.cwd(), '.appium')

@@ -16,24 +16,20 @@ import {
 // a test needs them): iOS branches, PWA branches, multi-actor (spawnActor),
 // deep links, in-app webview context switching, long-press.
 
+// The demo is one tall ScrollView — nine sections, several screens' worth — so
+// these are sized to cross it: a swipe of 30% of the screen, slow enough that
+// Android reads it as a drag rather than a fling and does not sail past the
+// target, repeated enough times to reach the bottom. (The 10%-per-swipe,
+// 10-attempt default this harness was ported with covers about one screen,
+// which stops short of the lower half of the demo.)
 const DEFAULT_SCROLL_OPTIONS: Required<ScrollOptions> = {
-  maxScrolls: 10,
+  maxScrolls: 15,
   scrollDirection: 'down',
-  scrollDuration: 100,
-  scrollPercentage: 10,
+  scrollDuration: 600,
+  scrollPercentage: 30,
 }
 
 export const DEFAULT_TIMEOUT = 20000
-
-// For bringing a result line into view in waitForTextInElement: a longer swipe
-// than DEFAULT_SCROLL_OPTIONS' 10% of the screen, slow enough that Android
-// reads it as a drag rather than a fling and does not sail past the target.
-// Few attempts, since the line is normally one or two below the fold.
-const RESULT_SCROLL_OPTIONS: ScrollOptions = {
-  scrollPercentage: 30,
-  scrollDuration: 600,
-  maxScrolls: 5,
-}
 
 // Longer budget for operations that touch a real federation over the
 // network (join, invoice pay/create) rather than purely-local SDK calls.
@@ -476,20 +472,37 @@ export class AppiumTestBase {
       return element
     }
 
-    for (let i = 0; i < maxScrolls; i++) {
-      try {
-        await this.scroll(scrollDirection, scrollDuration, scrollPercentage)
-        element = await findElementFn()
-        if (await this.isElementVisible(element)) {
-          console.log(`Element found and visible after ${i + 1} scroll(s)`)
-          return element
+    // Both ways, requested direction first. Tests move up and down the demo's
+    // one long screen in whatever order their steps need — MintService spends
+    // from Ecash Out and then redeems in Ecash In, which sits above it — and a
+    // one-way search would simply never find the section behind it. The
+    // reverse pass starts from wherever the first one ended, so it covers the
+    // ground it just crossed as well as everything before the starting point.
+    const reverse: Record<ScrollDirection, ScrollDirection> = {
+      down: 'up',
+      up: 'down',
+      left: 'right',
+      right: 'left',
+    }
+
+    for (const direction of [scrollDirection, reverse[scrollDirection]]) {
+      for (let i = 0; i < maxScrolls; i++) {
+        try {
+          await this.scroll(direction, scrollDuration, scrollPercentage)
+          element = await findElementFn()
+          if (await this.isElementVisible(element)) {
+            console.log(
+              `Element ${elementDescription} found after ${i + 1} scroll(s) ${direction}`,
+            )
+            return element
+          }
+        } catch (error) {
+          console.error(`Scroll ${direction} attempt ${i + 1} failed:`, error)
         }
-      } catch (error) {
-        console.error(`Scroll attempt ${i + 1} failed:`, error)
       }
     }
     console.log(
-      `Element ${elementDescription} not found after ${maxScrolls} scroll attempts`,
+      `Element ${elementDescription} not found after ${maxScrolls} scrolls each way`,
     )
     return null
   }
@@ -625,8 +638,7 @@ export class AppiumTestBase {
     let scrolled = false
     while (Date.now() - startTime < timeout) {
       const element =
-        (await this.findElementByKey(key)) ??
-        (await this.scrollToElement(key, RESULT_SCROLL_OPTIONS))
+        (await this.findElementByKey(key)) ?? (await this.scrollToElement(key))
       if (element) {
         scrolled = true
         last = await element.getText()
