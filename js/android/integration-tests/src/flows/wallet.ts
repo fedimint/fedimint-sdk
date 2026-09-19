@@ -1,4 +1,6 @@
 /* eslint-disable no-console */
+import { execSync } from 'child_process'
+
 import {
   AppiumTestBase,
   NETWORK_TIMEOUT,
@@ -86,9 +88,56 @@ export async function receiveOverLightning(
   }
   console.log(`[flow] invoice for ${msats} msat: ${invoice.slice(0, 24)}…`)
 
-  await new FaucetClient().payInvoice(invoice)
+  await payFromOutside(invoice)
 
   const after = await waitForBalanceAbove(t, before)
   console.log(`[flow] balance ${before} -> ${after} msat`)
   return after
+}
+
+/**
+ * Pays an invoice the app issued, from a lightning node that is not the one
+ * that issued it.
+ *
+ * Which node issued it is not ours to choose. The SDK's `receive` takes no
+ * gateway — fedimint picks one by vetting and fee, and devimint runs two
+ * (LND and LDK) whose ids are fresh each run, so the tiebreak between two equal,
+ * unvetted gateways is effectively arbitrary from here. The faucet always
+ * pays from the LDK node (devimint/src/faucet.rs), so when fedimint happens
+ * to pick the LDK gateway, the faucet would be paying an invoice its own node
+ * issued, which lightning does not do.
+ *
+ * The wasm suite sidesteps this by naming the gateway when it creates the
+ * invoice (`createInvoice(..., info)` with the faucet's advertised LND
+ * gateway). An app driven through its UI cannot, so pay from the other node
+ * instead: devimint exports a ready-made `lncli` invocation, and exactly one
+ * of the two payers is never the issuer.
+ */
+async function payFromOutside(invoice: string): Promise<void> {
+  try {
+    await new FaucetClient().payInvoice(invoice)
+    return
+  } catch (error) {
+    console.log(
+      `[flow] the faucet's LDK node would not pay this invoice ` +
+        `(${(error as Error).message.split('\n')[0]}), trying LND`,
+    )
+  }
+
+  const lncli = process.env.FM_LNCLI
+  if (!lncli) {
+    throw new Error(
+      'The faucet could not pay the invoice and FM_LNCLI is not set, so there ' +
+        'is no second node to try. Is this running under scripts/setup_test_shell.sh?',
+    )
+  }
+  // FM_LNCLI is a command line, not a path, so it has to go through a shell.
+  // The invoice is checked rather than trusted: it comes back off a screen.
+  if (!/^ln[a-z0-9]+$/i.test(invoice)) {
+    throw new Error(`Refusing to shell out with "${invoice}" as an invoice`)
+  }
+  execSync(`${lncli} payinvoice --force --json ${invoice}`, {
+    stdio: 'pipe',
+    timeout: NETWORK_TIMEOUT,
+  })
 }
