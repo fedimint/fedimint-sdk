@@ -25,6 +25,16 @@ const DEFAULT_SCROLL_OPTIONS: Required<ScrollOptions> = {
 
 export const DEFAULT_TIMEOUT = 20000
 
+// For bringing a result line into view in waitForTextInElement: a longer swipe
+// than DEFAULT_SCROLL_OPTIONS' 10% of the screen, slow enough that Android
+// reads it as a drag rather than a fling and does not sail past the target.
+// Few attempts, since the line is normally one or two below the fold.
+const RESULT_SCROLL_OPTIONS: ScrollOptions = {
+  scrollPercentage: 30,
+  scrollDuration: 600,
+  maxScrolls: 5,
+}
+
 // Longer budget for operations that touch a real federation over the
 // network (join, invoice pay/create) rather than purely-local SDK calls.
 export const NETWORK_TIMEOUT = 60000
@@ -592,12 +602,18 @@ export class AppiumTestBase {
   }
 
   /**
-   * Waits for one element's text to contain `expected`.
+   * Waits for one element's text to contain `expected`, scrolling to it if it
+   * is not on screen.
    *
-   * Every section of the demo app writes "working…" into its result line
-   * before the SDK call and overwrites it with the outcome, so a test that
-   * read the text once would race the call it is asserting on. Polls instead,
-   * and reports what the line actually said when it times out.
+   * Two things make the naive version wrong. Every section of the demo writes
+   * "working…" into its result line before the SDK call and overwrites it with
+   * the outcome, so reading the text once races the call being asserted on —
+   * hence the polling. And UiAutomator2 reports only what is currently
+   * visible, so an element below the fold is *absent from the tree* rather
+   * than present and empty. That is the normal case right after a tap: a
+   * section's result line sits under the button that produced it, and
+   * scrolling far enough to tap the button leaves the line it writes just off
+   * the bottom edge. So a miss means "scroll to it", not "not there yet".
    */
   async waitForTextInElement(
     key: string,
@@ -606,9 +622,13 @@ export class AppiumTestBase {
   ): Promise<string> {
     const startTime = Date.now()
     let last = ''
+    let scrolled = false
     while (Date.now() - startTime < timeout) {
-      const element = await this.findElementByKey(key)
+      const element =
+        (await this.findElementByKey(key)) ??
+        (await this.scrollToElement(key, RESULT_SCROLL_OPTIONS))
       if (element) {
+        scrolled = true
         last = await element.getText()
         if (last.includes(expected)) return last
       }
@@ -616,7 +636,11 @@ export class AppiumTestBase {
     }
     throw new Error(
       `Element "${key}" never contained "${expected}" within ${timeout}ms` +
-        (last ? ` — last read: "${last}"` : ' — element never appeared'),
+        (last
+          ? ` — last read: "${last}"`
+          : scrolled
+            ? ' — element appeared but never had readable text'
+            : ' — element never appeared, including after scrolling to it'),
     )
   }
 
