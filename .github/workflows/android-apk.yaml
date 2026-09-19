@@ -14,10 +14,16 @@ name: Android APK Build
 # isn't responding" dialog rather than against the app. Built here instead,
 # the E2E job only ever installs a finished APK.
 #
-# Three machines, one artifact handed to the next:
+# It is also the one place the example app is compiled against the generated
+# Kotlin, which is what proves those bindings are usable from ordinary Kotlin
+# and not merely that they parse.
 #
-#   android-native.yaml   cross-compiles the .so                -> jniLibs
-#   android-apk.yaml      generates Kotlin from it, runs Gradle -> android-example-apk
+# One task per machine, each handed the last one's artifact rather than
+# redoing it (kotlin-sdk.yaml wires them together):
+#
+#   android-native.yaml   cross-compiles the .so          -> jniLibs
+#   kotlin-sdk.yaml       generates Kotlin from that .so  -> kotlin-bindings
+#   android-apk.yaml      runs Gradle on both             -> android-example-apk
 #   android-e2e.yml       boots devimint + an emulator, installs the APK
 #
 # Callable only: kotlin-sdk.yaml is the one PR entry point for the Android
@@ -29,6 +35,10 @@ on:
     inputs:
       jni-artifact:
         description: 'Name of the jniLibs artifact built by android-native.yaml'
+        required: true
+        type: string
+      bindings-artifact:
+        description: 'Name of the generated Kotlin artifact from kotlin-sdk.yaml'
         required: true
         type: string
     outputs:
@@ -59,24 +69,27 @@ jobs:
         with:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # jniLibs is a build output and gitignored, so it has to be put back
-      # before either uniffi-bindgen or Gradle can see it.
+      # jniLibs and the generated Kotlin are both build outputs and gitignored,
+      # so both have to be put back before Gradle can see them. Neither is made
+      # here: `native` built the .so and `bindings` read the Kotlin out of it.
       - name: 'Download jniLibs'
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.jni-artifact }}
           path: android/fedimint-sdk/src/main/jniLibs/
 
-      # Both steps in one shell so the Kotlin is generated from the exact .so
-      # just downloaded and Gradle then compiles against it. `.#android` is the
-      # whole toolchain: cargo for `rust/uniffi-bindgen` (its only dependency is
-      # `uniffi`, a small host build), the Android SDK and the JDK for Gradle.
-      - name: 'Generate the Kotlin bindings and assemble the APK'
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
+      # `.#android` is the whole toolchain: the Android SDK and the JDK.
+      - name: 'Assemble the APK'
         shell: bash
         run: |
           nix develop --accept-flake-config .#android --command bash << 'EOF'
             set -euo pipefail
-            ./scripts/generate-kotlin-bindings.sh
             cd android
             ./gradlew :app:assembleDebug
           EOF

@@ -19,8 +19,9 @@ test-kotlin: build-kotlin
 
 # The example APK the E2E suite installs: the native library, the Kotlin generated
 # from it, then Gradle, all in the lean `.#android` shell (Android SDK and a
-# JDK — no emulator, no devimint). CI's android-apk.yaml is this on its own
-# machine. It is a separate step from `test-android-e2e` on purpose: a Gradle
+# JDK — no emulator, no devimint). CI runs the same three steps as one job each
+# (native, bindings, apk), each handed the last one's output. It is a separate
+# step from `test-android-e2e` on purpose: a Gradle
 # build alongside an emulator and a devimint federation starves the emulator
 # until Android's System UI stops responding, so the build finishes — daemon
 # and all — before either of those starts.

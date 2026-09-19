@@ -148,15 +148,17 @@ devimint federation starved the emulator until Android's System UI stopped
 responding. Both shells carry a JDK for Gradle, so `.#android` is enough to
 assemble the app without a host one.
 
-CI runs those same two scripts as two workflows —
+CI runs those same two scripts as separate jobs —
 [`android-native.yaml`](../.github/workflows/android-native.yaml) builds the
 `.so` and uploads it,
 [`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) calls that workflow
 and generates the Kotlin from the artifact — so the shared, costly half is
 built once and any binding generator added later starts from the same binary.
-`kotlin-sdk.yaml` also calls
-[`android-e2e.yml`](../.github/workflows/android-e2e.yml) off that same
-artifact, which is what runs the example app on an emulator.
+The Kotlin is generated once too: the AAR job and
+[`android-apk.yaml`](../.github/workflows/android-apk.yaml) both download it
+rather than regenerate it, and `android-apk.yaml` is the one place the example
+app is compiled. [`android-e2e.yml`](../.github/workflows/android-e2e.yml) then
+installs that APK on an emulator.
 
 Non-Nix escape hatch: `just build-android-local` (`scripts/build-android-sdk.sh
 --local`, via `cargo-ndk` in the `.#android` shell).

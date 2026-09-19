@@ -82,8 +82,9 @@ the suite has no federation-free mode, so a local run and CI are the same run.
 It builds the APK in a separate step (`just build-android-apk`, in the lean `.#android`
 shell) and the device run installs it without building anything. That is a resource
 decision: a Gradle build on the same machine as an emulator and a devimint federation
-starved the emulator until Android's System UI stopped responding. CI mirrors it as three
-jobs on three machines — native library, APK, device run.
+starved the emulator until Android's System UI stopped responding. CI mirrors it as separate
+jobs on separate machines — native library, Kotlin bindings, APK, device run — each task run
+once and its output downloaded by the next.
 
 **Nix**: run this from the `android-tests` devshell (`nix develop .#android-tests`), which extends
 the plain `android` FFI-build shell with an emulator + system image and wires

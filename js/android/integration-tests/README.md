@@ -44,13 +44,18 @@ System UI stopped responding — every test then failed against the "System UI i
 dialog rather than against the app. So the build finishes, daemon and all, before either of
 those starts.
 
-CI makes the same split across machines, as three jobs in `kotlin-sdk.yaml`:
+CI makes the same split across machines, as separate jobs in `kotlin-sdk.yaml`. Each task runs
+exactly once and the next job downloads its output rather than redoing it:
 
-| job      | workflow                            | shell             | produces                                                    |
-| -------- | ----------------------------------- | ----------------- | ----------------------------------------------------------- |
-| `native` | `android-native.yaml` (self-hosted) | —                 | `jniLibs`, the cross-compiled `.so`                         |
-| `apk`    | `android-apk.yaml`                  | `.#android`       | `android-example-apk`, from Kotlin generated off that `.so` |
-| `e2e`    | `android-e2e.yml`                   | `.#android-tests` | the run itself — installs the APK, no Gradle                |
+| job        | workflow                            | shell             | produces                                                  |
+| ---------- | ----------------------------------- | ----------------- | --------------------------------------------------------- |
+| `native`   | `android-native.yaml` (self-hosted) | —                 | `jniLibs`, the cross-compiled `.so`                       |
+| `bindings` | `kotlin-sdk.yaml`                   | — (Rust)          | `kotlin-bindings`, generated once from that `.so`         |
+| `apk`      | `android-apk.yaml`                  | `.#android`       | `android-example-apk` — Gradle on the two artifacts above |
+| `e2e`      | `android-e2e.yml`                   | `.#android-tests` | the run itself — installs the APK, no Gradle              |
+
+The AAR job (`kotlin`) downloads the same `jniLibs` and `kotlin-bindings` and only assembles the
+release AAR; the example app is compiled once, by `apk`.
 
 By hand, the two halves:
 

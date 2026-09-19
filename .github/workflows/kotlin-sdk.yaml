@@ -4,6 +4,15 @@ name: Kotlin SDK
 # proves the whole chain builds: the AAR, and the example app compiled against
 # the freshly generated bindings.
 #
+# Every task runs exactly once, and each job downloads what the one before it
+# produced instead of redoing it:
+#
+#   native    cross-compiles the .so                    -> jniLibs
+#   bindings  runs `uniffi-bindgen` against that .so    -> kotlin-bindings
+#   apk       Gradle: the example app's debug APK       -> android-example-apk
+#   e2e       installs that APK on an emulator and drives it
+#   kotlin    Gradle: the release AAR                   -> fedimint-android-aar
+#
 # The native `.so` is not built here. `android-native.yaml` builds it once and
 # this workflow calls that, then runs `uniffi-bindgen` against the artifact it
 # produced. Generating from the built binary rather than from the crate source
@@ -54,44 +63,25 @@ permissions:
 
 jobs:
   # The shared half. Builds nothing Kotlin-specific and uploads the `.so`
-  # tree as the `jniLibs` artifact for the job below.
+  # tree as the `jniLibs` artifact for the jobs below.
   native:
     name: 'Native library'
     uses: ./.github/workflows/android-native.yaml
     secrets: inherit
 
-  # Assembles the example APK the E2E job installs, in the lean `.#android` shell
-  # on a machine of its own. Not folded into `e2e`, and not borrowed from
-  # `kotlin` below: a Gradle build on the same four cores as an emulator and a
-  # devimint federation starved the emulator until Android's System UI stopped
-  # responding, so the build happens where nothing else is running.
-  apk:
-    name: 'Assemble the Android example APK'
-    needs: native
-    uses: ./.github/workflows/android-apk.yaml
-    with:
-      jni-artifact: ${{ needs.native.outputs.jni-artifact }}
-    secrets: inherit
-
-  # Runs the example app on an emulator and drives it with Appium. Separate from
-  # `kotlin` below, rather than another step of it, because the two answer
-  # different questions — `kotlin` that the bindings compile and package, this
-  # one that they work on a device — and an emulator run has no business
-  # holding up the AAR. It installs the APK `apk` built rather than building
-  # its own; see that job for why.
-  e2e:
-    name: 'Drive the Android example app on a device'
-    needs: apk
-    uses: ./.github/workflows/android-e2e.yml
-    with:
-      apk-artifact: ${{ needs.apk.outputs.apk-artifact }}
-    secrets: inherit
-
-  kotlin:
-    name: 'Generate the bindings, assemble the AAR + Android example app'
+  # Reads the Kotlin out of the `.so`, once. `rust/uniffi-bindgen`'s only
+  # dependency is `uniffi` itself, so this is a small host build — no NDK, no
+  # cross-compile, no Nix; everything heavy was done by `native`. A job of its
+  # own because two others need its output, `apk` and `kotlin`, and each
+  # generating a copy would be the same work done twice, on two machines, for
+  # the same file.
+  bindings:
+    name: 'Generate the Kotlin bindings'
     needs: native
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
+    outputs:
+      bindings-artifact: kotlin-bindings
 
     steps:
       - name: 'Checkout'
@@ -100,16 +90,13 @@ jobs:
           persist-credentials: false
 
       # jniLibs is a build output and gitignored, so it has to be put back
-      # before either uniffi-bindgen or Gradle can see it.
+      # before uniffi-bindgen can read it.
       - name: 'Download jniLibs'
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.native.outputs.jni-artifact }}
           path: android/fedimint-sdk/src/main/jniLibs/
 
-      # `rust/uniffi-bindgen`'s only dependency is `uniffi` itself, so this is a
-      # small host build — no NDK, no cross-compile, no Nix. Everything heavy
-      # was done by the `native` job.
       - name: 'Set up Rust'
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -123,6 +110,64 @@ jobs:
           path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
           if-no-files-found: error
 
+  # Assembles the example APK the E2E job installs, in the lean `.#android` shell
+  # on a machine of its own: a Gradle build on the same four cores as an
+  # emulator and a devimint federation starved the emulator until Android's
+  # System UI stopped responding, so the build happens where nothing else is
+  # running. It is also the one place the example app is compiled against the
+  # generated bindings — what proves they are usable from ordinary Kotlin, not
+  # merely that they parse. A failure here fails the run, so `kotlin` below has
+  # no need to compile the app a second time.
+  apk:
+    name: 'Assemble the Android example APK'
+    needs: [native, bindings]
+    uses: ./.github/workflows/android-apk.yaml
+    with:
+      jni-artifact: ${{ needs.native.outputs.jni-artifact }}
+      bindings-artifact: ${{ needs.bindings.outputs.bindings-artifact }}
+    secrets: inherit
+
+  # Runs the example app on an emulator and drives it with Appium. Separate from
+  # `kotlin` below, rather than another step of it, because the two answer
+  # different questions — `kotlin` that the library packages into an AAR, this
+  # one that it works on a device — and an emulator run has no business
+  # holding up the AAR. It installs the APK `apk` built rather than building
+  # its own; see that job for why.
+  e2e:
+    name: 'Drive the Android example app on a device'
+    needs: apk
+    uses: ./.github/workflows/android-e2e.yml
+    with:
+      apk-artifact: ${{ needs.apk.outputs.apk-artifact }}
+    secrets: inherit
+
+  kotlin:
+    name: 'Assemble the AAR'
+    needs: [native, bindings]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # jniLibs and the generated Kotlin are both build outputs and gitignored,
+      # so both have to be put back before Gradle can see them. Neither is made
+      # here: `native` built the .so and `bindings` read the Kotlin out of it.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.native.outputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.bindings.outputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
       - name: 'Set up JDK'
         uses: actions/setup-java@v4
         with:
@@ -132,12 +177,11 @@ jobs:
       - name: 'Set up Gradle'
         uses: gradle/actions/setup-gradle@v4
 
-      # The example app is the reason `:app:assembleDebug` is here: compiling it
-      # is what proves the generated bindings are usable from ordinary Kotlin,
-      # not merely that they parse.
-      - name: 'Assemble the library + compile the example app'
+      # Only the library. The example app is compiled — once — by `apk`,
+      # against these same bindings.
+      - name: 'Assemble the library'
         working-directory: android
-        run: ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
+        run: ./gradlew :fedimint-sdk:assembleRelease
 
       - name: 'Upload AAR'
         uses: actions/upload-artifact@v4
