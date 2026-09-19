@@ -123,35 +123,8 @@ async function runTests(testNames: string[]): Promise<void> {
 
       try {
         await test.initialize()
-
-        // Recorded and saved for every test, pass or fail — see the failure
-        // path below for the equivalent on that side. Real cost: every run
-        // now produces and uploads a video, not just failing ones.
-        try {
-          await test.driver.startRecordingScreen()
-        } catch (recError) {
-          console.warn('Could not start screen recording:', recError)
-        }
-
         await ensureState(test, TestClass.prerequisites)
         await test.execute()
-
-        try {
-          const video = await test.driver.stopRecordingScreen()
-          if (video) {
-            const videoPath = path.join(
-              process.cwd(),
-              'screenshots',
-              `${testName}-passed-${Date.now()}.mp4`,
-            )
-            const dir = path.dirname(videoPath)
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-            fs.writeFileSync(videoPath, video, 'base64')
-            console.log(`Recording saved to: ${videoPath}`)
-          }
-        } catch (recError) {
-          console.warn('Could not save screen recording:', recError)
-        }
 
         for (const state of TestClass.produces) currentState.add(state)
 
@@ -192,34 +165,18 @@ async function runTests(testNames: string[]): Promise<void> {
               captureError,
             )
           }
-
-          try {
-            const video = await drv.stopRecordingScreen()
-            if (video) {
-              const videoPath = path.join(
-                process.cwd(),
-                'screenshots',
-                `${testName}-failure-${Date.now()}.mp4`,
-              )
-              fs.writeFileSync(videoPath, video, 'base64')
-              console.log(`Recording saved to: ${videoPath}`)
-            }
-          } catch (recordingError) {
-            console.error('Failed to save screen recording:', recordingError)
-          }
         }
 
         captureAndroidLogcat(testName)
 
-        try {
-          await test.resetAppToFresh()
-        } catch (resetError) {
-          console.error(
-            'Reset after failure failed. Subsequent tests may not run cleanly:',
-            resetError,
-          )
-        }
-        currentState.clear()
+        // Fail-fast: one failing test stops the run rather than resetting and
+        // trying the rest. A federation-backed suite has no independent
+        // failures to still learn from — devimint, the emulator or the app
+        // itself is in a state the next test would just fail against too,
+        // for a reason already captured above. Exiting here instead of
+        // ploughing through the remaining tests is also what makes a CI run
+        // finish in minutes instead of the full timeout.
+        break
       }
     }
 

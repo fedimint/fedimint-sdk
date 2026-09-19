@@ -343,9 +343,6 @@
               pkgs.curl
               # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
               pkgs.jdk17
-              # Appium re-encodes what the device's screenrecord produces
-              # before handing the run's video back over the wire.
-              pkgs.ffmpeg-headless
             ] ++ devimintNativeBuildInputs;
             shellHook = commonShellHook + androidTestsShellHook;
           };
