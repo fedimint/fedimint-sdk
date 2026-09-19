@@ -131,7 +131,7 @@ jobs:
               js/web/react/*|packages/react/*)
                 core=true
                 ;;
-              js/react-native/react-native/*|js/react-native/react-native-bindings/*|scripts/generate-sdk-rn-bindings.sh|scripts/build-sdk-rn-ios.sh|Justfile)
+              js/react-native/react-native/*|js/react-native/react-native-bindings/*|js/examples/react-native/*|js/examples/expo-app/*|scripts/generate-sdk-rn-bindings.sh|scripts/build-sdk-rn-ios.sh|Justfile)
                 react_native=true
                 # The Justfile also holds the web binding recipe.
                 web=true
@@ -202,6 +202,10 @@ jobs:
         # ubrn-generated and need a package build; this config maps them to the test stub so the
         # type-level contract still gets checked.
         run: pnpm --dir js --filter @fedimint/react-native typecheck:test
+      - name: Build the React Native packages
+        run: pnpm --dir js build:reactnative
+      - name: Type-check the example apps against the built packages
+        run: pnpm --dir js --filter react-native-sdk-example --filter expo-app-example typecheck
 
   build-android:
     name: Build Android
