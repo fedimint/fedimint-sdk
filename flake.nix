@@ -90,6 +90,29 @@
           cmdLineToolsVersion = "13.0";
         };
 
+        # Separate from androidSdk above: this pulls in the emulator +
+        # a system image (gigabytes), only for the android-tests shell that
+        # actually boots a device to run the Appium suite against.
+        # arm64-v8a on Apple Silicon hosts runs with hardware acceleration
+        # (Hypervisor.framework); x86_64 elsewhere (Intel Mac, Linux CI).
+        #
+        # platformVersions carries 34 alongside the 36 the Gradle project
+        # compiles against: the AVD this shell boots runs the android-34
+        # system image.
+        androidEmulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
+        androidSdkEmulator = pkgs.androidenv.composeAndroidPackages {
+          includeNDK = true;
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = [ "google_apis" ];
+          abiVersions = [ androidEmulatorAbi ];
+          toolsVersion = "26.1.1";
+          ndkVersions = ["27.1.12297006"];
+          buildToolsVersions = ["36.0.0"];
+          platformVersions = ["34" "36"];
+          cmdLineToolsVersion = "13.0";
+        };
+
         fenixPkgs = fenix.packages.${system};
         baseToolchain = fenixPkgs.stable.toolchain;
         
@@ -134,6 +157,29 @@
           '';
 
           # Dependencies that were previously common, likely for general dev/testing/wasm
+          # The daemons devimint drives, and devimint itself. Shared by the two
+          # shells that stand a federation up: `wasm-tests` runs the browser
+          # client against it, `android-tests` the Android one. Neither list
+          # mentions the other's client, so the Android shell never pulls the
+          # Playwright browser bundles and the wasm shell never pulls an
+          # emulator image.
+          devimintNativeBuildInputs = [
+            pkgs.bitcoind
+            pkgs.electrs
+            pkgs.jq
+            pkgs.lnd
+            pkgs.netcat
+            pkgs.perl
+            pkgs.esplora-electrs
+            pkgs.procps
+            pkgs.which
+            fedimint.packages.${system}.devimint
+            fedimint.packages.${system}.gateway-pkgs
+            fedimint.packages.${system}.fedimint-pkgs
+            fedimint.packages.${system}.fedimint-recurringd
+            fedimint.packages.${system}.fedimint-recurringdv2
+          ];
+
           wasmNativeBuildInputs = commonNativeBuildInputs ++ [
             pkgs.bitcoind
             pkgs.electrs
@@ -167,8 +213,12 @@
             fi
           '';
 
-          androidShellHook = ''
-            export ANDROID_HOME=${androidSdk.androidsdk}/libexec/android-sdk
+          # Parametrized over which composeAndroidPackages result to point at:
+          # the lean androidSdk (build-only, no emulator) for the `android`
+          # shell, or androidSdkEmulator (adds emulator + a system image) for
+          # `android-tests`.
+          mkAndroidShellHook = sdk: ''
+            export ANDROID_HOME=${sdk.androidsdk}/libexec/android-sdk
             export ANDROID_SDK_ROOT=$ANDROID_HOME
             export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
             export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
@@ -217,6 +267,35 @@
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
             fi
 
+            # ./gradlew needs a JVM, and so do avdmanager and the uiautomator2
+            # driver. Both android shells carry one so that assembling the example app
+            # APK needs nothing from outside the shell: it is what lets CI build
+            # the APK in the lean `android` shell, on a machine that never
+            # boots an emulator or stands a federation up.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
+
+          '';
+
+          androidShellHook = mkAndroidShellHook androidSdk;
+
+          # Adds: emulator/platform-tools/cmdline-tools on PATH, a repo-local
+          # APPIUM_HOME + ANDROID_AVD_HOME (so driver installs and AVDs don't
+          # land in ~/.appium / ~/.android on a contributor's machine), and
+          # the pnpm-installed `appium` binary on PATH. Appium itself is a
+          # plain npm devDependency of js/android/integration-tests
+          # (see its package.json), not a Nix package — only the Android SDK/
+          # emulator toolchain it drives comes from Nix here.
+          androidTestsShellHook = mkAndroidShellHook androidSdkEmulator + ''
+            REPO_ROOT=$(git rev-parse --show-toplevel)
+
+            export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+            export PATH="$REPO_ROOT/js/android/integration-tests/node_modules/.bin:$PATH"
+
+            export APPIUM_HOME="$REPO_ROOT/js/android/integration-tests/.appium"
+            mkdir -p "$APPIUM_HOME"
+            export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
+            mkdir -p "$ANDROID_AVD_HOME"
           '';
         in {
           default = pkgs.mkShell {
@@ -239,8 +318,37 @@
               pkgs.cargo-ndk
               pkgs.libclang # Often needed for bindgen
               androidToolchain
+              # Gradle, for assembling the example APK (see mkAndroidShellHook).
+              pkgs.jdk17
             ];
             shellHook = commonShellHook + androidShellHook;
+          };
+
+          # For js/android/integration-tests: everything `android` gives
+          # you, plus a bootable emulator, appium's PATH/APPIUM_HOME wiring,
+          # and devimint, so the suite can run against the same local
+          # federation the wasm tests use (scripts/setup_test_shell.sh execs
+          # the runner inside `devimint wasm-test-setup`). Kept separate from
+          # `android` so the plain FFI build shell doesn't pay for the
+          # emulator system image or the federation daemons it never runs.
+          android-tests = pkgs.mkShell {
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              androidSdkEmulator.androidsdk
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.go
+              pkgs.cargo-ndk
+              pkgs.libclang
+              androidToolchain
+              # curl backs the Appium server health-check in
+              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # present, like `ps`/`lsof`, on minimal self-hosted runners).
+              pkgs.curl
+              # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
+              pkgs.jdk17
+            ] ++ devimintNativeBuildInputs;
+            shellHook = commonShellHook + androidTestsShellHook;
           };
 
           wasm-tests = pkgs.mkShell {
