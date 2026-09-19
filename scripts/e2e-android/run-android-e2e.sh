@@ -27,6 +27,27 @@ for bin in adb emulator java; do
   fi
 done
 
+# Every test in the suite runs against a devimint federation — there is no
+# federation-free mode, so that what CI runs and what a contributor runs are
+# the same thing. devimint exports these when it execs this script; without
+# them the federation-backed tests would fail one by one on a connection
+# refused, which is a slower and much less obvious way to learn the same
+# thing.
+if [[ -z "${FM_FEDERATION_BASE_PORT:-}" ]]; then
+  cat >&2 <<'MSG'
+No federation in the environment (FM_FEDERATION_BASE_PORT is unset).
+
+This suite runs inside devimint, the same way the wasm one does. Start it with:
+
+  just test-android-e2e
+
+or, by hand:
+
+  nix develop .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+MSG
+  exit 1
+fi
+
 echo "=== Android E2E (SDK) tests ==="
 
 cd "$REPO_ROOT"
@@ -151,7 +172,7 @@ else
   done
 
   if [[ -z "${TESTS_TO_RUN:-}" ]]; then
-    echo "Which tests to run? (mnemonic, inviteCode, all)"
+    echo "Which tests to run? (mnemonic, inviteCode, federation, lightning, mint, all)"
     read -r TESTS_TO_RUN
     TESTS_TO_RUN=${TESTS_TO_RUN:-all}
   fi
@@ -200,14 +221,7 @@ fi
 #   faucet     FM_PORT_FAUCET, so a test could reach it from the device too;
 #              the runner itself talks to it from the host.
 reverse_devimint_ports() {
-  local base="${FM_FEDERATION_BASE_PORT:-}"
-  if [[ -z "$base" ]]; then
-    echo "No FM_FEDERATION_BASE_PORT in the environment — running without a federation."
-    echo "For federation-backed tests, run under devimint:"
-    echo "  nix develop .#android-tests -c scripts/setup_test_shell.sh bash $0"
-    return
-  fi
-
+  local base="$FM_FEDERATION_BASE_PORT"
   local fed_size="${FM_FED_SIZE:-4}"
   local ports_per_peer=4
   local last=$((base + fed_size * ports_per_peer - 1))

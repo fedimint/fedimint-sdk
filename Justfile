@@ -18,17 +18,14 @@ test-kotlin: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 
 # Boot an emulator, install the demo app and drive it with the Appium suite
-# (js/android/integration-tests), against a devimint federation — the Android
-# counterpart of `just test`, which does the same for the wasm client. Builds
-# the SDK payload first unless SKIP_BINDINGS_BUILD=true says it is in place.
+# (js/android/integration-tests) against a devimint federation — the Android
+# counterpart of `just test`, which does the same for the wasm client, through
+# the same scripts/setup_test_shell.sh. There is deliberately no federation-free
+# variant: one way to run this suite, so what CI does and what you can
+# reproduce are the same thing. Builds the SDK payload first unless
+# SKIP_BINDINGS_BUILD=true says it is in place.
 test-android-e2e:
     nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
-
-# The same suite with no federation behind it: faster to start, and enough for
-# the tests that never join one (mnemonic, inviteCode). The federation-backed
-# tests fail fast rather than hanging if they are selected here.
-test-android-e2e-local:
-    nix develop --accept-flake-config .#android-tests -c scripts/e2e-android/run-android-e2e.sh
 
 # Assemble the release AAR (publishing is not wired up yet).
 build-android-aar: build-kotlin

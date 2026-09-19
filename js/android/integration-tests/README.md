@@ -23,12 +23,13 @@ separate so that shell doesn't pay for the emulator's multi-gigabyte closure), a
 this package — Nix supplies the Android toolchain around Appium, not Appium itself):
 
 ```bash
-just test-android-e2e          # with a devimint federation behind it
-just test-android-e2e-local    # without one: only the tests that never join
+just test-android-e2e
 ```
 
-Both boot (or let you pick) a device, build the SDK payload and the APK, start
-Appium and run the suite. By hand, inside the shell:
+That boots (or lets you pick) a device, builds the SDK payload and the APK,
+starts Appium, and runs the suite inside a devimint federation. There is one
+way to run it on purpose: no federation-free variant, so what CI runs and what
+you can reproduce are the same thing. By hand, inside the shell:
 
 ```bash
 nix develop .#android-tests

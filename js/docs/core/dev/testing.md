@@ -76,8 +76,8 @@ inside `devimint wasm-test-setup` by the same `scripts/setup_test_shell.sh`, tes
 faucet for an invite code and for invoice payments, and the app joins the real thing. The
 emulator reaches guardians and gateways bound to the host's `127.0.0.1` through `adb
 reverse` — see `js/android/integration-tests/README.md` for why that rather than
-`10.0.2.2`. `just test-android-e2e` is the Android counterpart of `just test`;
-`just test-android-e2e-local` skips the federation for the tests that never join one.
+`10.0.2.2`. `just test-android-e2e` is the Android counterpart of `just test`, and the only way in:
+the suite has no federation-free mode, so a local run and CI are the same run.
 
 **Nix**: run this from the `android-tests` devshell (`nix develop .#android-tests`), which extends
 the plain `android` FFI-build shell with an emulator + system image and wires
