@@ -5,12 +5,12 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@expo/metro-runtime": "~55.0.0",
     "@expo/vector-icons": "^15.0.0",
-    "@fedimint/core": "workspace:*",
     "@fedimint/react-native": "workspace:*",
     "expo": "~55.0.0",
     "expo-clipboard": "~55.0.0",

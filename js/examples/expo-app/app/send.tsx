@@ -1,6 +1,13 @@
 import React, { useState } from 'react'
-import { Text, TextInput, ScrollView } from 'react-native'
-import { wallet } from '../src/wallet'
+import { Text, TextInput, View, ScrollView } from 'react-native'
+import {
+  Notes,
+  LnSendState_Tags,
+  OnchainSendState_Tags,
+  type LnQuoteLike,
+  type OnchainQuoteLike,
+} from '@fedimint/react-native'
+import { errorMessage, federation, msatToSat } from '../src/sdk'
 import {
   SectionCard,
   SectionTitle,
@@ -11,19 +18,50 @@ import {
 import s from '../src/styles'
 
 const SendLightning = () => {
-  const [lightningInput, setLightningInput] = useState('')
-  const [lightningResult, setLightningResult] = useState('')
-  const [lightningError, setLightningError] = useState('')
+  const [invoice, setInvoice] = useState('')
+  const [quote, setQuote] = useState<LnQuoteLike>()
+  const [quoting, setQuoting] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState('')
+  const [error, setError] = useState('')
 
-  const handleSubmit = async () => {
+  const handleQuote = async () => {
+    setQuoting(true)
+    setError('')
+    setResult('')
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
-      await wallet.lightning.payInvoice(lightningInput)
-      setLightningResult('Paid!')
-      setLightningError('')
-    } catch (e) {
-      setLightningError(String(e))
-      setLightningResult('')
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const lightning = fed.lightning()
+      if (!lightning) {
+        throw new Error('Lightning is not supported by this federation')
+      }
+      setQuote(await lightning.quote(invoice.trim()))
+    } catch (error) {
+      setError(errorMessage(error))
+      setQuote(undefined)
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  const handlePay = async () => {
+    if (!quote) return
+    setSending(true)
+    setError('')
+    try {
+      const lightning = federation()?.lightning()
+      if (!lightning) {
+        throw new Error('Lightning is not supported by this federation')
+      }
+      const operation = await lightning.send(quote)
+      const state = await operation.awaitFinal()
+      setResult(LnSendState_Tags[state.tag])
+      setQuote(undefined)
+    } catch (error) {
+      setError(errorMessage(error))
+    } finally {
+      setSending(false)
     }
   }
 
@@ -34,12 +72,36 @@ const SendLightning = () => {
         style={s.input}
         placeholder="lnbc..."
         placeholderTextColor="#888"
-        value={lightningInput}
-        onChangeText={setLightningInput}
+        value={invoice}
+        onChangeText={(text) => {
+          setInvoice(text)
+          setQuote(undefined)
+        }}
       />
-      <Btn title="Pay" onPress={handleSubmit} primary />
-      {!!lightningResult && <SuccessBox>{lightningResult}</SuccessBox>}
-      {!!lightningError && <ErrorBox>{lightningError}</ErrorBox>}
+      <Btn
+        title={quoting ? 'Quoting...' : 'Quote'}
+        onPress={handleQuote}
+        disabled={quoting || !invoice.trim()}
+      />
+
+      {quote && (
+        <View style={s.resultBox}>
+          <Text style={s.label}>
+            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
+          </Text>
+          <Text style={s.label}>
+            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
+          </Text>
+          <Btn
+            title={sending ? 'Paying...' : `Pay ${msatToSat(quote.total())} sats`}
+            onPress={handlePay}
+            disabled={sending}
+            primary
+          />
+        </View>
+      )}
+      {!!result && <SuccessBox>{result}</SuccessBox>}
+      {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
 }
@@ -47,18 +109,47 @@ const SendLightning = () => {
 const SendOnchain = () => {
   const [address, setAddress] = useState('')
   const [amount, setAmount] = useState('')
+  const [quote, setQuote] = useState<OnchainQuoteLike>()
+  const [quoting, setQuoting] = useState(false)
+  const [sending, setSending] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
-  const [sending, setSending] = useState(false)
 
-  const handleWithdraw = async () => {
+  const handleQuote = async () => {
+    setQuote(undefined)
+    setResult('')
+    setError('')
+    setQuoting(true)
     try {
-      setSending(true)
-      if (!wallet) throw new Error('Wallet unavailable')
-      const res = await wallet.wallet.sendOnchain(Number(amount), address)
-      res && setResult(res.operation_id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const onchain = fed.onchain()
+      if (!onchain) {
+        throw new Error('On-chain is not supported by this federation')
+      }
+      setQuote(await onchain.quote(address.trim(), BigInt(amount.trim())))
+    } catch (error) {
+      setError(errorMessage(error))
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  const handleSend = async () => {
+    if (!quote) return
+    setSending(true)
+    setError('')
+    try {
+      const onchain = federation()?.onchain()
+      if (!onchain) {
+        throw new Error('On-chain is not supported by this federation')
+      }
+      const operation = await onchain.send(quote)
+      const state = await operation.awaitFinal()
+      setResult(OnchainSendState_Tags[state.tag])
+      setQuote(undefined)
+    } catch (error) {
+      setError(errorMessage(error))
     } finally {
       setSending(false)
     }
@@ -67,49 +158,84 @@ const SendOnchain = () => {
   return (
     <SectionCard>
       <SectionTitle>Send Onchain</SectionTitle>
-      <Text style={s.label}>Amount (sats):</Text>
       <TextInput
         style={s.input}
-        placeholder="Enter amount"
+        placeholder="Enter amount in sats"
         placeholderTextColor="#888"
         keyboardType="numeric"
         value={amount}
-        onChangeText={setAmount}
+        onChangeText={(text) => {
+          setAmount(text)
+          setQuote(undefined)
+        }}
       />
-      <Text style={s.label}>Address:</Text>
       <TextInput
         style={s.input}
         placeholder="Enter onchain address"
         placeholderTextColor="#888"
         value={address}
-        onChangeText={setAddress}
+        onChangeText={(text) => {
+          setAddress(text)
+          setQuote(undefined)
+        }}
       />
       <Btn
-        title={sending ? 'Sending...' : 'Send'}
-        onPress={handleWithdraw}
-        disabled={sending}
-        primary
+        title={quoting ? 'Quoting...' : 'Quote'}
+        onPress={handleQuote}
+        disabled={quoting || !amount.trim() || !address.trim()}
       />
-      {!!result && <SuccessBox>Onchain Send Successful</SuccessBox>}
+
+      {quote && (
+        <View style={s.resultBox}>
+          <Text style={s.label}>
+            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
+          </Text>
+          <Text style={s.label}>
+            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
+          </Text>
+          <Btn
+            title={sending ? 'Sending...' : `Send ${msatToSat(quote.total())} sats`}
+            onPress={handleSend}
+            disabled={sending}
+            primary
+          />
+        </View>
+      )}
+      {!!result && <SuccessBox>{result}</SuccessBox>}
       {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
 }
 
 const RedeemEcash = () => {
-  const [ecashInput, setEcashInput] = useState('')
-  const [redeemResult, setRedeemResult] = useState('')
-  const [redeemError, setRedeemError] = useState('')
+  const [input, setInput] = useState('')
+  const [result, setResult] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const handleRedeem = async () => {
+    setBusy(true)
+    setResult('')
+    setError('')
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
-      await wallet.mint.redeemEcash(ecashInput)
-      setRedeemResult('Redeemed!')
-      setRedeemError('')
-    } catch (e) {
-      setRedeemError(String(e))
-      setRedeemResult('')
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const ecash = fed.ecash()
+      if (!ecash) throw new Error('Ecash is not supported by this federation')
+      const notes = (() => {
+        try {
+          return Notes.parse(input.trim())
+        } catch (parseError) {
+          throw new Error(`Invalid ecash notes: ${errorMessage(parseError)}`)
+        }
+      })()
+      const operation = await ecash.receive(notes)
+      await operation.awaitFinal()
+      setResult(`Redeemed ${msatToSat(notes.value())} sats`)
+    } catch (error) {
+      setError(errorMessage(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -120,12 +246,16 @@ const RedeemEcash = () => {
         style={s.input}
         placeholder="Long ecash string..."
         placeholderTextColor="#888"
-        value={ecashInput}
-        onChangeText={setEcashInput}
+        value={input}
+        onChangeText={setInput}
       />
-      <Btn title="Redeem" onPress={handleRedeem} />
-      {!!redeemResult && <SuccessBox>{redeemResult}</SuccessBox>}
-      {!!redeemError && <ErrorBox>{redeemError}</ErrorBox>}
+      <Btn
+        title={busy ? 'Redeeming...' : 'Redeem'}
+        onPress={handleRedeem}
+        disabled={busy || !input.trim()}
+      />
+      {!!result && <SuccessBox>{result}</SuccessBox>}
+      {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
 }

@@ -101,9 +101,6 @@ importers:
       '@expo/vector-icons':
         specifier: ^15.0.0
         version: 15.0.3(expo-font@55.0.4)(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
