@@ -9,9 +9,8 @@ import {
   Platform,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
-import { director } from '../wallet'
+import { errorMessage, generateWords, open } from '../sdk'
 import { Btn, ErrorBox, SuccessBox } from '../components'
-import { extractErrorMessage } from '../hooks'
 
 type Step = 'welcome' | 'mnemonic'
 
@@ -59,7 +58,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
 
 function MnemonicStep({ onComplete }: { onComplete: () => void }) {
   const [mode, setMode] = useState<'choose' | 'generate' | 'import'>('choose')
-  const [mnemonic, setMnemonic] = useState('')
+  const [words, setWords] = useState<string[]>([])
   const [importInput, setImportInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{
@@ -67,58 +66,37 @@ function MnemonicStep({ onComplete }: { onComplete: () => void }) {
     type: 'success' | 'error'
   }>()
 
-  const handleGenerate = async () => {
-    setLoading(true)
+  const handleGenerate = () => {
     setMessage(undefined)
-    try {
-      const words = await director.generateMnemonic()
-      setMnemonic(words.join(' '))
-      setMode('generate')
-    } catch (error) {
-      setMessage({ text: extractErrorMessage(error), type: 'error' })
-    } finally {
-      setLoading(false)
-    }
+    setWords(generateWords())
+    setMode('generate')
   }
 
-  const handleSaveMnemonic = async () => {
+  const handleContinue = async () => {
     setLoading(true)
     setMessage(undefined)
     try {
-      const words = mnemonic.trim().split(/\s+/)
-      await director.setMnemonic(words)
-      setMessage({ text: 'Mnemonic saved!', type: 'success' })
+      await open(words)
+      setMessage({ text: 'Wallet created!', type: 'success' })
       setTimeout(onComplete, 600)
     } catch (error) {
-      const msg = extractErrorMessage(error)
-      if (msg.toLowerCase().includes('already exists')) {
-        setMessage({ text: 'Mnemonic already set!', type: 'success' })
-        setTimeout(onComplete, 600)
-      } else {
-        setMessage({ text: msg, type: 'error' })
-      }
+      setMessage({ text: errorMessage(error), type: 'error' })
     } finally {
       setLoading(false)
     }
   }
 
   const handleImport = async () => {
-    if (!importInput.trim()) return
+    const importWords = importInput.trim().split(/\s+/).filter(Boolean)
+    if (importWords.length === 0) return
     setLoading(true)
     setMessage(undefined)
     try {
-      const words = importInput.trim().split(/\s+/)
-      await director.setMnemonic(words)
-      setMessage({ text: 'Mnemonic imported!', type: 'success' })
+      await open(importWords)
+      setMessage({ text: 'Wallet imported!', type: 'success' })
       setTimeout(onComplete, 600)
     } catch (error) {
-      const msg = extractErrorMessage(error)
-      if (msg.toLowerCase().includes('already exists')) {
-        setMessage({ text: 'Mnemonic already set!', type: 'success' })
-        setTimeout(onComplete, 600)
-      } else {
-        setMessage({ text: msg, type: 'error' })
-      }
+      setMessage({ text: errorMessage(error), type: 'error' })
     } finally {
       setLoading(false)
     }
@@ -144,12 +122,7 @@ function MnemonicStep({ onComplete }: { onComplete: () => void }) {
         </Text>
         <View style={styles.optionRow}>
           <View style={styles.optionBtn}>
-            <Btn
-              title={loading ? 'Generating...' : 'Generate New'}
-              onPress={handleGenerate}
-              disabled={loading}
-              primary
-            />
+            <Btn title="Generate New" onPress={handleGenerate} disabled={loading} primary />
           </View>
           <View style={styles.optionBtn}>
             <Btn
@@ -174,12 +147,12 @@ function MnemonicStep({ onComplete }: { onComplete: () => void }) {
           recover your wallet.
         </Text>
         <View style={styles.mnemonicBox}>
-          <Text style={styles.mnemonicText}>{mnemonic}</Text>
+          <Text style={styles.mnemonicText}>{words.join(' ')}</Text>
         </View>
         <View style={styles.btnContainer}>
           <Btn
-            title={loading ? 'Saving...' : "I've Saved My Phrase — Continue"}
-            onPress={handleSaveMnemonic}
+            title={loading ? 'Creating...' : "I've Saved My Phrase — Continue"}
+            onPress={handleContinue}
             disabled={loading}
             primary
           />

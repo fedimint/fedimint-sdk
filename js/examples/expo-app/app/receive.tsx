@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { View, Text, TextInput, ScrollView, Alert, Linking } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { wallet } from '../src/wallet'
+import { LnReceiveState_Tags } from '@fedimint/react-native'
+import { errorMessage, federation, msatToSat, satToMsat } from '../src/sdk'
 import {
   SectionCard,
   SectionTitle,
@@ -15,22 +16,31 @@ const GenerateLightningInvoice = () => {
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [invoice, setInvoice] = useState('')
+  const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
 
-  const handleSubmit = async () => {
+  const handleGenerate = async () => {
     setInvoice('')
+    setStatus('')
     setError('')
     setGenerating(true)
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
-      const response = await wallet.lightning.createInvoice(
-        Number(amount),
-        description,
-      )
-      response && setInvoice(response.invoice)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const lightning = fed.lightning()
+      if (!lightning) {
+        throw new Error('Lightning is not supported by this federation')
+      }
+      const handle = await lightning.receive(satToMsat(amount), description)
+      setInvoice(handle.invoice)
+      setStatus('Waiting for payment')
+      handle.operation
+        .awaitFinal()
+        .then((state) => setStatus(LnReceiveState_Tags[state.tag]))
+        .catch((finalError) => setStatus(errorMessage(finalError)))
+    } catch (error) {
+      setError(errorMessage(error))
     } finally {
       setGenerating(false)
     }
@@ -44,10 +54,10 @@ const GenerateLightningInvoice = () => {
   return (
     <SectionCard>
       <SectionTitle>Generate Lightning Invoice</SectionTitle>
-      <Text style={s.label}>Amount (msats):</Text>
+      <Text style={s.label}>Amount (sats):</Text>
       <TextInput
         style={s.input}
-        placeholder="Enter amount in msats"
+        placeholder="Enter amount in sats"
         placeholderTextColor="#888"
         keyboardType="numeric"
         value={amount}
@@ -63,8 +73,8 @@ const GenerateLightningInvoice = () => {
       />
       <Btn
         title={generating ? 'Generating...' : 'Generate Invoice'}
-        onPress={handleSubmit}
-        disabled={generating}
+        onPress={handleGenerate}
+        disabled={generating || !amount.trim()}
         primary
       />
       <Text
@@ -80,6 +90,7 @@ const GenerateLightningInvoice = () => {
           <Text style={s.mono} selectable>
             {invoice}
           </Text>
+          {!!status && <Text style={s.value}>{status}</Text>}
           <Btn title="Copy" onPress={copyInvoice} small />
         </View>
       )}
@@ -94,13 +105,19 @@ const Deposit = () => {
   const [loading, setLoading] = useState(false)
 
   const handleGenerate = async () => {
+    setAddressError('')
     setLoading(true)
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
-      const result = await wallet.wallet.generateAddress()
-      result && setAddress(result.deposit_address)
-    } catch (e) {
-      setAddressError(e instanceof Error ? e.message : String(e))
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const onchain = fed.onchain()
+      if (!onchain) {
+        throw new Error('On-chain is not supported by this federation')
+      }
+      const handle = await onchain.receive()
+      setAddress(handle.address)
+    } catch (error) {
+      setAddressError(errorMessage(error))
     } finally {
       setLoading(false)
     }
