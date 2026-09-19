@@ -193,9 +193,6 @@ importers:
 
   examples/react-native:
     dependencies:
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
@@ -242,6 +239,9 @@ importers:
       '@react-native/typescript-config':
         specifier: 0.83.1
         version: 0.83.1
+      '@types/jest':
+        specifier: ^29.5.14
+        version: 29.5.14
       '@types/react':
         specifier: '>=19.2.14'
         version: 19.2.14
