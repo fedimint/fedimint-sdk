@@ -155,6 +155,25 @@
         wasmToolchain = mkToolchain [
           "wasm32-unknown-unknown"
         ];
+
+        # The four Apple targets the iOS SDK ships as XCFramework slices. Unlike
+        # Android, there is no cacheable Nix cross-compile to pair this with:
+        # every Apple target needs the iOS/macOS SDK, which only exists inside
+        # an Xcode installation and cannot live in the store. So this toolchain
+        # supplies `rust-std` and nothing else, and
+        # scripts/build-ios-lib.sh drives plain `cargo` against the host Xcode —
+        # the same shape js/react-native/react-native-bindings already uses for
+        # these exact triples. nix/ffi.nix stays Android-only.
+        #
+        # `aarch64-apple-darwin` is not a mistake: the XCFramework carries a
+        # macOS slice so `swift test --package-path ios` runs on the host
+        # without booting a simulator.
+        iosToolchain = mkToolchain [
+          "aarch64-apple-ios"
+          "aarch64-apple-ios-sim"
+          "x86_64-apple-ios"
+          "aarch64-apple-darwin"
+        ];
         
         defaultToolchain = mkToolchain [];
       in
@@ -411,6 +430,63 @@
                fedimint.packages.${system}.fedimint-recurringdv2
              ] ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
+          };
+        } // nixpkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          # Darwin-only: every target in `iosToolchain` compiles against an SDK
+          # that ships with Xcode, so the shell is useless on Linux and
+          # `eachDefaultSystem` would otherwise expose a broken `.#ios` there.
+          #
+          # Note this shell deliberately does *not* include `commonShellHook`:
+          # that exports `pkgs.libclang`, and bindgen must see the *Apple* SDK
+          # headers instead. See LIBCLANG_PATH below.
+          ios = pkgs.mkShell {
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              iosToolchain
+              # For aws-lc-sys's and librocksdb-sys's C/C++ sources: the same
+              # set nix/ffi.nix passes to the Android cross-compile, carried
+              # over so the two shells do not drift. In practice the Apple
+              # builds have only been observed to need `cmake` and `perl`;
+              # `gnumake`, `go` and `python3` are here because aws-lc and ring
+              # reach for them on some configurations and finding that out
+              # halfway through a 5-minute cross-compile is worse than the
+              # closure size.
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.perl
+              pkgs.go
+              pkgs.python3
+              # Generates ios/Demo/FedimintDemo.xcodeproj from the committed
+              # project.yml, so the Xcode project is a build output like every
+              # other generated file here.
+              pkgs.xcodegen
+            ];
+            shellHook = ''
+              # Xcode's libclang, NOT pkgs.libclang. bindgen (librocksdb-sys,
+              # aws-lc-sys) has to resolve headers out of the iPhoneOS /
+              # MacOSX SDK, and the nixpkgs build has no Apple sysroot at all —
+              # it fails with "'stdint.h' file not found" on the first header.
+              # This is the exact inverse of what androidShellHook wants, which
+              # is why that hook is not reused here.
+              export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+
+              # Both of these mirror androidShellHook rather than fixing an
+              # observed Apple failure: the Apple targets have been built
+              # without either. They are set so this shell and the Android one
+              # drive the same dependency graph the same way — aws-lc-sys's
+              # "bindgen" feature (enabled through fedimint-connectors) can
+              # otherwise fall back to a CMake source build whose CMakeLists.txt
+              # references files the crates.io tarball does not ship, and the
+              # cc-only builder compiles the same sources without touching them.
+              # Drop them if they ever get in the way; nothing here depends on
+              # them.
+              export AWS_LC_SYS_CMAKE_BUILDER=0
+              export ROCKSDB_STATIC=1
+
+              # CC/CXX are deliberately left unset, unlike androidShellHook: the
+              # `cc` and `cmake` crates must reach Xcode's clang through
+              # `xcrun` with the right `-target`/`-isysroot` per Apple triple,
+              # and pinning a single compiler here would break three of the four.
+            '';
           };
         };
         packages =
