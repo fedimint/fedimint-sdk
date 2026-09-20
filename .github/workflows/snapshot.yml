@@ -55,8 +55,20 @@ jobs:
 
             npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
 
+            # `changeset version --snapshot` below exits 1 with "No unreleased
+            # changesets found" when nothing is pending. This run was asked for
+            # by a person, so say what they can act on instead of leaving them
+            # that message to decode. Still a failure: a snapshot was requested
+            # and none can be built. Keep this path in step with `.changeset` if
+            # it ever moves. (The canary in `changesets.yml` fires on every push
+            # rather than on request, so it skips this case instead.)
+            if [ -z "$(find js/.changeset -maxdepth 1 -name "*.md" ! -name "README.md" -print -quit)" ]; then
+              echo "No changeset pending on this branch; there is nothing to publish as a snapshot." >&2
+              exit 1
+            fi
+
             pnpm --dir js install
-            pnpm --dir js changeset version --no-git-tag --snapshot "$snapshot"
+            pnpm --dir js changeset version --snapshot "$snapshot"
             pnpm --dir js build
-            pnpm --dir js changeset publish --no-git-tag --snapshot "$snapshot" --tag snapshot
+            pnpm --dir js changeset publish --no-git-tag --tag snapshot
           '

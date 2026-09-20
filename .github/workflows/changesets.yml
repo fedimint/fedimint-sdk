@@ -77,18 +77,29 @@ jobs:
       - name: Publish prerelease
         # Only publish a prerelease if we didn't publish a release
         if: steps.changesets.outputs.published != 'true'
-        continue-on-error: true
         timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           nix develop --accept-flake-config -c bash -c '
+            set -euo pipefail
             export CI=true
             npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
             git reset --hard origin/main
+            # `changeset version --snapshot` exits 1 when no changeset is
+            # pending, which is the ordinary state of a commit that needs no
+            # release. Skipping here keeps that case a success, so the only way
+            # past this point is a real failure: the step no longer carries
+            # `continue-on-error`, and the `set -e` above stops the script at
+            # whichever command actually broke. Keep this path in step with
+            # `.changeset` if it ever moves, or the canary quietly stops again.
+            if [ -z "$(find js/.changeset -maxdepth 1 -name "*.md" ! -name "README.md" -print -quit)" ]; then
+              echo "No changeset pending; nothing to publish as a canary."
+              exit 0
+            fi
             pnpm --dir js clean
-            pnpm --dir js changeset version --no-git-tag --snapshot canary
+            pnpm --dir js changeset version --snapshot canary
             pnpm --dir js build
-            pnpm --dir js changeset publish --no-git-tag --snapshot canary --tag canary
+            pnpm --dir js changeset publish --no-git-tag --tag canary
           '
