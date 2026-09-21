@@ -55,6 +55,12 @@ final class DemoModel: ObservableObject {
     private var federation: Federation?
     private var balanceTask: Task<Void, Never>?
 
+    /// One long-lived operation watcher per section, so a new one can replace
+    /// the old instead of racing it. Same ownership `balanceTask` has, and for
+    /// the same reason: the Kotlin demo gets this free from `lifecycleScope`
+    /// (MainActivity.kt:506), and Swift has no equivalent ambient scope.
+    private var watchTasks: [Section: Task<Void, Never>] = [:]
+
     /// Quotes are single use: held between the Quote and Pay/Send taps so the
     /// user sees the fee before committing, then dropped once submitted. The
     /// Rust side enforces this too — a second `send` on the same quote throws
@@ -391,6 +397,9 @@ final class DemoModel: ObservableObject {
         federation = joined
         hasFederation = true
         balanceTask?.cancel()
+        // Every open watcher belongs to the federation being replaced, so its
+        // cursor is stale by definition.
+        cancelWatchers()
         lnQuote = nil
         onchainQuote = nil
         balance = "Balance: …"
@@ -443,19 +452,47 @@ final class DemoModel: ObservableObject {
         header: String,
         next: @MainActor @escaping () async throws -> State?
     ) {
-        Task {
+        watchTasks[section]?.cancel()
+        // `[weak self]` for the same reason `balanceTask` uses it: the model
+        // owns the task and the task would otherwise own the model, and a
+        // watcher can stay open for as long as an on-chain confirmation takes.
+        // It also makes a write from a watcher that outlives the screen a
+        // no-op rather than a resurrection.
+        watchTasks[section] = Task { [weak self] in
             do {
                 while let state = try await next() {
-                    self.results[section] = "\(header)\n\nstate: \(state)"
+                    // Checked before the write rather than only at loop entry.
+                    // `next()` is a uniffi call and is not cancellable, so a
+                    // cancelled watcher stays alive until its in-flight call
+                    // returns; guarding the write is what actually stops a
+                    // stale watcher from overwriting a section that a newer
+                    // one now owns.
+                    if Task.isCancelled { break }
+                    self?.results[section] = "\(header)\n\nstate: \(state)"
                 }
                 // A `nil` means the state is final, not that anything went
                 // wrong; leave the last rendering in place and stop.
             } catch let error as SdkError {
-                self.results[section] = "\(header)\n\nstopped watching: \(error.reason())"
+                if !Task.isCancelled {
+                    self?.results[section] = "\(header)\n\nstopped watching: \(error.reason())"
+                }
             } catch {
-                self.results[section] = "\(header)\n\nstopped watching: \(error)"
+                if !Task.isCancelled {
+                    self?.results[section] = "\(header)\n\nstopped watching: \(error)"
+                }
             }
         }
+    }
+
+    /// Stops every operation watcher.
+    ///
+    /// Finished tasks are left in the dictionary rather than removing
+    /// themselves on completion: self-removal needs a token to avoid a task
+    /// that finished late clearing the entry belonging to its own replacement,
+    /// and cancelling an already-finished `Task` is a no-op.
+    private func cancelWatchers() {
+        watchTasks.values.forEach { $0.cancel() }
+        watchTasks.removeAll()
     }
 
     private func describe(_ error: SdkError) -> String {
@@ -482,11 +519,20 @@ final class DemoModel: ObservableObject {
 
 // MARK: - Formatting
 
+/// Exact for every `UInt64`.
+///
+/// Integer division rather than `Double(msats) / 1000`: the binding preserves
+/// the full `u64`, and going through `Double` would quietly round anything
+/// above 2^53 msats. Same output as the Kotlin demo's `formatMsats`
+/// (MainActivity.kt:553), so both render an amount identically.
 func formatMsats(_ msats: UInt64) -> String {
-    let sats = Double(msats) / 1000
-    return String(format: "%.3f sat", sats)
+    let sats = msats / 1_000
+    return msats % 1_000 == 0 ? "\(sats) sat" : "\(sats) sat (\(msats) msat)"
 }
 
+/// `Double` is fine here, unlike in `formatMsats`: epoch milliseconds are
+/// ~1.7e12, four orders of magnitude below 2^53, and `Date` takes a
+/// `TimeInterval` anyway.
 func formatTimestamp(_ epochMillis: UInt64) -> String {
     let date = Date(timeIntervalSince1970: Double(epochMillis) / 1000)
     return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .medium)

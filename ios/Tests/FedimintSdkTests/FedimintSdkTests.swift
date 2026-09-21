@@ -172,28 +172,72 @@ final class FedimintSdkTests: XCTestCase {
 
     /// Fails the test instead of hanging the whole run.
     ///
-    /// Not belt and braces: the storage tests above are exactly the ones whose
-    /// failure mode is a deadlock rather than a wrong value — `createFedimintSdk`
-    /// waits for the store when a handle is still open. Without this, a
-    /// regression costs CI its full timeout and reports nothing useful.
+    /// The storage tests above are exactly the ones whose failure mode is a
+    /// deadlock rather than a wrong value — `createFedimintSdk` waits for the
+    /// store when a handle is still open. Without this, a regression costs CI
+    /// its full job timeout and reports nothing useful.
+    ///
+    /// The task is unstructured and is never awaited, which is the whole design
+    /// rather than an oversight. A structured child — a task group, or
+    /// `async let` — cannot work here: the scope does not exit until every
+    /// child has drained, and a uniffi call in flight never drains no matter
+    /// how hard it is cancelled. Its generated `uniffiRustCallAsync` polls
+    /// inside a bare `withUnsafeContinuation` with no `withTaskCancellationHandler`,
+    /// so cancellation is not signalled to Rust at all and the poll loop runs
+    /// until the Rust future reports ready — which, when it is blocked on the
+    /// store, is never. Leaking the task is the point: the test fails, the run
+    /// carries on, and the stuck task dies with the process.
+    ///
+    /// Leaking is safe here because each storage test works in its own `UUID()`
+    /// temp directory, so a stuck task shares no state with any later test, and
+    /// unlinking a directory Rust still holds open is fine on POSIX.
     private func withTimeout<T: Sendable>(
-        seconds: UInt64 = 60,
+        seconds: TimeInterval = 60,
         _ work: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await work() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-                throw TimedOut(seconds: seconds)
-            }
-            guard let first = try await group.next() else { throw TimedOut(seconds: seconds) }
-            group.cancelAll()
-            return first
+        let finished = expectation(description: "SDK call finished")
+        let outcome = OutcomeBox<T>()
+
+        Task {
+            do { outcome.set(.success(try await work())) }
+            catch { outcome.set(.failure(error)) }
+            finished.fulfill()
+        }
+
+        // Records its own XCTest failure on timeout and then returns normally,
+        // so the throw below is not redundant: it stops the rest of the test
+        // body, which would otherwise go on to await a `shutdown()` on a handle
+        // that was never created and hang for another full timeout.
+        await fulfillment(of: [finished], timeout: seconds)
+
+        guard let result = outcome.take() else { throw TimedOut(seconds: seconds) }
+        return try result.get()
+    }
+
+    /// Carries one result out of the unstructured task above.
+    ///
+    /// A lock rather than an actor: the value crosses between executors exactly
+    /// once, and an actor would make `set` async inside a task whose whole job
+    /// is to not be awaited.
+    private final class OutcomeBox<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Result<T, Swift.Error>?
+
+        func set(_ result: Result<T, Swift.Error>) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = result
+        }
+
+        func take() -> Result<T, Swift.Error>? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
         }
     }
 
     private struct TimedOut: Swift.Error, CustomStringConvertible {
-        let seconds: UInt64
+        let seconds: TimeInterval
         var description: String { "timed out after \(seconds)s — most likely a deadlock" }
     }
 
