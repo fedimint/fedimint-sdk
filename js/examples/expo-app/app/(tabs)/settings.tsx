@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { View, Text, TextInput, ScrollView, Alert } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { InviteCode, type LnQuoteLike } from '@fedimint/react-native'
+import { InviteCode, Mnemonic, type LnQuoteLike } from '@fedimint/react-native'
 import {
   current,
   errorMessage,
@@ -54,6 +54,9 @@ const MnemonicManager = () => {
     setBusy(true)
     setMessage(undefined)
     try {
+      // Parse the seed before resetting, so a bad entry is caught while the current wallet
+      // is still there instead of after it has already been deleted.
+      Mnemonic.fromWords(restoreWords)
       await reset()
       await open(restoreWords)
       setRestoreInput('')

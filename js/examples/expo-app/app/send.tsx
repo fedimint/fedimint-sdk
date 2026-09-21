@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Text, TextInput, View, ScrollView } from 'react-native'
 import {
   Notes,
@@ -24,8 +24,12 @@ const SendLightning = () => {
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
+  // A quote belongs to the input it was requested for: this counts each request so a quote
+  // that resolves after the invoice has since changed can tell it is stale and drop itself.
+  const quoteGen = useRef(0)
 
   const handleQuote = async () => {
+    const gen = ++quoteGen.current
     setQuoting(true)
     setError('')
     setResult('')
@@ -36,7 +40,9 @@ const SendLightning = () => {
       if (!lightning) {
         throw new Error('Lightning is not supported by this federation')
       }
-      setQuote(await lightning.quote(invoice.trim()))
+      const next = await lightning.quote(invoice.trim())
+      if (gen !== quoteGen.current) return
+      setQuote(next)
     } catch (error) {
       setError(errorMessage(error))
       setQuote(undefined)
@@ -76,7 +82,9 @@ const SendLightning = () => {
         onChangeText={(text) => {
           setInvoice(text)
           setQuote(undefined)
+          quoteGen.current += 1
         }}
+        editable={!quoting}
       />
       <Btn
         title={quoting ? 'Quoting...' : 'Quote'}
@@ -114,8 +122,13 @@ const SendOnchain = () => {
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
+  // A quote belongs to the input it was requested for: this counts each request so a quote
+  // that resolves after the amount or address has since changed can tell it is stale and drop
+  // itself.
+  const quoteGen = useRef(0)
 
   const handleQuote = async () => {
+    const gen = ++quoteGen.current
     setQuote(undefined)
     setResult('')
     setError('')
@@ -127,7 +140,9 @@ const SendOnchain = () => {
       if (!onchain) {
         throw new Error('On-chain is not supported by this federation')
       }
-      setQuote(await onchain.quote(address.trim(), BigInt(amount.trim())))
+      const next = await onchain.quote(address.trim(), BigInt(amount.trim()))
+      if (gen !== quoteGen.current) return
+      setQuote(next)
     } catch (error) {
       setError(errorMessage(error))
     } finally {
@@ -167,7 +182,9 @@ const SendOnchain = () => {
         onChangeText={(text) => {
           setAmount(text)
           setQuote(undefined)
+          quoteGen.current += 1
         }}
+        editable={!quoting}
       />
       <TextInput
         style={s.input}
@@ -177,7 +194,9 @@ const SendOnchain = () => {
         onChangeText={(text) => {
           setAddress(text)
           setQuote(undefined)
+          quoteGen.current += 1
         }}
+        editable={!quoting}
       />
       <Btn
         title={quoting ? 'Quoting...' : 'Quote'}
