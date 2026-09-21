@@ -218,6 +218,16 @@ That one slice is enough for `swift test`, which runs on macOS and needs no
 simulator. CI ([`swift-sdk.yaml`](../.github/workflows/swift-sdk.yaml)) uses the
 same knob: two targets on a pull request, all four on `main`.
 
+A narrowed build produces a narrowed XCFramework — it does **not** keep slices
+from an earlier run. That is deliberate: `build-ios-lib.sh` records the triples
+it built in `target/apple-slices.txt`, and both the bindings step and the
+XCFramework assembly key off that record rather than off which archives happen
+to be on disk. Otherwise a populated `target/` would let a subset build ship
+stale machine code, and — worse — let `uniffi-bindgen` read its metadata out of
+an archive that is not the one being shipped, which is the exact drift the
+two-step split exists to prevent. Run a full build when you want a full
+framework back.
+
 Non-Nix escape hatch: the scripts are plain `cargo` and never call `nix`, so
 running them directly works on any machine whose toolchain already has the Apple
 targets — the counterpart of `build-android-sdk.sh --local`:

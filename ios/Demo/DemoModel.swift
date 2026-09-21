@@ -282,9 +282,19 @@ final class DemoModel: ObservableObject {
             guard let lightning = self.federation?.lightning() else {
                 return "this federation has no lightning module"
             }
-            guard !self.lnInvoice.trimmed.isEmpty else { return "paste an invoice first" }
+            let invoice = self.lnInvoice.trimmed
+            guard !invoice.isEmpty else { return "paste an invoice first" }
 
-            let quote = try await lightning.quote(invoice: self.lnInvoice.trimmed)
+            let quote = try await lightning.quote(invoice: invoice)
+
+            // Quoting is a round trip, and the field is editable throughout it.
+            // The `didSet` on `lnInvoice` clears any existing quote the moment
+            // the user types, but it cannot stop a call already in flight from
+            // landing afterwards — and arming Pay with a quote for an invoice
+            // that is no longer on screen is how the wrong invoice gets paid.
+            guard invoice == self.lnInvoice.trimmed else {
+                return "the invoice changed while quoting — quote again"
+            }
             self.lnQuote = quote
             return """
                 Amount   \(formatMsats(quote.invoiceAmount()))
@@ -347,14 +357,21 @@ final class DemoModel: ObservableObject {
             guard let sats = UInt64(self.onchainAmount.trimmed) else {
                 return "enter an amount in sats"
             }
-            guard !self.onchainAddress.trimmed.isEmpty else {
+            let address = self.onchainAddress.trimmed
+            guard !address.isEmpty else {
                 return "enter a destination address"
             }
 
-            let quote = try await onchain.quote(
-                address: self.onchainAddress.trimmed,
-                amount: sats
-            )
+            let quote = try await onchain.quote(address: address, amount: sats)
+
+            // Same in-flight race as the lightning quote above, over two fields
+            // instead of one: a quote carries the destination *and* the amount
+            // it was taken for, so either one moving invalidates it.
+            guard address == self.onchainAddress.trimmed,
+                  sats == UInt64(self.onchainAmount.trimmed)
+            else {
+                return "the destination changed while quoting — quote again"
+            }
             self.onchainQuote = quote
             return """
                 Amount   \(quote.amount()) sat

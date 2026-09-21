@@ -41,37 +41,45 @@ GEN_MODULEMAP="FedimintSdkFFI.modulemap"
 # it knows which slices its own run produced, which is the only way to be sure
 # the metadata came from this build.
 #
-# The probe below is for deliberate standalone use (`just build-swift-bindings`).
-# It prefers the device library — the one a phone actually loads — then the
-# simulator, then macOS, so a host-only build still generates. The metadata is
-# identical in every slice; only the machine code differs.
+# The selection below is for deliberate standalone use
+# (`just build-swift-bindings`). It prefers the device library — the one a phone
+# actually loads — then the simulator, then macOS, so a host-only build still
+# generates. The metadata is identical in every slice; only the machine code
+# differs.
 #
-# It is restricted to IOS_TARGETS when that is set, because a populated target/
-# from an earlier full build otherwise lets it pick a triple the caller
-# deliberately excluded — reading the metadata out of an archive that is not
-# going to be shipped, which is exactly the drift this whole pipeline exists to
-# make impossible.
-wanted_target() {
-    local wanted="$1" triple
-    [[ -z "${IOS_TARGETS:-}" ]] && return 0
-    for triple in $IOS_TARGETS; do
-        [[ "$triple" == "$wanted" ]] && return 0
-    done
-    return 1
-}
+# It never picks by "this file exists". A populated target/ — from an earlier
+# full build, or restored from a CI cache — makes the device archive present
+# even on a run that deliberately skipped that target, and reading metadata out
+# of an archive that is not going to be shipped is exactly the drift this whole
+# pipeline exists to make impossible. So the choice is made from the manifest
+# scripts/build-ios-lib.sh writes, which records what that run actually built.
+MANIFEST="$TARGET_DIR/apple-slices.txt"
 
 if [[ -n "${1:-}" ]]; then
     LIB="$1"
 else
+    if [[ ! -f "$MANIFEST" ]]; then
+        echo "no build manifest at $MANIFEST" >&2
+        echo "build the native libraries first: ./scripts/build-ios-lib.sh" >&2
+        echo "(or pass an archive explicitly: $0 <path-to-libfedimint_sdk.a>)" >&2
+        exit 1
+    fi
+
     LIB=""
     for triple in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin; do
-        wanted_target "$triple" || continue
+        grep -qxF "$triple" "$MANIFEST" || continue
         candidate="$TARGET_DIR/$triple/release/libfedimint_sdk.a"
         if [[ -f "$candidate" ]]; then
             LIB="$candidate"
             break
         fi
     done
+
+    if [[ -z "$LIB" ]]; then
+        echo "the last build produced no archive that can carry UniFFI metadata" >&2
+        echo "it built: $(tr '\n' ' ' <"$MANIFEST")" >&2
+        exit 1
+    fi
 fi
 
 if [[ -z "$LIB" || ! -f "$LIB" ]]; then

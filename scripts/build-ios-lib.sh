@@ -39,18 +39,20 @@ LIB_NAME="libfedimint_sdk.a"
 DEFAULT_TARGETS="aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin"
 TARGETS="${IOS_TARGETS:-$DEFAULT_TARGETS}"
 
-# This script owns the default list and the `IOS_TARGETS` override, and
-# `--print-targets` is how scripts/build-ios-sdk.sh asks what a run would build
-# without having to repeat the default. Keeping one owner is what stops the
-# orchestrator and the builder from silently disagreeing about which slices this
-# invocation is responsible for.
-if [[ "${1:-}" == "--print-targets" ]]; then
-    echo "$TARGETS"
-    exit 0
-elif [[ -n "${1:-}" ]]; then
-    echo "usage: $0 [--print-targets]" >&2
+if [[ -n "${1:-}" ]]; then
+    echo "usage: $0" >&2
     exit 1
 fi
+
+# The record of what this invocation actually built, which is the only thing
+# downstream can safely act on. `--library` metadata extraction and XCFramework
+# assembly both have to know which archives are fresh, and a populated target/ —
+# from an earlier full build, or restored from a CI cache — makes "the file
+# exists" a useless proxy for that.
+#
+# Removed before the build and written only on success, so a failed or
+# interrupted run leaves no manifest claiming slices that are not there.
+MANIFEST="$TARGET_DIR/apple-slices.txt"
 
 # Must agree with ios/Package.swift's `platforms:`. cargo sets the Rust half per
 # target, but the `cc` and `cmake` crates compiling rocksdb's and aws-lc's C and
@@ -91,6 +93,7 @@ done
 # where build-ios-sdk.sh looks for one, and it gets packaged.
 SIM_OUT="$TARGET_DIR/lipo-ios-sim/release"
 rm -f "$SIM_OUT/$LIB_NAME"
+rm -f "$MANIFEST"
 
 built=()
 for triple in $TARGETS; do
@@ -142,6 +145,9 @@ if (( ${#sim_inputs[@]} > 0 )); then
 else
     echo "==> no simulator target built this run, skipping lipo"
 fi
+
+mkdir -p "$(dirname "$MANIFEST")"
+printf '%s\n' "${built[@]}" >"$MANIFEST"
 
 echo "==> Done. Built: ${built[*]}"
 for triple in "${built[@]}"; do

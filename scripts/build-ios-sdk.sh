@@ -33,24 +33,21 @@ HEADERS="$ROOT/ios/Frameworks/Headers"
 XCFRAMEWORK="$ROOT/ios/Frameworks/FedimintSdkFFI.xcframework"
 LIB_NAME="libfedimint_sdk.a"
 
-# Resolve the target list once, from the script that owns it, and pin it for
-# the child so both halves of this run are talking about the same slices even
-# when IOS_TARGETS was not set. Everything below keys off TARGETS rather than
-# off what happens to be on disk: a populated target/ from an earlier full build
-# would otherwise let a subset run package archives it did not produce.
-TARGETS="$("$ROOT/scripts/build-ios-lib.sh" --print-targets)"
-export IOS_TARGETS="$TARGETS"
-
-# `set -e` means this returns 0 only if every triple in TARGETS built, so from
-# here on TARGETS *is* the list of fresh slices.
 "$ROOT/scripts/build-ios-lib.sh"
 
+# Everything below keys off what that run *built*, not off what is on disk: a
+# populated target/ from an earlier full build would otherwise let a subset run
+# package archives it did not produce. build-ios-lib.sh records the list, having
+# deleted any previous one before it started, so this cannot outlive its build.
+MANIFEST="$TARGET_DIR/apple-slices.txt"
+[[ -f "$MANIFEST" ]] || {
+    echo "build-ios-lib.sh wrote no manifest at $MANIFEST" >&2
+    exit 1
+}
+TARGETS="$(tr '\n' ' ' <"$MANIFEST")"
+
 built_this_run() {
-    local wanted="$1" triple
-    for triple in $TARGETS; do
-        [[ "$triple" == "$wanted" ]] && return 0
-    done
-    return 1
+    grep -qxF "$1" "$MANIFEST"
 }
 
 # Generate from a slice this run built, chosen explicitly rather than left to
