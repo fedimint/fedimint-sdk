@@ -81,14 +81,15 @@ function fatal(error: string): void {
 async function handle(
   request: Extract<Request, { kind: 'static' | 'call' }>,
 ): Promise<void> {
+  // The controller is registered before the first `await`: this function is entered
+  // synchronously from the message listener, so an `abort` for this id cannot be dispatched
+  // until it is in the map, however long the module still takes to load.
+  const controller = request.abortable ? new AbortController() : undefined
+  if (controller) aborts.set(request.id, controller)
   try {
     await ready
     const args = decodeArgs(request.args)
-    if (request.abortable) {
-      const controller = new AbortController()
-      aborts.set(request.id, controller)
-      args.push({ signal: controller.signal })
-    }
+    if (controller) args.push({ signal: controller.signal })
     let receiver: unknown
     let fn: unknown
     if (request.kind === 'static') {
