@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { ErrorCode, LnReceiveState_Tags, openSdk } from '../index'
+// Imported through the package's `exports` (not a relative path into `src`) so the worker
+// entry, the wasm-bindgen glue and the module are loaded from `dist`, exactly as an
+// application would load them.
+import { ErrorCode, LnReceiveState_Tags, openSdk } from '@fedimint/sdk-web'
 
 const faucet = import.meta.env.FAUCET
 

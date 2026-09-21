@@ -1,5 +1,6 @@
 import { expectTypeOf, it } from 'vitest'
 import type {
+  BalanceUpdatesLike,
   FederationLike,
   FederationStatus,
   FederationStatus_Tags,
@@ -40,4 +41,14 @@ it('keeps a tagged enum as its tag and data fields, never as a handle', () => {
   // Quarantined's own data field, so it is not part of the tag-only intersection every variant
   // shares.
   expectTypeOf<keyof Status>().toEqualTypeOf<'tag'>()
+})
+
+it('keeps an AbortSignal argument as itself, not a handle', () => {
+  // `updates.next({ signal })` must type-check: the record carrying the signal maps
+  // structurally, and the signal inside it keeps its own type rather than becoming a `Proxied`
+  // handle, because it never crosses to the worker.
+  type Next = Proxied<BalanceUpdatesLike>['next']
+  expectTypeOf<Next>()
+    .parameter(0)
+    .toEqualTypeOf<{ signal: AbortSignal } | undefined>()
 })

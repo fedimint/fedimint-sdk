@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WorkerSession } from '../client'
 import type { WorkerLike } from '../client'
 import { SdkError, SessionClosed, WorkerCrashed } from '../errors'
@@ -131,6 +131,42 @@ describe('WorkerSession', () => {
     expect(w.sent[0]).toMatchObject({ abortable: true, args: [] })
     controller.abort()
     expect(w.sent[1]).toEqual({ kind: 'abort', id: 1 })
+  })
+  it('rejects an already-aborted signal without posting anything', async () => {
+    const w = new FakeWorker()
+    const s = new WorkerSession(w)
+    const controller = new AbortController()
+    controller.abort()
+    const p = s.callMethod(1, 'balance', [{ signal: controller.signal }])
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+    expect(w.sent).toHaveLength(0)
+  })
+  it('stops listening for abort once the call has settled', async () => {
+    const w = new FakeWorker()
+    const s = new WorkerSession(w)
+    const controller = new AbortController()
+    // The listener is observed directly: a later abort posting nothing would also be explained
+    // by the pending-map check inside the listener, so that alone proves no detachment.
+    const added = vi.spyOn(controller.signal, 'addEventListener')
+    const removed = vi.spyOn(controller.signal, 'removeEventListener')
+    const p = s.callMethod(1, 'balance', [{ signal: controller.signal }])
+    w.reply({ kind: 'ok', id: 1, value: 5n })
+    await p
+    expect(added).toHaveBeenCalledTimes(1)
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(removed.mock.calls[0]![1]).toBe(added.mock.calls[0]![1])
+    controller.abort()
+    expect(w.sent).toHaveLength(1)
+  })
+  it('detaches the abort listeners of every call in flight when the session fails', () => {
+    const w = new FakeWorker()
+    const s = new WorkerSession(w)
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, 'removeEventListener')
+    const p = s.callMethod(1, 'balance', [{ signal: controller.signal }])
+    p.catch(() => {})
+    s.fail(new WorkerCrashed('gone'))
+    expect(removed).toHaveBeenCalledTimes(1)
   })
   it('a handle is not thenable', async () => {
     const w = new FakeWorker()

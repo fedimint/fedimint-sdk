@@ -130,6 +130,6 @@ export default defineConfig({
     ],
   },
   optimizeDeps: {
-    exclude: ['@fedimint/core'],
+    exclude: ['@fedimint/core', '@fedimint/sdk-web'],
   },
 })

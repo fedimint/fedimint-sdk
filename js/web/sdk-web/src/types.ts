@@ -43,16 +43,20 @@ export type ProxiedValue<V> = V extends
   | null
   | undefined
   ? V
-  : V extends Uint8Array | ArrayBuffer | Date
+  : // An `AbortSignal` is a local main-thread object; `splitSignal` strips it out of the call
+    // before it crosses to the worker, so it never needs a handle and keeps its own type.
+    V extends AbortSignal
     ? V
-    : V extends Array<infer E>
-      ? Array<ProxiedValue<E>>
-      : V extends Map<infer K, infer W>
-        ? Map<ProxiedValue<K>, ProxiedValue<W>>
-        : V extends { readonly tag: string }
-          ? Fields<V>
-          : V extends object
-            ? HasMethod<V> extends never
-              ? { [K in keyof V]: ProxiedValue<V[K]> }
-              : Proxied<V>
-            : V
+    : V extends Uint8Array | ArrayBuffer | Date
+      ? V
+      : V extends Array<infer E>
+        ? Array<ProxiedValue<E>>
+        : V extends Map<infer K, infer W>
+          ? Map<ProxiedValue<K>, ProxiedValue<W>>
+          : V extends { readonly tag: string }
+            ? Fields<V>
+            : V extends object
+              ? HasMethod<V> extends never
+                ? { [K in keyof V]: ProxiedValue<V[K]> }
+                : Proxied<V>
+              : V

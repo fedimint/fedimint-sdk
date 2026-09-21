@@ -35,7 +35,7 @@
     "clean:deep": "pnpm run clean && rm -rf node_modules",
     "generate": "../../../scripts/generate-sdk-web-bindings.sh",
     "typecheck": "tsc --noEmit",
-    "prepare": "tsc --project tsconfig.build.json"
+    "prepare": "pnpm build"
   },
   "dependencies": {
     "@ubjs/core": "0.31.0-5",

@@ -20,6 +20,8 @@ export interface WorkerLike {
 interface Pending {
   resolve(value: unknown): void
   reject(error: Error): void
+  /** Detaches this call's `abort` listener from its signal once the call has settled. */
+  cleanup(): void
 }
 
 type CallHead =
@@ -75,7 +77,10 @@ export class WorkerSession {
   fail(error: Error): void {
     if (this.dead) return
     this.dead = error
-    for (const { reject } of this.pending.values()) reject(error)
+    for (const pending of this.pending.values()) {
+      pending.cleanup()
+      pending.reject(error)
+    }
     this.pending.clear()
   }
 
@@ -86,20 +91,31 @@ export class WorkerSession {
 
   private request(head: CallHead, rawArgs: unknown[]): Promise<unknown> {
     if (this.dead) return Promise.reject(this.dead)
-    const id = this.nextId++
     const { args, signal } = splitSignal(rawArgs)
+    // An already-aborted signal never fires its `abort` event, so without this check the call
+    // would still be posted to the worker and run to completion.
+    if (signal?.aborted)
+      return Promise.reject(
+        new DOMException('The operation was aborted', 'AbortError'),
+      )
+    const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      const onAbort = () => {
+        if (this.pending.has(id))
+          this.worker.postMessage({ kind: 'abort', id } satisfies Request)
+      }
+      signal?.addEventListener('abort', onAbort)
+      this.pending.set(id, {
+        resolve,
+        reject,
+        cleanup: () => signal?.removeEventListener('abort', onAbort),
+      })
       this.worker.postMessage({
         ...head,
         id,
         args: walk(args, (v) => this.markerFor(v)),
         abortable: signal !== undefined,
       } as Request)
-      signal?.addEventListener('abort', () => {
-        if (this.pending.has(id))
-          this.worker.postMessage({ kind: 'abort', id } satisfies Request)
-      })
     })
   }
 
@@ -118,6 +134,7 @@ export class WorkerSession {
     const pending = this.pending.get(message.id)
     if (!pending) return
     this.pending.delete(message.id)
+    pending.cleanup()
     if (message.kind === 'ok') {
       pending.resolve(
         walk(message.value, (v) =>
