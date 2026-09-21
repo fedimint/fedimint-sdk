@@ -74,9 +74,6 @@ and `awaitFinal()`. The demo app (`ios/Demo`) drives each of them once.
 
 ## Using it
 
-See [`use-ios-sdk.md`](../../Fedimint-workspace-/use-ios-sdk.md) for the full
-walkthrough. The shape of it:
-
 ```swift
 import FedimintSdk
 
