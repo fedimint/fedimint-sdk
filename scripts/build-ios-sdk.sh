@@ -33,8 +33,44 @@ HEADERS="$ROOT/ios/Frameworks/Headers"
 XCFRAMEWORK="$ROOT/ios/Frameworks/FedimintSdkFFI.xcframework"
 LIB_NAME="libfedimint_sdk.a"
 
+# Resolve the target list once, from the script that owns it, and pin it for
+# the child so both halves of this run are talking about the same slices even
+# when IOS_TARGETS was not set. Everything below keys off TARGETS rather than
+# off what happens to be on disk: a populated target/ from an earlier full build
+# would otherwise let a subset run package archives it did not produce.
+TARGETS="$("$ROOT/scripts/build-ios-lib.sh" --print-targets)"
+export IOS_TARGETS="$TARGETS"
+
+# `set -e` means this returns 0 only if every triple in TARGETS built, so from
+# here on TARGETS *is* the list of fresh slices.
 "$ROOT/scripts/build-ios-lib.sh"
-"$ROOT/scripts/generate-swift-bindings.sh"
+
+built_this_run() {
+    local wanted="$1" triple
+    for triple in $TARGETS; do
+        [[ "$triple" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
+# Generate from a slice this run built, chosen explicitly rather than left to
+# the fallback probe in generate-swift-bindings.sh. Device first — it is the one
+# a phone actually loads — then the simulator, then macOS. The metadata is
+# identical in every slice; what matters is that it came from this build.
+BINDINGS_LIB=""
+for triple in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin; do
+    if built_this_run "$triple"; then
+        BINDINGS_LIB="$TARGET_DIR/$triple/release/$LIB_NAME"
+        break
+    fi
+done
+if [[ -z "$BINDINGS_LIB" ]]; then
+    echo "none of the Apple targets that can carry UniFFI metadata were built" >&2
+    echo "IOS_TARGETS was: $TARGETS" >&2
+    exit 1
+fi
+
+"$ROOT/scripts/generate-swift-bindings.sh" "$BINDINGS_LIB"
 
 # ---------------------------------------------------------------------------
 # XCFramework
@@ -47,19 +83,38 @@ LIB_NAME="libfedimint_sdk.a"
 # generate-swift-bindings.sh puts the header and `module.modulemap` there and
 # nothing else.
 
+# Each slice is gated on a triple from TARGETS rather than on `[[ -f ]]`, so a
+# subset build produces a subset framework instead of quietly shipping whatever
+# an earlier run left behind. The file check stays as a sanity assert: by this
+# point the library is supposed to exist, and its absence is a bug worth
+# shouting about rather than silently dropping a slice.
 args=()
 slices=()
 add_slice() {
     local label="$1" lib="$2"
-    if [[ -f "$lib" ]]; then
-        args+=(-library "$lib" -headers "$HEADERS")
-        slices+=("$label")
-    fi
+    shift 2
+    local triple
+    for triple in "$@"; do
+        if built_this_run "$triple"; then
+            [[ -f "$lib" ]] || {
+                echo "built $triple this run but $lib is missing" >&2
+                exit 1
+            }
+            args+=(-library "$lib" -headers "$HEADERS")
+            slices+=("$label")
+            return 0
+        fi
+    done
+    return 0
 }
 
-add_slice "ios-arm64"                  "$TARGET_DIR/aarch64-apple-ios/release/$LIB_NAME"
-add_slice "ios-arm64_x86_64-simulator" "$TARGET_DIR/lipo-ios-sim/release/$LIB_NAME"
-add_slice "macos-arm64"                "$TARGET_DIR/aarch64-apple-darwin/release/$LIB_NAME"
+add_slice "ios-arm64" "$TARGET_DIR/aarch64-apple-ios/release/$LIB_NAME" \
+    aarch64-apple-ios
+# Either simulator triple produces the lipo'd archive, so either one earns the slice.
+add_slice "ios-arm64_x86_64-simulator" "$TARGET_DIR/lipo-ios-sim/release/$LIB_NAME" \
+    aarch64-apple-ios-sim x86_64-apple-ios
+add_slice "macos-arm64" "$TARGET_DIR/aarch64-apple-darwin/release/$LIB_NAME" \
+    aarch64-apple-darwin
 
 if (( ${#slices[@]} == 0 )); then
     echo "no built libraries to assemble — did build-ios-lib.sh run?" >&2

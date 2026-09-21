@@ -39,6 +39,19 @@ LIB_NAME="libfedimint_sdk.a"
 DEFAULT_TARGETS="aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin"
 TARGETS="${IOS_TARGETS:-$DEFAULT_TARGETS}"
 
+# This script owns the default list and the `IOS_TARGETS` override, and
+# `--print-targets` is how scripts/build-ios-sdk.sh asks what a run would build
+# without having to repeat the default. Keeping one owner is what stops the
+# orchestrator and the builder from silently disagreeing about which slices this
+# invocation is responsible for.
+if [[ "${1:-}" == "--print-targets" ]]; then
+    echo "$TARGETS"
+    exit 0
+elif [[ -n "${1:-}" ]]; then
+    echo "usage: $0 [--print-targets]" >&2
+    exit 1
+fi
+
 # Must agree with ios/Package.swift's `platforms:`. cargo sets the Rust half per
 # target, but the `cc` and `cmake` crates compiling rocksdb's and aws-lc's C and
 # C++ sources read these from the environment — without them every object file
@@ -72,6 +85,13 @@ for triple in $TARGETS; do
     fi
 done
 
+# The lipo output is derived from the simulator slices, so a leftover from an
+# earlier run must not survive into this one. Without this, a build that
+# produces no simulator slice at all still leaves a stale fat archive sitting
+# where build-ios-sdk.sh looks for one, and it gets packaged.
+SIM_OUT="$TARGET_DIR/lipo-ios-sim/release"
+rm -f "$SIM_OUT/$LIB_NAME"
+
 built=()
 for triple in $TARGETS; do
     echo "==> cargo build --release --features uniffi --target $triple"
@@ -100,20 +120,27 @@ done
 # before xcodebuild will take them. `lipo -create` over one input is a plain
 # copy, which is what a CI subset build ends up doing.
 
+# Gated on `built`, not on the file being present: a previous full build leaves
+# both simulator archives on disk, so probing the filesystem would merge a slice
+# this run did not produce and ship stale machine code inside a fat archive that
+# looks freshly made.
 sim_inputs=()
 for triple in aarch64-apple-ios-sim x86_64-apple-ios; do
-    candidate="$TARGET_DIR/$triple/release/$LIB_NAME"
-    [[ -f "$candidate" ]] && sim_inputs+=("$candidate")
+    for done_triple in "${built[@]}"; do
+        if [[ "$done_triple" == "$triple" ]]; then
+            sim_inputs+=("$TARGET_DIR/$triple/release/$LIB_NAME")
+            break
+        fi
+    done
 done
 
 if (( ${#sim_inputs[@]} > 0 )); then
-    sim_out="$TARGET_DIR/lipo-ios-sim/release"
-    mkdir -p "$sim_out"
-    echo "==> lipo -create -> $sim_out/$LIB_NAME"
-    lipo -create "${sim_inputs[@]}" -output "$sim_out/$LIB_NAME"
-    lipo -info "$sim_out/$LIB_NAME"
+    mkdir -p "$SIM_OUT"
+    echo "==> lipo -create -> $SIM_OUT/$LIB_NAME"
+    lipo -create "${sim_inputs[@]}" -output "$SIM_OUT/$LIB_NAME"
+    lipo -info "$SIM_OUT/$LIB_NAME"
 else
-    echo "==> no simulator target built, skipping lipo"
+    echo "==> no simulator target built this run, skipping lipo"
 fi
 
 echo "==> Done. Built: ${built[*]}"

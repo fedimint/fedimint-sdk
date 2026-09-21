@@ -14,7 +14,10 @@ could drift.
 
 ## Installing
 
-Add the package by path, or by URL once this repository is tagged:
+Add the package by path. There is no URL install yet: `Frameworks/` is a build
+output and is gitignored, so a git tag carries no XCFramework for
+`binaryTarget` to resolve — see [Publishing](#publishing) for what hosting one
+would take.
 
 ```swift
 dependencies: [

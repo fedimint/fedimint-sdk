@@ -37,15 +37,35 @@ GEN_SWIFT="FedimintSdk.swift"
 GEN_HEADER="FedimintSdkFFI.h"
 GEN_MODULEMAP="FedimintSdkFFI.modulemap"
 
-# Prefer the device library — it is the one a phone actually loads. The macOS
-# slice is the fallback so a host-only build (what CI does on a pull request,
-# and what anyone running `swift test` needs) still generates. The metadata is
+# An explicit path always wins, and scripts/build-ios-sdk.sh always passes one:
+# it knows which slices its own run produced, which is the only way to be sure
+# the metadata came from this build.
+#
+# The probe below is for deliberate standalone use (`just build-swift-bindings`).
+# It prefers the device library — the one a phone actually loads — then the
+# simulator, then macOS, so a host-only build still generates. The metadata is
 # identical in every slice; only the machine code differs.
+#
+# It is restricted to IOS_TARGETS when that is set, because a populated target/
+# from an earlier full build otherwise lets it pick a triple the caller
+# deliberately excluded — reading the metadata out of an archive that is not
+# going to be shipped, which is exactly the drift this whole pipeline exists to
+# make impossible.
+wanted_target() {
+    local wanted="$1" triple
+    [[ -z "${IOS_TARGETS:-}" ]] && return 0
+    for triple in $IOS_TARGETS; do
+        [[ "$triple" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
 if [[ -n "${1:-}" ]]; then
     LIB="$1"
 else
     LIB=""
     for triple in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin; do
+        wanted_target "$triple" || continue
         candidate="$TARGET_DIR/$triple/release/libfedimint_sdk.a"
         if [[ -f "$candidate" ]]; then
             LIB="$candidate"

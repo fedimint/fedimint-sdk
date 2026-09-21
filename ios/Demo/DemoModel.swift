@@ -38,10 +38,24 @@ final class DemoModel: ObservableObject {
     @Published var lnReceiveDescription = "Coffee"
     @Published var ecashNotes = ""
     @Published var ecashSendAmount = "1000"
-    @Published var lnInvoice = ""
+    /// Editing the invoice invalidates any quote taken against the previous one.
+    /// Without this, Pay stays enabled (it is gated on `lnQuote != nil`) and
+    /// would send the invoice the user has just replaced. The `!= nil` guard
+    /// keeps a keystroke from publishing a change when there is no quote to
+    /// invalidate.
+    @Published var lnInvoice = "" {
+        didSet { if lnQuote != nil { lnQuote = nil } }
+    }
     @Published var parseInviteText = testnetFederationCode
-    @Published var onchainAmount = "10000"
-    @Published var onchainAddress = ""
+    /// Same invalidation as `lnInvoice`, for the same reason: Send is gated on
+    /// `onchainQuote != nil`, and a quote carries the destination and amount it
+    /// was taken for.
+    @Published var onchainAmount = "10000" {
+        didSet { if onchainQuote != nil { onchainQuote = nil } }
+    }
+    @Published var onchainAddress = "" {
+        didSet { if onchainQuote != nil { onchainQuote = nil } }
+    }
 
     // Copyable results of the last run of each flow.
     @Published var lastInvoice: String?
@@ -261,6 +275,9 @@ final class DemoModel: ObservableObject {
     /// Quotes a pasted invoice: amount, fee, route and expiry, before anything
     /// is paid.
     func lnQuoteInvoice() {
+        // Disarmed synchronously, before the call: if this quote fails, the
+        // previous one must not stay live behind the error message.
+        lnQuote = nil
         run(.lnPay) {
             guard let lightning = self.federation?.lightning() else {
                 return "this federation has no lightning module"
@@ -317,6 +334,9 @@ final class DemoModel: ObservableObject {
     }
 
     func onchainQuoteAddress() {
+        // Same as `lnQuoteInvoice`: a failed re-quote must not leave the
+        // previous destination armed.
+        onchainQuote = nil
         run(.onchainSend) {
             guard let onchain = self.federation?.onchain() else {
                 return "this federation has no wallet module"
@@ -406,11 +426,21 @@ final class DemoModel: ObservableObject {
 
         balanceTask = Task { [weak self] in
             do {
-                guard let self else { return }
-                self.balance = "Balance: " + formatMsats(try await joined.balance())
+                let initial = try await joined.balance()
+                // `if let`, not `guard let`: a `guard let self` here binds for
+                // the rest of the `do` block — the loop included — which pins
+                // the model for the life of an endless subscription and makes
+                // the `[weak self]` above do nothing.
+                if let self { self.balance = "Balance: " + formatMsats(initial) }
+
                 let updates = joined.balanceUpdates()
                 while !Task.isCancelled {
                     let next = try await updates.next()
+                    // Scoped to one iteration, so nothing strong is held across
+                    // the await above. `break` rather than skipping: with the
+                    // model gone there is nobody left to render into, and
+                    // `next()` is a uniffi call that cancellation cannot stop.
+                    guard let self else { break }
                     self.balance = "Balance: " + formatMsats(next)
                 }
             } catch let error as SdkError {
@@ -468,7 +498,10 @@ final class DemoModel: ObservableObject {
                     // stale watcher from overwriting a section that a newer
                     // one now owns.
                     if Task.isCancelled { break }
-                    self?.results[section] = "\(header)\n\nstate: \(state)"
+                    // Also stop if the screen is gone: `self?.` alone would
+                    // keep pulling a cursor nothing can render.
+                    guard let self else { break }
+                    self.results[section] = "\(header)\n\nstate: \(state)"
                 }
                 // A `nil` means the state is final, not that anything went
                 // wrong; leave the last rendering in place and stop.
