@@ -60,14 +60,21 @@ pnpm android
 ```
 
 Without a device, the repository provides an emulator. From the repository root, boot it in one
-terminal (the virtual device is created on first use; KVM access is required) and install the app
-from another. Both commands run in the `.#android-emulator` shell, so the same `adb` owns the
-device:
+terminal and leave that terminal running: it is the device, and Ctrl-C shuts it down. Install the
+app from a second terminal. Both commands run in the `.#android-emulator` shell, so the same
+`adb` owns the device:
 
 ```sh
-just android-emulator            # add -no-window for a headless boot
+just android-emulator            # terminal 1; add -no-window for a headless boot
 just rn-example expo-app
 ```
+
+The virtual device is created on first use and needs KVM access. The first `just rn-example` is
+quiet for several minutes while Gradle downloads its distribution and the app's dependencies.
+On a host enforcing SELinux (Fedora) the emulator segfaults at startup until a local policy
+module allows it; `scripts/android-emulator.sh` describes the fix. If your login shell also has
+another Android SDK's `adb` server running, stop it first (`pkill -x adb`): two adb builds keep
+restarting each other's server and the device shows as offline.
 
 ### Starting the Metro Bundler separately
 

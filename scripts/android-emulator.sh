@@ -14,6 +14,12 @@
 #
 # Hardware acceleration is required: on Linux the user needs read and write access to
 # /dev/kvm. Without it the emulator refuses to start rather than crawling.
+#
+# On a host enforcing SELinux (Fedora) the emulator's qemu segfaults right after its startup
+# banner, whichever build it comes from: the policy has rules for the distribution's qemu, not
+# for one under /nix/store or a home directory. Confirm with `ausearch -m avc -ts recent`, then
+# either build a local module (`ausearch -m avc -ts recent | audit2allow -M android-emulator`
+# and `semodule -i android-emulator.pp`) or run permissive while developing.
 set -euo pipefail
 
 AVD=fedimint-sdk
