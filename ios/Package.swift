@@ -16,6 +16,17 @@ let package = Package(
     // with no simulator boot, which is what CI does. Both minimums have to
     // agree with IPHONEOS_/MACOSX_DEPLOYMENT_TARGET in
     // scripts/build-ios-lib.sh, which is what the C sources are compiled for.
+    //
+    // macOS here means **Apple Silicon only**. The XCFramework ships one
+    // `macos-arm64` slice and no `x86_64` one, so an Intel Mac cannot resolve
+    // the binary target — SwiftPM reports "no library for this platform was
+    // found". SwiftPM has no way to say "macOS, arm64 only" in `platforms:`,
+    // which is why it is said here instead.
+    //
+    // That is deliberate rather than an oversight: the macOS slice exists so
+    // `swift test` runs on the host without booting a simulator, not because
+    // macOS is a shipping target for this SDK. Adding the Intel slice would
+    // mean a fifth cross-compile of the whole crate on every full build.
     platforms: [
         .iOS(.v15),
         .macOS(.v13),

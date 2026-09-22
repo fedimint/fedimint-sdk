@@ -15,6 +15,18 @@ enum Section: String {
     case deposit, onchainSend, activity
 }
 
+extension Section {
+    /// Sections whose contents belong to one federation, and are therefore
+    /// meaningless the moment another one is attached.
+    ///
+    /// `wallet` is SDK-scoped and `parseInvite` is a pure function of its input,
+    /// so both survive a switch; `join` is written by the caller of `attach`
+    /// immediately afterwards.
+    static let federationScoped: Set<Section> = [
+        .lnReceive, .ecashReceive, .ecashSend, .lnPay, .deposit, .onchainSend, .activity,
+    ]
+}
+
 /// Every SDK handle the screen holds, and one `run` helper that funnels each
 /// action's outcome — including an `SdkError` — into one result line.
 ///
@@ -74,6 +86,10 @@ final class DemoModel: ObservableObject {
     /// the same reason: the Kotlin demo gets this free from `lifecycleScope`
     /// (MainActivity.kt:506), and Swift has no equivalent ambient scope.
     private var watchTasks: [Section: Task<Void, Never>] = [:]
+
+    /// One in-flight SDK action per section. See `run` for why this is separate
+    /// from `watchTasks`.
+    private var runTasks: [Section: Task<Void, Never>] = [:]
 
     /// Quotes are single use: held between the Quote and Pay/Send taps so the
     /// user sees the fee before committing, then dropped once submitted. The
@@ -441,6 +457,17 @@ final class DemoModel: ObservableObject {
         onchainQuote = nil
         balance = "Balance: …"
 
+        // All of this names values from the federation being replaced, and the
+        // copy buttons are gated on it being non-nil — so leaving it in place
+        // offers the user the previous federation's invoice, address and notes
+        // under the new federation's screen. `lastNotes` is the one that
+        // matters: e-cash is a bearer token, and those notes are drawn on a
+        // different mint.
+        lastInvoice = nil
+        lastNotes = nil
+        lastAddress = nil
+        for section in Section.federationScoped { results[section] = nil }
+
         balanceTask = Task { [weak self] in
             do {
                 let initial = try await joined.balance()
@@ -484,15 +511,30 @@ final class DemoModel: ObservableObject {
     /// Runs one SDK action and renders what comes back into its result line,
     /// including an `SdkError` — which is what a real application would branch
     /// on. This is the Swift counterpart of the Android demo's `section`.
+    /// Kept in its own dictionary rather than sharing `watchTasks`: a `run`
+    /// block may install a watcher on the *same* section — `run(.deposit)`
+    /// calls `watch(.deposit)` — so one shared key would have the watcher
+    /// cancel its own caller.
+    ///
+    /// Deliberately not cancelled by `attach`, for the mirror-image reason:
+    /// `attach` runs inside a run task itself, so cancelling them there would
+    /// suppress the very result its caller is about to write. Cross-federation
+    /// staleness is handled by clearing the section instead.
     private func run(_ section: Section, _ block: @MainActor @escaping () async throws -> String) {
+        runTasks[section]?.cancel()
         results[section] = "working…"
-        Task {
+        runTasks[section] = Task {
             do {
-                self.results[section] = try await block()
+                let output = try await block()
+                // The SDK call is a uniffi call and cannot be interrupted, so —
+                // as everywhere else in this file — the guard is on the write,
+                // not on reaching it. Without this the slower of two taps on
+                // one button wins, whichever was issued first.
+                if !Task.isCancelled { self.results[section] = output }
             } catch let error as SdkError {
-                self.results[section] = self.describe(error)
+                if !Task.isCancelled { self.results[section] = self.describe(error) }
             } catch {
-                self.results[section] = "\(error)"
+                if !Task.isCancelled { self.results[section] = "\(error)" }
             }
         }
     }

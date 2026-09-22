@@ -89,6 +89,20 @@ if [[ -z "$LIB" || ! -f "$LIB" ]]; then
     exit 1
 fi
 
+# Canonicalised here, before the `cd "$CRATE_DIR"` further down. A relative path
+# given on the command line is validated above against the caller's working
+# directory but would be resolved again against the crate directory, and the
+# dangerous case is not the one that errors: `target/<triple>/release/...` does
+# not exist at the repo root but does exist under rust/fedimint-sdk, so the
+# script could check one archive and read a different one — the exact drift this
+# pipeline exists to prevent. The auto-selected paths are already absolute;
+# this only matters for an explicit argument.
+#
+# `dirname`/`pwd` rather than `realpath`, which is not dependable across macOS
+# versions. Safe because the check above established the file, and so its
+# directory, exists.
+LIB="$(cd "$(dirname "$LIB")" && pwd)/$(basename "$LIB")"
+
 GEN_TMP="$(mktemp -d)"
 trap 'rm -rf "$GEN_TMP"' EXIT
 

@@ -33,7 +33,9 @@ targets: [
 In Xcode: **File → Add Package Dependencies… → Add Local…** and pick this
 directory.
 
-Requires iOS 15+ or macOS 13+. Nothing else is needed at the call site: the
+Requires iOS 15+, or macOS 13+ **on Apple Silicon** — the XCFramework ships
+no Intel macOS slice, for the reason given beside `platforms:` in
+[`Package.swift`](Package.swift). Nothing else is needed at the call site: the
 system frameworks the native library pulls in (`SystemConfiguration`, `Security`
 and `Network`) are declared in the XCFramework's own modulemap, and the C++
 runtime rocksdb and aws-lc need is linked by the package itself, so there are no
