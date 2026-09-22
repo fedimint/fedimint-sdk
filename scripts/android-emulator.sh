@@ -68,10 +68,12 @@ emulator "@$AVD" -no-audio -no-boot-anim "$@" &
 EMULATOR_PID=$!
 trap 'kill "$EMULATOR_PID" 2>/dev/null || true' EXIT INT TERM
 
+# `adb wait-for-device` would block for good if the emulator died before registering, so the
+# device's appearance is polled inside the same bounded loop that watches the process.
 echo "==> Waiting for Android to boot"
-adb wait-for-device
 for _ in $(seq 1 120); do
-  if [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+  if [[ "$(adb get-state 2>/dev/null)" == "device" &&
+    "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
     serial=$(adb devices | awk 'NR == 2 { print $1 }')
     release=$(adb shell getprop ro.build.version.release | tr -d '\r')
     echo "==> Ready: $serial (Android $release)"

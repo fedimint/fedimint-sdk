@@ -44,10 +44,23 @@ echo "==> Target: $SERIAL (Android $(adb shell getprop ro.build.version.release 
   "app $PACKAGE from $DIR"
 
 step() { echo "==> [$(date +%H:%M:%S)] $*"; }
-metro_up() { curl -sf http://localhost:8081/status >/dev/null 2>&1; }
+# Metro names the project it serves in a response header; a server left over from the other
+# example answers on the same port but would hand this app the wrong bundle.
+metro_root() {
+  curl -sfI http://localhost:8081/status 2>/dev/null |
+    awk 'tolower($1) == "x-react-native-project-root:" { print $2 }' | tr -d '\r'
+}
+metro_up() { [[ "$(metro_root)" == "$DIR" ]]; }
 
 if metro_up; then
-  step "Metro is already serving on port 8081"
+  step "Metro is already serving $APP on port 8081"
+elif [[ -n "$(metro_root)" ]]; then
+  echo "port 8081 is served by a Metro for $(metro_root), not $DIR; stop it first" \
+    "(pkill -f 'react-native start' or Ctrl-C in its terminal), then rerun" >&2
+  exit 1
+elif curl -sf http://localhost:8081/status >/dev/null 2>&1; then
+  echo "something other than Metro answers on port 8081; free the port and rerun" >&2
+  exit 1
 else
   step "Starting Metro in the background (log: $DIR/metro.log)"
   (cd "$DIR" && setsid pnpm start > metro.log 2>&1 < /dev/null &)
