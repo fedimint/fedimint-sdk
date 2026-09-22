@@ -1393,6 +1393,14 @@ pub enum ErrorCode {
     FederationClosed,
     /// The operation did not complete within an internal time budget.
     Timeout,
+    /// An endpoint the application supplied could not be reached, or answered
+    /// with something other than success.
+    ///
+    /// Distinct from [`FederationUnreachable`](Self::FederationUnreachable),
+    /// which is about a federation's guardians: this is an ordinary web
+    /// server, named by the application rather than by a federation, as with
+    /// [`Sdk::discover_federations`](crate::Sdk::discover_federations).
+    EndpointUnreachable,
     /// The platform's secure random source was unavailable or failed, so no
     /// entropy could be drawn, as when
     /// [`Mnemonic::generate`](crate::Mnemonic::generate) creates a fresh seed,

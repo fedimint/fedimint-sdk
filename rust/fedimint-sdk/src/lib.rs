@@ -313,6 +313,7 @@
 
 mod activity;
 mod db;
+mod discovery;
 mod ecash;
 mod error;
 mod federation;
@@ -338,6 +339,7 @@ mod types;
 uniffi::setup_scaffolding!();
 
 pub use activity::{ActivityItem, ActivityPage, ActivityStatus, Direction};
+pub use discovery::DiscoveredFederation;
 pub use ecash::{
     Ecash, EcashQuote, EcashReceiveDetails, EcashReceiveState, EcashSend, EcashSendDetails,
     EcashSendState,

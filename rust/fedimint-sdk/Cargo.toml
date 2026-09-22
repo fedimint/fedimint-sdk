@@ -137,10 +137,24 @@ tokio = { version = "1.48.0", features = [
     "io-util",
 ] }
 socket2 = { version = "0.5", features = ["all"] }
+# Federation discovery fetches an app-supplied URL (see `src/discovery.rs`). Version and
+# feature set are fedimint's own `[workspace.dependencies]` entry verbatim, so cargo unifies
+# this onto the copy `fedimint-client` already links rather than resolving a second HTTP
+# stack, and the TLS backend stays the one the rest of the graph uses.
+reqwest = { version = "0.12.28", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "charset",
+    "http2",
+] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1ab15e4b89aaa35727ca16e401d0cbc7d066de58" }
 js-sys = "0.3.83"
+# The same crate as the native entry above, but none of its features: on wasm it is a thin
+# wrapper over the browser's `fetch`, and the TLS and HTTP/2 backends it would otherwise
+# carry have no counterpart there — the browser owns both.
+reqwest = { version = "0.12.28", default-features = false }
 # `macros` is not about tests here: `tokio::select!` lives behind it, and both
 # subscription types select a stream against a shutdown watch on every target.
 tokio = { version = "1.48.0", features = ["sync", "macros"] }

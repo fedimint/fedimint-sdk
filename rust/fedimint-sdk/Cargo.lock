@@ -2415,6 +2415,7 @@ dependencies = [
  "fedimint-walletv2-common",
  "futures",
  "js-sys",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "socket2 0.5.10",
