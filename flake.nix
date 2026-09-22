@@ -166,6 +166,8 @@
 
           # Dependencies that were previously common, likely for general dev/testing/wasm
           wasmNativeBuildInputs = commonNativeBuildInputs ++ [
+            # wasm-opt, the last step of scripts/generate-sdk-web-bindings.sh.
+            pkgs.binaryen
             pkgs.bitcoind
             pkgs.electrs
             pkgs.jq

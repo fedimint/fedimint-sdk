@@ -24,6 +24,11 @@
 # regeneration even with no meaningful change (`fedimint_sdk_bg.d.ts`, the third glue file, is
 # a fixed stub); the three ubrn-written TypeScript files (`index.ts`, `fedimint_sdk.ts`,
 # `fedimint_sdk-ffi.ts`) are byte-stable, and CI's freshness check compares only those.
+#
+# The staged module is the one the browser downloads, so it is optimised for size last:
+# `wasm-opt -Oz` shrinks the code and strips the `name` section (the debug function names, a
+# third of the file as the compiler emits it). It runs after ubrn and wasm-bindgen because both
+# read the module as rustc wrote it, and neither optimises it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,7 +40,7 @@ if [[ ! -f "$WASM" ]]; then
   echo "build one first: scripts/nix-build-sdk-wasm.sh (or pass its path as the argument)" >&2
   exit 1
 fi
-for tool in ubrn wasm-bindgen cargo; do
+for tool in ubrn wasm-bindgen wasm-opt cargo; do
   command -v "$tool" >/dev/null ||
     { echo "$tool not on PATH; run in the .#wasm-tests shell" >&2; exit 1; }
 done
@@ -56,6 +61,11 @@ pnpm --dir "$ROOT/js" exec prettier --write \
   "$PKG/src/generated/fedimint_sdk_bg.js" \
   "$PKG/src/generated/fedimint_sdk_bg.d.ts" \
   "$PKG/src/generated/fedimint_sdk_bg.wasm.d.ts"
+
+echo "==> Optimising the staged module for size with wasm-opt"
+STAGED="$PKG/src/generated/fedimint_sdk.wasm"
+wasm-opt -Oz -o "$STAGED.opt" "$STAGED"
+mv "$STAGED.opt" "$STAGED"
 
 echo "==> Done."
 ls -la "$PKG/src/generated"
