@@ -51,11 +51,13 @@ built_this_run() {
 }
 
 # Generate from a slice this run built, chosen explicitly rather than left to
-# the fallback probe in generate-swift-bindings.sh. Device first — it is the one
-# a phone actually loads — then the simulator, then macOS. The metadata is
-# identical in every slice; what matters is that it came from this build.
+# the fallback in generate-swift-bindings.sh. Device first — it is the one a
+# phone actually loads — then the simulators, then macOS. The metadata is
+# identical in every slice; what matters is that it came from this build, which
+# is also why every triple has to be listed: an Intel-simulator-only build
+# carries the same metadata as any other and must not be rejected.
 BINDINGS_LIB=""
-for triple in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin; do
+for triple in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin; do
     if built_this_run "$triple"; then
         BINDINGS_LIB="$TARGET_DIR/$triple/release/$LIB_NAME"
         break

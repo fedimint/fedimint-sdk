@@ -43,9 +43,10 @@ GEN_MODULEMAP="FedimintSdkFFI.modulemap"
 #
 # The selection below is for deliberate standalone use
 # (`just build-swift-bindings`). It prefers the device library — the one a phone
-# actually loads — then the simulator, then macOS, so a host-only build still
-# generates. The metadata is identical in every slice; only the machine code
-# differs.
+# actually loads — then the simulators, then macOS, so a host-only build still
+# generates. Every triple is listed, the Intel simulator included: the metadata
+# is identical in every slice and only the machine code differs, so refusing one
+# would fail a build that had a perfectly good archive to read.
 #
 # It never picks by "this file exists". A populated target/ — from an earlier
 # full build, or restored from a CI cache — makes the device archive present
@@ -66,7 +67,7 @@ else
     fi
 
     LIB=""
-    for triple in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin; do
+    for triple in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin; do
         grep -qxF "$triple" "$MANIFEST" || continue
         candidate="$TARGET_DIR/$triple/release/libfedimint_sdk.a"
         if [[ -f "$candidate" ]]; then

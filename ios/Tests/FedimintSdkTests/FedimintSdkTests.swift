@@ -162,10 +162,71 @@ final class FedimintSdkTests: XCTestCase {
 
     // MARK: - Packaging
 
-    /// Cheap guard against the one file in `Sources/FedimintSdk` that is hand
-    /// written drifting from the crate it describes.
-    func testVersionMatchesTheCrate() {
-        XCTAssertEqual(fedimintSdkVersion, "0.1.0-alpha.1")
+    /// Guards `Version.swift`'s `fedimintSdkVersion` against the crate it claims
+    /// to describe.
+    ///
+    /// It reads `rust/fedimint-sdk/Cargo.toml` rather than comparing the
+    /// constant to a literal copy of itself: that version of this test only
+    /// failed when someone edited `Version.swift` without editing the test,
+    /// which is not a failure anyone cares about, while the drift that matters —
+    /// the Swift constant falling behind the crate — went undetected.
+    func testVersionMatchesTheCrate() throws {
+        let manifest = Self.repositoryRoot
+            .appendingPathComponent("rust/fedimint-sdk/Cargo.toml")
+        let toml = try String(contentsOf: manifest, encoding: .utf8)
+
+        let crateVersion = try XCTUnwrap(
+            Self.packageVersion(inCargoToml: toml),
+            "no [package] version found in \(manifest.path)"
+        )
+        XCTAssertEqual(
+            fedimintSdkVersion,
+            crateVersion,
+            "ios/Sources/FedimintSdk/Version.swift is out of step with the crate"
+        )
+    }
+
+    /// The repository root, from this file's compile-time location:
+    /// `<root>/ios/Tests/FedimintSdkTests/FedimintSdkTests.swift`.
+    private static var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // FedimintSdkTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // ios
+            .deletingLastPathComponent()   // repository root
+    }
+
+    /// The `version` of the `[package]` table, or `nil` if there is none.
+    ///
+    /// Scoped to `[package]` rather than matching the first `version` anywhere:
+    /// every dependency in this manifest states its version inline as
+    /// `{ version = "..." }` so nothing else currently begins a line with
+    /// `version`, but a `[workspace.package]` added later would.
+    private static func packageVersion(inCargoToml toml: String) -> String? {
+        var inPackage = false
+        for rawLine in toml.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+
+            if line.hasPrefix("[") {
+                inPackage = (line == "[package]")
+                continue
+            }
+            guard inPackage else { continue }
+
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespaces) == "version"
+            else { continue }
+
+            // First quote to the next one, so a trailing `# comment` cannot
+            // widen the match.
+            let value = parts[1]
+            guard let open = value.firstIndex(of: "\"") else { return nil }
+            let rest = value[value.index(after: open)...]
+            guard let close = rest.firstIndex(of: "\"") else { return nil }
+            return String(rest[..<close])
+        }
+        return nil
     }
 
     // MARK: - Helpers

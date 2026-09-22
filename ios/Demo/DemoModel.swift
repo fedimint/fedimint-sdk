@@ -444,26 +444,39 @@ final class DemoModel: ObservableObject {
         balanceTask = Task { [weak self] in
             do {
                 let initial = try await joined.balance()
+                // Cancellation is re-checked *after* every await, not just
+                // before: `attach` cancels this task when a new federation
+                // replaces `joined`, and `balance()`/`next()` are uniffi calls
+                // that cancellation cannot interrupt. Writing on the way out
+                // would put the old federation's balance on top of the new
+                // one's. Same discipline as `watch` below.
+                //
                 // `if let`, not `guard let`: a `guard let self` here binds for
                 // the rest of the `do` block — the loop included — which pins
                 // the model for the life of an endless subscription and makes
                 // the `[weak self]` above do nothing.
-                if let self { self.balance = "Balance: " + formatMsats(initial) }
+                if !Task.isCancelled, let self {
+                    self.balance = "Balance: " + formatMsats(initial)
+                }
 
                 let updates = joined.balanceUpdates()
                 while !Task.isCancelled {
                     let next = try await updates.next()
+                    if Task.isCancelled { break }
                     // Scoped to one iteration, so nothing strong is held across
                     // the await above. `break` rather than skipping: with the
-                    // model gone there is nobody left to render into, and
-                    // `next()` is a uniffi call that cancellation cannot stop.
+                    // model gone there is nobody left to render into.
                     guard let self else { break }
                     self.balance = "Balance: " + formatMsats(next)
                 }
             } catch let error as SdkError {
-                self?.balance = "Balance: unavailable (\(error.code()))"
+                // A cancelled subscription failing on its way out must not
+                // stamp an error over the federation that replaced it.
+                if !Task.isCancelled {
+                    self?.balance = "Balance: unavailable (\(error.code()))"
+                }
             } catch {
-                self?.balance = "Balance: unavailable"
+                if !Task.isCancelled { self?.balance = "Balance: unavailable" }
             }
         }
     }
