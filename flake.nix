@@ -276,6 +276,8 @@
               sdk.androidsdk
               # The JDK Gradle runs on, the version CI's kotlin-sdk job installs too.
               pkgs.jdk17
+              # scripts/rn-example.sh asks Metro whether it is up.
+              pkgs.curl
               pkgs.cmake
               pkgs.gnumake
               pkgs.go

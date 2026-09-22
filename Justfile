@@ -32,14 +32,11 @@ android-emulator *ARGS:
     nix develop --accept-flake-config .#android-emulator -c scripts/android-emulator.sh {{ARGS}}
 
 # Build and install one example app (react-native or expo-app) on the running emulator or a
-# connected device, from the same shell as the emulator so one adb owns the device. Needs
-# `just build-rn-android` first. Gradle is pointed at the SDK's own aapt2: the one it would
-# download from Maven is a binary that cannot run on NixOS hosts.
+# connected device and launch it, from the same shell as the emulator so one adb owns the device.
+# Needs `just build-rn-android` first. See the script for why this is not `react-native
+# run-android`.
 rn-example app="react-native":
-    nix develop --accept-flake-config .#android-emulator -c bash -c \
-      'aapt2=$ANDROID_HOME/build-tools/36.0.0/aapt2 && \
-       env "ORG_GRADLE_PROJECT_android.aapt2FromMavenOverride=$aapt2" \
-         pnpm --dir js/examples/{{app}} android'
+    nix develop --accept-flake-config .#android-emulator -c scripts/rn-example.sh {{app}}
 
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test

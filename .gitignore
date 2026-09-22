@@ -196,3 +196,7 @@ js/examples/react-native/**/fastlane/report.xml
 js/examples/react-native/**/fastlane/Preview.html
 js/examples/react-native/**/fastlane/screenshots
 js/examples/react-native/**/fastlane/test_output
+
+# Written by scripts/rn-example.sh when it starts Metro itself.
+js/examples/*/metro.log
+
