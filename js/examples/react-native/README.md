@@ -53,10 +53,20 @@ pnpm ios
 
 ### Running on Android
 
-Start the application:
+With a device connected over USB debugging, start the application:
 
 ```sh
 pnpm android
+```
+
+Without a device, the repository provides an emulator. From the repository root, boot it in one
+terminal (the virtual device is created on first use; KVM access is required) and install the app
+from another. Both commands run in the `.#android-emulator` shell, so the same `adb` owns the
+device:
+
+```sh
+just android-emulator            # add -no-window for a headless boot
+just rn-example react-native
 ```
 
 ### Starting the Metro Bundler separately

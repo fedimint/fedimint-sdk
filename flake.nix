@@ -79,15 +79,30 @@
         # `playwright` version in pnpm-lock.yaml, not the fedimint bump.
         playwrightBrowsers =
           (import nixpkgs-playwright { inherit system; }).playwright-driver.browsers;
-        # No emulator system images: nothing in this repo runs an emulator, and
-        # each ABI's image adds gigabytes to the dev shell closure.
-        androidSdk = pkgs.androidenv.composeAndroidPackages {
+        # The SDK the Gradle builds and `cargo ndk` need. The emulator and its system image
+        # add gigabytes to the closure, so they live in a second composition used only by the
+        # `.#android-emulator` shell (scripts/android-emulator.sh).
+        mkAndroidSdk = extra: pkgs.androidenv.composeAndroidPackages ({
           includeNDK = true;
           toolsVersion = "26.1.1";
           ndkVersions = ["27.1.12297006"];
-          buildToolsVersions = ["36.0.0"];
+          # The CMake the Android Gradle plugin asks for when a module does not pin one (React
+          # Native's app template); the SDK directory is read-only, so it cannot fetch it itself.
+          cmakeVersions = ["3.22.1"];
+          # 35.0.0 is what the Android Gradle plugin picks for a library module that names no
+          # version, the React Native bindings package among them; 36.0.0 is what the apps name.
+          buildToolsVersions = ["35.0.0" "36.0.0"];
           platformVersions = ["36"];
           cmdLineToolsVersion = "13.0";
+        } // extra);
+        androidSdk = mkAndroidSdk { };
+        # One x86_64 Google APIs image for the platform above; the React Native bindings ship
+        # arm64-v8a and x86_64, so this is the emulator ABI they run on.
+        androidEmulatorSdk = mkAndroidSdk {
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = ["google_apis"];
+          abiVersions = ["x86_64"];
         };
 
         # Xcode wrapper to expose system tools in the impure Nix shell.
@@ -202,8 +217,8 @@
             fi
           '';
 
-          androidShellHook = ''
-            export ANDROID_HOME=${androidSdk.androidsdk}/libexec/android-sdk
+          mkAndroidShellHook = sdk: ''
+            export ANDROID_HOME=${sdk.androidsdk}/libexec/android-sdk
             export ANDROID_SDK_ROOT=$ANDROID_HOME
             export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
             export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
@@ -254,6 +269,22 @@
 
           '';
 
+          mkAndroidShell = sdk: pkgs.mkShell {
+            # Set as derivation env var so it can't be overridden by user shell profiles
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              sdk.androidsdk
+              # The JDK Gradle runs on, the version CI's kotlin-sdk job installs too.
+              pkgs.jdk17
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.go
+              pkgs.cargo-ndk
+              pkgs.libclang # Often needed for bindgen
+              androidToolchain
+            ];
+            shellHook = commonShellHook + mkAndroidShellHook sdk;
+          };
           iosShellHook = ''
             export PATH=${xcode-wrapper}/bin:$PATH
 
@@ -342,20 +373,12 @@
              shellHook = wasmShellHook;
           };
 
-          android = pkgs.mkShell {
-            # Set as derivation env var so it can't be overridden by user shell profiles
-            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-            nativeBuildInputs = commonNativeBuildInputs ++ [
-              androidSdk.androidsdk
-              pkgs.cmake
-              pkgs.gnumake
-              pkgs.go
-              pkgs.cargo-ndk
-              pkgs.libclang # Often needed for bindgen
-              androidToolchain
-            ];
-            shellHook = commonShellHook + androidShellHook;
-          };
+          android = mkAndroidShell androidSdk;
+          # The same shell plus the emulator and one system image, for running the React Native
+          # example apps: `just android-emulator` boots the device, `just rn-example` installs an
+          # app on it. Both run in this one shell so a single `adb` talks to the device; two adb
+          # builds on one machine keep restarting each other's server and leave it "offline".
+          android-emulator = mkAndroidShell androidEmulatorSdk;
 
           # macOS only. Cargo cross-compiles rust/fedimint-sdk for the three iOS slices with
           # Xcode's toolchain; ubrn assembles the xcframework and regenerates the bindings
