@@ -862,6 +862,10 @@ const Deposit = () => {
     }
   }
 
+  const copyAddress = () => {
+    Clipboard.setString(address)
+  }
+
   return (
     <SectionCard>
       <SectionTitle>Generate Deposit Address</SectionTitle>
@@ -871,7 +875,15 @@ const Deposit = () => {
         disabled={loading}
         primary
       />
-      {!!address && <SuccessBox>{address}</SuccessBox>}
+      {!!address && (
+        <View style={s.invoiceBox}>
+          <Text style={s.label}>Deposit address:</Text>
+          <Text style={s.mono} selectable>
+            {address}
+          </Text>
+          <Btn title="Copy" onPress={copyAddress} small />
+        </View>
+      )}
       {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
