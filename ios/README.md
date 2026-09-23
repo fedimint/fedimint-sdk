@@ -244,19 +244,24 @@ an archive that is not the one being shipped, which is the exact drift the
 two-step split exists to prevent. Run a full build when you want a full
 framework back.
 
-Non-Nix escape hatch: the scripts are plain `cargo` and never call `nix`, so
-running them directly works on any machine whose toolchain already has the Apple
+Non-Nix escape hatch: `--local` cross-compiles with plain `cargo` and never
+calls `nix`, so it works on any machine whose toolchain already has the Apple
 targets — the counterpart of `build-android-sdk.sh --local`:
 
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-./scripts/build-ios-sdk.sh
+./scripts/build-ios-sdk.sh --local
 ```
 
-`.#ios` exists for the machine that does not have those, and to pin the
-`cmake`/`perl`/`go` that aws-lc-sys and rocksdb need; it is not a requirement of
-the build. CI takes the direct route for the same reason — there is no cacheable
-Nix output here to be worth installing Nix for.
+The `--local` is required, not decorative: without it the script takes the Nix
+path and needs `nix` on PATH, which is exactly what the machine this paragraph
+describes does not have.
+
+`.#ios` exists for a machine that lacks the Apple Rust targets, and to pin the
+`cmake`/`perl`/`go` that aws-lc-sys and rocksdb need. CI does **not** take this
+route — [`ios-native.yaml`](../.github/workflows/ios-native.yaml) builds the
+slices as Nix derivations and pushes them to Cachix, so a pull request
+substitutes them instead of compiling rocksdb and aws-lc again.
 
 Requires macOS with Xcode either way. `xcodebuild -checkFirstLaunchStatus` must
 exit 0 — run `xcodebuild -runFirstLaunch` once if it does not.

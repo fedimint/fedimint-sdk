@@ -74,6 +74,14 @@ final class DemoModel: ObservableObject {
     @Published var lastNotes: Notes?
     @Published var lastAddress: String?
 
+    /// True while an ecash send is committing.
+    ///
+    /// Ecash send is the only value-moving action here without a natural gate:
+    /// `lnPay` and `onchainSend` both require a quote that is cleared before the
+    /// run starts, so a second tap does nothing, while this one quotes and sends
+    /// in a single block. Two taps would be two real spends.
+    @Published private(set) var isSendingEcash = false
+
     @Published private(set) var hasSdk = false
     @Published private(set) var hasFederation = false
 
@@ -158,7 +166,15 @@ final class DemoModel: ObservableObject {
         run(.wallet) {
             guard let federation = self.federation else { return "join a federation first" }
             let amount = try await federation.balance()
-            guard !self.isSuperseded else { return "superseded" }
+            // `.wallet` is deliberately outside `federationScoped` — that set is
+            // what `attach` both cancels and clears, and this section holds the
+            // SDK-level status line — so `attach` never cancels this run and
+            // `isSuperseded` alone cannot see a federation switch. Compare the
+            // handle instead, or a Refresh started on the previous federation
+            // lands its balance under the new one.
+            guard !self.isSuperseded, self.federation === federation else {
+                return "federation changed — refresh again"
+            }
             self.balance = "Balance: " + formatMsats(amount)
             return "balance refreshed"
         }
@@ -283,7 +299,15 @@ final class DemoModel: ObservableObject {
     /// instrument — hand them to a receiver out of band — and the operation
     /// keeps tracking whether they were redeemed or reclaimed.
     func ecashSend() {
+        // Refused here, not only by the disabled button: the button's state is a
+        // frame behind, so a fast double tap would otherwise still start a
+        // second spend and `run` would cancel the first one mid-commit.
+        guard !isSendingEcash else { return }
+        isSendingEcash = true
+
         run(.ecashSend) {
+            defer { self.isSendingEcash = false }
+
             guard let ecash = self.federation?.ecash() else {
                 return "this federation has no mint module"
             }
@@ -292,14 +316,22 @@ final class DemoModel: ObservableObject {
             }
 
             let quote = try await ecash.quote(amount: msats)
+
+            // Checked before anything commits. `ecash` was captured from the
+            // federation attached when this started, so without this a switch
+            // during the quote goes on to spend from the federation the user has
+            // just left.
+            guard !self.isSuperseded else { return "federation changed — quote again" }
+
             let sent = try await ecash.send(quote: quote)
-            // Guarded like the rest so Copy notes always matches the notes the
-            // screen is showing. Worth being clear about what this does *not*
-            // fix, though: two taps here are two real sends, and the superseded
-            // one has already moved value whose notes then appear nowhere in the
-            // UI. The actual fix is to disable the button while a send is in
-            // flight; this guard only keeps the two displays consistent.
-            guard !self.isSuperseded else { return "superseded by a newer send" }
+
+            // Deliberately NOT guarded on `isSuperseded`, unlike every other
+            // post-await write in this file. The send has committed and these
+            // notes are the only way to recover that value — dropping them
+            // because the run was superseded loses funds outright, and nothing
+            // in this demo can retrieve them afterwards. Showing them under a
+            // federation the user has since switched away from is the lesser
+            // evil; the text below names the operation they belong to.
             self.lastNotes = sent.notes
 
             let state = try await sent.operation.state()

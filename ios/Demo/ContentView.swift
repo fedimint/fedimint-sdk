@@ -110,8 +110,11 @@ struct ContentView: View {
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numberPad)
             HStack {
-                Button("Quote + Send") { model.ecashSend() }
-                    .disabled(!model.hasFederation)
+                // Disabled while a send is committing: two taps are two real
+                // spends. The model refuses re-entry as well, since this state
+                // lags the tap by a frame.
+                Button(model.isSendingEcash ? "Sending…" : "Quote + Send") { model.ecashSend() }
+                    .disabled(!model.hasFederation || model.isSendingEcash)
                 // `notes` is an opaque handle, so nothing prints the token by
                 // accident; `display()` is the deliberate way to take it out.
                 CopyButton("Copy notes", value: model.lastNotes?.display())
