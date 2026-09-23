@@ -275,10 +275,14 @@ const SendEcash = () => {
       const handle = await ecash.send(quote)
       setNotes(handle.notes.display())
       setOperation(handle.operation)
-      setStatus('Waiting for the notes to be redeemed')
       setQuote(undefined)
-      // The notes are spendable as soon as they are shown; this only reports when the
-      // recipient redeems them, or when they come back to this wallet instead.
+      // The federation never reports a redemption to the sender. The outcome is learnt when
+      // the notes are reclaimed: by the deadline in the details, or sooner through Cancel
+      // send, which fails against notes the receiver already redeemed and settles the state
+      // as Redeemed.
+      const details = await handle.operation.details()
+      const reclaimAt = new Date(Number(details.reclaimAt)).toLocaleString()
+      setStatus(`Outcome settles by ${reclaimAt}, or when you press Cancel send`)
       handle.operation
         .awaitFinal()
         .then((state) => setStatus(EcashSendState[state]))
