@@ -5,15 +5,19 @@ name: Swift SDK
 # chain: the package's tests, and the demo app compiled against the freshly
 # generated bindings.
 #
-# Deliberately one workflow, where Android is two. The Android split exists
-# because its `.so` is a Nix derivation: android-native.yaml builds it on a
-# self-hosted runner with a warm /nix/store, pushes it to Cachix and uploads it
-# so any binding generator can read the artifact instead of rebuilding. None of
-# that applies here. Every Apple target compiles against an SDK that ships
-# inside Xcode and cannot live in the nix store, so scripts/build-ios-lib.sh is
-# plain cargo, there is no derivation to cache, and a separate `workflow_call`
-# native job would buy nothing while costing a second macOS runner — the most
-# expensive kind. The cargo cache below plays the role Cachix plays there.
+# Two workflows, the same shape as Android's. An earlier version of this file
+# argued the opposite — that because every Apple target compiles against an SDK
+# shipping inside Xcode, which cannot live in the nix store, there was "no
+# derivation to cache". The premise is true and the conclusion does not follow:
+# a derivation marked `__noChroot` reads the host SDK and still produces an
+# ordinary, substitutable store path. fedimint-sdk-ffi had been doing exactly
+# that, against this same dependency graph, the whole time.
+#
+# So the expensive half now lives in ios-native.yaml as cacheable derivations
+# pushed to fedimint.cachix.org, and this workflow calls it and does the cheap
+# half: bindings, XCFramework, tests, demo. A cold cache degrades to "build it"
+# rather than failing, because this calls that workflow rather than depending on
+# an artifact having survived.
 
 on:
   workflow_dispatch:
@@ -24,11 +28,14 @@ on:
       - 'rust/fedimint-sdk/**'
       - 'rust/uniffi-bindgen/**'
       - 'scripts/build-ios-lib.sh'
+      - 'scripts/nix-build-ios-lib.sh'
       - 'scripts/generate-swift-bindings.sh'
       - 'scripts/build-ios-sdk.sh'
+      - 'nix/**'
       - 'flake.nix'
       - 'flake.lock'
       - '.github/workflows/swift-sdk.yaml'
+      - '.github/workflows/ios-native.yaml'
 
   # On `main`, build the full four-target set so a complete XCFramework is
   # always available as an artifact, and so the two targets pull requests skip
@@ -40,27 +47,40 @@ on:
       - 'rust/fedimint-sdk/**'
       - 'rust/uniffi-bindgen/**'
       - 'scripts/build-ios-lib.sh'
+      - 'scripts/nix-build-ios-lib.sh'
       - 'scripts/generate-swift-bindings.sh'
       - 'scripts/build-ios-sdk.sh'
+      - 'nix/**'
       - '.github/workflows/swift-sdk.yaml'
+      - '.github/workflows/ios-native.yaml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# `contents: read` rather than `{}`: this workflow calls another one, and a
+# called workflow can never hold more permissions than its caller grants. With
+# no permissions at all the call is refused before the callee's jobs are ever
+# created — which shows up as this workflow's own job being skipped, with no log
+# to read anywhere.
 permissions:
   contents: read
 
 jobs:
+  # The shared, expensive half. Builds nothing Swift-specific and uploads the
+  # per-triple archives for the job below.
+  native:
+    name: 'Native libraries'
+    uses: ./.github/workflows/ios-native.yaml
+    secrets: inherit
+
   swift:
-    name: 'Build the XCFramework, generate the bindings, test + compile the demo'
-    # Apple Silicon. The macOS SDK it ships is what every slice here compiles
-    # against, so this cannot move to a Linux runner, Nix or not.
+    needs: native
+    name: 'Generate the bindings, assemble the XCFramework, test + compile the demo'
+    # Still a macOS runner: xcodebuild -create-xcframework, swift test and the
+    # demo build all need Xcode. The heavy cross-compile is no longer here.
     runs-on: macos-15
-    # A cold build compiles rocksdb and aws-lc from C once per target. The cache
-    # below usually avoids that; this is the ceiling for when it does not, and
-    # matches android-native.yaml's.
-    timeout-minutes: 120
+    timeout-minutes: 45
 
     steps:
       - name: 'Checkout'
@@ -68,41 +88,37 @@ jobs:
         with:
           persist-credentials: false
 
-      # No Nix here. `.#ios` exists for local work — it supplies the Apple Rust
-      # targets and the C build tools a developer's machine may not have — but a
-      # macOS runner already has cmake, perl, go and Xcode, and installing Nix
-      # to reach a shell with no cacheable outputs would only add minutes.
+      # The archives and their manifest are build outputs and gitignored, so
+      # they have to be put back before uniffi-bindgen or the XCFramework
+      # assembly can see them. Restored to the exact paths the local
+      # plain-cargo producer writes, so the scripts below need no special case.
+      - name: 'Download the Apple slices'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.native.outputs.slices-artifact }}
+          path: rust/fedimint-sdk/target/
+
+      # Only `rust/uniffi-bindgen` is built here now — a small host build whose
+      # single dependency is uniffi itself. No Apple targets: the cross-compile
+      # belongs to the `native` job.
       - name: 'Set up Rust'
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: aarch64-apple-darwin,aarch64-apple-ios-sim,aarch64-apple-ios,x86_64-apple-ios
-          # This is the whole reason the job fits in its timeout: the expensive
-          # half is aws-lc's and rocksdb's C sources, and they are cached per
-          # target alongside the Rust. Both crates are listed for the same
-          # reason rust-sdk-ci.yaml lists them — this is a workspace of
-          # workspaces, so neither is found from the repo root.
-          cache-workspaces: |
-            rust/fedimint-sdk
-            rust/uniffi-bindgen
+          cache-workspaces: rust/uniffi-bindgen
 
       - name: 'Install xcodegen'
         # Generates ios/Demo/FedimintDemo.xcodeproj from the committed
         # project.yml. cmake, perl and go are already on the runner image.
         run: brew install xcodegen
 
-      # Two targets on a pull request rather than four: the macOS slice is what
-      # `swift test` runs against and the simulator slice is what the demo
-      # compiles against, so this covers every check below while halving the
-      # cross-compile. The device and Intel-simulator slices are built on `main`
-      # and on demand. Same cost-control knob, same reasoning, as IOS_TARGETS in
-      # js/react-native/react-native-bindings/scripts/nix-prebuild.sh.
-      - name: 'Build the XCFramework + generate the Swift bindings'
-        env:
-          IOS_TARGETS: >-
-            ${{ github.event_name == 'pull_request'
-                && 'aarch64-apple-darwin aarch64-apple-ios-sim'
-                || 'aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin' }}
-        run: ./scripts/build-ios-sdk.sh
+      # The `native` job builds all four slices, so there is no IOS_TARGETS
+      # subset here any more — the expensive half is cached, and halving it
+      # bought nothing once it stopped running on this runner. The manifest that
+      # came down with the artifact is what decides which slices get assembled.
+      - name: 'Generate the Swift bindings + assemble the XCFramework'
+        run: |
+          ./scripts/generate-swift-bindings.sh
+          ./scripts/assemble-ios-xcframework.sh
 
       - name: 'Upload the generated Swift bindings'
         uses: actions/upload-artifact@v4
@@ -119,23 +135,19 @@ jobs:
       # proves the generated bindings are usable from ordinary Swift, not merely
       # that they parse. The exact role :app:assembleDebug plays in
       # kotlin-sdk.yaml.
-      # `generic/platform=iOS Simulator` builds every standard simulator
-      # architecture, so ARCHS has to match the slices that were actually built
-      # above or the link fails on the missing one. On a pull request that is
-      # arm64 only; on main the x86_64 simulator target is built too and the
-      # lipo'd slice covers both.
+      # No ARCHS override any more. That existed because a pull request built
+      # only the arm64 simulator slice, so a generic destination — which builds
+      # every standard simulator architecture — failed to link x86_64. The
+      # native job now always produces both, so the lipo'd slice satisfies the
+      # generic destination on every trigger.
       - name: 'Compile the demo app for the simulator'
         working-directory: ios/Demo
-        env:
-          DEMO_ARCHS: >-
-            ${{ github.event_name == 'pull_request' && 'arm64' || '$(ARCHS_STANDARD)' }}
         run: |
           xcodegen generate
           xcodebuild build \
             -project FedimintDemo.xcodeproj \
             -scheme FedimintDemo \
-            -destination 'generic/platform=iOS Simulator' \
-            ARCHS="$DEMO_ARCHS"
+            -destination 'generic/platform=iOS Simulator'
 
       - name: 'Upload the XCFramework'
         uses: actions/upload-artifact@v4

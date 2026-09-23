@@ -51,12 +51,24 @@ rn-example app="react-native":
 build-ios-lib:
     nix develop --accept-flake-config .#ios -c ./scripts/build-ios-lib.sh
 
+# The Apple native libraries via Nix — cachix-cached, see nix/ffi.nix. Nothing
+# compiles locally when the cache is warm; a cold run cross-compiles the crate
+# (heavy: rocksdb + aws-lc from C). This is what `build-swift` uses by default.
+build-ios-lib-nix:
+    ./scripts/nix-build-ios-lib.sh
+
 # The Swift bindings, read out of an already-built .a.
 build-swift-bindings:
     ./scripts/generate-swift-bindings.sh
 
 build-swift:
-    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-sdk.sh
+    ./scripts/build-ios-sdk.sh
+
+# Non-nix escape hatch: cross-compile locally with plain cargo instead of
+# fetching from Cachix, for a machine that cannot or should not use Nix.
+# Needs the `.#ios` shell (Apple Rust targets, cmake/perl/go for aws-lc-sys).
+build-swift-local:
+    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-sdk.sh --local
 
 # Runs on the macOS slice of the XCFramework — no simulator boot needed.
 test-swift: build-swift

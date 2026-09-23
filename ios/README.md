@@ -21,7 +21,11 @@ would take.
 
 ```swift
 dependencies: [
-    .package(path: "../fedimint-sdk/ios")
+    // `name:` is load bearing. Without it SwiftPM takes a path dependency's
+    // identity from the directory name — `ios` — and the product reference
+    // below fails with "unknown package 'FedimintSdk'". The `name:` in this
+    // package's own manifest is a display name and does not set identity.
+    .package(name: "FedimintSdk", path: "../fedimint-sdk/ios")
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -193,19 +197,32 @@ is two steps, and the split is deliberate — the same split
    `.a` built in step 1**, not out of the crate source, so the Swift cannot
    drift from the binary it will load on the device. This half takes seconds.
 
-Unlike Android, step 1 does **not** go through Nix. Every Apple target compiles
-against an SDK that ships inside Xcode and cannot live in the nix store, so there
-is no cacheable derivation to build — [`nix/ffi.nix`](../nix/ffi.nix) stays
-Android-only. `nix develop .#ios` supplies the Apple Rust targets and the
-cmake/perl/go that aws-lc and rocksdb want; Xcode supplies the SDKs.
+Step 1 goes through Nix and Cachix, exactly as Android's does — the derivations
+live in [`nix/ffi.nix`](../nix/ffi.nix) as `fedimint-sdk-ios-<triple>`. Nothing
+compiles locally when the cache is warm.
+
+Because Apple targets compile against proprietary SDKs bundled with Xcode rather
+than hermetic Nix packages, these derivations use relaxed sandboxing
+(`__noChroot = true` via `sandbox = relaxed`). This allows the build to access
+the host Xcode toolchain while still producing ordinary, substitutable Nix store
+paths, enabling true binary caching via Cachix for all Apple slices.
 
 ```sh
-just build-ios-lib        # cargo -> libfedimint_sdk.a per target, + lipo'd sim slice
+just build-ios-lib-nix    # nix/cachix -> libfedimint_sdk.a per target
 just build-swift-bindings # uniffi-bindgen over that .a  -> FedimintSdk.swift
 just build-swift          # both, then xcodebuild -create-xcframework
 just test-swift           # build-swift, then `swift test` on the macOS slice
 just build-ios-demo       # build-swift, then xcodegen + compile the demo
+
+just build-swift-local    # same, but cross-compile with plain cargo instead
+just build-ios-lib        # just the cargo half
 ```
+
+`build-swift-local` (`scripts/build-ios-sdk.sh --local`) is the counterpart of
+`build-android-sdk.sh --local`: it cross-compiles with plain `cargo` in the
+`.#ios` shell instead of fetching from Cachix. Both producers write the same
+tree — per-triple archives, the lipo'd simulator slice, and
+`target/apple-slices.txt` — so everything downstream is identical either way.
 
 A full build produces four targets. To iterate faster, narrow it:
 
