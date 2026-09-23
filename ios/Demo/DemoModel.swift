@@ -91,6 +91,21 @@ final class DemoModel: ObservableObject {
     /// from `watchTasks`.
     private var runTasks: [Section: Task<Void, Never>] = [:]
 
+    /// True once the action currently running has been superseded — by a newer
+    /// tap on the same section, or by `attach` replacing the federation it was
+    /// started against.
+    ///
+    /// **Every mutation that follows an `await` inside a `run` block has to
+    /// consult this**, and that is not the same as `run` checking it once at the
+    /// end. Cancelling a task does not stop the block: uniffi calls cannot be
+    /// interrupted, so the block runs to completion and each of its writes lands
+    /// unless that write is guarded. `run`'s own check covers the result text
+    /// and nothing else.
+    ///
+    /// It reads `Task.isCancelled` because a block is awaited *by* its run task,
+    /// so the current task inside the block is that task.
+    private var isSuperseded: Bool { Task.isCancelled }
+
     /// Quotes are single use: held between the Quote and Pay/Send taps so the
     /// user sees the fee before committing, then dropped once submitted. The
     /// Rust side enforces this too — a second `send` on the same quote throws
@@ -111,6 +126,7 @@ final class DemoModel: ObservableObject {
             let mnemonic = words.isEmpty ? nil : try Mnemonic.fromWords(words: words)
             let dataDir = try Self.dataDirectory()
             let sdk = try await createFedimintSdk(dataDir: dataDir.path, mnemonic: mnemonic)
+            guard !self.isSuperseded else { return "superseded by a newer open" }
             self.sdk = sdk
             self.hasSdk = true
             self.walletStatus = "Wallet open at \(dataDir.lastPathComponent)"
@@ -141,7 +157,9 @@ final class DemoModel: ObservableObject {
     func refreshBalance() {
         run(.wallet) {
             guard let federation = self.federation else { return "join a federation first" }
-            self.balance = "Balance: " + formatMsats(try await federation.balance())
+            let amount = try await federation.balance()
+            guard !self.isSuperseded else { return "superseded" }
+            self.balance = "Balance: " + formatMsats(amount)
             return "balance refreshed"
         }
     }
@@ -183,6 +201,7 @@ final class DemoModel: ObservableObject {
                 verb = "Already joined — reattached to"
             }
 
+            guard !self.isSuperseded else { return "superseded by a newer join" }
             self.attach(joined)
             return "\(verb) \(joined.id())\n\(joined.name() ?? "(unnamed)") on \(joined.network())"
         }
@@ -195,6 +214,7 @@ final class DemoModel: ObservableObject {
         run(.join) {
             guard let sdk = self.sdk else { return "open the wallet first" }
             let recovery = try await sdk.recover(invite: InviteCode.parse(code: self.trimmedInvite))
+            guard !self.isSuperseded else { return "superseded by a newer join" }
             self.attach(recovery.federation)
 
             let header = "Recovering \(recovery.federation.id())"
@@ -220,6 +240,7 @@ final class DemoModel: ObservableObject {
                 amount: msats,
                 description: self.lnReceiveDescription
             )
+            guard !self.isSuperseded else { return "superseded by a newer request" }
             self.lastInvoice = receive.invoice
 
             let header = "Invoice:\n\(receive.invoice)\n\noperation \(receive.operation.id())"
@@ -272,6 +293,13 @@ final class DemoModel: ObservableObject {
 
             let quote = try await ecash.quote(amount: msats)
             let sent = try await ecash.send(quote: quote)
+            // Guarded like the rest so Copy notes always matches the notes the
+            // screen is showing. Worth being clear about what this does *not*
+            // fix, though: two taps here are two real sends, and the superseded
+            // one has already moved value whose notes then appear nowhere in the
+            // UI. The actual fix is to disable the button while a send is in
+            // flight; this guard only keeps the two displays consistent.
+            guard !self.isSuperseded else { return "superseded by a newer send" }
             self.lastNotes = sent.notes
 
             let state = try await sent.operation.state()
@@ -302,6 +330,12 @@ final class DemoModel: ObservableObject {
             guard !invoice.isEmpty else { return "paste an invoice first" }
 
             let quote = try await lightning.quote(invoice: invoice)
+
+            // Two taps on Quote with the *same* invoice race each other, and the
+            // input check below cannot see that: the field never changed. Arming
+            // Pay with the older quote while the screen shows the newer one's fee
+            // is the worst version of this bug.
+            guard !self.isSuperseded else { return "superseded by a newer quote" }
 
             // Quoting is a round trip, and the field is editable throughout it.
             // The `didSet` on `lnInvoice` clears any existing quote the moment
@@ -350,6 +384,7 @@ final class DemoModel: ObservableObject {
             }
 
             let receive = try await onchain.receive()
+            guard !self.isSuperseded else { return "superseded by a newer request" }
             self.lastAddress = receive.address
 
             let header = "Send bitcoin to:\n\(receive.address)\n\noperation \(receive.operation.id())"
@@ -380,6 +415,9 @@ final class DemoModel: ObservableObject {
 
             let quote = try await onchain.quote(address: address, amount: sats)
 
+            // Same supersession race as the lightning quote above.
+            guard !self.isSuperseded else { return "superseded by a newer quote" }
+
             // Same in-flight race as the lightning quote above, over two fields
             // instead of one: a quote carries the destination *and* the amount
             // it was taken for, so either one moving invalidates it.
@@ -403,6 +441,7 @@ final class DemoModel: ObservableObject {
         onchainQuote = nil
         run(.onchainSend) {
             let operation = try await onchain.send(quote: quote)
+            guard !self.isSuperseded else { return "operation \(operation.id()) — superseded" }
             let header = "operation \(operation.id())"
             let updates = operation.updates()
             self.watch(.onchainSend, header: header) { try await updates.next() }
@@ -466,7 +505,21 @@ final class DemoModel: ObservableObject {
         lastInvoice = nil
         lastNotes = nil
         lastAddress = nil
-        for section in Section.federationScoped { results[section] = nil }
+
+        // Clearing the values is not enough on its own: an action still in
+        // flight against the federation being replaced would repopulate them on
+        // its way out — A's deposit address, A's invoice, A's watcher — and
+        // render the result under B. Cancelling is what makes `isSuperseded`
+        // true inside those blocks, which is what actually stops the writes.
+        //
+        // `federationScoped` deliberately excludes `.join` and `.wallet`:
+        // `attach` runs inside one of those, so cancelling the whole set would
+        // cancel its own caller and suppress the result it is about to return.
+        for section in Section.federationScoped {
+            runTasks[section]?.cancel()
+            runTasks[section] = nil
+            results[section] = nil
+        }
 
         balanceTask = Task { [weak self] in
             do {
@@ -526,10 +579,10 @@ final class DemoModel: ObservableObject {
         runTasks[section] = Task {
             do {
                 let output = try await block()
-                // The SDK call is a uniffi call and cannot be interrupted, so —
-                // as everywhere else in this file — the guard is on the write,
-                // not on reaching it. Without this the slower of two taps on
-                // one button wins, whichever was issued first.
+                // This guards the *result text* only. It does not protect any
+                // state the block mutated on its way here — by this point those
+                // writes have already happened. Anything a block assigns after
+                // an await guards itself with `isSuperseded`; see that property.
                 if !Task.isCancelled { self.results[section] = output }
             } catch let error as SdkError {
                 if !Task.isCancelled { self.results[section] = self.describe(error) }
