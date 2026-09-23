@@ -14,7 +14,8 @@ use crate::{
 // binding can never hand over — it only ever holds a shared handle — so this borrows the quote and
 // claims it for single use instead. `Onchain::quote` needs no such adapter, so it keeps the export
 // attribute on the real method in `onchain.rs`.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Onchain {
     /// See [`Onchain::receive`].
     #[uniffi::method(name = "receive")]

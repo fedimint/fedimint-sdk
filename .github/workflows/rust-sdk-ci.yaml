@@ -2,11 +2,11 @@ name: Rust SDK Continuous Integration
 
 # Continuous integration for the fedimint-sdk crate: build, test, clippy
 # (default + `--features uniffi`), rustfmt, doc, and the wasm-target check,
-# path-filtered to rust/fedimint-sdk. The `--features uniffi` clippy is the
-# cheap Android-surface gate: it compiles the `#[uniffi::export]` blocks and
-# type derives on the host, no cross-compile. The real Android build (2 ABIs)
-# lives in android-native.yaml, and the `uniffi-bindgen` run over its output
-# in kotlin-sdk.yaml.
+# with and without `--features uniffi`, path-filtered to rust/fedimint-sdk.
+# The `--features uniffi` clippy is the cheap Android-surface gate: it
+# compiles the `#[uniffi::export]` blocks and type derives on the host, no
+# cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
+# and the `uniffi-bindgen` run over its output in kotlin-sdk.yaml.
 
 on:
   push:
@@ -225,3 +225,7 @@ jobs:
 
       - name: 'Check wasm'
         run: cargo check --locked --target wasm32-unknown-unknown
+
+      - name: 'Check wasm (uniffi feature)'
+        # The same surface the browser binding is generated from.
+        run: cargo check --locked --target wasm32-unknown-unknown --features uniffi

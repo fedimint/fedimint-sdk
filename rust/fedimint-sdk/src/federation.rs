@@ -94,7 +94,11 @@ pub struct Federation {
 // block already mixes `export_mnemonic` (sync) with `preview`/`join` (async).
 // `new`, below all of this, stays in its own unexported block since it is
 // `pub(crate)`.
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Federation {
     /// This federation's id.
     pub fn id(&self) -> FederationId {
@@ -269,7 +273,11 @@ impl Federation {
     }
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Federation {
     /// The metadata facade.
     ///
