@@ -83,7 +83,7 @@ jobs:
           persist-credentials: false
 
       - name: 'Install Nix'
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
           # `relaxed` is what lets a derivation opt out of the sandbox with
