@@ -118,8 +118,10 @@ jobs:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Install JS dependencies
+        # The default shell has pnpm and node; `.#wasm-tests` is entered only by the step that
+        # runs the devimint-backed tests, so its closure is not realised before it is needed.
         shell: bash
-        run: nix develop --accept-flake-config .#wasm-tests --command pnpm --dir js install
+        run: nix develop --accept-flake-config --command pnpm --dir js install
 
       - name: Build SDK web bindings
         uses: ./.github/actions/build-sdk-web
