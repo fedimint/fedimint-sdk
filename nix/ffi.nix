@@ -242,11 +242,47 @@ let
           # BSD tar, because crane's depsArchive depends on `--sort=name`.
           export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
           export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-          # Build scripts and proc macros are compiled for the *host* even on a
-          # cross-compile, and they have to link with Apple's cc for the same
-          # reason everything else here does.
+          # Pin the *host* toolchain to Apple's too, not just the iOS targets.
+          #
+          # flakebox's mkIOSTarget already points the three iOS targets at
+          # /usr/bin/clang, but the native target is left on nixpkgs'
+          # cc-wrapper — and the three unsets above are exactly how that wrapper
+          # locates the macOS SDK and its libraries. Leaving it in place while
+          # stripping them produces:
+          #
+          #   ld: dynamic executables or dylibs must link with libSystem.dylib
+          #
+          # from aws-lc-sys's CMake probe, because NIX_LDFLAGS is what supplies
+          # `-lSystem`. Sanitizing the environment and keeping nix's compiler are
+          # mutually exclusive; this picks the compiler to match the environment.
+          #
+          # It also keeps the two producers aligned: scripts/build-ios-lib.sh
+          # builds every slice with Apple's clang, so the Nix path now uses the
+          # same toolchain rather than only the same layout. (Not byte-identical
+          # output — see the deployment-target note below.)
+          export CC=/usr/bin/clang
+          export CXX=/usr/bin/clang++
+          export AR=/usr/bin/ar
+          export LD=/usr/bin/cc
+          export CC_aarch64_apple_darwin=/usr/bin/clang
+          export CXX_aarch64_apple_darwin=/usr/bin/clang++
+          export AR_aarch64_apple_darwin=/usr/bin/ar
+          export LD_aarch64_apple_darwin=/usr/bin/cc
           export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
           export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+
+          # Deliberately NOT re-exporting MACOSX_DEPLOYMENT_TARGET here. nixpkgs'
+          # Darwin stdenv resets it after the attribute above is applied, so the
+          # macOS slice lands at its darwinMinVersion (11.3) rather than 13.0 —
+          # but forcing 13.0 in preBuild breaks the host proc-macro dylibs
+          # (`can't find crate for zeroize_derive`, and the same for
+          # futures_macro / tokio_macros) and fails the build outright.
+          #
+          # It is not worth fixing: a *lower* deployment floor links into a
+          # macOS 13 consumer perfectly well, so 11.3 is compatible with
+          # ios/Package.swift's `.macOS(.v13)`. The iOS slices are unaffected —
+          # nixpkgs does not touch IPHONEOS_DEPLOYMENT_TARGET, and those come
+          # out at minos 15.0 as intended.
         '';
 
         nativeBuildInputs = [ xcodeWrapper ] ++ (target.args.nativeBuildInputs or [ ]) ++ [
