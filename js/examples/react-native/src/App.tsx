@@ -15,11 +15,14 @@ import {
   InviteCode,
   Mnemonic,
   Notes,
+  EcashSendState,
   LnSendState_Tags,
   LnReceiveState_Tags,
   OnchainSendState_Tags,
   Network,
   type FederationPreview,
+  type EcashQuoteLike,
+  type EcashSendOperationLike,
   type LnQuoteLike,
   type OnchainQuoteLike,
 } from '@fedimint/react-native'
@@ -542,6 +545,139 @@ const RedeemEcash = () => {
   )
 }
 
+const SendEcash = () => {
+  const [amount, setAmount] = useState('')
+  const [quote, setQuote] = useState<EcashQuoteLike>()
+  const [quoting, setQuoting] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [operation, setOperation] = useState<EcashSendOperationLike>()
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  // A quote belongs to the input it was requested for: this counts each request so a quote
+  // that resolves after the amount has since changed can tell it is stale and drop itself.
+  const quoteGen = useRef(0)
+
+  const handleQuote = async () => {
+    const gen = ++quoteGen.current
+    setQuoting(true)
+    setError('')
+    setNotes('')
+    setStatus('')
+    try {
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const ecash = fed.ecash()
+      if (!ecash) throw new Error('Ecash is not supported by this federation')
+      const next = await ecash.quote(satToMsat(amount.trim()))
+      if (gen !== quoteGen.current) return
+      setQuote(next)
+    } catch (error) {
+      setError(errorMessage(error))
+      setQuote(undefined)
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  const handleSend = async () => {
+    if (!quote) return
+    setSending(true)
+    setError('')
+    try {
+      const ecash = federation()?.ecash()
+      if (!ecash) throw new Error('Ecash is not supported by this federation')
+      const handle = await ecash.send(quote)
+      setNotes(handle.notes.display())
+      setOperation(handle.operation)
+      setStatus('Waiting for the notes to be redeemed')
+      setQuote(undefined)
+      // The notes are spendable as soon as they are shown; this only reports when the
+      // recipient redeems them, or when they come back to this wallet instead.
+      handle.operation
+        .awaitFinal()
+        .then((state) => setStatus(EcashSendState[state]))
+        .catch((error) => setStatus(errorMessage(error)))
+    } catch (error) {
+      setError(errorMessage(error))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    if (!operation) return
+    setError('')
+    try {
+      await operation.requestCancel()
+      setStatus('Cancel requested; unredeemed notes return to this wallet')
+    } catch (error) {
+      setError(errorMessage(error))
+    }
+  }
+
+  const copyNotes = () => {
+    Clipboard.setString(notes)
+  }
+
+
+  return (
+    <SectionCard>
+      <SectionTitle>Send Ecash</SectionTitle>
+      <TextInput
+        style={s.input}
+        placeholder="Amount in sats"
+        placeholderTextColor="#888"
+        value={amount}
+        onChangeText={(text) => {
+          setAmount(text)
+          setQuote(undefined)
+          quoteGen.current += 1
+        }}
+        keyboardType="numeric"
+        editable={!quoting}
+      />
+      <Btn
+        title={quoting ? 'Quoting...' : 'Quote'}
+        onPress={handleQuote}
+        disabled={quoting || !amount.trim()}
+      />
+
+      {quote && (
+        <View style={s.resultBox}>
+          <Text style={s.label}>
+            Notes: <Text style={s.value}>{msatToSat(quote.notesValue())} sats</Text>
+          </Text>
+          <Text style={s.label}>
+            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
+          </Text>
+          <Text style={s.label}>
+            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
+          </Text>
+          <Btn
+            title={sending ? 'Sending...' : `Send ${msatToSat(quote.total())} sats`}
+            onPress={handleSend}
+            disabled={sending}
+            primary
+          />
+        </View>
+      )}
+      {!!notes && (
+        <View style={s.invoiceBox}>
+          <Text style={s.label}>Notes to hand over:</Text>
+          <Text style={s.mono} selectable>
+            {notes}
+          </Text>
+          {!!status && <Text style={s.value}>{status}</Text>}
+          <Btn title="Copy" onPress={copyNotes} small />
+          <Btn title="Cancel send" onPress={handleCancel} small />
+        </View>
+      )}
+      {!!error && <ErrorBox>{error}</ErrorBox>}
+    </SectionCard>
+  )
+}
+
 const SendLightning = () => {
   const [invoice, setInvoice] = useState('')
   const [quote, setQuote] = useState<LnQuoteLike>()
@@ -1043,6 +1179,7 @@ const App = () => {
         <JoinFederation joined={joined} refresh={refresh} />
         <GenerateLightningInvoice />
         <RedeemEcash />
+        <SendEcash />
         <SendLightning />
         <InviteCodeParser />
         <QuoteLightningInvoice />
