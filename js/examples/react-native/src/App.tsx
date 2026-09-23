@@ -545,25 +545,36 @@ const RedeemEcash = () => {
   )
 }
 
+type Send = {
+  id: number
+  notes: string
+  status: string
+  final: boolean
+}
+
 const SendEcash = () => {
   const [amount, setAmount] = useState('')
   const [quote, setQuote] = useState<EcashQuoteLike>()
   const [quoting, setQuoting] = useState(false)
   const [sending, setSending] = useState(false)
-  const [notes, setNotes] = useState('')
-  const [operation, setOperation] = useState<EcashSendOperationLike>()
-  const [status, setStatus] = useState('')
+  const [sends, setSends] = useState<Send[]>([])
+  // Operations are not render state; keyed by the same id as their entry in `sends`.
+  const operations = useRef(new Map<number, EcashSendOperationLike>())
+  const nextSendId = useRef(0)
   const [error, setError] = useState('')
   // A quote belongs to the input it was requested for: this counts each request so a quote
   // that resolves after the amount has since changed can tell it is stale and drop itself.
   const quoteGen = useRef(0)
 
+  const updateSend = (id: number, patch: Partial<Send>) =>
+    setSends((prev) =>
+      prev.map((send) => (send.id === id ? { ...send, ...patch } : send)),
+    )
+
   const handleQuote = async () => {
     const gen = ++quoteGen.current
     setQuoting(true)
     setError('')
-    setNotes('')
-    setStatus('')
     try {
       const fed = federation()
       if (!fed) throw new Error('Join a federation first')
@@ -588,8 +599,12 @@ const SendEcash = () => {
       const ecash = federation()?.ecash()
       if (!ecash) throw new Error('Ecash is not supported by this federation')
       const handle = await ecash.send(quote)
-      setNotes(handle.notes.display())
-      setOperation(handle.operation)
+      const id = nextSendId.current++
+      operations.current.set(id, handle.operation)
+      setSends((prev) => [
+        { id, notes: handle.notes.display(), status: '', final: false },
+        ...prev,
+      ])
       setQuote(undefined)
       // The federation never reports a redemption to the sender. The outcome is learnt when
       // the notes are reclaimed: by the deadline in the details, or sooner through Cancel
@@ -597,11 +612,13 @@ const SendEcash = () => {
       // as Redeemed.
       const details = await handle.operation.details()
       const reclaimAt = new Date(Number(details.reclaimAt)).toLocaleString()
-      setStatus(`Outcome settles by ${reclaimAt}, or when you press Cancel send`)
+      updateSend(id, {
+        status: `Outcome settles by ${reclaimAt}, or when you press Cancel send`,
+      })
       handle.operation
         .awaitFinal()
-        .then((state) => setStatus(EcashSendState[state]))
-        .catch((error) => setStatus(errorMessage(error)))
+        .then((state) => updateSend(id, { status: EcashSendState[state], final: true }))
+        .catch((error) => updateSend(id, { status: errorMessage(error) }))
     } catch (error) {
       setError(errorMessage(error))
     } finally {
@@ -609,21 +626,35 @@ const SendEcash = () => {
     }
   }
 
-  const handleCancel = async () => {
+  const handleCancel = async (id: number) => {
+    const operation = operations.current.get(id)
     if (!operation) return
     setError('')
     try {
       await operation.requestCancel()
-      setStatus('Cancel requested; unredeemed notes return to this wallet')
+      setSends((prev) =>
+        prev.map((send) =>
+          send.id === id && !send.final
+            ? {
+                ...send,
+                status: 'Cancel requested; unredeemed notes return to this wallet',
+              }
+            : send,
+        ),
+      )
     } catch (error) {
       setError(errorMessage(error))
     }
   }
 
-  const copyNotes = () => {
-    Clipboard.setString(notes)
+  const dismiss = (id: number) => {
+    operations.current.delete(id)
+    setSends((prev) => prev.filter((send) => send.id !== id))
   }
 
+  const copyNotes = (notes: string) => {
+    Clipboard.setString(notes)
+  }
 
   return (
     <SectionCard>
@@ -666,17 +697,25 @@ const SendEcash = () => {
           />
         </View>
       )}
-      {!!notes && (
-        <View style={s.invoiceBox}>
+      {sends.map((send) => (
+        <View key={send.id} style={s.invoiceBox}>
           <Text style={s.label}>Notes to hand over:</Text>
           <Text style={s.mono} selectable>
-            {notes}
+            {send.notes}
           </Text>
-          {!!status && <Text style={s.value}>{status}</Text>}
-          <Btn title="Copy" onPress={copyNotes} small />
-          <Btn title="Cancel send" onPress={handleCancel} small />
+          {!!send.status && <Text style={s.value}>{send.status}</Text>}
+          <Btn title="Copy" onPress={() => copyNotes(send.notes)} small />
+          {send.final ? (
+            <Btn title="Dismiss" onPress={() => dismiss(send.id)} small />
+          ) : (
+            <Btn
+              title="Cancel send"
+              onPress={() => handleCancel(send.id)}
+              small
+            />
+          )}
         </View>
-      )}
+      ))}
       {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
