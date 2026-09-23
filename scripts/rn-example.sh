@@ -45,10 +45,14 @@ echo "==> Target: $SERIAL (Android $(adb shell getprop ro.build.version.release 
 
 step() { echo "==> [$(date +%H:%M:%S)] $*"; }
 # Metro names the project it serves in a response header; a server left over from the other
-# example answers on the same port but would hand this app the wrong bundle.
+# example answers on the same port but would hand this app the wrong bundle. Expo's Metro sends
+# the path URI-encoded (a space as %20) and React Native's sends it plain, so the value is
+# percent-decoded before it is compared with the directory.
 metro_root() {
-  curl -sfI http://localhost:8081/status 2>/dev/null |
-    awk 'tolower($1) == "x-react-native-project-root:" { print $2 }' | tr -d '\r'
+  local value
+  value=$(curl -sfI http://localhost:8081/status 2>/dev/null |
+    sed -n 's/^[Xx]-[Rr]eact-[Nn]ative-[Pp]roject-[Rr]oot: *//p' | tr -d '\r')
+  printf '%b' "${value//%/\\x}"
 }
 metro_up() { [[ "$(metro_root)" == "$DIR" ]]; }
 
