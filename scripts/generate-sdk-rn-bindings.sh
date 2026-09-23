@@ -16,7 +16,7 @@
 #
 # ubrn finds the libraries through `cargo metadata`'s target directory, so the nix output is laid
 # out under a throwaway CARGO_TARGET_DIR and ubrn is told not to build (`--no-cargo`). Run inside
-# the `.#wasm-tests` shell: it needs the nix-packaged `ubrn` and `cargo` on PATH, and
+# the `.#android` shell: it needs the nix-packaged `ubrn` and `cargo` on PATH, and
 # `pnpm install` done in js/ so ubrn formats its TypeScript with the workspace's prettier.
 #
 # The `uniffi-bindgen-react-native` npm package the bindings depend on (for its C++ runtime
@@ -30,12 +30,12 @@ PKG="$ROOT/js/react-native/react-native-bindings"
 
 for tool in ubrn cargo; do
   command -v "$tool" >/dev/null ||
-    { echo "$tool not on PATH; run in the .#wasm-tests shell" >&2; exit 1; }
+    { echo "$tool not on PATH; run in the .#android shell" >&2; exit 1; }
 done
 case "$(command -v ubrn)" in
   */node_modules/*)
     echo "ubrn resolves to the npm package's CLI ($(command -v ubrn)), which generates for" \
-      "UniFFI 0.31; run this script from the nix shell, not through pnpm run" >&2
+      "UniFFI 0.31; run this script from the .#android shell, not through pnpm run" >&2
     exit 1
     ;;
 esac

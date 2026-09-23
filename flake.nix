@@ -284,6 +284,8 @@
               pkgs.cargo-ndk
               pkgs.libclang # Often needed for bindgen
               androidToolchain
+              # The binding generator scripts/generate-sdk-rn-bindings.sh runs over the built .so.
+              webBindgen.ubrn
             ];
             shellHook = commonShellHook + mkAndroidShellHook sdk;
           };

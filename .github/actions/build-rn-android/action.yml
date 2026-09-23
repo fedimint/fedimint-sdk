@@ -29,7 +29,7 @@ runs:
     - name: Install JS dependencies
       shell: bash
       run: |
-        nix develop --accept-flake-config .#wasm-tests --command \
+        nix develop --accept-flake-config .#android --command \
           pnpm --dir js install --frozen-lockfile
 
     - name: Generate the bindings and stage the libraries
@@ -37,7 +37,7 @@ runs:
       # formats with the workspace's prettier exactly as a contributor's run does.
       shell: bash
       run: |
-        nix develop --accept-flake-config .#wasm-tests --command \
+        nix develop --accept-flake-config .#android --command \
           scripts/generate-sdk-rn-bindings.sh "$(readlink -f sdk-android-jni)"
 
     - name: The committed bindings must match the crate
@@ -52,7 +52,7 @@ runs:
     - name: Build the React Native packages
       shell: bash
       run: |
-        nix develop --accept-flake-config .#wasm-tests --command \
+        nix develop --accept-flake-config .#android --command \
           pnpm --dir js run build:reactnative
 
     - name: Upload the libraries and the built packages

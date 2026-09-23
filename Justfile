@@ -44,18 +44,18 @@ test:
 # The browser package's bindings, regenerated from the Nix-built wasm module. Run after any
 # change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
 generate-sdk-web-bindings:
-    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js install
-    nix develop --accept-flake-config .#wasm-tests -c scripts/generate-sdk-web-bindings.sh
+    nix develop --accept-flake-config .#wasm -c pnpm --dir js install
+    nix develop --accept-flake-config .#wasm -c scripts/generate-sdk-web-bindings.sh
 
 # The React Native package's bindings, regenerated from the nix-built Android libraries. Run after
 # any change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
 generate-sdk-rn-bindings:
-    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js install
-    nix develop --accept-flake-config .#wasm-tests -c scripts/generate-sdk-rn-bindings.sh
+    nix develop --accept-flake-config .#android -c pnpm --dir js install
+    nix develop --accept-flake-config .#android -c scripts/generate-sdk-rn-bindings.sh
 
 # Regenerate, then build the two React Native packages' JavaScript (what CI's Build Android does).
 build-rn-android: generate-sdk-rn-bindings
-    nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run build:reactnative
+    nix develop --accept-flake-config .#android -c pnpm --dir js run build:reactnative
 
 # iOS: cargo cross-compiles rust/fedimint-sdk inside the `.#ios` shell (macOS with Xcode only),
 # ubrn assembles the xcframework and regenerates the bindings. UBRN_IOS_TARGETS (comma separated)

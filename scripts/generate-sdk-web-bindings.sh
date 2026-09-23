@@ -15,7 +15,7 @@
 #
 # ubrn finds the module through `cargo metadata`'s target directory, so the given file is laid
 # out under a throwaway CARGO_TARGET_DIR and ubrn is told not to build. Run inside the
-# `.#wasm-tests` shell: it needs `ubrn`, `wasm-bindgen` 0.2.106 and `cargo` on PATH, and
+# `.#wasm` shell: it needs `ubrn`, `wasm-bindgen` 0.2.106 and `cargo` on PATH, and
 # `pnpm install` done in js/: ubrn formats its own output with the workspace's prettier, and
 # this script's last step runs that same prettier over the wasm-bindgen glue ubrn leaves alone.
 #
@@ -42,7 +42,7 @@ if [[ ! -f "$WASM" ]]; then
 fi
 for tool in ubrn wasm-bindgen wasm-opt cargo; do
   command -v "$tool" >/dev/null ||
-    { echo "$tool not on PATH; run in the .#wasm-tests shell" >&2; exit 1; }
+    { echo "$tool not on PATH; run in the .#wasm shell" >&2; exit 1; }
 done
 
 TARGET="$(mktemp -d)"

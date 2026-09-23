@@ -45,7 +45,7 @@ Regenerate it from a source checkout with:
 pnpm generate
 ```
 
-run inside the `.#wasm-tests` Nix shell (`nix develop .#wasm-tests`). This builds
+run inside the `.#wasm` Nix shell (`nix develop .#wasm`). This builds
 `rust/fedimint-sdk` for `wasm32-unknown-unknown` through Nix and turns the result into the
 files under `src/generated/`; see `scripts/generate-sdk-web-bindings.sh` for the details.
 

@@ -23,7 +23,7 @@ runs:
       # ubrn formats with the workspace's prettier exactly as a contributor's run does.
       shell: bash
       run: |
-        nix develop --accept-flake-config .#wasm-tests --command \
+        nix develop --accept-flake-config .#wasm --command \
           scripts/generate-sdk-web-bindings.sh "$(readlink -f sdk-wasm)/lib/fedimint_sdk.wasm"
 
     - name: The committed bindings must match the crate
