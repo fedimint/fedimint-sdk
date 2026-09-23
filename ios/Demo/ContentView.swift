@@ -81,12 +81,13 @@ struct ContentView: View {
             TextField("amount (msats)", text: $model.lnReceiveAmount)
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numberPad)
+                .autocorrectionDisabled()
             TextField("description", text: $model.lnReceiveDescription)
                 .textFieldStyle(.roundedBorder)
 
             HStack {
                 Button("Create invoice") { model.lnReceive() }
-                    .disabled(!model.hasFederation)
+                    .disabled(!model.hasFederation || model.lnReceiveAmount.trimmed.isEmpty)
                 CopyButton("Copy invoice", value: model.lastInvoice)
             }
             .buttonStyle(.bordered)
