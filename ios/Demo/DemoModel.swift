@@ -325,24 +325,41 @@ final class DemoModel: ObservableObject {
 
             let sent = try await ecash.send(quote: quote)
 
-            // Deliberately NOT guarded on `isSuperseded`, unlike every other
-            // post-await write in this file. The send has committed and these
-            // notes are the only way to recover that value — dropping them
-            // because the run was superseded loses funds outright, and nothing
-            // in this demo can retrieve them afterwards. Showing them under a
+            // Looked up here, before anything is published, and with `try?`.
+            // The state is cosmetic; the notes and the operation id are not.
+            // An earlier version published the notes first and then awaited
+            // this, which left a window where `attach` cleared the notes of a
+            // send that had already moved value — and where a throw here
+            // discarded the whole summary along with them.
+            let state = try? await sent.operation.state()
+
+            // No `await` from here to the end of the block, so nothing can
+            // interleave: the notes, the operation id and the rendered summary
+            // all land together or not at all.
+            //
+            // None of it is guarded on `isSuperseded`, unlike every other
+            // post-await write in this file. The send has committed, and this
+            // is the only record of where that value went; dropping it because
+            // the run was superseded loses funds outright. Showing it under a
             // federation the user has since switched away from is the lesser
-            // evil; the text below names the operation they belong to.
+            // evil.
             self.lastNotes = sent.notes
 
-            let state = try await sent.operation.state()
-            return """
+            let summary = """
                 notes \(formatMsats(quote.notesValue())) + fee \(formatMsats(quote.fee()))
 
                 hand these notes to the receiver:
                 \(sent.notes.display())
 
-                operation \(sent.operation.id()) — \(state)
+                operation \(sent.operation.id()) — \(state.map { "\($0)" } ?? "state unavailable")
                 """
+
+            // Written directly as well as returned: `run` drops the returned
+            // string when the run was superseded, and this is the only place
+            // the operation id is ever shown. On the happy path `run` then
+            // assigns the identical string, so this costs nothing.
+            self.results[.ecashSend] = summary
+            return summary
         }
     }
 

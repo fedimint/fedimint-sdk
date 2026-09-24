@@ -144,35 +144,19 @@
           "x86_64-linux-android"
         ];
 
-        # The three slices `ubrn build ios` assembles into the xcframework: a device build plus
-        # both simulator architectures.
-        iosToolchain = mkToolchain [
-          "aarch64-apple-ios"
-          "aarch64-apple-ios-sim"
-          "x86_64-apple-ios"
-        ];
-
-        wasmToolchain = mkToolchain [
-          "wasm32-unknown-unknown"
-        ];
-
-        # The four Apple targets the iOS SDK ships as XCFramework slices. Unlike
-        # Android, there is no cacheable Nix cross-compile to pair this with:
-        # every Apple target needs the iOS/macOS SDK, which only exists inside
-        # an Xcode installation and cannot live in the store. So this toolchain
-        # supplies `rust-std` and nothing else, and
-        # scripts/build-ios-lib.sh drives plain `cargo` against the host Xcode —
-        # the same shape js/react-native/react-native-bindings already uses for
-        # these exact triples. nix/ffi.nix stays Android-only.
-        #
-        # `aarch64-apple-darwin` is not a mistake: the XCFramework carries a
-        # macOS slice so `swift test --package-path ios` runs on the host
-        # without booting a simulator.
+        # Apple targets for the Swift iOS SDK and React Native (ubrn): device slice,
+        # both simulator architectures, plus host aarch64-apple-darwin so package
+        # tests (`swift test --package-path ios`) run on the host without booting a
+        # simulator.
         iosToolchain = mkToolchain [
           "aarch64-apple-ios"
           "aarch64-apple-ios-sim"
           "x86_64-apple-ios"
           "aarch64-apple-darwin"
+        ];
+
+        wasmToolchain = mkToolchain [
+          "wasm32-unknown-unknown"
         ];
         
         defaultToolchain = mkToolchain [];

@@ -42,7 +42,11 @@ struct ContentView: View {
                 .textInputAutocapitalization(.never)
 
             HStack {
+                // Disabled mid-send for the same reason as Join/Recover below:
+                // reopening reattaches a federation, and `attach` clears the
+                // notes of a send that has already committed.
                 Button("Open Wallet") { model.openWallet() }
+                    .disabled(model.isSendingEcash)
                 Button(model.seed == nil ? "Show seed" : "Hide seed") { model.toggleSeed() }
                     .disabled(!model.hasSdk)
                 Button("Refresh") { model.refreshBalance() }
@@ -72,7 +76,12 @@ struct ContentView: View {
                 Button("Recover") { model.recover() }
             }
             .buttonStyle(.bordered)
-            .disabled(!model.hasSdk)
+            // `isSendingEcash` blocks the whole row while a send is committing:
+            // Join and Recover call `attach`, which cancels the send's run and
+            // clears its notes — losing the only record of value that has
+            // already moved. Preview is harmless but rides along rather than
+            // splitting the row for one button.
+            .disabled(!model.hasSdk || model.isSendingEcash)
         }
     }
 
