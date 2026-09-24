@@ -282,7 +282,7 @@ jobs:
 
       - name: 'Upload devimint logs'
         if: ${{ !cancelled() && steps.run-tests.outcome == 'failure' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: devimint-logs-${{ matrix.shape }}-${{ github.run_id }}
           path: |
