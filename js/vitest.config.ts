@@ -50,6 +50,38 @@ export default defineConfig({
         },
       },
       {
+        plugins: [wasm()],
+        test: {
+          environment: 'happy-dom',
+          name: 'sdk-web',
+          include: ['web/sdk-web/src/**/*.browser.test.ts'],
+          browser: {
+            enabled: true,
+            provider: playwright(),
+            fileParallelism: false,
+            ui: false, // no ui for the core library
+            api: {
+              port: 63315,
+            },
+            screenshotFailures: false,
+            instances: [
+              {
+                browser: 'chromium',
+                headless: true,
+              },
+            ],
+          },
+          env: {
+            // devimint exports the faucet port to the environment of the command it
+            // execs (`pnpm test` runs under `devimint wasm-test-setup --exec`); the
+            // fallback matches devimint's current hard-coded default. `||` so a
+            // set-but-empty variable also falls back, like `:-` in the setup script.
+            FAUCET: `http://localhost:${process.env.FM_PORT_FAUCET || '15243'}`,
+          },
+          testTimeout: 180_000,
+        },
+      },
+      {
         test: {
           name: 'cli',
           environment: 'happy-dom',
@@ -63,7 +95,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           environment: 'node',
-          include: ['shared/core/**/*.test.ts'],
+          include: ['shared/core/**/*.test.ts', 'web/sdk-web/src/**/*.test.ts'],
+          exclude: ['**/*.browser.test.ts'],
         },
         resolve: {
           alias: {
@@ -83,17 +116,13 @@ export default defineConfig({
         },
         resolve: {
           alias: {
-            // The real bindings module is ubrn-generated and needs a compiled
-            // native library; unit tests run against a stub instead. Types are
-            // aliased to source so no workspace build is needed beforehand.
+            // The real bindings module is ubrn-generated and needs a compiled native library;
+            // unit tests run against a stub instead.
             '@fedimint/react-native-bindings': fileURLToPath(
               new URL(
-                './react-native/react-native/src/__tests__/rpc-handler-stub.ts',
+                './react-native/react-native/src/__tests__/bindings-stub.ts',
                 import.meta.url,
               ),
-            ),
-            '@fedimint/types': fileURLToPath(
-              new URL('./shared/types/src/index.ts', import.meta.url),
             ),
           },
         },
@@ -101,6 +130,6 @@ export default defineConfig({
     ],
   },
   optimizeDeps: {
-    exclude: ['@fedimint/core'],
+    exclude: ['@fedimint/core', '@fedimint/sdk-web'],
   },
 })

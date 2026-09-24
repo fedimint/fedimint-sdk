@@ -26,8 +26,46 @@ build-android-aar: build-kotlin
 build-android-local:
     nix develop --accept-flake-config .#android -c ./scripts/build-android-sdk.sh --local
 
+# Boot the emulator the React Native example apps run on (created on first use, see the
+# script). Leave it running; pass emulator flags after the recipe name, e.g. -no-window.
+android-emulator *ARGS:
+    nix develop --accept-flake-config .#android-emulator -c scripts/android-emulator.sh {{ARGS}}
+
+# Build and install one example app (react-native or expo-app) on the running emulator or a
+# connected device and launch it, from the same shell as the emulator so one adb owns the device.
+# Needs `just build-rn-android` first. See the script for why this is not `react-native
+# run-android`.
+rn-example app="react-native":
+    nix develop --accept-flake-config .#android-emulator -c scripts/rn-example.sh {{app}}
+
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test
+
+# The browser package's bindings, regenerated from the Nix-built wasm module. Run after any
+# change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-web-bindings:
+    nix develop --accept-flake-config .#wasm -c pnpm --dir js install
+    nix develop --accept-flake-config .#wasm -c scripts/generate-sdk-web-bindings.sh
+
+# The React Native package's bindings, regenerated from the nix-built Android libraries. Run after
+# any change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-rn-bindings:
+    nix develop --accept-flake-config .#android -c pnpm --dir js install
+    nix develop --accept-flake-config .#android -c scripts/generate-sdk-rn-bindings.sh
+
+# Regenerate, then build the two React Native packages' JavaScript (what CI's Build Android does).
+build-rn-android: generate-sdk-rn-bindings
+    nix develop --accept-flake-config .#android -c pnpm --dir js run build:reactnative
+
+# iOS: cargo cross-compiles rust/fedimint-sdk inside the `.#ios` shell (macOS with Xcode only),
+# ubrn assembles the xcframework and regenerates the bindings. UBRN_IOS_TARGETS (comma separated)
+# narrows the slices; CI passes aarch64-apple-ios on pull requests. NIX_CONFIG serialises the
+# build so rocksdb and aws-lc-sys do not exhaust macos-latest's memory.
+build-rn-ios:
+    nix develop --accept-flake-config .#ios -c pnpm --dir js install
+    NIX_CONFIG=$'max-jobs = 1\ncores = 1' \
+      nix develop --accept-flake-config .#ios -c scripts/build-sdk-rn-ios.sh
+    nix develop --accept-flake-config .#ios -c pnpm --dir js run build:reactnative
 
 test-coverage:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:coverage

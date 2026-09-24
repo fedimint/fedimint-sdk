@@ -1,0 +1,66 @@
+name: Build RN Android
+description:
+  Builds rust/fedimint-sdk for Android via Nix, regenerates js/react-native/react-native-bindings
+  from it, fails if the committed bindings are stale, and builds the two React Native packages.
+
+# Cachix is already authenticated by setup-nix earlier in the calling job, so this action takes
+# no token of its own.
+runs:
+  using: 'composite'
+  steps:
+    - name: Build the Android native libraries
+      shell: bash
+      run: nix build -L .#fedimint-sdk-android-jni -o sdk-android-jni
+
+    - name: Push the libraries to Cachix
+      # cachix-action's post-run hook only pushes paths built in this run; on the self-hosted
+      # runner the store is warm, so push the libraries and their dependency builds explicitly
+      # for `just generate-sdk-rn-bindings` elsewhere to substitute.
+      shell: bash
+      continue-on-error: true
+      run: |
+        nix build --accept-flake-config --no-link --print-out-paths \
+          .#fedimint-sdk-android-aarch64-linux-android \
+          .#fedimint-sdk-android-x86_64-linux-android \
+          .#fedimint-sdk-android-aarch64-linux-android-deps \
+          .#fedimint-sdk-android-x86_64-linux-android-deps \
+          | cachix push fedimint
+
+    - name: Install JS dependencies
+      shell: bash
+      run: |
+        nix develop --accept-flake-config .#android --command \
+          pnpm --dir js install --frozen-lockfile
+
+    - name: Generate the bindings and stage the libraries
+      # Needs the nix-packaged ubrn and cargo from the shell, and the install above so ubrn
+      # formats with the workspace's prettier exactly as a contributor's run does.
+      shell: bash
+      run: |
+        nix develop --accept-flake-config .#android --command \
+          scripts/generate-sdk-rn-bindings.sh "$(readlink -f sdk-android-jni)"
+
+    - name: The committed bindings must match the crate
+      shell: bash
+      run: |
+        if ! git diff --exit-code -- js/react-native/react-native-bindings; then
+          echo "::error::js/react-native/react-native-bindings is stale; run" \
+            "just generate-sdk-rn-bindings" >&2
+          exit 1
+        fi
+
+    - name: Build the React Native packages
+      shell: bash
+      run: |
+        nix develop --accept-flake-config .#android --command \
+          pnpm --dir js run build:reactnative
+
+    - name: Upload the libraries and the built packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: react-native-android
+        path: |
+          js/react-native/react-native-bindings/android/src/main/jniLibs
+          js/react-native/react-native-bindings/lib
+          js/react-native/react-native/lib
+        if-no-files-found: error

@@ -1,13 +1,16 @@
 name: Pull Request
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # `labeled` lets the ci-ios label start the otherwise gated iOS build.
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # Label events only need to consider the gated iOS lane. Give each one its own group so
+  # ordinary label churn cannot cancel a full verification run.
+  group: ${{ github.workflow }}-${{ github.event.action == 'labeled' && github.run_id || github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -17,6 +20,7 @@ jobs:
     outputs:
       core: ${{ steps.filter.outputs.core }}
       web: ${{ steps.filter.outputs.web }}
+      react-native: ${{ steps.filter.outputs.react-native }}
       docs: ${{ steps.filter.outputs.docs }}
       cli: ${{ steps.filter.outputs.cli }}
       rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
@@ -41,6 +45,7 @@ jobs:
 
           core=false
           web=false
+          react_native=false
           docs=false
           cli=false
           rust_sdk=false
@@ -48,6 +53,7 @@ jobs:
           enable_all() {
             core=true
             web=true
+            react_native=true
             docs=true
             cli=true
             rust_sdk=true
@@ -57,6 +63,7 @@ jobs:
             {
               echo "core=$core"
               echo "web=$web"
+              echo "react-native=$react_native"
               echo "docs=$docs"
               echo "cli=$cli"
               echo "rust-sdk=$rust_sdk"
@@ -124,11 +131,24 @@ jobs:
               js/web/react/*|packages/react/*)
                 core=true
                 ;;
+              js/react-native/react-native/*|js/react-native/react-native-bindings/*|js/examples/react-native/*|js/examples/expo-app/*|scripts/generate-sdk-rn-bindings.sh|scripts/build-sdk-rn-ios.sh|Justfile)
+                react_native=true
+                # The Justfile also holds the web binding recipe.
+                web=true
+                ;;
               rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh)
                 rust_sdk=true
-                ;;
-              js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
+                # The web and React Native bindings are generated from the crate; their
+                # freshness checks run in the web test job and the Android job.
                 web=true
+                react_native=true
+                ;;
+              js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|js/web/sdk-web/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
+                web=true
+                ;;
+              nix/web-bindgen.nix|nix/ubrn-Cargo.lock|nix/ffi.nix)
+                web=true
+                react_native=true
                 ;;
               js/vitest.config.ts|js/vitest.workspace.ts)
                 web=true
@@ -140,6 +160,7 @@ jobs:
                 ;;
               flake.nix|flake.lock)
                 web=true
+                react_native=true
                 rust_sdk=true
                 ;;
               js/docs/*|docs/*)
@@ -156,6 +177,7 @@ jobs:
   verify:
     name: Verify
     needs: detect-changes
+    if: ${{ github.event.action != 'labeled' }}
     uses: ./.github/workflows/verify.yml
     secrets: inherit
     with:
@@ -163,6 +185,57 @@ jobs:
       run_web: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.web == 'true' }}
       run_docs: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.docs == 'true' }}
       run_cli: ${{ github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.cli == 'true' }}
+
+  test-react-native:
+    name: Test React Native
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-deps
+      - name: Run the unit tests
+        run: pnpm --dir js test:reactnative --run
+      - name: Type-check the package against the stubbed bindings
+        # The package is excluded from the root typecheck because its real bindings types are
+        # ubrn-generated and need a package build; this config maps them to the test stub so the
+        # type-level contract still gets checked.
+        run: pnpm --dir js --filter @fedimint/react-native typecheck:test
+      - name: Build the React Native packages
+        run: pnpm --dir js build:reactnative
+      - name: Type-check the example apps against the built packages
+        run: pnpm --dir js --filter react-native-sdk-example --filter expo-app-example typecheck
+
+  build-android:
+    name: Build Android
+    needs: detect-changes
+    if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-android
+
+  build-ios:
+    name: Build iOS
+    needs: detect-changes
+    # macOS runners are the scarce and expensive lane, so pull requests only build iOS when asked
+    # to through the `ci-ios` label. Pushes to main and manual runs always build.
+    if: ${{ (github.event.action != 'labeled' || github.event.label.name == 'ci-ios') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-ios')) && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - uses: ./.github/actions/build-rn-ios
+        with:
+          device-only: 'true'
 
   integration-test-sdk:
     name: 'Integration test SDK (${{ matrix.shape }})'

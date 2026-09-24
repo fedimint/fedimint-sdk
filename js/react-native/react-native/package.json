@@ -1,6 +1,6 @@
 {
   "name": "@fedimint/react-native",
-  "description": "React Native SDKfor the Fedimint client",
+  "description": "The Fedimint SDK for React Native: rust/fedimint-sdk through its generated bindings",
   "version": "0.1.0",
   "private": true,
   "repository": {
@@ -35,9 +35,7 @@
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@fedimint/core": "workspace:*",
-    "@fedimint/react-native-bindings": "workspace:*",
-    "@fedimint/types": "workspace:*"
+    "@fedimint/react-native-bindings": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18.0.0",

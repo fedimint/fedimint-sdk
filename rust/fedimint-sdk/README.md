@@ -19,11 +19,16 @@ The UniFFI layer is implemented, behind the `uniffi` feature: a
 `#[uniffi::export]` block in `src/sdk.rs` exposes the calls whose bodies are
 real (open an instance, show its mnemonic, preview a federation, join one),
 and [the Android SDK](../../android) is generated from them. The same
-feature compiles for `wasm32-unknown-unknown`, which is what the browser
-binding is generated from. The exports hand out this crate's own
-types (`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`,
-`Error`, `ErrorCode`), so a binding is a view of this API rather than a
-copy that can drift.
+feature compiles for `wasm32-unknown-unknown`, which is what
+[the browser SDK](../../js/web/sdk-web) is generated from, and for
+Android's native targets, which is what the React Native bindings
+([`js/react-native/react-native-bindings`](../../js/react-native/react-native-bindings),
+regenerated with `just generate-sdk-rn-bindings`) and the
+[`@fedimint/react-native`](../../js/react-native/react-native) package built
+over them are generated from. The exports hand out this crate's own types
+(`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`, `Error`,
+`ErrorCode`), so a binding is a view of this API rather than a copy that can
+drift.
 
 The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the

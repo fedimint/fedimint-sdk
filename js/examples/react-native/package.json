@@ -4,10 +4,10 @@
   "scripts": {
     "android": "react-native run-android",
     "ios": "react-native run-ios",
-    "start": "react-native start"
+    "start": "react-native start",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fedimint/core": "workspace:*",
     "@fedimint/react-native": "workspace:*",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "react": ">=19.2.4",
@@ -25,6 +25,7 @@
     "@react-native/gradle-plugin": "0.83.1",
     "@react-native/metro-config": "0.83.1",
     "@react-native/typescript-config": "0.83.1",
+    "@types/jest": "^29.5.14",
     "@types/react": ">=19.2.14",
     "@types/react-native": "^0.73.0",
     "typescript": "^6.0.3"

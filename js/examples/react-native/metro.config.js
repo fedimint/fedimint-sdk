@@ -28,8 +28,6 @@ config.resolver.extraNodeModules = {
     __dirname,
     '../../react-native/react-native',
   ),
-  '@fedimint/core': path.resolve(__dirname, '../../shared/core'),
-  '@fedimint/types': path.resolve(__dirname, '../../shared/types'),
 };
 
 module.exports = config;

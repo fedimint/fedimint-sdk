@@ -6,6 +6,12 @@ packages:
   - 'examples/*'
   - 'docs'
 
+# A flat node_modules, as npm lays it out: React Native's Gradle plugin and Metro resolve
+# packages such as @react-native/codegen from the app directory without declaring them, which
+# pnpm's default symlinked layout does not provide. pnpm 10 and later read this setting here,
+# not from .npmrc.
+nodeLinker: hoisted
+
 allowBuilds:
   esbuild: true
   secp256k1: true

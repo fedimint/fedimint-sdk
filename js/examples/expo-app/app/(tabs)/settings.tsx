@@ -1,8 +1,15 @@
 import React, { useState } from 'react'
-import { View, Text, TextInput, ScrollView } from 'react-native'
+import { View, Text, TextInput, ScrollView, Alert } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { director } from '../../src/wallet'
-import { extractErrorMessage } from '../../src/hooks'
+import { InviteCode, Mnemonic, type LnQuoteLike } from '@fedimint/react-native'
+import {
+  current,
+  errorMessage,
+  federation,
+  msatToSat,
+  open,
+  reset,
+} from '../../src/sdk'
 import {
   SectionCard,
   SectionTitle,
@@ -12,90 +19,72 @@ import {
   ErrorBox,
 } from '../../src/components'
 import s from '../../src/styles'
-import type { ParsedInviteCode, ParsedBolt11Invoice } from '@fedimint/core'
 
 const MnemonicManager = () => {
-  const [mnemonicState, setMnemonicState] = useState('')
-  const [inputMnemonic, setInputMnemonic] = useState('')
-  const [activeAction, setActiveAction] = useState<
-    'get' | 'set' | 'generate' | null
-  >(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const [words, setWords] = useState('')
+  const [visible, setVisible] = useState(false)
+  const [restoreInput, setRestoreInput] = useState('')
+  const [showRestore, setShowRestore] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{
     text: string
     type: 'success' | 'error'
   }>()
-  const [showMnemonic, setShowMnemonic] = useState(false)
 
-  const clearMessage = () => setMessage(undefined)
-
-  const handleAction = async (action: 'get' | 'set' | 'generate') => {
-    if (activeAction === action) {
-      setActiveAction(null)
-      return
-    }
-    setActiveAction(action)
-    clearMessage()
-    if (action === 'get') await handleGetMnemonic()
-    else if (action === 'generate') await handleGenerateMnemonic()
-  }
-
-  const handleGenerateMnemonic = async () => {
-    setIsLoading(true)
+  const handleExport = async () => {
+    setBusy(true)
+    setMessage(undefined)
     try {
-      const newMnemonic = await director.generateMnemonic()
-      setMnemonicState(newMnemonic.join(' '))
-      setMessage({ text: 'New mnemonic generated!', type: 'success' })
-      setShowMnemonic(true)
+      const session = current()
+      if (!session) throw new Error('Wallet not ready')
+      const list = session.sdk.exportMnemonic().words()
+      setWords(list.join(' '))
+      setVisible(true)
+      setMessage({ text: 'Mnemonic retrieved!', type: 'success' })
     } catch (error) {
-      setMessage({ text: extractErrorMessage(error), type: 'error' })
+      setMessage({ text: errorMessage(error), type: 'error' })
     } finally {
-      setIsLoading(false)
+      setBusy(false)
     }
   }
 
-  const handleGetMnemonic = async () => {
-    setIsLoading(true)
+  const restoreWallet = async () => {
+    const restoreWords = restoreInput.trim().split(/\s+/).filter(Boolean)
+    if (restoreWords.length === 0) return
+    setBusy(true)
+    setMessage(undefined)
     try {
-      const mnemonic = await director.getMnemonic()
-      if (mnemonic && mnemonic.length > 0) {
-        setMnemonicState(mnemonic.join(' '))
-        setMessage({ text: 'Mnemonic retrieved!', type: 'success' })
-        setShowMnemonic(true)
-      } else {
-        setMessage({ text: 'No mnemonic found', type: 'error' })
-      }
+      // Parse the seed before resetting, so a bad entry is caught while the current wallet
+      // is still there instead of after it has already been deleted.
+      Mnemonic.fromWords(restoreWords)
+      await reset()
+      await open(restoreWords)
+      setRestoreInput('')
+      setShowRestore(false)
+      setMessage({ text: 'Wallet restored!', type: 'success' })
     } catch (error) {
-      setMessage({ text: extractErrorMessage(error), type: 'error' })
+      setMessage({ text: errorMessage(error), type: 'error' })
     } finally {
-      setIsLoading(false)
+      setBusy(false)
     }
   }
 
-  const handleSetMnemonic = async () => {
-    if (!inputMnemonic.trim()) return
-    setIsLoading(true)
-    try {
-      const words = inputMnemonic.trim().split(/\s+/)
-      await director.setMnemonic(words)
-      setMessage({ text: 'Mnemonic set successfully!', type: 'success' })
-      setInputMnemonic('')
-      setMnemonicState(words.join(' '))
-      setActiveAction(null)
-    } catch (error) {
-      setMessage({ text: extractErrorMessage(error), type: 'error' })
-    } finally {
-      setIsLoading(false)
-    }
+  const handleRestore = () => {
+    const restoreWords = restoreInput.trim().split(/\s+/).filter(Boolean)
+    if (restoreWords.length === 0) return
+    Alert.alert(
+      'Restore wallet?',
+      'This deletes the wallet data on this device and replaces it with the seed you entered.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore', style: 'destructive', onPress: restoreWallet },
+      ],
+    )
   }
 
   const copyToClipboard = async () => {
-    try {
-      await Clipboard.setStringAsync(mnemonicState)
-      setMessage({ text: 'Copied to clipboard!', type: 'success' })
-    } catch {
-      setMessage({ text: 'Failed to copy', type: 'error' })
-    }
+    await Clipboard.setStringAsync(words)
+    setMessage({ text: 'Copied to clipboard!', type: 'success' })
   }
 
   return (
@@ -104,60 +93,53 @@ const MnemonicManager = () => {
 
       <Row>
         <Btn
-          title="Get"
-          onPress={() => handleAction('get')}
-          disabled={isLoading}
-          active={activeAction === 'get'}
+          title={busy ? 'Working...' : 'Export'}
+          onPress={handleExport}
+          disabled={busy}
         />
         <Btn
-          title="Set"
-          onPress={() => handleAction('set')}
-          disabled={isLoading}
-          active={activeAction === 'set'}
-        />
-        <Btn
-          title="Generate"
-          onPress={() => handleAction('generate')}
-          disabled={isLoading}
-          active={activeAction === 'generate'}
+          title="Restore"
+          onPress={() => setShowRestore(!showRestore)}
+          disabled={busy}
+          active={showRestore}
         />
       </Row>
 
-      {activeAction === 'set' && (
+      {showRestore && (
         <View style={s.formGroup}>
           <TextInput
             style={s.textArea}
             placeholder="Enter 12 or 24 words separated by spaces"
             placeholderTextColor="#888"
-            value={inputMnemonic}
-            onChangeText={setInputMnemonic}
+            value={restoreInput}
+            onChangeText={setRestoreInput}
             multiline
             numberOfLines={2}
           />
           <Btn
-            title={isLoading ? 'Setting...' : 'Set Mnemonic'}
-            onPress={handleSetMnemonic}
-            disabled={isLoading || !inputMnemonic.trim()}
+            title={busy ? 'Restoring...' : 'Restore Wallet'}
+            onPress={handleRestore}
+            disabled={busy || !restoreInput.trim()}
             primary
           />
         </View>
       )}
 
-      {!!mnemonicState && (
+      {!!words && (
         <View style={s.mnemonicDisplay}>
-          <Text style={showMnemonic ? s.mnemonicText : s.mnemonicBlurred}>
-            {mnemonicState}
+          <Text style={visible ? s.mnemonicText : s.mnemonicBlurred}>
+            {words}
           </Text>
           <Row>
             <Btn
-              title={showMnemonic ? 'Hide' : 'Show'}
-              onPress={() => setShowMnemonic(!showMnemonic)}
+              title={visible ? 'Hide' : 'Show'}
+              onPress={() => setVisible(!visible)}
               small
             />
             <Btn
               title="Copy"
               onPress={copyToClipboard}
-              disabled={!showMnemonic}
+              disabled={!visible}
               small
             />
           </Row>
@@ -175,22 +157,24 @@ const MnemonicManager = () => {
 }
 
 const InviteCodeParser = () => {
-  const [inviteCode, setInviteCode] = useState('')
-  const [parseResult, setParseResult] = useState<ParsedInviteCode | null>(null)
-  const [parseError, setParseError] = useState('')
-  const [parsing, setParsing] = useState(false)
+  const [code, setCode] = useState('')
+  const [result, setResult] = useState<{
+    federationId: string
+    display: string
+  }>()
+  const [error, setError] = useState('')
 
-  const handleParse = async () => {
-    setParseResult(null)
-    setParseError('')
-    setParsing(true)
+  const handleParse = () => {
+    setResult(undefined)
+    setError('')
     try {
-      const result = await director.parseInviteCode(inviteCode)
-      setParseResult(result)
-    } catch (e) {
-      setParseError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setParsing(false)
+      const invite = InviteCode.parse(code.trim())
+      setResult({
+        federationId: invite.federationId(),
+        display: invite.display(),
+      })
+    } catch (error) {
+      setError(errorMessage(error))
     }
   }
 
@@ -201,80 +185,86 @@ const InviteCodeParser = () => {
         style={s.input}
         placeholder="Enter invite code..."
         placeholderTextColor="#888"
-        value={inviteCode}
-        onChangeText={setInviteCode}
+        value={code}
+        onChangeText={setCode}
       />
-      <Btn
-        title={parsing ? 'Parsing...' : 'Parse'}
-        onPress={handleParse}
-        disabled={parsing}
-      />
-      {parseResult && (
+      <Btn title="Parse" onPress={handleParse} disabled={!code.trim()} />
+      {result && (
         <View style={s.resultBox}>
           <Text style={s.label}>
-            Fed Id: <Text style={s.mono}>{parseResult.federation_id}</Text>
+            Fed Id: <Text style={s.mono}>{result.federationId}</Text>
           </Text>
           <Text style={s.label}>
-            Fed url: <Text style={s.mono}>{parseResult.url}</Text>
+            Display: <Text style={s.mono}>{result.display}</Text>
           </Text>
         </View>
       )}
-      {!!parseError && <ErrorBox>{parseError}</ErrorBox>}
+      {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
 }
 
-const ParseLightningInvoice = () => {
-  const [invoiceStr, setInvoiceStr] = useState('')
-  const [parseResult, setParseResult] = useState<ParsedBolt11Invoice | null>(
-    null,
-  )
-  const [parseError, setParseError] = useState('')
-  const [parsing, setParsing] = useState(false)
+const QuoteLightningInvoice = () => {
+  const [invoice, setInvoice] = useState('')
+  const [quote, setQuote] = useState<LnQuoteLike>()
+  const [error, setError] = useState('')
+  const [quoting, setQuoting] = useState(false)
 
-  const handleParse = async () => {
-    setParseResult(null)
-    setParseError('')
-    setParsing(true)
+  const handleQuote = async () => {
+    setQuote(undefined)
+    setError('')
+    setQuoting(true)
     try {
-      const result = await director.parseBolt11Invoice(invoiceStr)
-      setParseResult(result)
-    } catch (e) {
-      setParseError(e instanceof Error ? e.message : String(e))
+      const fed = federation()
+      if (!fed) throw new Error('Join a federation first')
+      const lightning = fed.lightning()
+      if (!lightning) {
+        throw new Error('Lightning is not supported by this federation')
+      }
+      setQuote(await lightning.quote(invoice.trim()))
+    } catch (error) {
+      setError(errorMessage(error))
     } finally {
-      setParsing(false)
+      setQuoting(false)
     }
   }
 
   return (
     <SectionCard>
-      <SectionTitle>Parse Lightning Invoice</SectionTitle>
+      <SectionTitle>Quote Lightning Invoice</SectionTitle>
       <TextInput
         style={s.input}
         placeholder="Enter invoice..."
         placeholderTextColor="#888"
-        value={invoiceStr}
-        onChangeText={setInvoiceStr}
+        value={invoice}
+        onChangeText={setInvoice}
       />
       <Btn
-        title={parsing ? 'Parsing...' : 'Parse'}
-        onPress={handleParse}
-        disabled={parsing}
+        title={quoting ? 'Quoting...' : 'Quote'}
+        onPress={handleQuote}
+        disabled={quoting || !invoice.trim()}
       />
-      {parseResult && (
+      {quote && (
         <View style={s.resultBox}>
           <Text style={s.label}>
-            Amount: <Text style={s.value}>{parseResult.amount}</Text> sats
+            Amount:{' '}
+            <Text style={s.value}>{msatToSat(quote.invoiceAmount())} sats</Text>
           </Text>
           <Text style={s.label}>
-            Expiry: <Text style={s.value}>{parseResult.expiry}</Text>
+            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
           </Text>
           <Text style={s.label}>
-            Memo: <Text style={s.value}>{parseResult.memo}</Text>
+            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
+          </Text>
+          <Text style={s.label}>
+            Expires:{' '}
+            <Text style={s.value}>
+              {new Date(Number(quote.expiresAt())).toLocaleString()}
+            </Text>
           </Text>
         </View>
       )}
-      {!!parseError && <ErrorBox>{parseError}</ErrorBox>}
+      {!!error && <ErrorBox>{error}</ErrorBox>}
     </SectionCard>
   )
 }
@@ -288,7 +278,7 @@ export default function SettingsScreen() {
     >
       <MnemonicManager />
       <InviteCodeParser />
-      <ParseLightningInvoice />
+      <QuoteLightningInvoice />
     </ScrollView>
   )
 }

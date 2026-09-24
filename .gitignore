@@ -159,6 +159,12 @@ rust_modules/
 *.a
 *.so
 
+# The module the web binding is generated from and staged beside its committed TypeScript;
+# a build artifact copied in from the nix build (scripts/generate-sdk-web-bindings.sh), not
+# checked in like the rest of src/generated.
+js/web/sdk-web/src/generated/*.wasm
+js/web/sdk-web/dist/
+
 # React Native Codegen
 js/react-native/react-native-bindings/ios/generated
 js/react-native/react-native-bindings/android/generated
@@ -168,10 +174,6 @@ js/react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcfra
 js/react-native/react-native-bindings/ios-artifacts.zip
 js/react-native/react-native-bindings/android-artifacts.zip
 js/react-native/react-native-bindings/ReactNativeBindings.podspec.orig
-js/react-native/react-native-bindings/cpp/generated/
-js/react-native/react-native-bindings/src/generated/
-js/react-native/react-native-bindings/android/cpp-adapter.cpp.rej
-js/react-native/react-native-bindings/android/cpp-adapter.cpp.orig
 
 # android/: both are produced by scripts/build-android-sdk.sh
 # (run it inside `nix develop .#android`) and must never be committed — a
@@ -194,3 +196,7 @@ js/examples/react-native/**/fastlane/report.xml
 js/examples/react-native/**/fastlane/Preview.html
 js/examples/react-native/**/fastlane/screenshots
 js/examples/react-native/**/fastlane/test_output
+
+# Written by scripts/rn-example.sh when it starts Metro itself.
+js/examples/*/metro.log
+

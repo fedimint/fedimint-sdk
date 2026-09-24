@@ -4,15 +4,18 @@
 # vendored xcframeworks. Without this declaration the Xcode linker fails with
 # "framework not found" / undefined symbols errors at app build time.
 #
-#   SystemConfiguration - required by `netdev` (via fedimint-connectors → iroh → netwatch →
-#                         netdev → system-configuration crate) to enumerate/monitor network
-#                         interfaces on Apple platforms.
-#   Security            - required by `tokio` and `socket2` (a direct dep in Cargo.toml) for
-#                         BSD socket operations and TLS on Apple platforms.
+#   SystemConfiguration - network interface enumeration on Apple platforms (iroh's netwatch,
+#                         through the system-configuration crate).
+#   Security            - BSD socket and TLS support on Apple platforms (tokio, socket2).
+#
+# Applied by scripts/generate-sdk-rn-bindings.sh and scripts/build-sdk-rn-ios.sh after ubrn writes
+# the podspec; ubrn's podspec template has no `frameworks` setting.
 --- ReactNativeBindings.podspec
 +++ ReactNativeBindings.podspec
-@@ -19,6 +19,7 @@ Pod::Spec.new do |s|
+@@ -18,6 +18,7 @@
    s.source_files = "ios/**/*.{h,m,mm,swift}", "ios/generated/**/*.{h,m,mm}", "cpp/**/*.{hpp,cpp,c,h}", "cpp/generated/**/*.{hpp,cpp,c,h}"
    s.vendored_frameworks = "FedimintReactNativeBindingsFramework.xcframework"
 +  s.frameworks = "SystemConfiguration", "Security"
-   s.dependency    "uniffi-bindgen-react-native", "0.29.3-1"
+   s.dependency    "uniffi-bindgen-react-native", "0.31.0-5"
+
+   # Use install_modules_dependencies helper to install the dependencies if React Native version >=0.71.0.

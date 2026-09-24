@@ -20,8 +20,8 @@ Repository layout:
   federation
 - `js/examples/` — example apps (vite, webpack, next, bare-js, ...)
 - `js/docs/` — VitePress documentation site
-- `rust/fedimint-client-uniffi` — the uniffi crate the React Native
-  bindings are generated from
+- `rust/fedimint-sdk` — the SDK crate; its `#[uniffi::export]` surface is
+  what the React Native and web bindings are generated from
 
 ## Review Philosophy
 

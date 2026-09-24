@@ -101,9 +101,6 @@ importers:
       '@expo/vector-icons':
         specifier: ^15.0.0
         version: 15.0.3(expo-font@55.0.4)(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
@@ -193,9 +190,6 @@ importers:
 
   examples/react-native:
     dependencies:
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
@@ -242,6 +236,9 @@ importers:
       '@react-native/typescript-config':
         specifier: 0.83.1
         version: 0.83.1
+      '@types/jest':
+        specifier: ^29.5.14
+        version: 29.5.14
       '@types/react':
         specifier: '>=19.2.14'
         version: 19.2.14
@@ -328,15 +325,9 @@ importers:
 
   react-native/react-native:
     dependencies:
-      '@fedimint/core':
-        specifier: workspace:*
-        version: link:../../shared/core
       '@fedimint/react-native-bindings':
         specifier: workspace:*
         version: link:../react-native-bindings
-      '@fedimint/types':
-        specifier: workspace:*
-        version: link:../../shared/types
       react:
         specifier: '>=18.0.0'
         version: 19.2.4
@@ -362,9 +353,12 @@ importers:
 
   react-native/react-native-bindings:
     dependencies:
+      '@ubjs/core':
+        specifier: 0.31.0-5
+        version: 0.31.0-5
       uniffi-bindgen-react-native:
-        specifier: 0.29.3-1
-        version: 0.29.3-1
+        specifier: 0.31.0-5
+        version: 0.31.0-5
     devDependencies:
       '@babel/preset-env':
         specifier: ^7.29.0
@@ -521,6 +515,19 @@ importers:
       vite-plugin-wasm:
         specifier: ^3.5.0
         version: 3.5.0(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2))
+
+  web/sdk-web:
+    dependencies:
+      '@ubjs/core':
+        specifier: 0.31.0-5
+        version: 0.31.0-5
+      '@ubjs/wasm':
+        specifier: 0.31.0-5
+        version: 0.31.0-5(@ubjs/core@0.31.0-5)
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   web/transport-web:
     dependencies:
@@ -4239,6 +4246,14 @@ packages:
     resolution: {integrity: sha512-hoBwJwcbKHmvd2QVebiytN1aELvpk9B74B4L1mFm/XT1Q/VOYAWl2vQ9AWRFtQq8zmz6enTpfTV8WRc4ATjW/g==}
     peerDependencies:
       typescript: '*'
+
+  '@ubjs/core@0.31.0-5':
+    resolution: {integrity: sha512-oRBRtyYOhaodiOY3rLMZFgAHGFMmD44XefMpsAx4Ja0/rO+45kVdQB1VZsblQMLYxP965i3IHm56eymgo3I5eQ==}
+
+  '@ubjs/wasm@0.31.0-5':
+    resolution: {integrity: sha512-dO7i67DQ1UKBSegznLVjVrYowmxY7gaXXluBdtJXPYgcR5vzwYf2ZbxAUqj4qL1JkqxRmeTKgXtuesFI+D5dPg==}
+    peerDependencies:
+      '@ubjs/core': ^0.31.0-5
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
@@ -9770,8 +9785,8 @@ packages:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
 
-  uniffi-bindgen-react-native@0.29.3-1:
-    resolution: {integrity: sha512-o6gXZsAh55yuvhwF2WSFdIHV4phyfWcCmg4DuyfJWJ7CvUz1UcIz2S4u9SmXAz1jsuqvu6Xc9hexrRBB0a5osg==}
+  uniffi-bindgen-react-native@0.31.0-5:
+    resolution: {integrity: sha512-YtL3gTe+RVXAQx/2P2Iuypic/CunRZC65Cs47v//YRfwWNYU4Ufd1jT3rqxSrH5b5QFCYblP89Nf/9ssZRvNgg==}
     hasBin: true
 
   union@0.5.0:
@@ -13380,9 +13395,9 @@ snapshots:
       execa: 5.1.1
       node-stream-zip: 1.15.0
       ora: 5.4.1
-      semver: 7.7.3
+      semver: 7.8.5
       wcwidth: 1.0.1
-      yaml: 2.8.2
+      yaml: 2.9.0
     transitivePeerDependencies:
       - typescript
 
@@ -13430,11 +13445,11 @@ snapshots:
       chalk: 4.1.2
       execa: 5.1.1
       find-up: 5.0.0
-      launch-editor: 2.12.0
+      launch-editor: 2.14.1
       mime: 2.6.0
       ora: 5.4.1
       prompts: 2.4.2
-      semver: 7.7.3
+      semver: 7.8.5
 
   '@react-native-community/cli-types@20.0.0':
     dependencies:
@@ -13456,7 +13471,7 @@ snapshots:
       fs-extra: 8.1.0
       graceful-fs: 4.2.11
       prompts: 2.4.2
-      semver: 7.7.3
+      semver: 7.8.5
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -14582,6 +14597,12 @@ snapshots:
       typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
+
+  '@ubjs/core@0.31.0-5': {}
+
+  '@ubjs/wasm@0.31.0-5(@ubjs/core@0.31.0-5)':
+    dependencies:
+      '@ubjs/core': 0.31.0-5
 
   '@ungap/structured-clone@1.3.0': {}
 
@@ -17981,7 +18002,7 @@ snapshots:
       '@babel/parser': 7.29.8
       '@istanbuljs/schema': 0.1.3
       istanbul-lib-coverage: 3.2.2
-      semver: 7.7.3
+      semver: 7.8.5
     transitivePeerDependencies:
       - supports-color
 
@@ -18332,7 +18353,7 @@ snapshots:
       jest-util: 29.7.0
       natural-compare: 1.4.0
       pretty-format: 29.7.0
-      semver: 7.7.3
+      semver: 7.8.5
     transitivePeerDependencies:
       - supports-color
 
@@ -18914,7 +18935,7 @@ snapshots:
       metro-cache: 0.83.3(supports-color@8.1.1)
       metro-core: 0.83.3
       metro-runtime: 0.83.3
-      yaml: 2.8.2
+      yaml: 2.9.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -21389,7 +21410,7 @@ snapshots:
 
   unicorn-magic@0.3.0: {}
 
-  uniffi-bindgen-react-native@0.29.3-1: {}
+  uniffi-bindgen-react-native@0.31.0-5: {}
 
   union@0.5.0:
     dependencies:
