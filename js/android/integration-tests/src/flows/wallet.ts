@@ -19,6 +19,16 @@ import { FaucetClient } from '../faucet/FaucetClient'
  * present and the sat form is scaled when it isn't.
  */
 export async function readBalanceMsats(t: AppiumTestBase): Promise<number> {
+  // The balance line sits at the top of the example app's one long screen,
+  // under the wallet status, and a test that has scrolled down to a section
+  // below it — the ecash sections are two screens down — leaves it off
+  // screen. UiAutomator2 reports only what is on screen, so the element is
+  // then absent from the tree rather than present, and reading it blind fails
+  // against an app that is working fine. The same rule `waitForTextInElement`
+  // follows: a miss means "scroll to it", not "it isn't there".
+  if (!(await t.findElementByKey('balance'))) {
+    await t.scrollToElement('balance', { scrollDirection: 'up' })
+  }
   const text = await t.getTextByKey('balance')
 
   const msats = text.match(/\((\d+) msat\)/)
