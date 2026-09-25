@@ -44,7 +44,8 @@ struct ContentView: View {
             HStack {
                 // Disabled mid-send for the same reason as Join/Recover below:
                 // reopening reattaches a federation, and `attach` clears the
-                // notes of a send that has already committed.
+                // notes of a send that has already committed. An open started
+                // first disables Quote + Send instead (`isAttaching`).
                 Button("Open Wallet") { model.openWallet() }
                     .disabled(model.isSendingEcash)
                 Button(model.seed == nil ? "Show seed" : "Hide seed") { model.toggleSeed() }
@@ -80,7 +81,9 @@ struct ContentView: View {
             // Join and Recover call `attach`, which cancels the send's run and
             // clears its notes — losing the only record of value that has
             // already moved. Preview is harmless but rides along rather than
-            // splitting the row for one button.
+            // splitting the row for one button. The reverse ordering, a join
+            // started before the send, is gated on Quote + Send via
+            // `isAttaching`.
             .disabled(!model.hasSdk || model.isSendingEcash)
         }
     }
@@ -120,10 +123,13 @@ struct ContentView: View {
                 .keyboardType(.numberPad)
             HStack {
                 // Disabled while a send is committing: two taps are two real
-                // spends. The model refuses re-entry as well, since this state
-                // lags the tap by a frame.
+                // spends. Also disabled while an Open Wallet, Join or Recover
+                // is in flight: its `attach` would clear this send's notes when
+                // it lands, even after the send has finished. This is the mirror
+                // of the gate on those buttons. The model refuses both as well,
+                // since this state lags the tap by a frame.
                 Button(model.isSendingEcash ? "Sending…" : "Quote + Send") { model.ecashSend() }
-                    .disabled(!model.hasFederation || model.isSendingEcash)
+                    .disabled(!model.hasFederation || model.isSendingEcash || model.isAttaching)
                 // `notes` is an opaque handle, so nothing prints the token by
                 // accident; `display()` is the deliberate way to take it out.
                 CopyButton("Copy notes", value: model.lastNotes?.display())

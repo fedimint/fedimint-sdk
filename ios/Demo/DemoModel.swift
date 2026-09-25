@@ -82,6 +82,22 @@ final class DemoModel: ObservableObject {
     /// in a single block. Two taps would be two real spends.
     @Published private(set) var isSendingEcash = false
 
+    /// Open Wallet, Join and Recover runs in flight — everything that may end in
+    /// `attach`.
+    ///
+    /// The other half of `isSendingEcash`. That flag stops an attach from
+    /// starting during a send; this one stops a send from starting while an
+    /// attach is still pending. `attach` clears `lastNotes` and
+    /// `results[.ecashSend]`, so a send that finished first would lose its notes
+    /// and operation id the moment a join started before it landed.
+    ///
+    /// A count rather than a flag: a superseded Join keeps running until its
+    /// uniffi call returns (see `isSuperseded`), so several of these blocks can
+    /// be alive at once, and the first to finish must not clear the gate for
+    /// the rest.
+    @Published private var attachesInFlight = 0
+    var isAttaching: Bool { attachesInFlight > 0 }
+
     @Published private(set) var hasSdk = false
     @Published private(set) var hasFederation = false
 
@@ -124,7 +140,11 @@ final class DemoModel: ObservableObject {
     // MARK: - Wallet
 
     func openWallet() {
+        guard !isSendingEcash else { return }
+        attachesInFlight += 1
         run(.wallet) {
+            defer { self.attachesInFlight -= 1 }
+
             let words = self.restoreWords
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
@@ -183,6 +203,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Join
 
     func preview() {
+        guard !isSendingEcash else { return }
         run(.join) {
             guard let sdk = self.sdk else { return "open the wallet first" }
             let preview = try await sdk.preview(invite: InviteCode.parse(code: self.trimmedInvite))
@@ -202,7 +223,11 @@ final class DemoModel: ObservableObject {
     /// it: `.alreadyJoined` is the cue to look the running federation up by the
     /// id the invite code carries.
     func join() {
+        guard !isSendingEcash else { return }
+        attachesInFlight += 1
         run(.join) {
+            defer { self.attachesInFlight -= 1 }
+
             guard let sdk = self.sdk else { return "open the wallet first" }
             let code = try InviteCode.parse(code: self.trimmedInvite)
 
@@ -227,7 +252,11 @@ final class DemoModel: ObservableObject {
     /// restored seed that already holds funds here. Spends and receives are
     /// refused until the rescan completes.
     func recover() {
+        guard !isSendingEcash else { return }
+        attachesInFlight += 1
         run(.join) {
+            defer { self.attachesInFlight -= 1 }
+
             guard let sdk = self.sdk else { return "open the wallet first" }
             let recovery = try await sdk.recover(invite: InviteCode.parse(code: self.trimmedInvite))
             guard !self.isSuperseded else { return "superseded by a newer join" }
@@ -301,8 +330,10 @@ final class DemoModel: ObservableObject {
     func ecashSend() {
         // Refused here, not only by the disabled button: the button's state is a
         // frame behind, so a fast double tap would otherwise still start a
-        // second spend and `run` would cancel the first one mid-commit.
-        guard !isSendingEcash else { return }
+        // second spend and `run` would cancel the first one mid-commit. Same lag
+        // for `isAttaching`: a join already in flight would clear this send's
+        // notes when it lands, even if the send has finished by then.
+        guard !isSendingEcash, !isAttaching else { return }
         isSendingEcash = true
 
         run(.ecashSend) {
