@@ -2388,6 +2388,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-compat",
+ "async-trait",
  "bip39",
  "cc",
  "fd-lock",

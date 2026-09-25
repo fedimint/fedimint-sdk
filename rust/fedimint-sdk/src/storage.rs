@@ -3,6 +3,8 @@
 use fedimint_core::db::Database;
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+#[cfg(not(target_family = "wasm"))]
+use fedimint_core::{apply, async_trait_maybe_send, db::IRawDatabase};
 
 use crate::{Error, ErrorCode, ErrorDetails, Result};
 
@@ -67,22 +69,25 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 /// open, by another [`Sdk`](crate::Sdk) in this process, by another process, or by another
 /// browser tab or worker, fails with
 /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse), with no override: two writers
-/// over one wallet's state could corrupt it and double-spend notes. The lock
-/// is taken when [`SdkBuilder::build`](crate::SdkBuilder::build) opens the storage and
-/// released by [`Sdk::shutdown`](crate::Sdk::shutdown) or when the last handle to the instance
-/// is dropped.
+/// over one wallet's state could corrupt it and double-spend notes. That refusal is immediate;
+/// an open never waits for the opener that is in the way.
 ///
-/// A lock left behind by a process that died is reclaimed by the next opener rather than left
+/// The claim lasts as long as the open store, not as long as one [`Sdk`](crate::Sdk) handle.
+/// [`SdkBuilder::build`](crate::SdkBuilder::build) takes it, and it is given back when the store
+/// closes. After [`Sdk::shutdown`](crate::Sdk::shutdown), that is when the last handle over the
+/// instance is dropped: every [`Sdk`](crate::Sdk), every [`Federation`](crate::Federation), and
+/// every operation handle and subscriber taken from a federation. Shutting down ends the
+/// instance's work but does not by itself close the store, so reopening a location in the same
+/// process means shutting the instance down and then letting go of everything built on it, and
+/// an attempt before that point is refused rather than left waiting. An instance that is let go
+/// of without being shut down can go on holding its location for a while after its last handle
+/// is dropped, until its background work has stopped.
+///
+/// A claim left behind by a process that died is reclaimed by the next opener rather than left
 /// stuck: `StorageInUse` always means genuinely concurrent use, never a stale marker. This
 /// protects against concurrent use of one location, not against a second copy of the data:
 /// copying a location's contents elsewhere and opening both is the same mistake as restoring
 /// one wallet's backup onto two devices, and the SDK cannot detect it.
-///
-/// In the same process, dropping or shutting down an [`Sdk`](crate::Sdk) is not by itself enough
-/// to make its location reopenable: the underlying store stays open until every
-/// [`Federation`](crate::Federation) handle over it has also been dropped, so a
-/// [`SdkBuilder::build`](crate::SdkBuilder::build) against that location started before that
-/// point is left waiting on it rather than failing outright.
 ///
 /// # Durability
 ///
@@ -263,23 +268,21 @@ impl Storage {
         }
     }
 
-    /// Opens the location, creating it if needed, and takes the single-opener lock.
+    /// Opens the location, creating it if needed, and takes the single-opener claim.
     ///
     /// This is step 1 of `SdkBuilder::build`: everything environmental about a location is
     /// reported here, and nothing has been written when it fails.
-    pub(crate) async fn open(self) -> Result<(Database, Option<StorageLock>)> {
+    ///
+    /// The claim on the location travels inside the returned store, so the caller has nothing
+    /// to hold on to and nothing to release: the location is given back when the last clone of
+    /// this `Database` goes, and not before.
+    pub(crate) async fn open(self) -> Result<Database> {
         match self.inner {
             #[cfg(not(target_family = "wasm"))]
-            StorageInner::Directory { location } => {
-                let (db, lock) = open_directory(location).await?;
-                Ok((db, Some(lock)))
-            }
+            StorageInner::Directory { location } => open_directory(location).await,
             #[cfg(target_family = "wasm")]
-            StorageInner::Browser { location } => {
-                let (db, lock) = open_browser(location).await?;
-                Ok((db, Some(lock)))
-            }
-            StorageInner::Memory { db } => Ok((db, None)),
+            StorageInner::Browser { location } => open_browser(location).await,
+            StorageInner::Memory { db } => Ok(db),
         }
     }
 }
@@ -297,65 +300,96 @@ enum StorageInner {
     Memory { db: Database },
 }
 
-/// Proof that this instance is the only opener of its location.
+/// A store with the claim on its location inside it.
 ///
-/// Dropping it releases the claim, which is what makes `Sdk::shutdown` and dropping the last
-/// handle both work, and what makes a lock left by a dead process reclaimable rather than fatal.
-pub(crate) struct StorageLock {
-    /// Native: the open `LOCK` file whose advisory lock this instance holds. The lock was taken
-    /// with `try_write` and its guard forgotten, so it lives exactly as long as this descriptor:
-    /// `flock` belongs to the open file description, so closing the file releases it, and so does
-    /// the kernel when the process dies.
-    #[cfg(not(target_family = "wasm"))]
-    _file: fd_lock::RwLock<std::fs::File>,
-    /// wasm: the exclusivity is the sync access handle inside the database itself, which the
-    /// browser grants to one context at a time, so there is nothing else to hold here.
-    #[cfg(target_family = "wasm")]
-    _marker: (),
+/// The claim is a field of the store rather than a value held next to it so that the two cannot
+/// come apart. Fields are dropped in declaration order, so the store is closed before the claim
+/// is given up, and there is never a moment when a location looks free while the store on it is
+/// still open. That is the moment a second opener would take the free claim and then block inside
+/// the store's own file lock, which has no timeout and no error.
+///
+/// Generic over the store so that the concrete type `fedimint-rocksdb` hands back, itself a
+/// wrapper around a wrapper, never has to be named here.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct ClaimedStore<Store> {
+    /// The store, closed when this value is dropped.
+    store: Store,
+    /// Given back after the store above has been closed, and never before it.
+    claim: Claim,
 }
 
-impl core::fmt::Debug for StorageLock {
-    /// Prints the type name and nothing else: a lock has no state worth rendering and the file
+#[cfg(not(target_family = "wasm"))]
+#[apply(async_trait_maybe_send!)]
+impl<Store> IRawDatabase for ClaimedStore<Store>
+where
+    Store: IRawDatabase,
+{
+    type Transaction<'a> = Store::Transaction<'a>;
+
+    async fn begin_transaction<'a>(&'a self) -> <Self as IRawDatabase>::Transaction<'_> {
+        self.store.begin_transaction().await
+    }
+
+    fn checkpoint(&self, backup_path: &std::path::Path) -> fedimint_core::db::DatabaseResult<()> {
+        self.store.checkpoint(backup_path)
+    }
+}
+
+/// Proof that this instance is the only opener of its location.
+///
+/// Dropping it gives the location back, which is what makes a location reopenable once
+/// everything built on it is gone, and what makes a claim left by a dead process reclaimable
+/// rather than fatal.
+#[cfg(not(target_family = "wasm"))]
+struct Claim {
+    /// The open `LOCK` file whose advisory lock this instance holds. The lock was taken with
+    /// `try_write` and its guard forgotten, so it lives exactly as long as this value: `flock`
+    /// belongs to the open file description, so closing the file releases it, and so does the
+    /// kernel when the process dies.
+    _file: fd_lock::RwLock<std::fs::File>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl core::fmt::Debug for Claim {
+    /// Prints the type name and nothing else: a claim has no state worth rendering and the file
     /// handle behind it is not part of any contract.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("StorageLock")
+        f.write_str("Claim")
     }
 }
 
 /// Opens a native directory: create it, claim it, then open the embedded store inside it.
 ///
-/// The lock is taken before the store, so a second opener is told `StorageInUse` instead of
-/// blocking forever inside the store's own file lock, which has no timeout and no error.
+/// Claiming and opening happen in one blocking task, which is what keeps the claim and the store
+/// inseparable even when the caller gives up waiting. A blocking task runs to completion whether
+/// or not anyone is still waiting for it, and what it hands back is the two together, so a
+/// caller that walks away leaves a store that is closed before its claim is given up, never a
+/// free claim over a store that is still being opened.
 #[cfg(not(target_family = "wasm"))]
-async fn open_directory(location: String) -> Result<(Database, StorageLock)> {
-    let directory = std::path::PathBuf::from(&location);
-    let lock_location = location.clone();
-    let lock_directory = directory.clone();
-    let lock = tokio::task::spawn_blocking(move || take_lock(&lock_directory, &lock_location))
-        .await
-        .map_err(|err| {
-            Error::new(ErrorCode::Storage, format!("could not open storage: {err}"))
-        })??;
-
-    let db_path = directory.join("db");
-    let raw = tokio::task::spawn_blocking(move || {
-        fedimint_rocksdb::RocksDb::build(db_path).open_blocking()
+async fn open_directory(location: String) -> Result<Database> {
+    let store = tokio::task::spawn_blocking(move || -> Result<_> {
+        let directory = std::path::PathBuf::from(&location);
+        let claim = take_claim(&directory, &location)?;
+        let store = fedimint_rocksdb::RocksDb::build(directory.join("db"))
+            .open_blocking()
+            .map_err(|err| {
+                Error::new(
+                    ErrorCode::Storage,
+                    format!("could not open the storage at {location}: {err}"),
+                )
+            })?;
+        Ok(ClaimedStore { store, claim })
     })
     .await
-    .map_err(|err| Error::new(ErrorCode::Storage, format!("could not open storage: {err}")))?
-    .map_err(|err| {
-        Error::new(
-            ErrorCode::Storage,
-            format!("could not open the storage at {location}: {err}"),
-        )
-    })?;
+    .map_err(|err| Error::new(ErrorCode::Storage, format!("could not open storage: {err}")))??;
 
-    Ok((Database::new(raw, ModuleDecoderRegistry::default()), lock))
+    Ok(Database::new(store, ModuleDecoderRegistry::default()))
 }
 
 /// Creates the directory and claims it, or reports why it cannot be claimed.
 #[cfg(not(target_family = "wasm"))]
-fn take_lock(directory: &std::path::Path, location: &str) -> Result<StorageLock> {
+fn take_claim(directory: &std::path::Path, location: &str) -> Result<Claim> {
     std::fs::create_dir_all(directory).map_err(|err| {
         Error::new(
             ErrorCode::Storage,
@@ -376,24 +410,24 @@ fn take_lock(directory: &std::path::Path, location: &str) -> Result<StorageLock>
         })?;
 
     let mut file = fd_lock::RwLock::new(file);
-    match file.try_write() {
-        Ok(guard) => {
-            // Forgetting the guard keeps the advisory lock without keeping a borrow of the
-            // `RwLock` that would make this value self-referential. Nothing leaks: the guard owns
-            // only a reference, and the lock is released when the file below is closed.
-            core::mem::forget(guard);
-        }
-        Err(_) => {
-            return Err(Error::with_details(
-                ErrorCode::StorageInUse,
-                format!("the storage at {location} is already open"),
-                ErrorDetails::StorageInUse {
-                    location: location.to_owned(),
-                },
-            ));
-        }
-    }
-    Ok(StorageLock { _file: file })
+    let Ok(guard) = file.try_write() else {
+        return Err(Error::with_details(
+            ErrorCode::StorageInUse,
+            format!(
+                "the storage at {location} is already open, in this process or another one: \
+                 shutting an instance down does not close its storage, dropping every handle \
+                 over it does"
+            ),
+            ErrorDetails::StorageInUse {
+                location: location.to_owned(),
+            },
+        ));
+    };
+    // Forgetting the guard keeps the advisory lock without keeping a borrow of the `RwLock` that
+    // would make this value self-referential. Nothing leaks: the guard owns only a reference, and
+    // the lock is released when the file below is closed.
+    core::mem::forget(guard);
+    Ok(Claim { _file: file })
 }
 
 /// Opens an origin-private store: find the origin's directory, claim the file, open redb on it.
@@ -402,7 +436,7 @@ fn take_lock(directory: &std::path::Path, location: &str) -> Result<StorageLock>
 /// a time, which is exactly the single-opener rule the documentation promises across tabs,
 /// iframes and workers.
 #[cfg(target_family = "wasm")]
-async fn open_browser(location: String) -> Result<(Database, StorageLock)> {
+async fn open_browser(location: String) -> Result<Database> {
     use wasm_bindgen::JsCast;
 
     let denied = |detail: &str| {
@@ -456,10 +490,7 @@ async fn open_browser(location: String) -> Result<(Database, StorageLock)> {
             format!("could not open the storage named {location}: {err}"),
         )
     })?;
-    Ok((
-        Database::new(raw, ModuleDecoderRegistry::default()),
-        StorageLock { _marker: () },
-    ))
+    Ok(Database::new(raw, ModuleDecoderRegistry::default()))
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -503,8 +534,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_second_opener_is_refused_and_the_lock_returns_when_the_first_drops() {
-        // The whole point of the lock is that two writers can never share one
+    async fn a_second_opener_is_refused_and_the_claim_returns_when_the_store_closes() {
+        // The whole point of the claim is that two writers can never share one
         // wallet's state, and that a dead holder is not a permanent lockout. The
         // second half is what makes `StorageInUse` mean "genuinely concurrent".
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -516,11 +547,16 @@ mod tests {
             .await
             .expect("the first opener wins");
 
-        let err = Storage::at(&path)
-            .expect("a valid path")
-            .open()
-            .await
-            .expect_err("the second opener is refused");
+        // Timed, because what this guards against is not a wrong answer but no answer: the
+        // refusal has to come back rather than queue behind the store's own file lock, which
+        // waits with no timeout and no error.
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Storage::at(&path).expect("a valid path").open(),
+        )
+        .await
+        .expect("the second opener answers rather than waiting on the first")
+        .expect_err("the second opener is refused");
         assert_eq!(err.code, ErrorCode::StorageInUse);
         match err.detail() {
             Some(ErrorDetails::StorageInUse { location }) => assert_eq!(location, &path),
@@ -533,7 +569,7 @@ mod tests {
             .expect("a valid path")
             .open()
             .await
-            .expect("the lock is reclaimed once the holder is gone");
+            .expect("the claim is reclaimed once the store is closed");
         drop(third);
     }
 
@@ -549,7 +585,6 @@ mod tests {
             .open()
             .await
             .expect("and so does a second");
-        assert!(first.1.is_none(), "an in-memory store takes no lock");
-        assert!(second.1.is_none());
+        drop((first, second));
     }
 }

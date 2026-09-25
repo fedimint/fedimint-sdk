@@ -19,7 +19,6 @@ use fedimint_core::module::registry::ModuleDecoderRegistry;
 use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
 use crate::federation::FederationInner;
 use crate::federation::{read_lock, write_lock};
-use crate::storage::StorageLock;
 use crate::{
     Amount, Diagnostic, Federation, FederationId, FederationPreview, InviteCode, Mnemonic, Network,
     Result, Storage,
@@ -1095,8 +1094,8 @@ impl Sdk {
         Ok(())
     }
 
-    /// Best-effort: flushes everything to storage, stops all background
-    /// work, and releases the storage lock.
+    /// Best-effort: flushes everything to storage and stops all background
+    /// work.
     ///
     /// After this returns, every fallible call on every [`Sdk`] and
     /// [`Federation`] handle, and every subscriber obtained from one, fails
@@ -1104,8 +1103,24 @@ impl Sdk {
     /// [`Sdk::export_mnemonic`] the deliberate exception, alongside the
     /// infallible status accessors ([`Sdk::stored_federations`],
     /// [`Sdk::federation_status`]) and the infallible accessors on
-    /// [`Federation`]. Another instance may then open the same storage.
-    /// Shutdown is idempotent.
+    /// [`Federation`]. Shutdown is idempotent.
+    ///
+    /// # It does not release the storage
+    ///
+    /// The location stays claimed until the store on it is closed, which
+    /// happens when the last handle built on this instance is dropped:
+    /// every [`Sdk`], this one included, every [`Federation`], and every
+    /// operation handle and subscriber taken from a federation. Until then a
+    /// [`SdkBuilder::build`] against the same location is refused with
+    /// [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
+    /// than by waiting, whether the attempt comes from this process or
+    /// another one.
+    ///
+    /// So an application that opens a location, closes it and opens it
+    /// again, to switch wallets or to restore one, has to let go of
+    /// everything it holds from the first instance between the two. On a
+    /// binding where handles are foreign objects, letting go means
+    /// destroying them rather than waiting for a garbage collector.
     ///
     /// # It is an optimisation, not a requirement
     ///
@@ -1114,18 +1129,12 @@ impl Sdk {
     /// warning and a browser tab can vanish the same way. Everything a
     /// caller can observe is already durable at the moment it becomes
     /// observable, see the durability section on [`Sdk`], and what this
-    /// call adds is a flush of buffered non-critical state such as caches,
-    /// an orderly release of the storage lock, and a defined point after
-    /// which no background work is running.
+    /// call adds is a flush of buffered non-critical state such as caches
+    /// and a defined point after which no background work is running.
     ///
     /// Call it from the platform's "entering background" or "about to
     /// terminate" callback if there is one, and await it if you are allowed
     /// to. Do not build anything on being able to.
-    ///
-    /// Skipping it is safe for correctness, but leaves one thing to mind in the same process: the
-    /// underlying store stays open until every [`Sdk`] and [`Federation`] handle over it, this
-    /// call included, has actually been dropped. A [`SdkBuilder::build`] against the same
-    /// location started before that point is left waiting on it.
     ///
     /// # What survives an abrupt kill
     ///
@@ -1178,9 +1187,6 @@ impl Sdk {
                 outcome
             }))
             .await;
-
-        // Released last, so nothing is still writing when another instance may open the location.
-        self.inner.release_lock();
 
         for outcome in results {
             outcome?;
@@ -1277,17 +1283,20 @@ impl SdkBuilder {
     /// an erase that will not finish, is reported as that federation's
     /// status instead.
     ///
-    /// 1. **Open the location and take its lock.** The location is created
+    /// 1. **Open the location and claim it.** The location is created
     ///    or found first; a native directory that cannot be created, or is
     ///    not readable and writable, fails with
     ///    [`Storage`](crate::ErrorCode::Storage), as does a browser origin
     ///    with no usable origin-private file system or one where storage
-    ///    access is denied. Then the single-opener lock is taken: if the
-    ///    location is already open elsewhere, the call fails with
+    ///    access is denied. Then the single-opener claim is taken: if the
+    ///    location is already open elsewhere, here or in another process,
+    ///    the call fails with
     ///    [`StorageInUse`](crate::ErrorCode::StorageInUse) and nothing has
-    ///    been touched. A lock left behind by a process that died without
+    ///    been touched. It fails rather than waiting for the location to
+    ///    come free. A claim left behind by a process that died without
     ///    [`Sdk::shutdown`] is reclaimed rather than treated as contention;
-    ///    see [`Storage`] for the native and browser cases.
+    ///    see [`Storage`] for the native and browser cases, and for when a
+    ///    location this process opened comes free again.
     /// 2. **Reconcile the seed, before any mutation.** There are exactly
     ///    four cases:
     ///    - *The storage holds a usable seed.* It is used. If a different
@@ -1324,7 +1333,7 @@ impl SdkBuilder {
     ///    to. Refusing is recoverable; a wrong write is not.
     ///
     ///    The emptiness proof and the seed reconciliation happen under the
-    ///    lock taken in step 1 and strictly before any write this call
+    ///    claim taken in step 1 and strictly before any write this call
     ///    makes: if step 2 fails for any reason, the backend is
     ///    byte-identical to how it was found.
     /// 3. **Attempt every committed erase, and keep a failure to the one
@@ -1381,10 +1390,10 @@ impl SdkBuilder {
         };
         let location = storage.location();
 
-        // Step 1: open the location and take its lock. Nothing has been touched if this fails.
-        let (db, lock) = storage.open().await?;
+        // Step 1: open the location and claim it. Nothing has been touched if this fails.
+        let db = storage.open().await?;
 
-        // Step 2: reconcile the seed, under that lock and before any write this call makes.
+        // Step 2: reconcile the seed, under that claim and before any write this call makes.
         let mnemonic = reconcile_seed(&db, &location, self.mnemonic).await?;
 
         // The instance exists before any federation does, which is what lets `export_mnemonic`
@@ -1402,7 +1411,6 @@ impl SdkBuilder {
             federations: std::sync::RwLock::new(BTreeMap::new()),
             status_tx: tokio::sync::broadcast::Sender::new(STATUS_CAPACITY),
             shutdown_tx: tokio::sync::watch::Sender::new(false),
-            lock: std::sync::Mutex::new(lock),
         });
 
         // Steps 3 and 4: finish committed erases, then reopen everything else. They run
@@ -1746,8 +1754,6 @@ pub(crate) struct SdkInner {
     status_tx: tokio::sync::broadcast::Sender<FederationInfo>,
     /// Set once, by `shutdown`; every subscriber and every fallible call watches it.
     shutdown_tx: tokio::sync::watch::Sender<bool>,
-    /// The single-opener claim, released by `shutdown` or by dropping the last handle.
-    lock: std::sync::Mutex<Option<StorageLock>>,
 }
 
 impl core::fmt::Debug for SdkInner {
@@ -1821,15 +1827,6 @@ impl SdkInner {
             ));
         }
         Ok(())
-    }
-
-    /// Gives up the single-opener claim. Idempotent.
-    pub(crate) fn release_lock(&self) {
-        let mut lock = self
-            .lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *lock = None;
     }
 
     /// Fetches a federation's configuration from the guardians the invite names.
@@ -2214,17 +2211,6 @@ impl SdkInner {
     }
 }
 
-impl Drop for SdkInner {
-    /// Gives the location back when the last handle goes.
-    ///
-    /// This is the half of the promise `Sdk::shutdown` does not cover: an application that never
-    /// calls it still releases the claim, and one that dies without either has it released by the
-    /// kernel. The federations' own clients are cleaned up by their `Drop`.
-    fn drop(&mut self) {
-        self.release_lock();
-    }
-}
-
 /// How long a call waits for a federation's guardians before it reports a timeout.
 ///
 /// `pub(crate)` so that `onchain.rs` can reuse the same bound for its own federation round
@@ -2504,6 +2490,87 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread")]
+        async fn a_location_is_refused_while_the_instance_on_it_is_still_held() {
+            // A shut-down instance still holds its location: what releases it is dropping the
+            // last handle over it, and until that happens a second build has to be told so.
+            // This used to be a build that never returned: the claim came free at `shutdown`
+            // while the store behind it stayed open, so the next opener took the free claim and
+            // then waited inside the store's own file lock, which has no timeout and no error.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            sdk.shutdown().await.expect("shutdown succeeds");
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .build(),
+            )
+            .await
+            .expect("the second build answers rather than waiting on the first")
+            .expect_err("a location whose instance is still held cannot be opened again");
+            assert_eq!(err.code, crate::ErrorCode::StorageInUse);
+
+            drop(sdk);
+
+            Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("the location comes free once nothing holds it any more");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_federation_handle_holds_the_location_on_its_own() {
+            // What made the hang survive letting go of the instance once a federation had been
+            // joined: a federation gets its own slice of the store, so a handle on one holds the
+            // whole store open after the `Sdk` it came from is gone.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            let planted = fedimint_core::config::FederationId::dummy();
+            plant_closed_federation(&sdk, planted).await;
+            let federation = crate::Federation::new(
+                sdk.inner()
+                    .federation_inner(&planted)
+                    .expect("the planted federation is there"),
+            );
+
+            sdk.shutdown().await.expect("shutdown succeeds");
+            drop(sdk);
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .build(),
+            )
+            .await
+            .expect("the second build answers rather than waiting on the handle")
+            .expect_err("a federation handle is enough to hold the location");
+            assert_eq!(err.code, crate::ErrorCode::StorageInUse);
+
+            drop(federation);
+
+            Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("the location comes free once the last handle goes");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         async fn a_fresh_store_generates_a_seed_when_none_is_supplied() {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
@@ -2567,7 +2634,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
             {
-                let (db, lock) = Storage::at(&path)
+                let db = Storage::at(&path)
                     .expect("a valid path")
                     .open()
                     .await
@@ -2577,7 +2644,6 @@ mod tests {
                     .await
                     .expect("the write succeeds");
                 crate::db::commit(dbtx).await.expect("the commit succeeds");
-                drop(lock);
                 drop(db);
             }
 
@@ -2598,7 +2664,7 @@ mod tests {
                 other => panic!("expected the orphan detail, got {other:?}"),
             }
 
-            let (db, _lock) = Storage::at(&path)
+            let db = Storage::at(&path)
                 .expect("a valid path")
                 .open()
                 .await
@@ -2620,7 +2686,7 @@ mod tests {
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
             let planted: &[u8] = b"\xff\xff\xff";
             {
-                let (db, lock) = Storage::at(&path)
+                let db = Storage::at(&path)
                     .expect("a valid path")
                     .open()
                     .await
@@ -2631,7 +2697,6 @@ mod tests {
                     .await
                     .expect("the write succeeds");
                 crate::db::commit(dbtx).await.expect("the commit succeeds");
-                drop(lock);
                 drop(db);
             }
 
@@ -2646,7 +2711,7 @@ mod tests {
                 other => panic!("expected the orphan detail, got {other:?}"),
             }
 
-            let (db, _lock) = Storage::at(&path)
+            let db = Storage::at(&path)
                 .expect("a valid path")
                 .open()
                 .await

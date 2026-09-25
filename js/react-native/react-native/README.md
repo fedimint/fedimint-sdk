@@ -157,8 +157,14 @@ Failures surface as `Exception`, with `code()` giving the stable error code to b
 `reason()` a human-readable message (never parsed, only logged), and `details()` structured
 detail where the failure has any.
 
-`close()` shuts the SDK down; every object obtained from the session is dead afterward. A second
-call does nothing.
+`close()` shuts the SDK down and destroys it; every object obtained from the session is dead
+afterward, and a later call waits on the same teardown and reports its outcome. Once destroyed,
+`sdk` takes no calls at all, `exportMnemonic` included, which a bare `sdk.shutdown()` leaves
+working: a call throws the bindings' error for a destroyed object rather than an `Exception`, so
+export the seed before closing if you need it. Destroying it is what hands the data directory
+back, so reopening that directory also means letting go of every other object still held from the
+session, a federation, an operation, a subscription. Opening a directory something still holds
+fails with `StorageInUse`.
 
 ## License
 

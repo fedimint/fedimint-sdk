@@ -61,7 +61,8 @@ export interface SdkSession {
   }
   /**
    * Shuts the SDK down and terminates the worker. Every handle from this session is dead
-   * after; a second call does nothing.
+   * after. Calls after the first wait on the same teardown instead of starting another, and all
+   * report its outcome.
    */
   close(): Promise<void>
 }
@@ -79,7 +80,7 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
     // A `const` alias so the closures below capture a type the compiler knows is defined; the
     // outer `session` stays reassignable only to let the catch below terminate it.
     const opened = session
-    let closed = false
+    let teardown: Promise<void> | undefined
     const mnemonic = options.mnemonic
       ? ((await opened.callStatic('Mnemonic', 'fromWords', [
           options.mnemonic,
@@ -108,14 +109,17 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
         >,
       },
       async close() {
-        // A second close is a no-op rather than a rejection: the worker is already gone.
-        if (closed) return
-        closed = true
-        try {
-          await sdk.shutdown()
-        } finally {
-          opened.terminate()
-        }
+        // Every caller waits on the one teardown rather than starting another, so none of them
+        // is told the session is closed while the worker is still running, and a failed
+        // shutdown reaches all of them.
+        teardown ??= (async () => {
+          try {
+            await sdk.shutdown()
+          } finally {
+            opened.terminate()
+          }
+        })()
+        return teardown
       },
     }
   } catch (error) {
