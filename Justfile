@@ -38,6 +38,53 @@ android-emulator *ARGS:
 rn-example app="react-native":
     nix develop --accept-flake-config .#android-emulator -c scripts/rn-example.sh {{app}}
 
+# The Apple native libraries only (.a), one per target. Shared by every Apple
+# binding generator, the same way build-android-so is for Android.
+#
+# Not a Nix build: every Apple target compiles against an SDK that ships inside
+# Xcode and cannot live in the store, so there is no cacheable derivation to
+# make. `.#ios` supplies the Rust targets and the C build tools; Xcode supplies
+# the SDKs. macOS host with Xcode required.
+#
+# IOS_TARGETS="aarch64-apple-darwin" narrows it to the host slice, which is all
+# `test-swift` needs and is roughly a quarter of the work.
+build-ios-lib:
+    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-lib.sh
+
+# The Apple native libraries via Nix — cachix-cached, see nix/ffi.nix. Nothing
+# compiles locally when the cache is warm; a cold run cross-compiles the crate
+# (heavy: rocksdb + aws-lc from C). This is what `build-swift` uses by default.
+build-ios-lib-nix:
+    ./scripts/nix-build-ios-lib.sh
+
+# The Swift bindings, read out of an already-built .a.
+build-swift-bindings:
+    ./scripts/generate-swift-bindings.sh
+
+build-swift:
+    ./scripts/build-ios-sdk.sh
+
+# Non-nix escape hatch: cross-compile locally with plain cargo instead of
+# fetching from Cachix, for a machine that cannot or should not use Nix.
+# Needs the `.#ios` shell (Apple Rust targets, cmake/perl/go for aws-lc-sys).
+build-swift-local:
+    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-sdk.sh --local
+
+# Runs on the macOS slice of the XCFramework — no simulator boot needed.
+test-swift: build-swift
+    swift test --package-path ios
+
+# Compile the demo app against the freshly generated bindings, the Swift
+# counterpart of `test-kotlin`'s :app:assembleDebug. The .xcodeproj is
+# generated from the committed project.yml and gitignored.
+# No ARCHS override: this depends on `build-swift`, whose default target set
+# includes both simulator architectures, so the lipo'd slice satisfies the
+# generic destination. A subset build (IOS_TARGETS) needs ARCHS narrowed to
+# match — see .github/workflows/swift-sdk.yaml.
+build-ios-demo: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Demo && xcodegen generate'
+    cd ios/Demo && xcodebuild build -project FedimintDemo.xcodeproj -scheme FedimintDemo -destination 'generic/platform=iOS Simulator'
+
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test
 
