@@ -1,5 +1,14 @@
 # @fedimint/fedimint-client-wasm-bundler
 
+## 0.1.2
+
+### Patch Changes
+
+- b43a924: Added `federation.getMetaConsensusValue()` for reading federation metadata from the meta module
+- bdba63f: Add `federation.getEventLog()` for reading paginated persistent client event log entries
+- abd43e0: Rebuild the wasm client from a fedimint revision that installs a panic hook and fixes the wallet write conflict behind it, so a peg-in issued right after joining a federation no longer crashes the worker
+- 33e5de2: Rebuild the wasm client from the fedimint revision the Rust SDK now compiles against, so every client in this repo and the federation they are tested against come from one commit
+
 ## 0.1.1
 
 ### Patch Changes
