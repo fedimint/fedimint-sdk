@@ -17,6 +17,27 @@ build-kotlin:
 test-kotlin: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 
+# The example APK the E2E suite installs: the native library, the Kotlin generated
+# from it, then Gradle, all in the lean `.#android` shell (Android SDK and a
+# JDK — no emulator, no devimint). CI runs the same three steps as one job each
+# (native, bindings, apk), each handed the last one's output. It is a separate
+# step from `test-android-e2e` on purpose: a Gradle
+# build alongside an emulator and a devimint federation starves the emulator
+# until Android's System UI stops responding, so the build finishes — daemon
+# and all — before either of those starts.
+build-android-apk:
+    nix develop --accept-flake-config .#android -c bash -c './scripts/build-android-sdk.sh && cd android && ./gradlew :app:assembleDebug'
+
+# Boot an emulator, install the example app and drive it with the Appium suite
+# (js/android/integration-tests) against a devimint federation — the Android
+# counterpart of `just test`, which does the same for the wasm client, through
+# the same scripts/setup_test_shell.sh. There is deliberately no federation-free
+# variant: one way to run this suite, so what CI does and what you can
+# reproduce are the same thing. Builds the APK first (see build-android-apk);
+# the script itself only installs one.
+test-android-e2e: build-android-apk
+    nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+
 # Assemble the release AAR (publishing is not wired up yet).
 build-android-aar: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease

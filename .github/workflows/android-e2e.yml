@@ -1,0 +1,105 @@
+name: Android E2E (Appium)
+
+# Runs the Android example app (android/app) on an emulator and drives it with
+# Appium, so the generated Kotlin bindings and the native library behind them
+# are exercised at runtime — kotlin-sdk.yaml's `kotlin` job only proves they
+# compile.
+#
+# This job builds nothing. It installs the APK that android-apk.yaml
+# assembled on another machine, because this one is already carrying a whole
+# devimint federation and an emulator: a Gradle build alongside them starved
+# the emulator until Android's own System UI stopped responding, and every
+# test failed against that dialog instead of against the app.
+#
+# Called by kotlin-sdk.yaml rather than triggered on `pull_request` of its
+# own, for the reason android-native.yaml spells out: the APK it consumes sits
+# at the end of a chain that starts with a cross-compile, and a second PR entry
+# point over the same paths would mean two of those for one commit in two runs
+# that cannot cancel each other. A manual run is kotlin-sdk.yaml's
+# `workflow_dispatch`, which runs the whole chain.
+
+on:
+  workflow_call:
+    inputs:
+      apk-artifact:
+        description: 'Name of the debug APK artifact built by android-apk.yaml'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  android-e2e:
+    name: Android E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Runs its own devimint federation, and does not join verify.yml's
+    # `devimint-tests` concurrency group: devimint now allocates a free
+    # faucet port per run (issue #340) and its federation ports come from a
+    # range it picks the same way, so two runs on two runners no longer
+    # collide. The `adb reverse` mappings are per-device, so they cannot
+    # collide either.
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # GitHub-hosted Ubuntu runners have /dev/kvm but it isn't
+      # world-accessible by default; without this the emulator falls back to
+      # (very slow) software virtualization. Standard reactivecircus/
+      # android-emulator-runner incantation.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Put where Gradle would have left it, which is where run-android-e2e.sh
+      # looks: the script neither knows nor cares whether this machine or
+      # another built the file.
+      - name: Download the example APK
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.apk-artifact }}
+          path: android/app/build/outputs/apk/debug/
+
+      - name: Install workspace deps
+        shell: bash
+        env:
+          FEDIMINT_SKIP_BINARY_DOWNLOAD: 'true'
+        run: |
+          nix develop --accept-flake-config -c bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js install --frozen-lockfile
+          EOF
+
+      - name: Run Android E2E tests
+        shell: bash
+        env:
+          TESTS_TO_RUN: all
+        run: |
+          nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
+            set -euo pipefail
+            # Same entry point the wasm suite uses (js/package.json's
+            # `test:setup`): devimint stands a federation up, exports its
+            # ports, and execs the run inside it. The app reaches that
+            # federation through `adb reverse` — see the script.
+            bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+          EOF
+
+      - name: Upload logs & screenshots
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: android-e2e-logs
+          include-hidden-files: true
+          path: |
+            js/android/integration-tests/.appium/*.log
+            js/android/integration-tests/screenshots/*

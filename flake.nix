@@ -128,6 +128,24 @@
         # nix/web-bindgen.nix.
         webBindgen = import ./nix/web-bindgen.nix { inherit pkgs; };
 
+        # The emulator SDK for the android-tests shell, which boots a device to
+        # run the Appium suite against. Separate from androidEmulatorSdk above
+        # because the suite's AVD needs the host's ABI and the android-34 image.
+        # arm64-v8a on Apple Silicon hosts runs with hardware acceleration
+        # (Hypervisor.framework); x86_64 elsewhere (Intel Mac, Linux CI).
+        #
+        # platformVersions carries 34 alongside the 36 the Gradle project
+        # compiles against: the AVD this shell boots runs the android-34
+        # system image.
+        androidEmulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
+        androidTestsSdk = mkAndroidSdk {
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = ["google_apis"];
+          abiVersions = [androidEmulatorAbi];
+          platformVersions = ["34" "36"];
+        };
+
         fenixPkgs = fenix.packages.${system};
         baseToolchain = fenixPkgs.stable.toolchain;
         
@@ -178,6 +196,29 @@
           commonShellHook = ''
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
+
+          # The daemons devimint drives, and devimint itself. Shared by the two
+          # shells that stand a federation up: `wasm-tests` runs the browser
+          # client against it, `android-tests` the Android one. Neither list
+          # mentions the other's client, so the Android shell never pulls the
+          # Playwright browser bundles and the wasm shell never pulls an
+          # emulator image.
+          devimintNativeBuildInputs = [
+            pkgs.bitcoind
+            pkgs.electrs
+            pkgs.jq
+            pkgs.lnd
+            pkgs.netcat
+            pkgs.perl
+            pkgs.esplora-electrs
+            pkgs.procps
+            pkgs.which
+            fedimint.packages.${system}.devimint
+            fedimint.packages.${system}.gateway-pkgs
+            fedimint.packages.${system}.fedimint-pkgs
+            fedimint.packages.${system}.fedimint-recurringd
+            fedimint.packages.${system}.fedimint-recurringdv2
+          ];
 
           # Dependencies that were previously common, likely for general dev/testing/wasm
           wasmNativeBuildInputs = commonNativeBuildInputs ++ [
@@ -267,6 +308,35 @@
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
             fi
 
+            # ./gradlew needs a JVM, and so do avdmanager and the uiautomator2
+            # driver. Every android shell carries one so that assembling the example app
+            # APK needs nothing from outside the shell: it is what lets CI build
+            # the APK in the lean `android` shell, on a machine that never
+            # boots an emulator or stands a federation up.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
+
+          '';
+
+          # Adds: emulator/platform-tools/cmdline-tools on PATH, a repo-local
+          # APPIUM_HOME + ANDROID_AVD_HOME (so driver installs and AVDs don't
+          # land in ~/.appium / ~/.android on a contributor's machine), and
+          # the pnpm-installed `appium` binary on PATH. Appium itself is a
+          # plain npm devDependency of js/android/integration-tests
+          # (see its package.json), not a Nix package — only the Android SDK/
+          # emulator toolchain it drives comes from Nix here.
+          androidTestsShellHook = mkAndroidShellHook androidTestsSdk + ''
+            REPO_ROOT=$(git rev-parse --show-toplevel)
+
+            export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+            # js/pnpm-workspace.yaml sets `nodeLinker: hoisted`, so pnpm links every
+            # workspace package's binaries into the root node_modules/.bin.
+            export PATH="$REPO_ROOT/js/node_modules/.bin:$PATH"
+
+            export APPIUM_HOME="$REPO_ROOT/js/android/integration-tests/.appium"
+            mkdir -p "$APPIUM_HOME"
+            export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
+            mkdir -p "$ANDROID_AVD_HOME"
           '';
 
           mkAndroidShell = sdk: pkgs.mkShell {
@@ -402,14 +472,38 @@
             shellHook = commonShellHook + iosShellHook;
           };
 
+          # For js/android/integration-tests: everything `android` gives
+          # you, plus a bootable emulator, appium's PATH/APPIUM_HOME wiring,
+          # and devimint, so the suite can run against the same local
+          # federation the wasm tests use (scripts/setup_test_shell.sh execs
+          # the runner inside `devimint wasm-test-setup`). Kept separate from
+          # `android` so the plain FFI build shell doesn't pay for the
+          # emulator system image or the federation daemons it never runs.
+          android-tests = pkgs.mkShell {
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              androidTestsSdk.androidsdk
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.go
+              pkgs.cargo-ndk
+              pkgs.libclang
+              androidToolchain
+              # curl backs the Appium server health-check in
+              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # present, like `ps`/`lsof`, on minimal self-hosted runners).
+              pkgs.curl
+              # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
+              pkgs.jdk17
+            ] ++ devimintNativeBuildInputs;
+            shellHook = commonShellHook + androidTestsShellHook;
+          };
+
+          # The federation half comes from the same list `android-tests` uses,
+          # so the two shells cannot drift. The daemons it repeats from
+          # wasmNativeBuildInputs are harmless duplicates.
           wasm-tests = pkgs.mkShell {
-             nativeBuildInputs = wasmNativeBuildInputs ++ [
-               fedimint.packages.${system}.devimint
-               fedimint.packages.${system}.gateway-pkgs
-               fedimint.packages.${system}.fedimint-pkgs
-               fedimint.packages.${system}.fedimint-recurringd
-               fedimint.packages.${system}.fedimint-recurringdv2
-             ] ++ [ wasmToolchain ];
+             nativeBuildInputs = wasmNativeBuildInputs ++ devimintNativeBuildInputs ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
           };
         };

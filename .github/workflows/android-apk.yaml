@@ -1,0 +1,102 @@
+name: Android APK Build
+
+# Builds the example app (android/app) into a debug APK and nothing else: no
+# emulator, no federation. Runs entirely in the lean `.#android` Nix shell —
+# the Android SDK and a JDK, and none of the emulator system image or devimint
+# daemons that `.#android-tests` carries.
+#
+# It is its own workflow, on its own machine, because of what it is not
+# allowed to share a machine with. A cold Gradle build is several minutes of
+# every core, and the E2E job runs an emulator and a whole devimint federation
+# on the same four-core hosted runner. Built in that job, the two overlapped:
+# Gradle's build starved the already-booted emulator until Android's own
+# System UI stopped responding, and every test failed against the "System UI
+# isn't responding" dialog rather than against the app. Built here instead,
+# the E2E job only ever installs a finished APK.
+#
+# It is also the one place the example app is compiled against the generated
+# Kotlin, which is what proves those bindings are usable from ordinary Kotlin
+# and not merely that they parse.
+#
+# One task per machine, each handed the last one's artifact rather than
+# redoing it (kotlin-sdk.yaml wires them together):
+#
+#   android-native.yaml   cross-compiles the .so          -> jniLibs
+#   kotlin-sdk.yaml       generates Kotlin from that .so  -> kotlin-bindings
+#   android-apk.yaml      runs Gradle on both             -> android-example-apk
+#   android-e2e.yml       boots devimint + an emulator, installs the APK
+#
+# Callable only: kotlin-sdk.yaml is the one PR entry point for the Android
+# chain, for the reason android-native.yaml spells out. A manual run of the
+# whole chain is that workflow's `workflow_dispatch`.
+
+on:
+  workflow_call:
+    inputs:
+      jni-artifact:
+        description: 'Name of the jniLibs artifact built by android-native.yaml'
+        required: true
+        type: string
+      bindings-artifact:
+        description: 'Name of the generated Kotlin artifact from kotlin-sdk.yaml'
+        required: true
+        type: string
+    outputs:
+      apk-artifact:
+        description: 'Name of the uploaded debug APK artifact'
+        value: ${{ jobs.build.outputs.apk-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 'Assemble the Android example APK'
+    # Hosted, unlike the native library: there is no cross-compile here to
+    # want a persistent /nix/store for. What it does download is the Android
+    # SDK closure, which is cached in Cachix like any other Nix output.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      apk-artifact: android-example-apk
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+
+      - name: 'Setup Nix'
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # jniLibs and the generated Kotlin are both build outputs and gitignored,
+      # so both have to be put back before Gradle can see them. Neither is made
+      # here: `native` built the .so and `bindings` read the Kotlin out of it.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
+      # `.#android` is the whole toolchain: the Android SDK and the JDK.
+      - name: 'Assemble the APK'
+        shell: bash
+        run: |
+          nix develop --accept-flake-config .#android --command bash << 'EOF'
+            set -euo pipefail
+            cd android
+            ./gradlew :app:assembleDebug
+          EOF
+
+      - name: 'Upload the APK'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-example-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
