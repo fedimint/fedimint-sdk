@@ -12323,6 +12323,62 @@ const FfiConverterTypeOnchain = new FfiConverterObject(
   uniffiTypeOnchainObjectFactory,
 )
 
+/**
+ * How far a running rescan has got.
+ *
+ * Read [`RecoveryState::Running`] for what `complete` reaching `total` does and does not mean.
+ */
+export type RecoveryProgress = {
+  /**
+   * How much of the rescan's work is done so far.
+   */
+  complete: number
+  /**
+   * The rescan's total amount of work, the same for as long as the rescan runs.
+   */
+  total: number
+}
+
+/**
+ * Generated factory for {@link RecoveryProgress} record objects.
+ */
+export const RecoveryProgress = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<RecoveryProgress, ReturnType<typeof defaults>>(
+      defaults,
+    )
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<RecoveryProgress>,
+  })
+})()
+
+const FfiConverterTypeRecoveryProgress = (() => {
+  type TypeName = RecoveryProgress
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        complete: FfiConverterUInt32.readFromCursor(c),
+        total: FfiConverterUInt32.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterUInt32.writeIntoCursor(value.complete, c)
+      FfiConverterUInt32.writeIntoCursor(value.total, c)
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.complete) +
+        FfiConverterUInt32.allocationSize(value.total)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
 // Enum: RecoveryState
 export enum RecoveryState_Tags {
   Running = 'Running',
@@ -12332,8 +12388,7 @@ export enum RecoveryState_Tags {
 /**
  * How a recovery is going.
  *
- * Deliberately coarse: this reports only what can be said truthfully, without a made-up
- * completion percentage.
+ * While the rescan runs, [`Running`](Self::Running) carries how far it has got.
  *
  * # Two different questions
  *
@@ -12360,6 +12415,7 @@ type RecoveryState_Running_interface = {
    */
   readonly [uniffiTypeNameSymbol]: 'RecoveryState'
   tag: RecoveryState_Tags.Running
+  inner: Readonly<{ progress?: RecoveryProgress }>
 }
 
 type RecoveryState_Done_interface = {
@@ -12398,12 +12454,14 @@ export const RecoveryState = (() => {
      */
     readonly [uniffiTypeNameSymbol] = 'RecoveryState'
     readonly tag = RecoveryState_Tags.Running
-    constructor() {
+    readonly inner: Readonly<{ progress?: RecoveryProgress }>
+    constructor(inner: { progress?: RecoveryProgress }) {
       super('RecoveryState', 'Running')
-    }
 
-    static new(): Running_ {
-      return new Running_()
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { progress?: RecoveryProgress }): Running_ {
+      return new Running_(inner)
     }
 
     static instanceOf(obj: any): obj is Running_ {
@@ -12415,9 +12473,9 @@ export const RecoveryState = (() => {
    * other joined federation and the recovery lock is released.
    *
    * This is the only state that releases the lock, and the only one for
-   * which [`is_complete`](Self::is_complete) is true. It says the wallet
-   * is restored: everything the seed owned in this federation that a
-   * rescan can find has been found.
+   * which [`is_complete`](Self::is_complete) is true. It is reached once
+   * the wallet holds everything the rescan found, so the balance and
+   * activity read from then on are the restored ones.
    */
   class Done_ extends UniffiEnum implements RecoveryState_Done_interface {
     /**
@@ -12506,7 +12564,10 @@ const FfiConverterTypeRecoveryState = (() => {
     readFromCursor(c: Cursor): TypeName {
       switch (c.readI32()) {
         case 1:
-          return new RecoveryState.Running()
+          return new RecoveryState.Running({
+            progress:
+              FfiConverterOptionalTypeRecoveryProgress.readFromCursor(c),
+          })
         case 2:
           return new RecoveryState.Done()
         case 3:
@@ -12521,6 +12582,11 @@ const FfiConverterTypeRecoveryState = (() => {
       switch (value.tag) {
         case RecoveryState_Tags.Running: {
           c.writeI32(1)
+          const inner = value.inner
+          FfiConverterOptionalTypeRecoveryProgress.writeIntoCursor(
+            inner.progress,
+            c,
+          )
           return
         }
         case RecoveryState_Tags.Done: {
@@ -12541,7 +12607,12 @@ const FfiConverterTypeRecoveryState = (() => {
     allocationSize(value: TypeName): number {
       switch (value.tag) {
         case RecoveryState_Tags.Running: {
-          return 4
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterOptionalTypeRecoveryProgress.allocationSize(
+            inner.progress,
+          )
+          return size
         }
         case RecoveryState_Tags.Done: {
           return 4
@@ -13797,10 +13868,10 @@ export interface FederationLike {
    * showing as progress, yet none of it is spendable, and every spend
    * or receive is refused with
    * [`Recovering`](crate::ErrorCode::Recovering) no matter what this
-   * method returned. It settles when recovery finishes. On a
-   * [`Running`](crate::FederationStatus::Running) federation the two
-   * notions coincide, and this is exactly the amount a spend can draw
-   * on.
+   * method returned. Once the recovery reaches
+   * [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
+   * restored balance, and the two notions coincide again: this is
+   * exactly the amount a spend can draw on.
    *
    * # Errors
    *
@@ -14054,10 +14125,10 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
    * showing as progress, yet none of it is spendable, and every spend
    * or receive is refused with
    * [`Recovering`](crate::ErrorCode::Recovering) no matter what this
-   * method returned. It settles when recovery finishes. On a
-   * [`Running`](crate::FederationStatus::Running) federation the two
-   * notions coincide, and this is exactly the amount a spend can draw
-   * on.
+   * method returned. Once the recovery reaches
+   * [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
+   * restored balance, and the two notions coincide again: this is
+   * exactly the amount a spend can draw on.
    *
    * # Errors
    *
@@ -16992,6 +17063,11 @@ const FfiConverterOptionalTypeOnchainSendOperation = new FfiConverterOptional(
   FfiConverterTypeOnchainSendOperation,
 )
 
+// FfiConverter for RecoveryProgress | undefined
+const FfiConverterOptionalTypeRecoveryProgress = new FfiConverterOptional(
+  FfiConverterTypeRecoveryProgress,
+)
+
 // FfiConverter for RecoveryState | undefined
 const FfiConverterOptionalTypeRecoveryState = new FfiConverterOptional(
   FfiConverterTypeRecoveryState,
@@ -17369,7 +17445,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_federation_balance() !==
-    45089
+    43699
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_balance',
@@ -18124,6 +18200,7 @@ export default Object.freeze({
     FfiConverterTypeRecoveryHandle,
     FfiConverterTypeRecoveryOperation,
     FfiConverterTypeRecoveryOperationUpdates,
+    FfiConverterTypeRecoveryProgress,
     FfiConverterTypeRecoveryState,
     FfiConverterTypeSats,
     FfiConverterTypeSdk,
