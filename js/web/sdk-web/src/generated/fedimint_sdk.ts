@@ -15527,8 +15527,8 @@ export interface SdkLike {
     asyncOpts_?: { signal: AbortSignal },
   ) /*throws*/ : Promise<RecoveryHandle>
   /**
-   * Best-effort: flushes everything to storage, stops all background
-   * work, and releases the storage lock.
+   * Best-effort: flushes everything to storage and stops all background
+   * work.
    *
    * After this returns, every fallible call on every [`Sdk`] and
    * [`Federation`] handle, and every subscriber obtained from one, fails
@@ -15536,8 +15536,24 @@ export interface SdkLike {
    * [`Sdk::export_mnemonic`] the deliberate exception, alongside the
    * infallible status accessors ([`Sdk::stored_federations`],
    * [`Sdk::federation_status`]) and the infallible accessors on
-   * [`Federation`]. Another instance may then open the same storage.
-   * Shutdown is idempotent.
+   * [`Federation`]. Shutdown is idempotent.
+   *
+   * # It does not release the storage
+   *
+   * The location stays claimed until the store on it is closed, which
+   * happens when the last handle built on this instance is dropped:
+   * every [`Sdk`], this one included, every [`Federation`], and every
+   * operation handle and subscriber taken from a federation. Until then a
+   * [`SdkBuilder::build`] against the same location is refused with
+   * [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
+   * than by waiting, whether the attempt comes from this process or
+   * another one.
+   *
+   * So an application that opens a location, closes it and opens it
+   * again, to switch wallets or to restore one, has to let go of
+   * everything it holds from the first instance between the two. On a
+   * binding where handles are foreign objects, letting go means
+   * destroying them rather than waiting for a garbage collector.
    *
    * # It is an optimisation, not a requirement
    *
@@ -15546,18 +15562,12 @@ export interface SdkLike {
    * warning and a browser tab can vanish the same way. Everything a
    * caller can observe is already durable at the moment it becomes
    * observable, see the durability section on [`Sdk`], and what this
-   * call adds is a flush of buffered non-critical state such as caches,
-   * an orderly release of the storage lock, and a defined point after
-   * which no background work is running.
+   * call adds is a flush of buffered non-critical state such as caches
+   * and a defined point after which no background work is running.
    *
    * Call it from the platform's "entering background" or "about to
    * terminate" callback if there is one, and await it if you are allowed
    * to. Do not build anything on being able to.
-   *
-   * Skipping it is safe for correctness, but leaves one thing to mind in the same process: the
-   * underlying store stays open until every [`Sdk`] and [`Federation`] handle over it, this
-   * call included, has actually been dropped. A [`SdkBuilder::build`] against the same
-   * location started before that point is left waiting on it.
    *
    * # What survives an abrupt kill
    *
@@ -16590,8 +16600,8 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
   }
 
   /**
-   * Best-effort: flushes everything to storage, stops all background
-   * work, and releases the storage lock.
+   * Best-effort: flushes everything to storage and stops all background
+   * work.
    *
    * After this returns, every fallible call on every [`Sdk`] and
    * [`Federation`] handle, and every subscriber obtained from one, fails
@@ -16599,8 +16609,24 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    * [`Sdk::export_mnemonic`] the deliberate exception, alongside the
    * infallible status accessors ([`Sdk::stored_federations`],
    * [`Sdk::federation_status`]) and the infallible accessors on
-   * [`Federation`]. Another instance may then open the same storage.
-   * Shutdown is idempotent.
+   * [`Federation`]. Shutdown is idempotent.
+   *
+   * # It does not release the storage
+   *
+   * The location stays claimed until the store on it is closed, which
+   * happens when the last handle built on this instance is dropped:
+   * every [`Sdk`], this one included, every [`Federation`], and every
+   * operation handle and subscriber taken from a federation. Until then a
+   * [`SdkBuilder::build`] against the same location is refused with
+   * [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
+   * than by waiting, whether the attempt comes from this process or
+   * another one.
+   *
+   * So an application that opens a location, closes it and opens it
+   * again, to switch wallets or to restore one, has to let go of
+   * everything it holds from the first instance between the two. On a
+   * binding where handles are foreign objects, letting go means
+   * destroying them rather than waiting for a garbage collector.
    *
    * # It is an optimisation, not a requirement
    *
@@ -16609,18 +16635,12 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    * warning and a browser tab can vanish the same way. Everything a
    * caller can observe is already durable at the moment it becomes
    * observable, see the durability section on [`Sdk`], and what this
-   * call adds is a flush of buffered non-critical state such as caches,
-   * an orderly release of the storage lock, and a defined point after
-   * which no background work is running.
+   * call adds is a flush of buffered non-critical state such as caches
+   * and a defined point after which no background work is running.
    *
    * Call it from the platform's "entering background" or "about to
    * terminate" callback if there is one, and await it if you are allowed
    * to. Do not build anything on being able to.
-   *
-   * Skipping it is safe for correctness, but leaves one thing to mind in the same process: the
-   * underlying store stays open until every [`Sdk`] and [`Federation`] handle over it, this
-   * call included, has actually been dropped. A [`SdkBuilder::build`] against the same
-   * location started before that point is left waiting on it.
    *
    * # What survives an abrupt kill
    *
@@ -18009,7 +18029,7 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
-    nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_shutdown() !== 26130
+    nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_shutdown() !== 5792
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_sdk_shutdown',

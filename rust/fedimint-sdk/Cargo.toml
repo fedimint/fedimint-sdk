@@ -116,6 +116,12 @@ uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
 # arrangement is temporary — it goes away with the pending uniffi change, at
 # which point the dependency can be dropped rather than bumped.
 async-compat = { version = "=0.2.6", optional = true, features = ["multi-thread"] }
+# Named only to implement `fedimint_core::db::IRawDatabase` for the wrapper that keeps the
+# single-opener claim inside the store (src/storage.rs). That trait's methods are declared
+# through fedimint's own `async_trait_maybe_send!`, which expands to `::async_trait::async_trait`
+# and so has to resolve in this crate too. Semver-compatible with fedimint's own requirement, so
+# cargo unifies the two onto a single copy.
+async-trait = "0.1.92"
 # `fd-lock` rather than the `fs-lock` fedimint uses for the embedded store's own
 # lock: this one is the SDK's single-opener claim, and it has to fail fast on
 # contention rather than block. See src/storage.rs.

@@ -43,6 +43,8 @@ export class Sdk {
   static failNext: Error | undefined
 
   shutdowns = 0
+  destroys = 0
+  failShutdown: Error | undefined
 
   constructor(
     public dataDir: string,
@@ -53,6 +55,11 @@ export class Sdk {
 
   async shutdown(): Promise<void> {
     this.shutdowns += 1
+    if (this.failShutdown) throw this.failShutdown
+  }
+
+  uniffiDestroy(): void {
+    this.destroys += 1
   }
 }
 

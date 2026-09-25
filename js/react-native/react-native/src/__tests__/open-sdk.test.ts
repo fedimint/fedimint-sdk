@@ -40,11 +40,23 @@ describe('openSdk', () => {
     expect(Mnemonic.generated).toBe(1)
   })
 
-  it('shuts the SDK down once, and a second close does nothing', async () => {
+  it('shuts the SDK down and lets go of it, and a second close does nothing', async () => {
+    // Destroying it is what hands the data directory back, so an application can close one
+    // wallet and open another over the same directory.
     const session = await openSdk({ dataDir: '/data/fedimint' })
     await session.close()
     await session.close()
     expect(Sdk.instances[0]!.shutdowns).toBe(1)
+    expect(Sdk.instances[0]!.destroys).toBe(1)
+  })
+
+  it('destroys the SDK even when the shutdown fails', async () => {
+    // A failed flush still leaves a closed instance, and nothing else would ever hand the data
+    // directory back: `close` has already marked the session closed and will not run again.
+    const session = await openSdk({ dataDir: '/data/fedimint' })
+    Sdk.instances[0]!.failShutdown = new Error('the flush failed')
+    await expect(session.close()).rejects.toThrow('the flush failed')
+    expect(Sdk.instances[0]!.destroys).toBe(1)
   })
 
   it('rejects when the SDK cannot be created', async () => {
