@@ -203,7 +203,8 @@ one if the last attempt stopped:
 ```ts
 for (const federation of sdk.federations()) {
   const id = federation.id()
-  if (sdk.federationStatus(id)?.tag !== FederationStatus_Tags.Recovering) continue
+  const status = sdk.federationStatus(id)
+  if (status?.tag !== FederationStatus_Tags.Recovering) continue
   const { progress } = await sdk.resumeRecovery(id)
   void follow(progress)
 }
