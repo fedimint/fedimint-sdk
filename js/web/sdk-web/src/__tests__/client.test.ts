@@ -1,32 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { WorkerSession } from '../client'
-import type { WorkerLike } from '../client'
 import { SdkError, SessionClosed, WorkerCrashed } from '../errors'
 import { REF_KEY } from '../protocol'
-import type { Request, Response } from '../protocol'
-
-class FakeWorker implements WorkerLike {
-  sent: Request[] = []
-  private listeners = new Map<string, ((event: never) => void)[]>()
-  terminated = false
-  postMessage(message: unknown) {
-    this.sent.push(message as Request)
-  }
-  addEventListener(type: string, listener: (event: never) => void) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
-  }
-  terminate() {
-    this.terminated = true
-  }
-  reply(message: Response) {
-    for (const l of this.listeners.get('message') ?? [])
-      (l as (e: { data: Response }) => void)({ data: message })
-  }
-  crash(message: string) {
-    for (const l of this.listeners.get('error') ?? [])
-      (l as (e: { message: string }) => void)({ message })
-  }
-}
+import { FakeWorker } from './fake-worker'
 
 describe('WorkerSession', () => {
   it('resolves a call with proxies for handles, nested too', async () => {

@@ -33,6 +33,11 @@ export interface SdkSession {
    * after the first wait on the same teardown instead of starting another, and all report its
    * outcome.
    *
+   * Letting go destroys `sdk`, so nothing can be called on it afterwards, `exportMnemonic`
+   * included, which a bare `sdk.shutdown()` leaves working. A call throws the bindings' error
+   * for a destroyed object rather than an `Exception`, so export the seed before closing if it
+   * will be needed.
+   *
    * Letting go is what gives the data directory back. The SDK holds a directory for as long as
    * anything built on it is alive, so an application that closes a wallet and opens one over the
    * same directory has to close the session first, and destroy any other object it still holds

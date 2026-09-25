@@ -74,12 +74,14 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 ///
 /// The claim lasts as long as the open store, not as long as one [`Sdk`](crate::Sdk) handle.
 /// [`SdkBuilder::build`](crate::SdkBuilder::build) takes it, and it is given back when the store
-/// closes, which is when the last handle over that instance has been dropped: every
-/// [`Sdk`](crate::Sdk), every [`Federation`](crate::Federation), and every operation handle and
-/// subscriber taken from a federation. [`Sdk::shutdown`](crate::Sdk::shutdown) ends the instance's
-/// work but does not by itself close the store, so reopening a location in the same process
-/// means letting go of everything built on it first, and an attempt before that point is
-/// refused rather than left waiting.
+/// closes. After [`Sdk::shutdown`](crate::Sdk::shutdown), that is when the last handle over the
+/// instance is dropped: every [`Sdk`](crate::Sdk), every [`Federation`](crate::Federation), and
+/// every operation handle and subscriber taken from a federation. Shutting down ends the
+/// instance's work but does not by itself close the store, so reopening a location in the same
+/// process means shutting the instance down and then letting go of everything built on it, and
+/// an attempt before that point is refused rather than left waiting. An instance that is let go
+/// of without being shut down can go on holding its location for a while after its last handle
+/// is dropped, until its background work has stopped.
 ///
 /// A claim left behind by a process that died is reclaimed by the next opener rather than left
 /// stuck: `StorageInUse` always means genuinely concurrent use, never a stale marker. This
@@ -346,27 +348,6 @@ struct Claim {
     /// belongs to the open file description, so closing the file releases it, and so does the
     /// kernel when the process dies.
     _file: fd_lock::RwLock<std::fs::File>,
-    /// This location's key in [`OPEN_HERE`], or `None` if it could not be resolved to one.
-    here: Option<std::path::PathBuf>,
-}
-
-#[cfg(not(target_family = "wasm"))]
-impl Drop for Claim {
-    fn drop(&mut self) {
-        let Some(here) = self.here.take() else {
-            return;
-        };
-        let mut open_here = open_here();
-        // Counted rather than simply removed, because one path can name two live claims: an
-        // application that deletes a location and opens it again gets a new directory at the
-        // same name, and the claim on the old one is still around until its store closes.
-        if let Some(claims) = open_here.get_mut(&here) {
-            *claims -= 1;
-            if *claims == 0 {
-                open_here.remove(&here);
-            }
-        }
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -376,26 +357,6 @@ impl core::fmt::Debug for Claim {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Claim")
     }
-}
-
-/// The locations this process currently holds open.
-///
-/// This decides nothing. The lock file is the only authority on whether a location can be
-/// claimed, and this answers the one question that lock cannot: whether the opener standing in
-/// the way is this very process, which the application can do something about, or another one,
-/// which it cannot.
-#[cfg(not(target_family = "wasm"))]
-static OPEN_HERE: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, usize>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-/// [`OPEN_HERE`], with a poisoned lock treated as merely locked: a panic elsewhere cannot leave
-/// a plain map of paths in a state worth refusing to read.
-#[cfg(not(target_family = "wasm"))]
-fn open_here()
--> std::sync::MutexGuard<'static, std::collections::BTreeMap<std::path::PathBuf, usize>> {
-    OPEN_HERE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Opens a native directory: create it, claim it, then open the embedded store inside it.
@@ -435,11 +396,6 @@ fn take_claim(directory: &std::path::Path, location: &str) -> Result<Claim> {
             format!("could not create the storage directory {location}: {err}"),
         )
     })?;
-    // Resolved once the directory exists, so that two spellings of one location are one entry.
-    // A location that will not resolve is simply not tracked; only the wording of a refusal
-    // depends on it.
-    let here = std::fs::canonicalize(directory).ok();
-
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -455,40 +411,23 @@ fn take_claim(directory: &std::path::Path, location: &str) -> Result<Claim> {
 
     let mut file = fd_lock::RwLock::new(file);
     let Ok(guard) = file.try_write() else {
-        return Err(in_use(location, here.as_deref()));
+        return Err(Error::with_details(
+            ErrorCode::StorageInUse,
+            format!(
+                "the storage at {location} is already open, in this process or another one: \
+                 shutting an instance down does not close its storage, dropping every handle \
+                 over it does"
+            ),
+            ErrorDetails::StorageInUse {
+                location: location.to_owned(),
+            },
+        ));
     };
     // Forgetting the guard keeps the advisory lock without keeping a borrow of the `RwLock` that
     // would make this value self-referential. Nothing leaks: the guard owns only a reference, and
     // the lock is released when the file below is closed.
     core::mem::forget(guard);
-
-    if let Some(here) = &here {
-        *open_here().entry(here.clone()).or_default() += 1;
-    }
-    Ok(Claim { _file: file, here })
-}
-
-/// The refusal a second opener gets, worded for whichever opener is in its way.
-///
-/// Both cases are the same [`ErrorCode::StorageInUse`] carrying the same details; what differs is
-/// what the message tells the application to do about it.
-#[cfg(not(target_family = "wasm"))]
-fn in_use(location: &str, here: Option<&std::path::Path>) -> Error {
-    let message = if here.is_some_and(|here| open_here().contains_key(here)) {
-        format!(
-            "the storage at {location} is still open in this process: shutting an instance down \
-             does not close it, every handle over it has to be dropped first"
-        )
-    } else {
-        format!("the storage at {location} is already open")
-    };
-    Error::with_details(
-        ErrorCode::StorageInUse,
-        message,
-        ErrorDetails::StorageInUse {
-            location: location.to_owned(),
-        },
-    )
+    Ok(Claim { _file: file })
 }
 
 /// Opens an origin-private store: find the origin's directory, claim the file, open redb on it.
@@ -623,11 +562,6 @@ mod tests {
             Some(ErrorDetails::StorageInUse { location }) => assert_eq!(location, &path),
             other => panic!("expected the location, got {other:?}"),
         }
-        assert!(
-            err.message.contains("in this process"),
-            "a refusal an application can act on has to name the opener in the way: {}",
-            err.message,
-        );
 
         drop(first);
 
