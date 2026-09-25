@@ -1,20 +1,24 @@
 //! What the SDK does around the underlying client's own recovery: the records it keeps, the
-//! watcher that learns when a rescan ends, and the client swap that makes a recovered wallet
-//! usable.
+//! watcher that learns when a rescan ends and forwards its progress, the client swap that makes
+//! a recovered wallet usable, and the wait that settles an attempt once what the rescan found has
+//! actually landed in it.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fedimint_client::ClientHandleArc;
 use fedimint_client::error::RecoveryError;
-use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_client_module::module::recovery::RecoveryProgress as UpstreamRecoveryProgress;
+use fedimint_core::core::{ModuleInstanceId, OperationId as UpstreamOperationId};
 use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+use futures::{FutureExt as _, StreamExt as _};
 
 use super::wire;
 use crate::db::{OperationRecord, OperationRecordKey, RecoveryRecord};
 use crate::federation::FederationInner;
 use crate::operation::OperationInner;
 use crate::sdk::SdkInner;
-use crate::{FederationStatus, RecoveryState, Result};
+use crate::{FederationStatus, RecoveryProgress, RecoveryState, Result};
 
 /// What is known about a federation's attempt before its client is opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +72,7 @@ pub(crate) async fn attempt_on_file(
         Some(op_record) => match op_record.final_state {
             None => AttemptOnFile::Running,
             Some(encoded) => match wire::decode_state(&encoded) {
-                Ok(RecoveryState::Running) => AttemptOnFile::Running,
+                Ok(RecoveryState::Running { .. }) => AttemptOnFile::Running,
                 Ok(RecoveryState::Done) => AttemptOnFile::Done,
                 Ok(RecoveryState::Failed { reason }) => AttemptOnFile::Failed { reason },
                 // A fresh attempt is the safe reading of a record this build cannot interpret:
@@ -130,35 +134,31 @@ pub(crate) async fn after_open(
     // A rescan that ended between the client's construction and here reports nothing pending,
     // but a module it held back for the duration (a v1 mint) is still out of the registry
     // until the next build: the same swap the watcher would have made is made now.
-    let usable = client.all_modules_usable();
-    drop(client);
-    if !usable {
+    if !client.all_modules_usable() {
+        drop(client);
         finish(sdk, federation, attempt).await;
         return;
     }
-    // The client's own durable state already corroborates completion. If the attempt's record
-    // has not caught up yet (the crash window between the client's own commit and this SDK's
-    // write), catch it up now: no watcher starts for an attempt whose client reports nothing
-    // pending, so nothing else ever will.
-    if let Some(record) = read_attempt_record(federation, attempt).await
-        && record.final_state.is_none()
+    // The client's own durable state already corroborates that the rescan is over, but not that
+    // what it found has landed: `Done` still waits for that. If the attempt's record has not
+    // caught up yet (the crash window between the client's own commit and this SDK's write), it
+    // is settled here exactly as the watcher's own completion is, since nothing else starts a
+    // watcher for an attempt whose client already reports nothing pending.
+    if read_attempt_record(federation, attempt)
+        .await
+        .is_some_and(|record| record.final_state.is_none())
     {
-        match write_final_state(federation, attempt, record, RecoveryState::Done).await {
-            Ok(()) => federation.bump_recovery(),
-            Err(err) => tracing::warn!(
-                target: "fedimint_sdk",
-                federation = %federation.id,
-                attempt = %attempt.fmt_full(),
-                error = %err,
-                "could not record a finished recovery attempt as done",
-            ),
-        }
+        federation.set_status(FederationStatus::Recovering);
+        start_settle(sdk.clone(), federation.clone(), client, attempt);
+        return;
     }
+    drop(client);
     federation.set_status(FederationStatus::Running);
 }
 
 /// One task per recovering federation: blocks until the client's rescan ends, then records
-/// the outcome and, on success, swaps in a usable client.
+/// the outcome and, on success, swaps in a usable client. While it waits, it also forwards the
+/// client's own per-module progress into [`FederationInner::publish_recovery_progress`].
 pub(crate) fn watch(
     sdk: Arc<SdkInner>,
     federation: Arc<FederationInner>,
@@ -166,6 +166,10 @@ pub(crate) fn watch(
     attempt: UpstreamOperationId,
 ) {
     fedimint_core::task::spawn("sdk-recovery-watch", async move {
+        // A watcher starting is the one place progress is reset: whatever an earlier attempt on
+        // this federation last published no longer describes anything running.
+        federation.reset_recovery_progress();
+
         // The wait ends either with the rescan's outcome or with the federation closing,
         // whichever comes first. The second matters because the client's own status channel
         // need not close when the federation does (a coordinator whose module gave up parks
@@ -173,11 +177,46 @@ pub(crate) fn watch(
         // `shutdown_client` needs the last reference.
         let mut closed = federation.closed();
         let outcome = {
-            let wait = std::pin::pin!(client.wait_for_all_recoveries());
-            let close = std::pin::pin!(closed.wait_for(|closed| *closed));
-            match futures::future::select(wait, close).await {
-                futures::future::Either::Left((outcome, _)) => outcome,
-                futures::future::Either::Right(_) => Err(RecoveryError::ClientStopped),
+            let mut wait = std::pin::pin!(client.wait_for_all_recoveries());
+            let mut close = std::pin::pin!(closed.wait_for(|closed| *closed));
+            let mut modules: BTreeMap<ModuleInstanceId, UpstreamRecoveryProgress> = BTreeMap::new();
+            let mut progress = std::pin::pin!(client.subscribe_to_recovery_progress());
+            let mut progress_ended = false;
+            loop {
+                tokio::select! {
+                    outcome = &mut wait => break outcome,
+                    _ = &mut close => break Err(RecoveryError::ClientStopped),
+                    next = progress.next(), if !progress_ended => {
+                        // The stream ends only when the client's status channel closes, which
+                        // ends `wait` too. It is not polled again, since an ended stream
+                        // answers at once and this loop would spin on it until `wait` is picked.
+                        let Some((module, module_progress)) = next else {
+                            progress_ended = true;
+                            continue;
+                        };
+                        modules.insert(module, module_progress);
+                        // Each change arrives as one item per recovering module, all ready at
+                        // once. They are taken together, so no snapshot is published half read.
+                        loop {
+                            match progress.next().now_or_never() {
+                                Some(Some((module, module_progress))) => {
+                                    modules.insert(module, module_progress);
+                                }
+                                Some(None) => {
+                                    progress_ended = true;
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
+                        match aggregate_progress(modules.values().copied()) {
+                            Some(aggregate) => {
+                                federation.publish_recovery_progress(attempt, aggregate);
+                            }
+                            None => federation.reset_recovery_progress(),
+                        }
+                    }
+                }
             }
         };
         drop(client);
@@ -208,13 +247,13 @@ pub(crate) fn watch(
 ///
 /// Taken because the swap and the status that follows it are a lifecycle transition, and a
 /// `close_federation` or `forget_federation` interleaved between the two would have its
-/// `Closed` overwritten with `Running` on a federation whose client had just been taken away.
+/// `Closed` overwritten with `Recovering` on a federation whose client had just been taken away.
 /// The mutex is taken before anything else, as every lifecycle call takes it.
 ///
 /// The attempt is re-read once the mutex is held: a `resume_recovery` that held it while the
-/// rescan ended has already seen nothing pending and completed the attempt itself, and a second
-/// swap would retire the usable client it just installed for nothing, with a failed reopen
-/// quarantining a federation that had recovered.
+/// rescan ended may already have swapped the client and started settling, or even have finished
+/// settling outright. Either way `finish` itself, once it holds the mutex too, recognises that
+/// and does not touch a client that does not need replacing a second time.
 pub(crate) async fn complete(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
@@ -230,28 +269,138 @@ pub(crate) async fn complete(
     finish(sdk, federation, attempt).await;
 }
 
-/// The completion rule from the plan's fixed decisions: swap in a usable client, record the
-/// attempt done, publish the status.
+/// Phase 1 of completing a recovery: swaps in a client whose modules the rescan unlocked, then
+/// starts the wait that settles the attempt once what it found has actually landed.
 ///
-/// The caller holds the lifecycle mutex, or is the build, which runs before any handle exists
-/// to take it. Either way nothing can close, erase or reopen the federation between the swap
-/// and the status.
+/// The caller holds the lifecycle mutex, or is the build, which runs before any handle exists to
+/// take it, so nothing can close, erase or reopen the federation while this runs. This phase does
+/// not mark the attempt done: a fresh client having its modules back is not the same as the notes
+/// the rescan found being spendable in it yet, and only [`conclude_settle`] writes
+/// [`RecoveryState::Done`], once phase 2 has waited for that. The federation's status stays
+/// [`Recovering`](FederationStatus::Recovering) throughout this phase.
+///
+/// A no-op when a settle is already claimed for the client installed right now: `finish` can be
+/// reached twice for one rescan ending (the watcher's own [`complete`], and `resume_recovery`
+/// finding nothing pending), and settling can take long enough for both to run before either
+/// concludes, so the second call must not swap away a client its predecessor is already watching.
 pub(crate) async fn finish(
     sdk: &Arc<SdkInner>,
     federation: &Arc<FederationInner>,
     attempt: UpstreamOperationId,
 ) {
+    if read_attempt_record(federation, attempt)
+        .await
+        .is_some_and(|record| record.final_state.is_some())
+    {
+        return;
+    }
+    if federation.is_settling() {
+        return;
+    }
     let id = federation.id;
     // The swap is what makes the recovered wallet usable: a v1 mint recovers as
     // `RecoveryMode::Unusable` and only enters the module registry on the client's next build
     // (`fedimint-mint-client/src/lib.rs:839-841`, `fedimint-client/src/client/builder.rs:951`),
     // so every generation is swapped even though only some of them need it.
-    let opened = federation
+    match federation
         .replace_client(|| async { sdk.open_client(&id).await })
-        .await;
-    if let Some(record) = read_attempt_record(federation, attempt).await
-        && let Err(err) = write_final_state(federation, attempt, record, RecoveryState::Done).await
+        .await
     {
+        Ok(()) => {}
+        // The federation was closed, quarantined or erased while the rescan was finishing; the
+        // swap was refused, and whatever did that owns the attempt's fate now. The next open
+        // settles it, through `after_open`'s own catch-up branch.
+        Err(err) if err.code == crate::ErrorCode::FederationClosed => return,
+        Err(err) => {
+            federation.set_status(FederationStatus::Quarantined {
+                diagnostic: err.into(),
+            });
+            sdk.announce(federation);
+            return;
+        }
+    }
+    // The mutex this function's caller holds rules out anything else touching the client
+    // between the swap above and this read, so the fresh client is always found here.
+    let client = match federation.client(false).await {
+        Ok(guard) => guard.handle(),
+        Err(err) => {
+            tracing::warn!(
+                target: "fedimint_sdk",
+                federation = %federation.id,
+                attempt = %attempt.fmt_full(),
+                error = %err,
+                "could not read back the client just swapped in for settling",
+            );
+            return;
+        }
+    };
+    start_settle(sdk.clone(), federation.clone(), client, attempt);
+}
+
+/// Starts phase 2 of completing a recovery (see [`finish`]), which waits for `client` to have
+/// nothing left running before marking the attempt done. No-op if a settle is already claimed
+/// for the client installed right now; see [`FederationInner::try_start_settle`].
+fn start_settle(
+    sdk: Arc<SdkInner>,
+    federation: Arc<FederationInner>,
+    client: ClientHandleArc,
+    attempt: UpstreamOperationId,
+) {
+    let Some(identity) = federation.try_start_settle() else {
+        return;
+    };
+    // Held weakly for the wait, which is unbounded: this task must never be what keeps the
+    // instance alive.
+    let sdk = Arc::downgrade(&sdk);
+    fedimint_core::task::spawn("sdk-recovery-settle", async move {
+        let stop = client.task_group().make_handle().make_shutdown_rx();
+        // The recovery lock keeps every other facade off this federation for as long as the
+        // attempt is not `Done`, so nothing else can have started a state machine on it while
+        // this waits: every one the fresh client has right now is the recovery's own issuance
+        // of what the rescan found.
+        let settled = crate::federation::wait_holding_client(client, stop, |client| async move {
+            client.wait_for_all_active_state_machines().await;
+            Ok(())
+        })
+        .await
+        .is_ok();
+        // Otherwise the client stopped before settling finished: whoever stopped it owns the
+        // attempt's fate now, exactly as a swap refused by a closed federation does.
+        if settled && let Some(sdk) = sdk.upgrade() {
+            conclude_settle(&sdk, &federation, identity, attempt).await;
+        }
+        // Released only after the conclusion, so a `finish` that runs in between still finds
+        // the claim and leaves the client alone, and one that runs after it finds the attempt
+        // done.
+        federation.finish_settle(identity);
+    });
+}
+
+/// Phase 2's conclusion: marks the attempt done once what the rescan found has landed, unless
+/// something else already decided the attempt's fate or moved the federation on to a different
+/// client while this was waiting.
+///
+/// Takes the lifecycle mutex, for the same reason [`complete`] does: nothing may overwrite a
+/// `close_federation` or `forget_federation` interleaved between the wait ending and this.
+async fn conclude_settle(
+    sdk: &Arc<SdkInner>,
+    federation: &Arc<FederationInner>,
+    identity: u64,
+    attempt: UpstreamOperationId,
+) {
+    let _lifecycle = sdk.lifecycle.lock().await;
+    let Some(record) = read_attempt_record(federation, attempt).await else {
+        return;
+    };
+    if record.final_state.is_some() {
+        return;
+    }
+    // Not open, or open on a client this settle was not watching: whatever replaced or closed
+    // it since owns the attempt's fate now.
+    if !federation.is_open() || !federation.is_current_client(identity) {
+        return;
+    }
+    if let Err(err) = write_final_state(federation, attempt, record, RecoveryState::Done).await {
         tracing::warn!(
             target: "fedimint_sdk",
             federation = %federation.id,
@@ -261,15 +410,7 @@ pub(crate) async fn finish(
         );
     }
     federation.bump_recovery();
-    match opened {
-        Ok(()) => federation.set_status(FederationStatus::Running),
-        // The federation was closed, quarantined or erased while the rescan was finishing;
-        // the swap was refused, and whatever closed it owns the status now.
-        Err(err) if err.code == crate::ErrorCode::FederationClosed => return,
-        Err(err) => federation.set_status(FederationStatus::Quarantined {
-            diagnostic: err.into(),
-        }),
-    }
+    federation.set_status(FederationStatus::Running);
     sdk.announce(federation);
 }
 
@@ -342,6 +483,34 @@ async fn write_final_state(
     }
     .record_final_state(encoded)
     .await
+}
+
+/// The rescan's aggregate progress: `complete` and `total` summed, saturating, across every
+/// recovering module, or `None` while any of them has not reported how much work it has.
+///
+/// Every recovering module is listed from the start, those that have not reported yet with an
+/// empty progress, so waiting for all of them is what keeps `total` from growing, and the ratio
+/// from dipping, when a module reports late. Each module counts its own units of work, history
+/// items or sessions depending on what the federation supports, so the sum weighs modules by how
+/// much work each has. It is a measure of how far the rescan has got, not a count of anything.
+fn aggregate_progress(
+    per_module: impl IntoIterator<Item = UpstreamRecoveryProgress>,
+) -> Option<RecoveryProgress> {
+    let mut aggregate: Option<RecoveryProgress> = None;
+    for module in per_module {
+        if module.is_none() {
+            return None;
+        }
+        let so_far = aggregate.unwrap_or(RecoveryProgress {
+            complete: 0,
+            total: 0,
+        });
+        aggregate = Some(RecoveryProgress {
+            complete: so_far.complete.saturating_add(module.complete),
+            total: so_far.total.saturating_add(module.total),
+        });
+    }
+    aggregate
 }
 
 #[cfg(test)]
@@ -534,7 +703,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn completing_a_closed_federation_records_the_ending_but_leaves_its_status_alone() {
+    async fn completing_a_closed_federation_leaves_the_attempt_for_the_next_open_to_settle() {
         let sdk = detached_sdk().await;
         // Closed, with no client: what the watcher finds when a close won the race against
         // the rescan's end.
@@ -548,14 +717,16 @@ mod tests {
 
         complete(sdk.inner(), &federation, attempt).await;
 
+        // No client to swap in means `finish` cannot settle this attempt either: it is left
+        // exactly as it was, without a final state, for the next open's own catch-up branch to
+        // settle once a client exists again.
         assert_eq!(federation.status(), FederationStatus::Closed);
         let record = read_attempt_record(&federation, attempt)
             .await
             .expect("the record survives");
-        assert_eq!(
-            wire::decode_state(&record.final_state.expect("the rescan's end is recorded"))
-                .expect("decode"),
-            RecoveryState::Done
+        assert!(
+            record.final_state.is_none(),
+            "a closed federation's attempt is not concluded here"
         );
     }
 
@@ -641,6 +812,79 @@ mod tests {
             RecoveryState::Failed {
                 reason: "guardian gone".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn aggregate_progress_of_nothing_reporting_is_none() {
+        assert_eq!(aggregate_progress([]), None);
+        assert_eq!(
+            aggregate_progress([UpstreamRecoveryProgress {
+                complete: 0,
+                total: 0,
+            }]),
+            None,
+            "total 0 is upstream's own encoding of a module that has not reported yet"
+        );
+    }
+
+    #[test]
+    fn aggregate_progress_sums_the_modules_that_have_reported() {
+        let sum = aggregate_progress([
+            UpstreamRecoveryProgress {
+                complete: 3,
+                total: 10,
+            },
+            UpstreamRecoveryProgress {
+                complete: 4,
+                total: 5,
+            },
+        ]);
+        assert_eq!(
+            sum,
+            Some(RecoveryProgress {
+                complete: 7,
+                total: 15
+            })
+        );
+    }
+
+    #[test]
+    fn aggregate_progress_waits_for_every_module_to_report() {
+        let sum = aggregate_progress([
+            UpstreamRecoveryProgress {
+                complete: 2,
+                total: 8,
+            },
+            UpstreamRecoveryProgress {
+                complete: 0,
+                total: 0,
+            },
+        ]);
+        assert_eq!(
+            sum, None,
+            "a module that has not reported would make the total grow once it does"
+        );
+    }
+
+    #[test]
+    fn aggregate_progress_saturates_rather_than_overflows() {
+        let sum = aggregate_progress([
+            UpstreamRecoveryProgress {
+                complete: u32::MAX,
+                total: u32::MAX,
+            },
+            UpstreamRecoveryProgress {
+                complete: 1,
+                total: 1,
+            },
+        ]);
+        assert_eq!(
+            sum,
+            Some(RecoveryProgress {
+                complete: u32::MAX,
+                total: u32::MAX
+            })
         );
     }
 }

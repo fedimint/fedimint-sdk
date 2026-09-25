@@ -107,7 +107,7 @@ impl Bucket for OnchainReceiveState {
 impl Bucket for RecoveryState {
     fn bucket(&self) -> ActivityStatus {
         match self {
-            RecoveryState::Running => ActivityStatus::Pending,
+            RecoveryState::Running { .. } => ActivityStatus::Pending,
             RecoveryState::Done => ActivityStatus::Success,
             RecoveryState::Failed { .. } => ActivityStatus::Failed,
         }
@@ -553,11 +553,18 @@ mod tests {
             reason: String::new(),
         };
 
-        assert_eq!(RecoveryState::Running.bucket(), ActivityStatus::Pending);
+        assert_eq!(
+            RecoveryState::Running { progress: None }.bucket(),
+            ActivityStatus::Pending
+        );
         assert_eq!(RecoveryState::Done.bucket(), ActivityStatus::Success);
         assert_eq!(failed.bucket(), ActivityStatus::Failed);
 
-        for state in [RecoveryState::Running, RecoveryState::Done, failed] {
+        for state in [
+            RecoveryState::Running { progress: None },
+            RecoveryState::Done,
+            failed,
+        ] {
             assert_eq!(state.bucket() == ActivityStatus::Pending, !state.is_final());
         }
     }

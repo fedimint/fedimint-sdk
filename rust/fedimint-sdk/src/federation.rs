@@ -16,7 +16,8 @@ use crate::operation::{Driver, Operation, OperationInner, OperationState, kinds}
 use crate::sdk::SdkInner;
 use crate::{
     ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
-    FederationStatus, InviteCode, Lightning, Meta, Network, Onchain, OperationId, Result,
+    FederationStatus, InviteCode, Lightning, Meta, Network, Onchain, OperationId, RecoveryProgress,
+    Result,
 };
 
 /// A handle to one federation this SDK instance has joined.
@@ -149,10 +150,10 @@ impl Federation {
     /// showing as progress, yet none of it is spendable, and every spend
     /// or receive is refused with
     /// [`Recovering`](crate::ErrorCode::Recovering) no matter what this
-    /// method returned. It settles when recovery finishes. On a
-    /// [`Running`](crate::FederationStatus::Running) federation the two
-    /// notions coincide, and this is exactly the amount a spend can draw
-    /// on.
+    /// method returned. Once the recovery reaches
+    /// [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
+    /// restored balance, and the two notions coincide again: this is
+    /// exactly the amount a spend can draw on.
     ///
     /// # Errors
     ///
@@ -508,6 +509,13 @@ pub(crate) struct FederationInner {
     /// Bumped whenever a recovery attempt's recorded state changes, so a subscriber to the
     /// attempt wakes up without polling.
     recovery_changed: tokio::sync::watch::Sender<u64>,
+    /// The current attempt's aggregate recovery progress, alongside the attempt it belongs to,
+    /// so a subscriber to an older attempt never reads another attempt's numbers.
+    recovery_progress:
+        tokio::sync::watch::Sender<Option<(fedimint_core::core::OperationId, RecoveryProgress)>>,
+    /// Which client instance a recovery settle is watching, if one is; see
+    /// [`FederationInner::try_start_settle`].
+    settle: std::sync::Mutex<SettleMarker>,
     /// Serialises the start of a lightning claim retry per federation: the read of the record,
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
@@ -517,6 +525,22 @@ pub(crate) struct FederationInner {
     /// record for it happen under this lock, so two concurrent `Onchain::receive` calls that
     /// are handed the same walletv2 address can never both record it.
     deposit_allocations: tokio::sync::Mutex<()>,
+}
+
+/// Which client instance, of however many a `FederationInner` sees installed over its life, a
+/// recovery settle is currently watching.
+///
+/// `current` is bumped every time a new client replaces whatever was installed before it, so it
+/// names the client presently in place. `running`, when it is set, names the client identity a
+/// settle claimed with [`FederationInner::try_start_settle`]. Comparing the two tells a settle
+/// running for the client in place from one left over from a predecessor. A plain flag could not:
+/// it would either let a client be swapped a second time while its settle is still watching it,
+/// or refuse to settle a fresh client because an old settle, from before a close and reopen, has
+/// not cleared its claim yet.
+#[derive(Debug, Default, Clone, Copy)]
+struct SettleMarker {
+    current: u64,
+    running: Option<u64>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -563,6 +587,8 @@ impl FederationInner {
             status: std::sync::RwLock::new(status),
             closed: tokio::sync::watch::Sender::new(!running),
             recovery_changed: tokio::sync::watch::Sender::new(0),
+            recovery_progress: tokio::sync::watch::Sender::new(None),
+            settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
             deposit_allocations: tokio::sync::Mutex::new(()),
         }
@@ -767,7 +793,9 @@ impl FederationInner {
     /// Puts a freshly opened client in place. Callers set the status separately, after the
     /// durable write that makes the transition observable.
     pub(crate) async fn install(&self, client: ClientHandleArc) {
-        *self.client.write().await = Some(client);
+        let mut guard = self.client.write().await;
+        *guard = Some(client);
+        self.bump_client_identity();
     }
 
     /// Retires the federation and hands back its client, if it had one.
@@ -841,6 +869,7 @@ impl FederationInner {
         }
         let fresh = open().await?;
         *guard = Some(fresh);
+        self.bump_client_identity();
         Ok(())
     }
 
@@ -866,6 +895,93 @@ impl FederationInner {
     /// Wakes every subscriber to [`FederationInner::recovery_changed`].
     pub(crate) fn bump_recovery(&self) {
         self.recovery_changed.send_modify(|n| *n += 1);
+    }
+
+    /// A receiver that fires whenever the current attempt's published aggregate recovery
+    /// progress changes.
+    pub(crate) fn recovery_progress_changed(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<(fedimint_core::core::OperationId, RecoveryProgress)>>
+    {
+        self.recovery_progress.subscribe()
+    }
+
+    /// The aggregate recovery progress published for `attempt`, or `None` if this federation's
+    /// currently published progress belongs to a different attempt, or nothing has been
+    /// published yet.
+    pub(crate) fn recovery_progress_of(
+        &self,
+        attempt: fedimint_core::core::OperationId,
+    ) -> Option<RecoveryProgress> {
+        (*self.recovery_progress.borrow())
+            .and_then(|(published, progress)| (published == attempt).then_some(progress))
+    }
+
+    /// Clears whatever progress was last published. A watcher calls it when it starts, so a new
+    /// attempt never shows a predecessor's numbers, and whenever not every module has reported
+    /// yet.
+    pub(crate) fn reset_recovery_progress(&self) {
+        self.recovery_progress
+            .send_if_modified(|current| current.take().is_some());
+    }
+
+    /// Publishes `attempt`'s fresh aggregate progress, if it differs from what is already
+    /// published.
+    pub(crate) fn publish_recovery_progress(
+        &self,
+        attempt: fedimint_core::core::OperationId,
+        progress: RecoveryProgress,
+    ) {
+        self.recovery_progress.send_if_modified(|current| {
+            let next = Some((attempt, progress));
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        });
+    }
+
+    /// Claims the client installed right now for a recovery settle, unless one is already
+    /// claimed for it. Returns the identity to settle for, so its conclusion can tell whether
+    /// that is still the client installed by then with
+    /// [`FederationInner::is_current_client`].
+    pub(crate) fn try_start_settle(&self) -> Option<u64> {
+        let mut settle = self.lock_settle();
+        if settle.running == Some(settle.current) {
+            None
+        } else {
+            settle.running = Some(settle.current);
+            Some(settle.current)
+        }
+    }
+
+    /// Whether a settle is already claimed for the client installed right now.
+    ///
+    /// The guard against swapping a client a second time while the first swap's own settle is
+    /// still watching it: whoever is running one owns concluding this rescan's attempt, and a
+    /// second swap would retire a client that never needed replacing again. It is false both
+    /// before a settle starts and after one has concluded; the attempt's own record tells those
+    /// two apart.
+    pub(crate) fn is_settling(&self) -> bool {
+        let settle = self.lock_settle();
+        settle.running == Some(settle.current)
+    }
+
+    /// Whether `identity` still names the client installed right now.
+    pub(crate) fn is_current_client(&self, identity: u64) -> bool {
+        self.lock_settle().current == identity
+    }
+
+    /// Releases a settle's claim on `identity`, if it is still the one claimed. Called once a
+    /// settle concludes, however it ends, so a later client on this federation can be settled
+    /// too.
+    pub(crate) fn finish_settle(&self, identity: u64) {
+        let mut settle = self.lock_settle();
+        if settle.running == Some(identity) {
+            settle.running = None;
+        }
     }
 
     /// The lock that serialises starting a lightning claim retry for this federation.
@@ -1230,6 +1346,24 @@ impl FederationInner {
         overwrite_placeholder: bool,
     ) -> crate::Result<crate::db::OperationRecord> {
         write_record_in(&self.db(), id, record, overwrite_placeholder).await
+    }
+
+    /// Bumps the client-instance identity that [`FederationInner::try_start_settle`] and friends
+    /// key on. Called by `install` and `replace_client` whenever a new client takes the place of
+    /// whatever was there, so a settle claimed for the old one is recognisable as stale.
+    fn bump_client_identity(&self) {
+        let mut settle = self.lock_settle();
+        settle.current += 1;
+    }
+
+    /// Locks the settle marker, recovering from a poisoned lock the way the plain `RwLock`s on
+    /// this type already do: a panic while it was held must not turn every later settle decision
+    /// into a panic of its own, and the marker guards no invariant a half-written value could
+    /// violate.
+    fn lock_settle(&self) -> std::sync::MutexGuard<'_, SettleMarker> {
+        self.settle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// A federation handle with no client behind it, for the operation engine's own tests.
@@ -2693,5 +2827,70 @@ mod tests {
             !opened.load(std::sync::atomic::Ordering::SeqCst),
             "the swap must not open a client on a federation that has none"
         );
+    }
+
+    #[test]
+    fn a_settle_claim_can_be_taken_only_once_per_client() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+
+        let claimed = federation
+            .try_start_settle()
+            .expect("nothing is claimed yet");
+        assert!(federation.is_settling());
+        assert_eq!(
+            federation.try_start_settle(),
+            None,
+            "a second settle for the same client must not start"
+        );
+
+        federation.finish_settle(claimed);
+        assert!(!federation.is_settling());
+        assert_eq!(
+            federation.try_start_settle(),
+            Some(claimed),
+            "the claim is free again once the running settle concluded"
+        );
+    }
+
+    #[test]
+    fn finish_settle_ignores_an_identity_it_did_not_claim() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let claimed = federation.try_start_settle().expect("first claim");
+
+        // A stale conclusion, from a settle that has already been superseded, must not clear a
+        // later claim it was never watching.
+        federation.finish_settle(claimed + 1);
+
+        assert!(
+            federation.is_settling(),
+            "a claim for a different identity must survive"
+        );
+    }
+
+    #[test]
+    fn recovery_progress_is_read_back_only_for_the_attempt_it_was_published_for() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+        let attempt = UpstreamOperationId([1u8; 32]);
+        let other_attempt = UpstreamOperationId([2u8; 32]);
+
+        assert_eq!(federation.recovery_progress_of(attempt), None);
+
+        let progress = RecoveryProgress {
+            complete: 3,
+            total: 10,
+        };
+        federation.publish_recovery_progress(attempt, progress);
+        assert_eq!(federation.recovery_progress_of(attempt), Some(progress));
+        assert_eq!(
+            federation.recovery_progress_of(other_attempt),
+            None,
+            "a different attempt never reads another attempt's published progress"
+        );
+
+        federation.reset_recovery_progress();
+        assert_eq!(federation.recovery_progress_of(attempt), None);
     }
 }

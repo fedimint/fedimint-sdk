@@ -362,7 +362,7 @@ pub use operation::{
     AnyOperation, DetailedOperationState, Operation, OperationDetails, OperationKind,
     OperationState, OperationSupport, OperationUpdates, RawOperationKind,
 };
-pub use recovery::{Recovery, RecoveryState};
+pub use recovery::{Recovery, RecoveryProgress, RecoveryState};
 pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, SdkBuilder};
 // The UniFFI entry point a mobile host calls to open an instance. Native, behind
 // the `uniffi` feature; the rest of the surface is `#[uniffi::export]` methods on
