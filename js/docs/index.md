@@ -2,14 +2,14 @@
 # https://vitepress.dev/reference/default-theme-home-page
 layout: home
 
-description: Robust, privacy-focused, powered by Rust
+description: Multi-platform Fedimint SDK powered by Rust, WebAssembly, and UniFFI
 title: Fedimint Sdk
 titleTemplate: false
 
 hero:
   name: Fedimint Sdk
   text: Building Ecash into Apps
-  tagline: Robust, privacy-focused, and WebAssembly-powered
+  tagline: Robust, privacy-focused, WebAssembly and Native Mobile FFI powered
   actions:
     - theme: brand
       text: Get Started
@@ -27,21 +27,21 @@ hero:
 
 features:
   - icon: 🚀
-    title: Rust-powered Client
-    details: Exposes the robust, fault-tolerant fedimint-client (built in Rust) via WebAssembly/native modules. Lazy loading included for performance.
+    title: Multi-Platform Rust Client
+    details: Exposes the robust fedimint-client via WebAssembly for web browsers and native UniFFI FFI bindings for iOS and Android.
   - icon: 💰
     title: Ecash Payments
-    details: Includes support for joining federations, sending/receiving ecash, and managing balances.
+    details: First-class support for joining federations, sending/receiving ecash, and managing token balances.
   - icon: ⚡
     title: Lightning Payments
-    details: Ships with zero-setup Lightning Network payments.
+    details: Ships with zero-setup Lightning Network payments via federation Lightning gateways.
   - icon: 🛠️
-    title: State Management
-    details: Handles the complex state management and storage challenges for browser & mobile wallets.
+    title: State Management & Persistence
+    details: Handles asynchronous state management, OPFS database persistence in browsers, and mobile filesystem storage.
   - icon: 🤫
-    title: Privacy Included
-    details: Offers a privacy-centric wallet by default.
+    title: Privacy by Default
+    details: Chaumian blinded tokens guarantee sender and receiver financial privacy.
   - icon: ⚙️
     title: Framework Agnostic
-    details: Designed as a "core" library compatible with vanilla JavaScript, laying the groundwork for future framework-specific packages.
+    details: Designed for vanilla JS, React, Next.js, Vite, React Native, and Expo applications.
 ---
