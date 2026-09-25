@@ -166,6 +166,53 @@ back, so reopening that directory also means letting go of every other object st
 session, a federation, an operation, a subscription. Opening a directory something still holds
 fails with `StorageInUse`.
 
+## Recovering a wallet
+
+`sdk.recover(invite)` joins a federation and rescans its history for what the seed owns. It
+returns `{ federation, progress }` as soon as the rescan starts, and `progress` is the operation to
+watch. Until it reads `Done`, sends and receives on that federation fail with `Recovering`. While
+it reads `Running`, `inner.progress` counts the rescan's work, `complete` out of `total`, once the
+rescan has reported any. At `Done` the balance is the restored one.
+
+```ts
+import {
+  FederationStatus_Tags,
+  RecoveryState_Tags,
+  type RecoveryOperationLike,
+} from '@fedimint/react-native'
+
+async function follow(progress: RecoveryOperationLike) {
+  const updates = progress.updates()
+  for (let state = await updates.next(); state; state = await updates.next()) {
+    if (state.tag === RecoveryState_Tags.Running && state.inner.progress) {
+      const { complete, total } = state.inner.progress
+      console.log(`recovering: ${complete} of ${total}`)
+    }
+  }
+}
+
+const { progress } = await sdk.recover(invite)
+void follow(progress)
+```
+
+A recovery carries on across restarts, and one that stopped is retried when the SDK opens again.
+To watch it again after a restart, look for the federations that are still `Recovering` and ask
+for their recovery by id. `resumeRecovery` hands back the attempt that is running, and starts a new
+one if the last attempt stopped:
+
+```ts
+for (const federation of sdk.federations()) {
+  const id = federation.id()
+  const status = sdk.federationStatus(id)
+  if (status?.tag !== FederationStatus_Tags.Recovering) continue
+  const { progress } = await sdk.resumeRecovery(id)
+  void follow(progress)
+}
+```
+
+`sdk.recoveryStatus(id)` reads where a federation's recovery stands without starting anything, and
+is `undefined` for a federation that was joined rather than recovered.
+
 ## License
 
 MIT

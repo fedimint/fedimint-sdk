@@ -554,11 +554,16 @@ impl Sdk {
                 )
             })?;
 
-        let Some((_, on_file)) = engine::attempt_on_file(self.inner(), &federation).await? else {
+        let Some((record, on_file)) = engine::attempt_on_file(self.inner(), &federation).await?
+        else {
             return Ok(None);
         };
         Ok(Some(match on_file {
-            engine::AttemptOnFile::None | engine::AttemptOnFile::Running => RecoveryState::Running,
+            engine::AttemptOnFile::None | engine::AttemptOnFile::Running => {
+                RecoveryState::Running {
+                    progress: federation.recovery_progress_of(record.attempt),
+                }
+            }
             engine::AttemptOnFile::Done => RecoveryState::Done,
             engine::AttemptOnFile::Failed { reason } => RecoveryState::Failed { reason },
         }))
@@ -625,7 +630,8 @@ async fn progress_handle(
 ///   and worth displaying so the user sees progress, but an application
 ///   should label them as provisional rather than presenting a partial
 ///   balance as the final one. A provisional balance on a locked federation
-///   is not spendable no matter what it says.
+///   is not spendable no matter what it says. Once the recovery reports
+///   [`RecoveryState::Done`], both are the restored ones.
 ///
 /// Observe [`Recovery::progress`] to know when that changes, and gate
 /// anything fund-touching on [`RecoveryState::is_complete`] rather than on
@@ -650,8 +656,7 @@ pub struct Recovery {
 
 /// How a recovery is going.
 ///
-/// Deliberately coarse: this reports only what can be said truthfully, without a made-up
-/// completion percentage.
+/// While the rescan runs, [`Running`](Self::Running) carries how far it has got.
 ///
 /// # Two different questions
 ///
@@ -676,14 +681,24 @@ pub enum RecoveryState {
     /// The rescan is running. Spends and receives are refused with
     /// [`Recovering`](crate::ErrorCode::Recovering); balance and activity
     /// are incomplete.
-    Running,
+    Running {
+        /// How far the rescan has got, or `None` until it has reported
+        /// how much work it has, such as right after it starts or restarts.
+        ///
+        /// Only the ratio of `complete` to `total` means anything, and
+        /// `total` stays the same while the rescan runs. `complete`
+        /// reaching `total` means the rescan is done, not the recovery: the
+        /// state stays `Running` while the wallet takes in what the rescan
+        /// found, and becomes [`Done`](Self::Done) once it has.
+        progress: Option<RecoveryProgress>,
+    },
     /// Final, and the wallet is recovered: the federation behaves like any
     /// other joined federation and the recovery lock is released.
     ///
     /// This is the only state that releases the lock, and the only one for
-    /// which [`is_complete`](Self::is_complete) is true. It says the wallet
-    /// is restored: everything the seed owned in this federation that a
-    /// rescan can find has been found.
+    /// which [`is_complete`](Self::is_complete) is true. It is reached once
+    /// the wallet holds everything the rescan found, so the balance and
+    /// activity read from then on are the restored ones.
     Done,
     /// Final for this attempt, and the wallet is **not** recovered.
     ///
@@ -717,6 +732,19 @@ pub enum RecoveryState {
     },
 }
 
+/// How far a running rescan has got.
+///
+/// Read [`RecoveryState::Running`] for what `complete` reaching `total` does and does not mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[non_exhaustive]
+pub struct RecoveryProgress {
+    /// How much of the rescan's work is done so far.
+    pub complete: u32,
+    /// The rescan's total amount of work, the same for as long as the rescan runs.
+    pub total: u32,
+}
+
 impl RecoveryState {
     /// Whether the wallet is fully restored, and therefore whether the
     /// federation's recovery lock has been released.
@@ -742,7 +770,7 @@ impl crate::operation::sealed::Sealed for RecoveryState {}
 impl OperationState for RecoveryState {
     fn is_final(&self) -> bool {
         match self {
-            RecoveryState::Running => false,
+            RecoveryState::Running { .. } => false,
             RecoveryState::Done | RecoveryState::Failed { .. } => true,
         }
     }
@@ -757,7 +785,7 @@ mod tests {
 
     #[test]
     fn recovery_state_running_is_not_final() {
-        assert!(!RecoveryState::Running.is_final());
+        assert!(!RecoveryState::Running { progress: None }.is_final());
     }
 
     #[test]
@@ -777,7 +805,7 @@ mod tests {
 
     #[test]
     fn recovery_state_running_is_not_complete() {
-        assert!(!RecoveryState::Running.is_complete());
+        assert!(!RecoveryState::Running { progress: None }.is_complete());
     }
 
     #[test]
