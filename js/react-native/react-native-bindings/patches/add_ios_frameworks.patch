@@ -1,4 +1,4 @@
-# Both system frameworks must be declared explicitly because the Rust-compiled
+# These system frameworks must be declared explicitly because the Rust-compiled
 # FedimintReactNativeBindingsFramework.xcframework links against them at compile time
 # but CocoaPods does not auto-discover transitive system framework dependencies from
 # vendored xcframeworks. Without this declaration the Xcode linker fails with
@@ -7,6 +7,8 @@
 #   SystemConfiguration - network interface enumeration on Apple platforms (iroh's netwatch,
 #                         through the system-configuration crate).
 #   Security            - BSD socket and TLS support on Apple platforms (tokio, socket2).
+#   Network             - the current network path on iOS (iroh's netwatch, through the netdev
+#                         crate, which watches it with nw_path_monitor).
 #
 # Applied by scripts/generate-sdk-rn-bindings.sh and scripts/build-sdk-rn-ios.sh after ubrn writes
 # the podspec; ubrn's podspec template has no `frameworks` setting.
@@ -15,7 +17,7 @@
 @@ -18,6 +18,7 @@
    s.source_files = "ios/**/*.{h,m,mm,swift}", "ios/generated/**/*.{h,m,mm}", "cpp/**/*.{hpp,cpp,c,h}", "cpp/generated/**/*.{hpp,cpp,c,h}"
    s.vendored_frameworks = "FedimintReactNativeBindingsFramework.xcframework"
-+  s.frameworks = "SystemConfiguration", "Security"
++  s.frameworks = "SystemConfiguration", "Security", "Network"
    s.dependency    "uniffi-bindgen-react-native", "0.31.0-5"
 
    # Use install_modules_dependencies helper to install the dependencies if React Native version >=0.71.0.

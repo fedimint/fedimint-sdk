@@ -73,8 +73,8 @@ CARGO_TARGET_DIR="$TARGET" \
 # run here. The namespace is the crate name UniFFI derives its default namespace from.
 ubrn generate turbo-module --config ubrn.config.yaml fedimint_sdk
 
-# ubrn's podspec template declares no system frameworks; the Rust library needs two. Skip the
-# patch when a kept podspec already carries them: `patch --forward` on an applied hunk exits 1.
+# ubrn's podspec template declares no system frameworks; the Rust library needs three. Skip
+# the patch when a kept podspec already carries them: `patch --forward` on an applied hunk exits 1.
 if ! grep -q '^  s.frameworks = ' ReactNativeBindings.podspec; then
   patch -p0 --forward < patches/add_ios_frameworks.patch
 fi

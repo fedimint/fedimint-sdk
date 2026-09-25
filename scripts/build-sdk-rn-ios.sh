@@ -38,8 +38,8 @@ cd "$PKG"
 echo "==> Building rust/fedimint-sdk for iOS and generating $PKG"
 ubrn build ios --config ubrn.config.yaml --release --and-generate "${targets[@]}"
 
-# ubrn's podspec template declares no system frameworks; the Rust library needs two. Skip the
-# patch when a kept podspec already carries them: `patch --forward` on an applied hunk exits 1.
+# ubrn's podspec template declares no system frameworks; the Rust library needs three. Skip
+# the patch when a kept podspec already carries them: `patch --forward` on an applied hunk exits 1.
 if ! grep -q '^  s.frameworks = ' ReactNativeBindings.podspec; then
   patch -p0 --forward < patches/add_ios_frameworks.patch
 fi
