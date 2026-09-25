@@ -2527,6 +2527,50 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread")]
+        async fn a_federation_handle_holds_the_location_on_its_own() {
+            // What made the hang survive letting go of the instance once a federation had been
+            // joined: a federation gets its own slice of the store, so a handle on one holds the
+            // whole store open after the `Sdk` it came from is gone.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            let planted = fedimint_core::config::FederationId::dummy();
+            plant_closed_federation(&sdk, planted).await;
+            let federation = crate::Federation::new(
+                sdk.inner()
+                    .federation_inner(&planted)
+                    .expect("the planted federation is there"),
+            );
+
+            sdk.shutdown().await.expect("shutdown succeeds");
+            drop(sdk);
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .build(),
+            )
+            .await
+            .expect("the second build answers rather than waiting on the handle")
+            .expect_err("a federation handle is enough to hold the location");
+            assert_eq!(err.code, crate::ErrorCode::StorageInUse);
+
+            drop(federation);
+
+            Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("the location comes free once the last handle goes");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         async fn a_fresh_store_generates_a_seed_when_none_is_supplied() {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
