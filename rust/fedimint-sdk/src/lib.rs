@@ -296,9 +296,12 @@
 // No unsafe code, and on every target but one that is absolute.
 //
 // Android is the exception, and only because it has to be: `src/android.rs`
-// writes to logcat through liblog's C API, which has no safe formulation, and
-// `forbid` cannot be opted out of even locally — that is exactly what
-// distinguishes it from `deny`.
+// hands the platform's `JavaVM` and `Context` to `ndk_context` over JNI, so
+// that anything reading Android's DNS configuration finds them rather than
+// aborting the host app (see that module for the failure it prevents).
+// Publishing raw pointers into a global slot and exporting `JNI_OnLoad` have
+// no safe formulation, and `forbid` cannot be opted out of even locally —
+// that is exactly what distinguishes it from `deny`.
 //
 // So the exception is scoped to the target that needs it instead of being
 // spent crate-wide: every other target keeps the guarantee that no module
@@ -326,7 +329,10 @@
 #![allow(dead_code)]
 
 mod activity;
-// Android-only, and not part of the SDK surface: logcat logging.
+// Android-only, and not part of the SDK surface: logcat logging, and `JNI_OnLoad` plus
+// the publish `create_fedimint_sdk` runs, so the platform handles this crate's
+// dependencies expect (`ndk_context`'s `JavaVM` and `Context`) are in place before
+// anything reads them.
 #[cfg(target_os = "android")]
 mod android;
 mod db;

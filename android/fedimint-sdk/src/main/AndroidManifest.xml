@@ -4,4 +4,11 @@
     <!-- Previewing and joining a federation both talk to guardians. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Android has no readable resolv.conf, so the DNS resolver under iroh asks
+         ConnectivityManager for the active network's DNS servers, and
+         getActiveNetwork/getLinkProperties require this. Without it the call throws
+         a SecurityException and the resolver falls back to public DNS servers,
+         which fails on networks that block them. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
 </manifest>
