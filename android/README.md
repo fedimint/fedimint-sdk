@@ -37,7 +37,7 @@ The `Federation` that `join` returns carries the rest of the surface: `balance()
 `capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
 `lightning()` and `onchain()` facades (each `null` when the federation lacks that
 module), whose `quote` → `send` and `receive` calls return operation handles to
-observe with `state()`, `updates()` and `awaitFinal()`. The demo app
+observe with `state()`, `updates()` and `awaitFinal()`. The example app
 (`android/app`) drives each of them once.
 
 ## Using it
@@ -72,7 +72,7 @@ sdk.close()
 ```
 
 `createFedimintSdk`, `preview` and `join` are `suspend` functions doing real disk
-and network work — call them from a coroutine, as the demo does. `exportMnemonic()`
+and network work — call them from a coroutine, as the example app does. `exportMnemonic()`
 and the `Mnemonic` / `InviteCode` methods are plain accessors.
 
 ### Error handling
@@ -110,6 +110,26 @@ record's `toString()`; `FederationPreview` is a data class and
 `ErrorCode` is `#[non_exhaustive]` in Rust, so a binding pinned to an older SDK
 cannot decode a code added since. Regenerate the bindings alongside the crate.
 
+### Permissions and setup
+
+The library's manifest declares two permissions, and Gradle merges them into
+your app's manifest; both are normal permissions, so there is no runtime prompt:
+
+| Permission             | Why                                                           |
+| ---------------------- | ------------------------------------------------------------- |
+| `INTERNET`             | Talking to guardians and gateways                             |
+| `ACCESS_NETWORK_STATE` | Reading the active network's DNS servers for iroh connections |
+
+Don't strip `ACCESS_NETWORK_STATE` (for example with `tools:node="remove"`).
+Android has no readable `resolv.conf`, so the SDK asks `ConnectivityManager` for
+the DNS servers. Without the permission that call fails, and iroh falls back to
+Google's public DNS servers with only a logcat warning, which breaks on networks
+that block outside DNS.
+
+There is no initialization call. The SDK finds your `Application` itself when
+`createFedimintSdk` runs, so it is fine to touch other bindings, such as
+`InviteCode.parse`, earlier in startup.
+
 ## Building
 
 The native libraries and the Kotlin are **generated**, not committed. Building
@@ -130,20 +150,41 @@ just build-android-so        # .#fedimint-sdk-android-jni     ->  jniLibs/ only
 just build-kotlin-bindings   # uniffi-bindgen over that .so   ->  java/ only
 just build-kotlin            # both, in that order
 just build-android-aar       # build-kotlin, then ./gradlew :fedimint-sdk:assembleRelease
-just test-kotlin             # build-kotlin, then compile the library + demo
+just test-kotlin             # build-kotlin, then compile the library + example app
+just build-android-apk       # the example APK, in the lean `.#android` shell
+just test-android-e2e        # build-android-apk, then drive the example app on an emulator
 ```
 
-CI runs those same two scripts as two workflows —
+`test-android-e2e` is the only one of these that needs a device: it installs the
+example app on an emulator and drives it with the Appium suite in
+[`js/android/integration-tests`](../js/android/integration-tests), so the
+bindings are loaded and the calls execute rather than merely compiling. It runs
+in the `.#android-tests` shell, which adds the emulator, a system image and
+devimint to what `.#android` provides.
+
+The APK is built by `build-android-apk` in the lean shell and only _installed_ by
+the device run, never built there: a Gradle build alongside an emulator and a
+devimint federation starved the emulator until Android's System UI stopped
+responding. Both shells carry a JDK for Gradle, so `.#android` is enough to
+assemble the app without a host one.
+
+CI runs those same two scripts as separate jobs —
 [`android-native.yaml`](../.github/workflows/android-native.yaml) builds the
 `.so` and uploads it,
 [`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) calls that workflow
 and generates the Kotlin from the artifact — so the shared, costly half is
 built once and any binding generator added later starts from the same binary.
+The Kotlin is generated once too: the AAR job and
+[`android-apk.yaml`](../.github/workflows/android-apk.yaml) both download it
+rather than regenerate it, and `android-apk.yaml` is the one place the example
+app is compiled. [`android-e2e.yml`](../.github/workflows/android-e2e.yml) then
+installs that APK on an emulator.
 
 Non-Nix escape hatch: `just build-android-local` (`scripts/build-android-sdk.sh
 --local`, via `cargo-ndk` in the `.#android` shell).
 
-Gradle needs a host JDK 17.
+Gradle needs a JDK 17. `just build-android-apk` gets one from the `.#android` shell; the recipes that run
+Gradle directly (`test-kotlin`, `build-android-aar`) use the host's, so those still need one installed.
 
 ## Layout
 
@@ -167,6 +208,6 @@ iOS bindings are a separate follow-up off the same `uniffi` feature.
 ## Publishing
 
 Not wired up yet. [`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml)
-builds the AAR and compiles the demo against the generated bindings — it does
+builds the AAR and compiles the example app against the generated bindings — it does
 not publish. `libs.versions.toml`'s `fedimintSdk` names the version for
 whenever it is.
