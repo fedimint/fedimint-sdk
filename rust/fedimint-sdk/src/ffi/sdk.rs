@@ -23,10 +23,15 @@ pub async fn create_fedimint_sdk(
     data_dir: String,
     mnemonic: Option<Arc<Mnemonic>>,
 ) -> Result<Arc<Sdk>> {
-    // A Kotlin host has no way to install a Rust log subscriber, so on Android the SDK does it
-    // itself, here: the first call a host is certain to make. Idempotent. See `crate::android`.
+    // A Kotlin host has no way to install a Rust log subscriber, or to hand the SDK the `Context`
+    // its DNS resolver needs, so on Android the SDK does both itself, here: the first call a host
+    // is certain to make, and one made once its `Application` exists. Idempotent. See
+    // `crate::android`.
     #[cfg(target_os = "android")]
-    crate::android::init_logging();
+    {
+        crate::android::init_logging();
+        crate::android::publish_context();
+    }
 
     #[cfg(not(target_family = "wasm"))]
     let storage = Storage::at(&data_dir)?;
