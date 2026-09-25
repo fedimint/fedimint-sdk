@@ -325,6 +325,34 @@ export class AppiumTestBase {
     }
   }
 
+  /**
+   * Waits for `key` to be displayed, scrolling to it first when it is not on
+   * screen at all.
+   *
+   * UiAutomator2 reports only what is on screen, so a view below the fold is
+   * absent from the tree rather than present and hidden, and waiting on it
+   * can only ever time out. Scrolling to it is how the rest of this harness
+   * resolves that — see `waitForTextInElement` — and interacting with a
+   * section is exactly where it bites: `scrollToElement` stops as soon as the
+   * view it was asked for is visible, which routinely leaves the button
+   * beneath it just off the bottom edge. The ecash notes field landing at
+   * y=2221 of a 2400px screen, with its Redeem button below the fold, is what
+   * prompted this.
+   *
+   * Only scrolls when the element is missing entirely. One that is present
+   * but not yet rendered, or not yet clickable, is the wait's business, and
+   * scrolling the screen out from under it would not help.
+   */
+  private async bringIntoView(
+    key: string,
+    timeout: number,
+  ): Promise<ChainablePromiseElement> {
+    if (!(await this.findElementByKey(key))) {
+      await this.scrollToElement(key)
+    }
+    return this.waitForElementDisplayed(key, timeout)
+  }
+
   private async isElementClickable(
     element: ChainablePromiseElement,
   ): Promise<boolean> {
@@ -337,7 +365,7 @@ export class AppiumTestBase {
     timeout = DEFAULT_TIMEOUT,
   ): Promise<void> {
     console.log(`Attempting to click element: ${key}`)
-    const element = await this.waitForElementDisplayed(key, timeout)
+    const element = await this.bringIntoView(key, timeout)
 
     const startTime = Date.now()
     while (Date.now() - startTime < timeout) {
@@ -359,7 +387,7 @@ export class AppiumTestBase {
     timeout = DEFAULT_TIMEOUT,
   ): Promise<void> {
     console.log(`Attempting to type into element: ${key}`)
-    const element = await this.waitForElementDisplayed(key, timeout)
+    const element = await this.bringIntoView(key, timeout)
     await element.setValue(text)
     console.log(`Successfully typed into element: ${key}`)
   }
