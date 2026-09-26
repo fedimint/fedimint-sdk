@@ -20,11 +20,23 @@ name: Kotlin SDK
 # step — and it leaves the expensive cross-compile as one job that any other
 # binding generator can call the same way.
 #
-# No publishing yet. This only proves the chain builds; libs.versions.toml's
-# `fedimintSdk` names the version for whenever it is.
+# Nothing is published here. kotlin-sdk-release.yaml and
+# kotlin-sdk-snapshot.yaml call this whole chain and publish the AAR only after
+# every job in it has passed.
 
 on:
   workflow_dispatch:
+  # For kotlin-sdk-release.yaml and kotlin-sdk-snapshot.yaml, which publish
+  # from these same artifacts after this chain has passed, rather than
+  # building their own.
+  workflow_call:
+    outputs:
+      jni-artifact:
+        description: 'Name of the uploaded jniLibs artifact'
+        value: ${{ jobs.native.outputs.jni-artifact }}
+      bindings-artifact:
+        description: 'Name of the uploaded Kotlin bindings artifact'
+        value: ${{ jobs.bindings.outputs.bindings-artifact }}
   # The single PR entry point for the Android chain. android-native.yaml has no
   # PR trigger of its own precisely so that this list is the whole story: one
   # run, one cross-compile, whatever the PR touched. That is why the Nix and

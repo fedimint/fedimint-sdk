@@ -1,0 +1,195 @@
+name: Kotlin SDK Release
+
+# Publishes the Android SDK, org.fedimint:fedimint-sdk, to Maven Central
+# through the Sonatype Central Portal.
+#
+# `version` checks the version first, so a bad tag fails in seconds rather
+# than after the whole chain. `chain` then runs the whole of kotlin-sdk.yaml on
+# the release commit: the native library, the bindings read out of it, the
+# AAR, and the example app driven on an emulator. `publish` runs only if all of
+# that passed. It packages the same jniLibs and bindings artifacts that chain
+# tested, rather than building them again.
+#
+# The upload is not a release. The Gradle build uses
+# `publishToMavenCentral(automaticRelease = false)`, so the job ends once the
+# upload is done. Central then validates the deployment (signatures, POM,
+# sources and javadoc jars) on its own, and this workflow does not wait for
+# that. A green run means uploaded, not validated. The deployment then waits
+# on central.sonatype.com (Publishing → Deployments) until someone presses
+# Publish. That is the last chance to drop a bad upload, because a version
+# released to Central can never be changed or deleted.
+#
+# To release:
+#
+#   1. Set `fedimintSdk` in android/gradle/libs.versions.toml to the version
+#      being released, and merge that. It is the Android SDK's own version,
+#      independent of rust/fedimint-sdk/Cargo.toml's. There are only two
+#      kinds: `X.Y.Z-beta.N` for betas, then `X.Y.Z` for the release. This
+#      workflow refuses anything else.
+#   2. Tag the merge commit `kotlin-sdk-v<that version>` and push the tag.
+#   3. On central.sonatype.com, wait for the deployment to show VALIDATED
+#      (FAILED comes with the reason), then press Publish.
+#
+# A manual run (workflow_dispatch) is a dry run by default. It runs the same
+# chain, signs the artifacts and publishes them to a local Maven repository,
+# which is uploaded as the `maven-central-dry-run` artifact for inspection.
+# With `publish` ticked it uploads to Central like a tag push. That is meant
+# for re-running a release whose tag already exists.
+#
+# Secrets. The two MAVEN_CENTRAL_* ones must be repository secrets, because
+# kotlin-sdk-snapshot.yaml uses them too without the environment. The signing
+# key can be on the `maven-central` environment or the repository:
+#
+#   MAVEN_CENTRAL_USERNAME       Central Portal user token, name part
+#   MAVEN_CENTRAL_PASSWORD       Central Portal user token, secret part
+#   MAVEN_SIGNING_KEY            ASCII-armored GPG private key
+#                                (gpg --export-secret-keys --armor <key id>)
+#   MAVEN_SIGNING_KEY_PASSWORD   its passphrase
+#
+# The key's public half must be on a keyserver Central checks, such as
+# keys.openpgp.org, or validation fails.
+#
+# Snapshots are not part of this. kotlin-sdk-snapshot.yaml publishes
+# `<branch>-SNAPSHOT`: automatically from main, and from any other branch on
+# a manual run.
+
+on:
+  push:
+    tags:
+      - 'kotlin-sdk-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to Maven Central (unticked: dry run into a local Maven repository)'
+        type: boolean
+        default: false
+
+# Two releases in flight would race for the same version. Queue them and
+# never cancel one partway through an upload.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: 'Check the version'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The catalog sets the version the artifacts are built with. It has to
+      # be a beta or a release, since a release to Central is permanent. On a
+      # tag it also has to be the version the tag names, or the upload would
+      # go out under a version nobody tagged. A dry run checks it too, so a
+      # bad version shows up before anything is tagged.
+      - name: 'Check the version'
+        run: |
+          catalog_version="$(sed -n 's/^fedimintSdk = "\(.*\)"$/\1/p' android/gradle/libs.versions.toml)"
+          if [[ -z "$catalog_version" ]]; then
+            echo "::error::no fedimintSdk version in android/gradle/libs.versions.toml"
+            exit 1
+          fi
+          if [[ ! "$catalog_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::fedimintSdk is $catalog_version; a release must be X.Y.Z-beta.N or X.Y.Z"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            echo "Version $catalog_version"
+            exit 0
+          fi
+          tag_version="${GITHUB_REF_NAME#kotlin-sdk-v}"
+          if [[ "$tag_version" != "$catalog_version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is version $tag_version, but libs.versions.toml's fedimintSdk is $catalog_version"
+            exit 1
+          fi
+          echo "Releasing $catalog_version"
+
+      # An upload has to come from a tag, so that the check above has a tag to
+      # hold the version to. A tag push always does. A manual run may not.
+      - name: 'Refuse to upload from a branch'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type != 'tag'
+        run: |
+          echo "::error::uploading to Maven Central needs a kotlin-sdk-v* tag; run this workflow from the tag, not from $GITHUB_REF_NAME"
+          exit 1
+
+  chain:
+    name: 'Build and test'
+    needs: version
+    uses: ./.github/workflows/kotlin-sdk.yaml
+    secrets: inherit
+
+  publish:
+    name: ${{ (github.event_name == 'push' || inputs.publish) && 'Publish to Maven Central' || 'Dry run' }}
+    needs: chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # An environment, so that required reviewers can be put in front of the
+    # upload and the secrets can be scoped to this job.
+    environment: maven-central
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Both are build outputs and gitignored, so both are put back from what
+      # `chain` produced and tested.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
+      - name: 'Set up JDK'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 'Set up Gradle'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # A release build should not write a cache that later PR builds
+          # would pick up.
+          cache-read-only: true
+
+      - name: 'Publish to Maven Central'
+        if: github.event_name == 'push' || inputs.publish
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew :fedimint-sdk:publishToMavenCentral
+
+      - name: 'Dry run: publish to a local Maven repository'
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew :fedimint-sdk:publishToMavenLocal -Dmaven.repo.local="$RUNNER_TEMP/m2"
+
+      - name: 'Upload the dry-run repository'
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-central-dry-run
+          path: ${{ runner.temp }}/m2/org/fedimint/
+          if-no-files-found: error

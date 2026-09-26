@@ -207,7 +207,78 @@ iOS bindings are a separate follow-up off the same `uniffi` feature.
 
 ## Publishing
 
-Not wired up yet. [`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml)
-builds the AAR and compiles the example app against the generated bindings — it does
-not publish. `libs.versions.toml`'s `fedimintSdk` names the version for
-whenever it is.
+The AAR is published to Maven Central as `org.fedimint:fedimint-sdk`, through
+the Sonatype Central Portal:
+
+```kotlin
+dependencies {
+    implementation("org.fedimint:fedimint-sdk:0.1.0-beta.1")
+}
+```
+
+The Android SDK has its own version, independent of
+[`rust/fedimint-sdk/Cargo.toml`](../rust/fedimint-sdk/Cargo.toml)'s. There are
+two kinds of release: betas (`X.Y.Z-beta.N`) for testing, then `X.Y.Z` itself.
+Both are permanent on Central. Snapshots are separate from these; see below.
+
+### Releases
+
+[`kotlin-sdk-release.yaml`](../.github/workflows/kotlin-sdk-release.yaml) does
+the release. It first runs the whole
+[`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) chain on the release
+commit, including the emulator run. Only if that passes does it sign and upload
+the same jniLibs and bindings it tested. The upload is not released
+automatically. It waits on central.sonatype.com until someone publishes it
+there, because a version released to Central can never be changed or deleted.
+The workflow also does not wait for Central to validate it, so a green run
+means uploaded, not validated.
+
+To release:
+
+1. Set `fedimintSdk` in [`gradle/libs.versions.toml`](gradle/libs.versions.toml)
+   to the version being released, `X.Y.Z-beta.N` or `X.Y.Z`, and merge that.
+2. Tag the merge commit `kotlin-sdk-v<version>` and push the tag. The workflow
+   fails if the tag and the catalog disagree, or if the version is anything
+   other than a beta or a release.
+3. On central.sonatype.com → Publishing → Deployments, wait for the
+   deployment to show `VALIDATED` (a `FAILED` one lists the reason), then
+   press Publish.
+
+A manual run of the workflow is a dry run. It signs the artifacts into a local
+Maven repository and uploads that repository as an artifact to inspect. The
+POM, signing and the Central setup live in
+[`fedimint-sdk/build.gradle.kts`](fedimint-sdk/build.gradle.kts), which also
+lists the credentials Gradle expects.
+
+To do the same check locally, publish to a scratch repository. Any throwaway
+signing key will do, because a non-SNAPSHOT version is always signed:
+
+```sh
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(cat throwaway-key.asc)" \
+  ./gradlew :fedimint-sdk:publishToMavenLocal -Dmaven.repo.local="$PWD/build/m2"
+```
+
+### Snapshots
+
+[`kotlin-sdk-snapshot.yaml`](../.github/workflows/kotlin-sdk-snapshot.yaml)
+publishes `<branch>-SNAPSHOT` to Central's snapshots repository. It publishes
+`main-SNAPSHOT` automatically whenever `main` changes what the SDK is built
+from. Any other branch publishes when the workflow is run by hand from it. A
+`/` in the branch name becomes `-`, so `feat/x` publishes `feat-x-SNAPSHOT`.
+Like a release, it publishes only after the whole `kotlin-sdk.yaml` chain has
+passed on that commit.
+
+A snapshot changes with every run and is deleted after about 90 days, so it is
+for trying unreleased work, not for shipping:
+
+```kotlin
+repositories {
+    maven("https://central.sonatype.com/repository/maven-snapshots/")
+}
+dependencies {
+    implementation("org.fedimint:fedimint-sdk:main-SNAPSHOT")
+}
+```
+
+Locally, `-Psnapshot=<name>` builds `<name>-SNAPSHOT`, and it needs no
+signing key.

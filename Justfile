@@ -38,7 +38,7 @@ build-android-apk:
 test-android-e2e: build-android-apk
     nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
-# Assemble the release AAR (publishing is not wired up yet).
+# Assemble the release AAR. Publishing to Maven Central is .github/workflows/kotlin-sdk-release.yaml.
 build-android-aar: build-kotlin
     cd android && ./gradlew :fedimint-sdk:assembleRelease
 
