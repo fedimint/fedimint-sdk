@@ -75,9 +75,6 @@ yarn-error.*
 
 app-example
 
-# generated native folders
-/ios
-
 # OSX
 .DS_Store
 
@@ -188,6 +185,15 @@ android/fedimint-sdk/src/main/java/org/fedimint/sdk
 # js/android/integration-tests
 js/android/integration-tests/.appium/
 js/android/integration-tests/screenshots/
+# ios/: all of these are produced by scripts/build-ios-sdk.sh (run it inside
+# `nix develop .#ios`) and must never be committed, for the same reason as the
+# Android pair above. Sources/FedimintSdk is listed by file rather than by
+# directory because Version.swift beside it *is* committed — see the comment in
+# that file for why one hand-written Swift file has to exist.
+ios/Sources/FedimintSdk/FedimintSdk.swift
+ios/Frameworks/
+ios/Demo/FedimintDemo.xcodeproj/
+ios/.build/
 
 # js/examples/react-native
 js/examples/react-native/vendor
