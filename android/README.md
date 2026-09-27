@@ -146,13 +146,13 @@ them is two steps, and the split is deliberate:
    drift from the binary it will load on the device. This half takes seconds.
 
 ```sh
-just build-android-so        # .#fedimint-sdk-android-jni     ->  jniLibs/ only
-just build-kotlin-bindings   # uniffi-bindgen over that .so   ->  java/ only
-just build-kotlin            # both, in that order
-just build-android-aar       # build-kotlin, then ./gradlew :fedimint-sdk:assembleRelease
-just test-kotlin             # build-kotlin, then compile the library + example app
-just build-android-apk       # the example APK, in the lean `.#android` shell
-just test-android-e2e        # build-android-apk, then drive the example app on an emulator
+just build-android-so         # .#fedimint-sdk-android-jni     ->  jniLibs/ only
+just build-android-bindings   # uniffi-bindgen over that .so   ->  java/ only
+just build-android-sdk        # both, in that order
+just build-android-aar        # build-android-sdk, then ./gradlew :fedimint-sdk:assembleRelease
+just test-android-sdk         # build-android-sdk, then compile the library + example app
+just build-android-apk        # the example APK, in the lean `.#android` shell
+just test-android-e2e         # build-android-apk, then drive the example app on an emulator
 ```
 
 `test-android-e2e` is the only one of these that needs a device: it installs the
@@ -171,7 +171,7 @@ assemble the app without a host one.
 CI runs those same two scripts as separate jobs —
 [`android-native.yaml`](../.github/workflows/android-native.yaml) builds the
 `.so` and uploads it,
-[`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) calls that workflow
+[`android-sdk.yaml`](../.github/workflows/android-sdk.yaml) calls that workflow
 and generates the Kotlin from the artifact — so the shared, costly half is
 built once and any binding generator added later starts from the same binary.
 The Kotlin is generated once too: the AAR job and
@@ -184,7 +184,7 @@ Non-Nix escape hatch: `just build-android-local` (`scripts/build-android-sdk.sh
 --local`, via `cargo-ndk` in the `.#android` shell).
 
 Gradle needs a JDK 17. `just build-android-apk` gets one from the `.#android` shell; the recipes that run
-Gradle directly (`test-kotlin`, `build-android-aar`) use the host's, so those still need one installed.
+Gradle directly (`test-android-sdk`, `build-android-aar`) use the host's, so those still need one installed.
 
 ## Layout
 
@@ -207,76 +207,181 @@ iOS bindings are a separate follow-up off the same `uniffi` feature.
 
 ## Publishing
 
-The AAR is published to Maven Central as `org.fedimint:fedimint-sdk`, through
+The AAR is published to Maven Central as `org.fedimint:sdk`, through
 the Sonatype Central Portal:
 
 ```kotlin
 dependencies {
-    implementation("org.fedimint:fedimint-sdk:0.1.0-beta.1")
+    implementation("org.fedimint:sdk:0.1.0-beta.1")
 }
 ```
 
-The Android SDK has its own version, independent of
-[`rust/fedimint-sdk/Cargo.toml`](../rust/fedimint-sdk/Cargo.toml)'s. There are
-two kinds of release: betas (`X.Y.Z-beta.N`) for testing, then `X.Y.Z` itself.
-Both are permanent on Central. Snapshots are separate from these; see below.
+The version above is the first one this repository will release. It resolves
+only once that release has actually been published on Maven Central; until
+then, and for newer versions, check
+[Maven Central](https://central.sonatype.com/artifact/org.fedimint/sdk) for
+what exists.
+
+### Versioning
+
+The Android SDK has its own version, `fedimintSdk` in
+[`gradle/libs.versions.toml`](gradle/libs.versions.toml), independent of
+[`rust/fedimint-sdk/Cargo.toml`](../rust/fedimint-sdk/Cargo.toml)'s. It follows
+[semantic versioning](https://semver.org), `MAJOR.MINOR.PATCH`, and describes
+the **Kotlin API**. The Kotlin API is generated from the Rust exports, so a
+change on the Rust side counts if it changes what Kotlin callers see.
+
+| Change since the last release                                                                | Before 1.0.0 | From 1.0.0 |
+| -------------------------------------------------------------------------------------------- | ------------ | ---------- |
+| Breaks callers: removes or renames a class, function, parameter or enum case, changes a type | `minor`      | `major`    |
+| Adds to the API without breaking anything                                                    | `minor`      | `minor`    |
+| Fixes behaviour, with no change to the API                                                   | `patch`      | `patch`    |
+
+Going to 1.0.0 is a `major` bump, made on purpose once the API is stable.
+Before that, a `minor` bump is how a breaking change is signalled, as semver
+allows for 0.x.
+
+There are two kinds of release: betas, `X.Y.Z-beta.N`, for testing, then
+`X.Y.Z` itself. Nothing else (no alpha, no rc) is accepted. Both kinds are
+permanent on Central, and every release must be newer than all the ones
+before it. A version moves like this:
+
+```
+0.1.0 --minor, as beta--> 0.2.0-beta.1 --beta--> 0.2.0-beta.2 --release--> 0.2.0
+0.2.0 --patch-------------------------------------------------------------> 0.2.1
+```
+
+A beta is always either continued (`beta`) or released (`release`). There is
+no `patch`, `minor` or `major` in the middle of one.
+
+Don't edit the version by hand. Run
+[`android-sdk-version-bump.yaml`](../.github/workflows/android-sdk-version-bump.yaml)
+(Actions → Android SDK Version Bump), pick the bump and whether a new version
+starts as a beta, and it opens a pull request with the change and drafted
+release notes. It refuses a bump that doesn't fit, and a version that is
+already taken.
+[`scripts/android-sdk-version.sh`](../scripts/android-sdk-version.sh) holds
+these rules for both that workflow and the release, and works locally too:
+
+```sh
+scripts/android-sdk-version.sh current          # 0.1.0-beta.1
+scripts/android-sdk-version.sh next release     # 0.1.0
+scripts/android-sdk-version.sh next minor --beta
+```
+
+Snapshots are separate from all of this; see below.
 
 ### Releases
 
-[`kotlin-sdk-release.yaml`](../.github/workflows/kotlin-sdk-release.yaml) does
+[`android-sdk-release.yaml`](../.github/workflows/android-sdk-release.yaml) does
 the release. It first runs the whole
-[`kotlin-sdk.yaml`](../.github/workflows/kotlin-sdk.yaml) chain on the release
-commit, including the emulator run. Only if that passes does it sign and upload
-the same jniLibs and bindings it tested. The upload is not released
+[`android-sdk.yaml`](../.github/workflows/android-sdk.yaml) chain on the release
+commit, including the emulator run. Only if that passes does it build the AAR
+again from the native libraries and bindings that run tested, then sign and
+upload it. The upload is not released
 automatically. It waits on central.sonatype.com until someone publishes it
 there, because a version released to Central can never be changed or deleted.
 The workflow also does not wait for Central to validate it, so a green run
 means uploaded, not validated.
 
+Every release has notes in [`CHANGELOG.md`](CHANGELOG.md), one `## <version>`
+section each. They also become the version's GitHub Release, and the tag's
+message. A release is refused without them.
+
 To release:
 
-1. Set `fedimintSdk` in [`gradle/libs.versions.toml`](gradle/libs.versions.toml)
-   to the version being released, `X.Y.Z-beta.N` or `X.Y.Z`, and merge that.
-2. Tag the merge commit `kotlin-sdk-v<version>` and push the tag. The workflow
-   fails if the tag and the catalog disagree, or if the version is anything
-   other than a beta or a release.
-3. On central.sonatype.com → Publishing → Deployments, wait for the
+1. Run the Android SDK Version Bump workflow (see Versioning). Its pull request
+   sets the version and drafts the version's section in `CHANGELOG.md` from
+   the commits since the last release that touched the SDK.
+2. In that pull request, rewrite the drafted notes for users and delete the
+   draft comment. Then merge it. Merging is the decision to release:
+   [`android-sdk-tag.yaml`](../.github/workflows/android-sdk-tag.yaml) tags the
+   merge commit `android-sdk-v<version>` and starts the release on it.
+3. Approve the `maven-central` environment when the release run asks.
+4. On central.sonatype.com → Publishing → Deployments, wait for the
    deployment to show `VALIDATED` (a `FAILED` one lists the reason), then
    press Publish.
+5. Publish the version's draft GitHub Release, which the run created.
 
-A manual run of the workflow is a dry run. It signs the artifacts into a local
-Maven repository and uploads that repository as an artifact to inspect. The
-POM, signing and the Central setup live in
+The release is refused if the tag and the catalog disagree, if the version is
+not a beta or a release, if it is not newer than every `android-sdk-v*` tag
+already pushed, or if its notes are missing or still a draft.
+
+The Android SDK Tag workflow tags automatically only right after a version
+bump that follows a release. For anything else, run it by hand on `main`
+(Actions → Android SDK Tag → Run workflow). The same checks apply. That
+covers two cases:
+
+- **The first release.** `0.1.0-beta.1` and its notes are already in place, so
+  there is no bump pull request to merge.
+- **A release whose automatic tagging failed,** for example because its notes
+  were merged as a draft. Fix the notes in a pull request, then run it.
+
+Pushing a `android-sdk-v*` tag by hand also still releases.
+
+The two workflows behave differently when run by hand:
+
+- **Android SDK Tag, run by hand, releases for real.** It pushes the tag and
+  starts Android SDK Release with publishing on.
+- **Android SDK Release, run by hand with "publish" unticked, is a dry run.**
+  It signs the artifacts into a local Maven repository and uploads that
+  repository as a workflow artifact to inspect. Nothing is tagged or
+  uploaded to Central.
+
+The POM, signing and the Central setup live in
 [`fedimint-sdk/build.gradle.kts`](fedimint-sdk/build.gradle.kts), which also
 lists the credentials Gradle expects.
 
-To do the same check locally, publish to a scratch repository. Any throwaway
+To do the same check locally, publish to a scratch repository from the
+`android/` directory, where the Gradle wrapper is. The native libraries and
+bindings must be built first (`just build-android-sdk`). Any throwaway
 signing key will do, because a non-SNAPSHOT version is always signed:
 
 ```sh
-ORG_GRADLE_PROJECT_signingInMemoryKey="$(cat throwaway-key.asc)" \
+cd android
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(cat /path/to/throwaway-key.asc)" \
   ./gradlew :fedimint-sdk:publishToMavenLocal -Dmaven.repo.local="$PWD/build/m2"
 ```
 
 ### Snapshots
 
-[`kotlin-sdk-snapshot.yaml`](../.github/workflows/kotlin-sdk-snapshot.yaml)
-publishes `<branch>-SNAPSHOT` to Central's snapshots repository. It publishes
-`main-SNAPSHOT` automatically whenever `main` changes what the SDK is built
-from. Any other branch publishes when the workflow is run by hand from it. A
-`/` in the branch name becomes `-`, so `feat/x` publishes `feat-x-SNAPSHOT`.
-Like a release, it publishes only after the whole `kotlin-sdk.yaml` chain has
-passed on that commit.
+[`android-sdk-snapshot.yaml`](../.github/workflows/android-sdk-snapshot.yaml)
+publishes a snapshot of a branch's current commit to Central's snapshots
+repository. It only runs by hand: Actions → Android SDK Snapshot → Run
+workflow, on the branch you want, `main` included. Nothing publishes a
+snapshot automatically. Like a release, it publishes only after the whole
+`android-sdk.yaml` chain has passed on that commit, and only after a reviewer
+approves the `maven-central` environment. The upload uses the same Central
+token as releases, and the branch's own build code runs with it.
 
-A snapshot changes with every run and is deleted after about 90 days, so it is
-for trying unreleased work, not for shipping:
+The version is `<branch>-<commit>-SNAPSHOT`:
+
+- `<branch>` is the branch name, with every character a Maven version cannot
+  hold (such as `/` or `#`) replaced by `-`.
+- `<commit>` is the first 12 characters of the commit's hash.
+
+So `main` at commit `85bd33d6df4ba32…` publishes `main-85bd33d6df4b-SNAPSHOT`,
+and `feat/x` at the same commit publishes `feat-x-85bd33d6df4b-SNAPSHOT`.
+Every commit gets its own version, so there is no version that follows a
+branch: to try a newer commit, switch to its version.
+
+To find the exact version, open the Android SDK Snapshot run for that commit
+(Actions → Android SDK Snapshot). Its summary shows the published version with
+a ready-to-copy dependency line. To work it out yourself instead:
+
+```sh
+printf '%s-%s-SNAPSHOT\n' "$(git branch --show-current | tr -c 'A-Za-z0-9._\n-' '-')" "$(git rev-parse HEAD | cut -c1-12)"
+```
+
+Snapshots are deleted after about 90 days, so they are for trying unreleased
+work, not for shipping:
 
 ```kotlin
 repositories {
     maven("https://central.sonatype.com/repository/maven-snapshots/")
 }
 dependencies {
-    implementation("org.fedimint:fedimint-sdk:main-SNAPSHOT")
+    implementation("org.fedimint:sdk:main-85bd33d6df4b-SNAPSHOT")
 }
 ```
 

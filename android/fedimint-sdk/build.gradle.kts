@@ -85,20 +85,25 @@ dependencies {
 }
 
 // Maven Central, through the Sonatype Central Portal. The coordinates are
-// org.fedimint:fedimint-sdk. The org.fedimint namespace has to be verified on
-// central.sonatype.com before the first upload. The version is
-// `libs.versions.fedimintSdk`, the Android SDK's own, which does not follow
-// rust/fedimint-sdk's.
+// org.fedimint:sdk, so an app depends on `org.fedimint:sdk:<version>` and
+// imports `org.fedimint.sdk.*`: the artifact name matches the Kotlin package
+// (uniffi.toml's package_name), with nothing added. The Gradle module is
+// still :fedimint-sdk; only the published name differs.
+//
+// The org.fedimint namespace has to be verified on central.sonatype.com
+// before the first upload. The version is `libs.versions.fedimintSdk`, the
+// Android SDK's own, which does not follow rust/fedimint-sdk's.
 //
 // `-Psnapshot=<name>` publishes `<name>-SNAPSHOT` instead, to Central's
-// snapshots repository (see .github/workflows/kotlin-sdk-snapshot.yaml, which
-// passes the branch name, so `main-SNAPSHOT` is the latest main). It is not
-// tied to the release version, so it is never bumped along with the releases.
+// snapshots repository. .github/workflows/android-sdk-snapshot.yaml passes
+// the branch and the commit, so a snapshot names exactly what it was built
+// from, e.g. `main-85bd33d6df4b-SNAPSHOT`. It is not tied to the release
+// version, so it is never bumped along with the releases.
 // Snapshots have to be enabled for the namespace on central.sonatype.com.
 //
 // Credentials and the signing key are never in the repository. Gradle reads
 // them from project properties, which CI supplies as environment variables
-// (see .github/workflows/kotlin-sdk-release.yaml):
+// (see .github/workflows/android-sdk-release.yaml):
 //
 //   ORG_GRADLE_PROJECT_mavenCentralUsername      Central Portal user token name
 //   ORG_GRADLE_PROJECT_mavenCentralPassword      Central Portal user token secret
@@ -115,10 +120,12 @@ require(snapshotName == null || Regex("[A-Za-z0-9._-]+").matches(snapshotName)) 
 }
 
 mavenPublishing {
-    // Only the release variant. The AAR carries jniLibs, so the published
-    // artifact is exactly the one kotlin-sdk.yaml assembles. The sources jar is
-    // the generated bindings. AGP builds the javadoc jar with its bundled
-    // Dokka, from those same bindings. Central requires both jars.
+    // Only the release variant. The AAR carries jniLibs. The publishing
+    // workflows assemble it from the same native libraries and generated
+    // bindings that android-sdk.yaml tested, though not as the same archive
+    // file. The sources jar is the generated bindings. AGP builds the javadoc
+    // jar with its bundled Dokka, from those same bindings. Central requires
+    // both jars.
     configure(
         AndroidSingleVariantLibrary(
             variant = "release",
@@ -140,7 +147,7 @@ mavenPublishing {
 
     coordinates(
         groupId = "org.fedimint",
-        artifactId = "fedimint-sdk",
+        artifactId = "sdk",
         version = snapshotName?.let { "$it-SNAPSHOT" } ?: libs.versions.fedimintSdk.get(),
     )
 

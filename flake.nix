@@ -81,7 +81,7 @@
           (import nixpkgs-playwright { inherit system; }).playwright-driver.browsers;
         # The SDK the Gradle builds and `cargo ndk` need. The emulator and its system image
         # add gigabytes to the closure, so they live in a second composition used only by the
-        # `.#android-emulator` shell (scripts/android-emulator.sh).
+        # `.#rn-android-emulator` shell (scripts/rn-android-emulator.sh).
         mkAndroidSdk = extra: pkgs.androidenv.composeAndroidPackages ({
           includeNDK = true;
           toolsVersion = "26.1.1";
@@ -98,7 +98,7 @@
         androidSdk = mkAndroidSdk { };
         # One x86_64 Google APIs image for the platform above; the React Native bindings ship
         # arm64-v8a and x86_64, so this is the emulator ABI they run on.
-        androidEmulatorSdk = mkAndroidSdk {
+        rnAndroidEmulatorSdk = mkAndroidSdk {
           includeEmulator = true;
           includeSystemImages = true;
           systemImageTypes = ["google_apis"];
@@ -129,7 +129,7 @@
         webBindgen = import ./nix/web-bindgen.nix { inherit pkgs; };
 
         # The emulator SDK for the android-tests shell, which boots a device to
-        # run the Appium suite against. Separate from androidEmulatorSdk above
+        # run the Appium suite against. Separate from rnAndroidEmulatorSdk above
         # because the suite's AVD needs the host's ABI and the android-34 image.
         # arm64-v8a on Apple Silicon hosts runs with hardware acceleration
         # (Hypervisor.framework); x86_64 elsewhere (Intel Mac, Linux CI).
@@ -347,9 +347,9 @@
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
               sdk.androidsdk
-              # The JDK Gradle runs on, the version CI's kotlin-sdk job installs too.
+              # The JDK Gradle runs on, the version CI's android-sdk workflow installs too.
               pkgs.jdk17
-              # scripts/rn-example.sh asks Metro whether it is up.
+              # scripts/rn-android-example.sh asks Metro whether it is up.
               pkgs.curl
               pkgs.cmake
               pkgs.gnumake
@@ -452,10 +452,11 @@
 
           android = mkAndroidShell androidSdk;
           # The same shell plus the emulator and one system image, for running the React Native
-          # example apps: `just android-emulator` boots the device, `just rn-example` installs an
-          # app on it. Both run in this one shell so a single `adb` talks to the device; two adb
-          # builds on one machine keep restarting each other's server and leave it "offline".
-          android-emulator = mkAndroidShell androidEmulatorSdk;
+          # example apps: `just rn-android-emulator` boots the device, `just rn-android-example`
+          # installs an app on it. Both run in this one shell so a single `adb` talks to the
+          # device; two adb builds on one machine keep restarting each other's server and leave
+          # it "offline".
+          rn-android-emulator = mkAndroidShell rnAndroidEmulatorSdk;
 
           # macOS only. Cargo cross-compiles rust/fedimint-sdk for the three iOS slices with
           # Xcode's toolchain; ubrn assembles the xcframework and regenerates the bindings

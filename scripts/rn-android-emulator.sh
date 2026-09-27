@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
 # Boots the Android emulator the React Native example apps run on, creating its virtual device
-# on first use. Run inside the `.#android-emulator` shell (`just android-emulator`), which
+# on first use. Run inside the `.#rn-android-emulator` shell (`just rn-android-emulator`), which
 # provides the emulator, the system image and the SDK's own `adb`.
 #
-#   scripts/android-emulator.sh [extra emulator flags]      e.g. -no-window for a headless boot
+#   scripts/rn-android-emulator.sh [extra emulator flags]      e.g. -no-window for a headless boot
 #
 # The device is `fedimint-sdk`, a Pixel 7 profile on the SDK's x86_64 Google APIs image, with
 # 4 GB of RAM (the image deadlocks on memory at boot with the profile's default) and software
 # rendering (the emulator's own GL path is what fails on many Linux desktops). The script
 # starts the emulator, waits until Android reports the boot complete, then stays attached so
-# Ctrl-C stops the device; leave it running and use `just rn-example` from another terminal.
+# Ctrl-C stops the device; leave it running and use `just rn-android-example` from another terminal.
 #
 # Hardware acceleration is required: on Linux the user needs read and write access to
 # /dev/kvm. Without it the emulator refuses to start rather than crawling.
@@ -18,8 +18,8 @@
 # On a host enforcing SELinux (Fedora) the emulator's qemu segfaults right after its startup
 # banner, whichever build it comes from: the policy has rules for the distribution's qemu, not
 # for one under /nix/store or a home directory. Confirm with `ausearch -m avc -ts recent`, then
-# either build a local module (`ausearch -m avc -ts recent | audit2allow -M android-emulator`
-# and `semodule -i android-emulator.pp`) or run permissive while developing.
+# either build a local module (`ausearch -m avc -ts recent | audit2allow -M rn-android-emulator`
+# and `semodule -i rn-android-emulator.pp`) or run permissive while developing.
 set -euo pipefail
 
 AVD=fedimint-sdk
@@ -28,7 +28,7 @@ AVD_DIR="${ANDROID_AVD_HOME:-$HOME/.android/avd}/$AVD.avd"
 
 for tool in avdmanager emulator adb; do
   command -v "$tool" >/dev/null ||
-    { echo "$tool not on PATH; run in the .#android-emulator shell" >&2; exit 1; }
+    { echo "$tool not on PATH; run in the .#rn-android-emulator shell" >&2; exit 1; }
 done
 # nixpkgs' SDK exposes its tools through wrappers under the package root, one level above
 # ANDROID_HOME (which points at its libexec/android-sdk); both prefixes are the shell's own.
@@ -77,7 +77,7 @@ for _ in $(seq 1 120); do
     serial=$(adb devices | awk 'NR == 2 { print $1 }')
     release=$(adb shell getprop ro.build.version.release | tr -d '\r')
     echo "==> Ready: $serial (Android $release)"
-    echo "    Install an example with: just rn-example            (leave this running)"
+    echo "    Install an example with: just rn-android-example            (leave this running)"
     wait "$EMULATOR_PID"
     exit 0
   fi

@@ -4,7 +4,7 @@
 # and runs the Appium test runner against it.
 #
 # The app under test is the native example app in android/, not a React Native
-# example: the same app kotlin-sdk.yaml compiles, driven on a device so the
+# example: the same app android-sdk.yaml compiles, driven on a device so the
 # generated bindings and the .so behind them are exercised at runtime rather
 # than merely compiled.
 #

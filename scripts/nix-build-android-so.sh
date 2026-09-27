@@ -10,7 +10,7 @@
 #
 # This is the `.so`-only half — no bindings of any language. It stands on its
 # own because the native library is the input every binding generator shares:
-# `generate-kotlin-bindings.sh` reads the metadata straight out of the `.so`
+# `generate-android-bindings.sh` reads the metadata straight out of the `.so`
 # built here, and any other generator added later reads the same one. It also
 # means iterating on the bindings needs no native rebuild.
 #

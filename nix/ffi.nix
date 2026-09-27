@@ -10,7 +10,7 @@
 #   .#fedimint-uniffi-bindgen              host build of rust/uniffi-bindgen
 #
 # Note that nothing depends on `.#fedimint-uniffi-bindgen` today:
-# scripts/generate-kotlin-bindings.sh builds that crate with plain cargo, since
+# scripts/generate-android-bindings.sh builds that crate with plain cargo, since
 # its only dependency is `uniffi` and doing so keeps the whole Kotlin half free
 # of Nix. The derivation is also currently broken — crane's vendoring loses
 # `uniffi_bindgen`'s askama.toml, so its templates fail to compile.
@@ -21,7 +21,7 @@
 # `.so` in seconds. Keeping it outside means the shared, costly half is built
 # and cached exactly once (.github/workflows/android-native.yaml) and each
 # binding generator is a separate, cheap step over that same artifact —
-# scripts/generate-kotlin-bindings.sh being the one that exists today.
+# scripts/generate-android-bindings.sh being the one that exists today.
 #
 # Ported from the fedimint-sdk-ffi repo's flake.nix (rev 6873aa3); the crane +
 # flakebox cross-compile scaffold is unchanged, retargeted from

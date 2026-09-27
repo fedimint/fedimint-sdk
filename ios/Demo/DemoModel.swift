@@ -680,7 +680,7 @@ final class DemoModel: ObservableObject {
     /// object cannot be, so the crate monomorphises it: there are seven
     /// unrelated `*OperationUpdates` classes with no common protocol between
     /// them. A closure is the one thing that unifies them without inventing a
-    /// Swift-only protocol layer the Kotlin SDK does not have. See
+    /// Swift-only protocol layer the Android SDK does not have. See
     /// `ios/README.md`, "What's not here yet".
     private func watch<State>(
         _ section: Section,

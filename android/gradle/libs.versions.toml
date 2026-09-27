@@ -16,8 +16,10 @@ lifecycle = "2.8.4"
 
 # The Android SDK's own version, the one published to Maven Central. It is
 # versioned independently of rust/fedimint-sdk/Cargo.toml. Releases are
-# `X.Y.Z-beta.N` betas, then `X.Y.Z` itself; kotlin-sdk-release.yaml refuses
+# `X.Y.Z-beta.N` betas, then `X.Y.Z` itself; android-sdk-release.yaml refuses
 # anything else. Snapshots are `<branch>-SNAPSHOT` and do not use this.
+# Change it with the Android SDK Version Bump workflow rather than by hand;
+# android/README.md's "Versioning" has the rules.
 fedimintSdk = "0.1.0-beta.1"
 
 # Publishes :fedimint-sdk to Maven Central through the Sonatype Central

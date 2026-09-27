@@ -1,0 +1,52 @@
+name: Android SDK Release Scripts
+
+# Tests the release gates: scripts/android-sdk-version.sh (what a valid
+# version is, and that a release is newer than every earlier one) and
+# scripts/android-sdk-changelog.sh (the release notes a release needs, and
+# the drafts the bump workflow writes). The release, tag and bump workflows
+# only run these scripts once something is being released, so this is what
+# checks them on a pull request. It needs no build and runs in seconds.
+#
+# It also checks the committed state the way a release will: the version in
+# android/gradle/libs.versions.toml is valid and android/CHANGELOG.md has
+# finished notes for it. A version bump pull request whose drafted notes were
+# never rewritten fails here, before merging it would start a release that
+# the tag workflow then refuses.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/android-sdk-version.sh'
+      - 'scripts/android-sdk-changelog.sh'
+      - 'scripts/test-android-sdk-scripts.sh'
+      - 'android/gradle/libs.versions.toml'
+      - 'android/CHANGELOG.md'
+      - '.github/workflows/android-sdk-scripts.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 'Test the release scripts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Run the tests'
+        run: scripts/test-android-sdk-scripts.sh
+
+      - name: 'Check the committed version and its notes'
+        run: |
+          version="$(scripts/android-sdk-version.sh current)"
+          scripts/android-sdk-changelog.sh check "$version"

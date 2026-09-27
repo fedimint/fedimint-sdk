@@ -2,7 +2,7 @@ name: Android E2E (Appium)
 
 # Runs the Android example app (android/app) on an emulator and drives it with
 # Appium, so the generated Kotlin bindings and the native library behind them
-# are exercised at runtime — kotlin-sdk.yaml's `kotlin` job only proves they
+# are exercised at runtime — android-sdk.yaml's `aar` job only proves they
 # compile.
 #
 # This job builds nothing. It installs the APK that android-apk.yaml
@@ -11,11 +11,11 @@ name: Android E2E (Appium)
 # the emulator until Android's own System UI stopped responding, and every
 # test failed against that dialog instead of against the app.
 #
-# Called by kotlin-sdk.yaml rather than triggered on `pull_request` of its
+# Called by android-sdk.yaml rather than triggered on `pull_request` of its
 # own, for the reason android-native.yaml spells out: the APK it consumes sits
 # at the end of a chain that starts with a cross-compile, and a second PR entry
 # point over the same paths would mean two of those for one commit in two runs
-# that cannot cancel each other. A manual run is kotlin-sdk.yaml's
+# that cannot cancel each other. A manual run is android-sdk.yaml's
 # `workflow_dispatch`, which runs the whole chain.
 
 on:

@@ -1,20 +1,20 @@
 set shell := ["bash", "-c"]
 
 # Native libraries only (.so), via Nix. Shared by every binding generator,
-# and what the two-job CI split (android-native.yaml, kotlin-sdk.yaml) uses
+# and what the two-job CI split (android-native.yaml, android-sdk.yaml) uses
 # so a binding job can read an artifact instead of rebuilding.
 build-android-so:
     ./scripts/nix-build-android-so.sh
 
 # The Kotlin bindings, read out of an already-built .so.
-build-kotlin-bindings:
-    ./scripts/generate-kotlin-bindings.sh
+build-android-bindings:
+    ./scripts/generate-android-bindings.sh
 
-build-kotlin:
+build-android-sdk:
     ./scripts/build-android-sdk.sh
 
 # Compile the library and the demo app against the freshly generated bindings.
-test-kotlin: build-kotlin
+test-android-sdk: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 
 # The example APK the E2E suite installs: the native library, the Kotlin generated
@@ -38,8 +38,13 @@ build-android-apk:
 test-android-e2e: build-android-apk
     nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
-# Assemble the release AAR. Publishing to Maven Central is .github/workflows/kotlin-sdk-release.yaml.
-build-android-aar: build-kotlin
+# Test the release gates: the version and changelog scripts the release, tag
+# and bump workflows rely on. Needs only bash and git, no build.
+test-android-sdk-scripts:
+    ./scripts/test-android-sdk-scripts.sh
+
+# Assemble the release AAR. Publishing to Maven Central is .github/workflows/android-sdk-release.yaml.
+build-android-aar: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease
 
 # Non-nix escape hatch: cross-compile + generate locally with cargo-ndk.
@@ -49,15 +54,15 @@ build-android-local:
 
 # Boot the emulator the React Native example apps run on (created on first use, see the
 # script). Leave it running; pass emulator flags after the recipe name, e.g. -no-window.
-android-emulator *ARGS:
-    nix develop --accept-flake-config .#android-emulator -c scripts/android-emulator.sh {{ARGS}}
+rn-android-emulator *ARGS:
+    nix develop --accept-flake-config .#rn-android-emulator -c scripts/rn-android-emulator.sh {{ARGS}}
 
 # Build and install one example app (react-native or expo-app) on the running emulator or a
 # connected device and launch it, from the same shell as the emulator so one adb owns the device.
 # Needs `just build-rn-android` first. See the script for why this is not `react-native
 # run-android`.
-rn-example app="react-native":
-    nix develop --accept-flake-config .#android-emulator -c scripts/rn-example.sh {{app}}
+rn-android-example app="react-native":
+    nix develop --accept-flake-config .#rn-android-emulator -c scripts/rn-android-example.sh {{app}}
 
 # The Apple native libraries only (.a), one per target. Shared by every Apple
 # binding generator, the same way build-android-so is for Android.
@@ -96,7 +101,7 @@ test-swift: build-swift
     swift test --package-path ios
 
 # Compile the demo app against the freshly generated bindings, the Swift
-# counterpart of `test-kotlin`'s :app:assembleDebug. The .xcodeproj is
+# counterpart of `test-android-sdk`'s :app:assembleDebug. The .xcodeproj is
 # generated from the committed project.yml and gitignored.
 # No ARCHS override: this depends on `build-swift`, whose default target set
 # includes both simulator architectures, so the lipo'd slice satisfies the

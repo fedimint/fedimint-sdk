@@ -1,4 +1,4 @@
-name: Kotlin SDK
+name: Android SDK
 
 # Generates the Kotlin bindings from the shared Android native library, then
 # proves the whole chain builds: the AAR, and the example app compiled against
@@ -8,7 +8,7 @@ name: Kotlin SDK
 # produced instead of redoing it:
 #
 #   native    cross-compiles the .so                    -> jniLibs
-#   bindings  runs `uniffi-bindgen` against that .so    -> kotlin-bindings
+#   bindings  runs `uniffi-bindgen` against that .so    -> android-bindings
 #   apk       Gradle: the example app's debug APK       -> android-example-apk
 #   e2e       installs that APK on an emulator and drives it
 #   kotlin    Gradle: the release AAR                   -> fedimint-android-aar
@@ -20,15 +20,15 @@ name: Kotlin SDK
 # step — and it leaves the expensive cross-compile as one job that any other
 # binding generator can call the same way.
 #
-# Nothing is published here. kotlin-sdk-release.yaml and
-# kotlin-sdk-snapshot.yaml call this whole chain and publish the AAR only after
+# Nothing is published here. android-sdk-release.yaml and
+# android-sdk-snapshot.yaml call this whole chain and publish the AAR only after
 # every job in it has passed.
 
 on:
   workflow_dispatch:
-  # For kotlin-sdk-release.yaml and kotlin-sdk-snapshot.yaml, which publish
-  # from these same artifacts after this chain has passed, rather than
-  # building their own.
+  # For android-sdk-release.yaml and android-sdk-snapshot.yaml. After this
+  # chain has passed, they reuse its jniLibs and bindings artifacts rather
+  # than building their own, and assemble the published AAR from them.
   workflow_call:
     outputs:
       jni-artifact:
@@ -52,14 +52,14 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - 'scripts/nix-build-android-so.sh'
-      - 'scripts/generate-kotlin-bindings.sh'
+      - 'scripts/generate-android-bindings.sh'
       - 'scripts/build-android-sdk.sh'
       - 'scripts/e2e-android/**'
       # android-e2e.yml runs the suite through this, the same entry
       # point the wasm tests use to stand a federation up.
       - 'scripts/setup_test_shell.sh'
       - 'js/android/integration-tests/**'
-      - '.github/workflows/kotlin-sdk.yaml'
+      - '.github/workflows/android-sdk.yaml'
       - '.github/workflows/android-native.yaml'
       - '.github/workflows/android-apk.yaml'
       - '.github/workflows/android-e2e.yml'
@@ -87,7 +87,7 @@ jobs:
   # Reads the Kotlin out of the `.so`, once. `rust/uniffi-bindgen`'s only
   # dependency is `uniffi` itself, so this is a small host build — no NDK, no
   # cross-compile, no Nix; everything heavy was done by `native`. A job of its
-  # own because two others need its output, `apk` and `kotlin`, and each
+  # own because two others need its output, `apk` and `aar`, and each
   # generating a copy would be the same work done twice, on two machines, for
   # the same file.
   bindings:
@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      bindings-artifact: kotlin-bindings
+      bindings-artifact: android-bindings
 
     steps:
       - name: 'Checkout'
@@ -116,12 +116,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: 'Generate the Kotlin bindings'
-        run: ./scripts/generate-kotlin-bindings.sh
+        run: ./scripts/generate-android-bindings.sh
 
       - name: 'Upload Kotlin bindings'
         uses: actions/upload-artifact@v4
         with:
-          name: kotlin-bindings
+          name: android-bindings
           path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
           if-no-files-found: error
 
@@ -131,7 +131,7 @@ jobs:
   # System UI stopped responding, so the build happens where nothing else is
   # running. It is also the one place the example app is compiled against the
   # generated bindings — what proves they are usable from ordinary Kotlin, not
-  # merely that they parse. A failure here fails the run, so `kotlin` below has
+  # merely that they parse. A failure here fails the run, so `aar` below has
   # no need to compile the app a second time.
   apk:
     name: 'Assemble the Android example APK'
@@ -143,8 +143,8 @@ jobs:
     secrets: inherit
 
   # Runs the example app on an emulator and drives it with Appium. Separate from
-  # `kotlin` below, rather than another step of it, because the two answer
-  # different questions — `kotlin` that the library packages into an AAR, this
+  # `aar` below, rather than another step of it, because the two answer
+  # different questions — `aar` that the library packages into an AAR, this
   # one that it works on a device — and an emulator run has no business
   # holding up the AAR. It installs the APK `apk` built rather than building
   # its own; see that job for why.
@@ -156,7 +156,7 @@ jobs:
       apk-artifact: ${{ needs.apk.outputs.apk-artifact }}
     secrets: inherit
 
-  kotlin:
+  aar:
     name: 'Assemble the AAR'
     needs: [native, bindings]
     runs-on: ubuntu-24.04

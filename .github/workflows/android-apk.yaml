@@ -19,14 +19,14 @@ name: Android APK Build
 # and not merely that they parse.
 #
 # One task per machine, each handed the last one's artifact rather than
-# redoing it (kotlin-sdk.yaml wires them together):
+# redoing it (android-sdk.yaml wires them together):
 #
 #   android-native.yaml   cross-compiles the .so          -> jniLibs
-#   kotlin-sdk.yaml       generates Kotlin from that .so  -> kotlin-bindings
+#   android-sdk.yaml      generates Kotlin from that .so  -> android-bindings
 #   android-apk.yaml      runs Gradle on both             -> android-example-apk
 #   android-e2e.yml       boots devimint + an emulator, installs the APK
 #
-# Callable only: kotlin-sdk.yaml is the one PR entry point for the Android
+# Callable only: android-sdk.yaml is the one PR entry point for the Android
 # chain, for the reason android-native.yaml spells out. A manual run of the
 # whole chain is that workflow's `workflow_dispatch`.
 
@@ -38,7 +38,7 @@ on:
         required: true
         type: string
       bindings-artifact:
-        description: 'Name of the generated Kotlin artifact from kotlin-sdk.yaml'
+        description: 'Name of the generated Kotlin artifact from android-sdk.yaml'
         required: true
         type: string
     outputs:
