@@ -37,6 +37,9 @@ class ReactNativeBindingsModule(reactContext: ReactApplicationContext) :
     const val NAME = "ReactNativeBindings"
 
     init {
+      // Load the SDK's own library first: pulled in only as a dependency of the bindings below,
+      // its JNI_OnLoad would never run, and without it the SDK aborts on its first DNS lookup.
+      System.loadLibrary("fedimint_sdk")
       System.loadLibrary("fedimint-react-native-bindings")
     }
   }

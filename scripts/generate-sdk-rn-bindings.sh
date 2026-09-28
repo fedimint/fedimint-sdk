@@ -79,5 +79,11 @@ if ! grep -q '^  s.frameworks = ' ReactNativeBindings.podspec; then
   patch -p0 --forward < patches/add_ios_frameworks.patch
 fi
 
+# ubrn's Android module loads only the bindings library, so the SDK library's `JNI_OnLoad` never
+# runs and the SDK aborts the app on its first iroh connection; see the patch for the details.
+# Unconditional, since both ubrn runs above rewrite the module: a patch that stops applying after
+# a ubrn upgrade fails this script instead of silently shipping the crash again.
+patch -p0 --forward < patches/load_fedimint_sdk.patch
+
 echo "==> Done."
 ls -la "$PKG/src/generated" "$PKG/cpp/generated" "$PKG/android/src/main/jniLibs"/*

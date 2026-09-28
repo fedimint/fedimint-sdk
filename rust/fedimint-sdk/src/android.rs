@@ -67,10 +67,19 @@
 //! call `System.loadLibrary` ahead of each `Native.register`. ART then loads
 //! the library and calls this, and JNA's `dlopen` that follows finds the same
 //! copy already loaded — also confirmed on a device: one copy, and
-//! `JNI_OnLoad` runs. Every app embedding the SDK gets this without
+//! `JNI_OnLoad` runs. Every Kotlin app embedding the SDK gets this without
 //! doing anything. The script fails, rather than skipping the patch, if a
 //! uniffi upgrade changes the lines it anchors on, because without it this
 //! function silently never runs.
+//!
+//! React Native misses it through a different door. Its turbo-module loads
+//! only the bindings library through `System.loadLibrary`, and that library
+//! links this one as a plain dependency. ART looks `JNI_OnLoad` up in the
+//! library it loaded and then breadth-first through its dependencies, where
+//! `libreactnative.so`'s comes first, so it calls React Native's instead. So
+//! `scripts/generate-sdk-rn-bindings.sh` patches the turbo-module to load this
+//! library on its own first, and fails the same way if the patch stops
+//! applying.
 //!
 //! The VM is not enough on its own: `ndk_context` also wants a `Context`,
 //! which is fetched from Rust through `ActivityThread.currentApplication()`.
