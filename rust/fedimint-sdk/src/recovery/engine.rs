@@ -234,11 +234,10 @@ pub(crate) fn watch(
         match outcome {
             // An instance gone by now completes nothing: the next open finds the rescan over and
             // settles the attempt itself.
-            Ok(()) => {
-                if let Some(sdk) = sdk.upgrade() {
-                    complete(&sdk, &federation, attempt).await;
-                }
-            }
+            Ok(()) => match sdk.upgrade() {
+                Some(sdk) => complete(&sdk, &federation, attempt).await,
+                None => stop_orphaned(&federation).await,
+            },
             Err(RecoveryError::Failed {
                 module_instance_id,
                 error,
@@ -250,13 +249,38 @@ pub(crate) fn watch(
                 )
                 .await;
             }
-            Err(RecoveryError::ClientStopped) => {}
+            Err(RecoveryError::ClientStopped) => {
+                if sdk.strong_count() == 0 {
+                    stop_orphaned(&federation).await;
+                }
+            }
             // `RecoveryError` is `#[non_exhaustive]`: a variant this build does not recognise
             // yet is still recorded as a failure, using its own `Display` for the reason,
             // rather than leaving the attempt `Running` forever.
             Err(err) => record_attempt_failed(&federation, attempt, err.to_string()).await,
         }
     });
+}
+
+/// Stops a federation whose instance was dropped without being shut down, the way shutting down
+/// would have.
+///
+/// A recovery cannot be concluded without its instance, since concluding one opens a fresh
+/// client, so the watcher and the settle wait end when the instance goes. An application can
+/// still hold a handle to the federation or to the attempt, though, and a subscriber there waits
+/// for the attempt's ending or for the federation to stop. This makes it the second, so that
+/// subscriber reports `FederationClosed` instead of waiting for ever. The next open resumes the
+/// attempt.
+async fn stop_orphaned(federation: &FederationInner) {
+    if let Err(err) = federation.stop().await {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            federation = %federation.id,
+            error = %err,
+            "could not cleanly shut down the client of a recovery whose instance was dropped",
+        );
+    }
+    federation.set_status(FederationStatus::Closed);
 }
 
 /// The watcher's completion: [`finish`] under the lifecycle mutex, unless the attempt has
@@ -392,8 +416,10 @@ fn start_settle(
         // Otherwise the client stopped, or the instance went away, before settling finished:
         // whoever stopped it owns the attempt's fate now, exactly as a swap refused by a closed
         // federation does, and the next open settles an attempt left without an ending.
-        if settled && let Some(sdk) = sdk.upgrade() {
-            conclude_settle(&sdk, &federation, identity, attempt).await;
+        match (settled, sdk.upgrade()) {
+            (true, Some(sdk)) => conclude_settle(&sdk, &federation, identity, attempt).await,
+            (_, None) => stop_orphaned(&federation).await,
+            (false, Some(_)) => {}
         }
         // Released only after the conclusion, so a `finish` that runs in between still finds
         // the claim and leaves the client alone, and one that runs after it finds the attempt

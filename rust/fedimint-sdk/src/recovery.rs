@@ -640,6 +640,12 @@ async fn progress_handle(
 /// background operation: it survives restarts, resumes on the next build,
 /// and dropping this struct does not stop it, nor does dropping it release
 /// the lock.
+///
+/// Dropping the last [`Sdk`] handle without calling
+/// [`Sdk::shutdown`](crate::Sdk::shutdown) stops it the way shutting down
+/// does. A `Recovery` still held after that reports
+/// [`FederationClosed`](crate::ErrorCode::FederationClosed), and the
+/// recovery resumes the next time the storage is opened.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Recovery {
