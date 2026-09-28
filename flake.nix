@@ -118,7 +118,6 @@
           commonNativeBuildInputs = [
             pkgs.pnpm
             pkgs.nodejs_24
-            pkgs.git
             pkgs.gh
             pkgs.zip
             pkgs.coreutils
