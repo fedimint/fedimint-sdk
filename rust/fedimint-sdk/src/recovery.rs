@@ -518,7 +518,7 @@ impl Sdk {
     /// | answer | the federation is |
     /// | --- | --- |
     /// | `None` | not locked; it was never recovered |
-    /// | `Some(`[`Running`](RecoveryState::Running)`)` | locked; a rescan is under way |
+    /// | `Some(`[`Running`](RecoveryState::Running)`)` | locked; the recovery is under way |
     /// | `Some(`[`Failed`](RecoveryState::Failed)`)` | locked; the last attempt stopped |
     /// | `Some(`[`Done`](RecoveryState::Done)`)` | not locked; the wallet is restored |
     ///
@@ -685,7 +685,8 @@ pub struct Recovery {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum RecoveryState {
-    /// The rescan is running. Spends and receives are refused with
+    /// The rescan is running, or the wallet is taking in what it found.
+    /// Spends and receives are refused with
     /// [`Recovering`](crate::ErrorCode::Recovering); balance and activity
     /// are incomplete.
     Running {

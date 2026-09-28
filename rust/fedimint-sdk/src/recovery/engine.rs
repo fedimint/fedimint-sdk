@@ -391,7 +391,8 @@ fn start_settle(
         return;
     };
     // Held weakly, and its going away ends the wait, for the reason `watch` gives: the wait is
-    // unbounded, and it holds the client and the store under it.
+    // unbounded (upstream checks the client's state machines every 100 ms until none is left),
+    // and it holds the client and the store under it.
     let mut instance = sdk.shutdown_watch();
     let sdk = Arc::downgrade(&sdk);
     fedimint_core::task::spawn("sdk-recovery-settle", async move {
@@ -404,9 +405,13 @@ fn start_settle(
             }
         };
         // The recovery lock keeps every other facade off this federation for as long as the
-        // attempt is not `Done`, so nothing else can have started a state machine on it while
-        // this waits: every one the fresh client has right now is the recovery's own issuance
-        // of what the rescan found.
+        // attempt is not `Done`, so no application operation can have started a state machine
+        // on it while this waits. What the fresh client does have is the recovery's own issuance
+        // of what the rescan found, and possibly the wallet module claiming on-chain deposits to
+        // addresses the rescan turned up: a v1 wallet's peg-in monitor and a walletv2 output
+        // scanner both start with the client. Both end in consensus time once the federation
+        // answers, which the issuance needs anyway, and upstream exposes no way to wait on the
+        // issuance alone (its operation ids are random and internal to the mint modules).
         let settled = crate::federation::wait_holding_client(client, stop, |client| async move {
             client.wait_for_all_active_state_machines().await;
             Ok(())

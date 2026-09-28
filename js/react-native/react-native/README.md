@@ -172,7 +172,7 @@ fails with `StorageInUse`.
 returns `{ federation, progress }` as soon as the rescan starts, and `progress` is the operation to
 watch. Until it reads `Done`, sends and receives on that federation fail with `Recovering`. While
 it reads `Running`, `inner.progress` counts the rescan's work, `complete` out of `total`, once the
-rescan has reported any. At `Done` the balance holds all the ecash the rescan found.
+rescan has said how much work it has. At `Done` the balance holds all the ecash the rescan found.
 
 ```ts
 import {

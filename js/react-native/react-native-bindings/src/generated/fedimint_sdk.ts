@@ -12591,7 +12591,8 @@ export type RecoveryState =
 
 export const RecoveryState = (() => {
   /**
-   * The rescan is running. Spends and receives are refused with
+   * The rescan is running, or the wallet is taking in what it found.
+   * Spends and receives are refused with
    * [`Recovering`](crate::ErrorCode::Recovering); balance and activity
    * are incomplete.
    */
