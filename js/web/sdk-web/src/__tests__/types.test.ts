@@ -52,3 +52,13 @@ it('keeps an AbortSignal argument as itself, not a handle', () => {
     .parameter(0)
     .toEqualTypeOf<{ signal: AbortSignal } | undefined>()
 })
+
+it('carries an activity cursor as a string, both ways', () => {
+  // A page's cursor is meant to be persisted and passed back to a later call, so both the
+  // cursor a page hands out and the one `activity` takes must be plain strings.
+  type Activity = Proxied<FederationLike>['activity']
+  expectTypeOf<Activity>().parameter(0).toEqualTypeOf<string | undefined>()
+  expectTypeOf<Activity>()
+    .returns.resolves.toHaveProperty('next')
+    .toEqualTypeOf<string | undefined>()
+})
