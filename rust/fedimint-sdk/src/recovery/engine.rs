@@ -457,14 +457,20 @@ async fn conclude_settle(
     if !federation.is_open() || !federation.is_current_client(identity) {
         return;
     }
+    // The lock is released only once `Done` is durable. Releasing it over a record that still
+    // reads unfinished would leave `recovery_status` reporting a lock that is not held, and the
+    // attempt's subscribers waiting for a `Done` that is never written. The write already retries
+    // on conflicts, so a failure here is the store failing: the federation stays `Recovering`,
+    // and `resume_recovery` or the next open settles the attempt again.
     if let Err(err) = write_final_state(federation, attempt, record, RecoveryState::Done).await {
         tracing::warn!(
             target: "fedimint_sdk",
             federation = %federation.id,
             attempt = %attempt.fmt_full(),
             error = %err,
-            "could not record a finished recovery attempt as done",
+            "could not record a finished recovery attempt as done; keeping the federation locked",
         );
+        return;
     }
     federation.bump_recovery();
     federation.set_status(FederationStatus::Running);
@@ -814,6 +820,51 @@ mod tests {
             "a second completion must leave the concluded attempt alone"
         );
         assert_eq!(federation.status(), FederationStatus::Running);
+    }
+
+    // Paused time: the durable write retries a failing commit a hundred times with a backoff of
+    // up to two seconds, and a paused clock skips those sleeps instead of waiting them out.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_done_write_keeps_the_federation_locked_until_a_later_one_lands() {
+        let sdk = detached_sdk().await;
+        let (db, commits) = crate::db::failing::failing_commits_db();
+        let federation = detached_federation(&db);
+        let attempt = UpstreamOperationId([10u8; 32]);
+        plant_operation_record(&federation, attempt, None).await;
+        // What the settle task has when its wait ends: the federation still locked, and the
+        // settle claimed for the client installed right now.
+        federation.set_status(FederationStatus::Recovering);
+        let identity = federation
+            .try_start_settle()
+            .expect("nothing else is settling");
+        let observed = federation.recovery_changed();
+
+        commits.fail(true);
+        conclude_settle(sdk.inner(), &federation, identity, attempt).await;
+        commits.fail(false);
+
+        assert_eq!(federation.status(), FederationStatus::Recovering);
+        assert!(
+            !observed.has_changed().expect("the sender is alive"),
+            "subscribers must not be told of an ending that was never written"
+        );
+        let record = read_attempt_record(&federation, attempt)
+            .await
+            .expect("the record survives");
+        assert!(record.final_state.is_none());
+
+        // Settling again, as `resume_recovery` or the next open does, finishes the job.
+        conclude_settle(sdk.inner(), &federation, identity, attempt).await;
+
+        assert_eq!(federation.status(), FederationStatus::Running);
+        let record = read_attempt_record(&federation, attempt)
+            .await
+            .expect("the record survives");
+        let final_state = record.final_state.expect("the ending is written");
+        assert_eq!(
+            wire::decode_state(&final_state).expect("decode"),
+            RecoveryState::Done
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
