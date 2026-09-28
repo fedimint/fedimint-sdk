@@ -11,19 +11,19 @@ if (!rustInstalled) {
 }
 
 // Export the generated bindings to the app.
-export * from './generated/fedimint_client_uniffi';
+export * from './generated/fedimint_sdk';
 
 // Now import the bindings so we can:
 // - intialize them
 // - export them as namespaced objects as the default export.
-import * as fedimint_client_uniffi from './generated/fedimint_client_uniffi';
+import * as fedimint_sdk from './generated/fedimint_sdk';
 
 // Initialize the generated bindings: mostly checksums, but also callbacks.
 // - the boolean flag ensures this loads exactly once, even if the JS code
 //   is reloaded (e.g. during development with metro).
 let initialized = false;
 if (!initialized) {
-  fedimint_client_uniffi.default.initialize();
+  fedimint_sdk.default.initialize();
   initialized = true;
 }
 
@@ -36,6 +36,6 @@ export async function uniffiInitAsync() {
 
 // Export the crates as individually namespaced objects.
 export default {
-  fedimint_client_uniffi,
+  fedimint_sdk,
 };
 

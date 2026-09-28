@@ -69,7 +69,11 @@ pub struct Ecash {
 // `EcashQuote`, which an object can never cross as (only `Arc<EcashQuote>`
 // can), and `receive`'s real return type names the generic
 // `Operation<EcashReceiveState>`, which cannot cross at all.
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Ecash {
     /// Plans an out-of-band send and returns an executable quote for it.
     ///

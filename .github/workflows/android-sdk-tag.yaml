@@ -1,0 +1,135 @@
+name: Android SDK Tag
+
+# Tags a Android SDK release and starts android-sdk-release.yaml on the tag, so
+# a release needs no hand-run git commands.
+#
+# It runs when a push to main changes android/gradle/libs.versions.toml, and
+# it tags only when all of these hold:
+#
+#   * `fedimintSdk` changed in that push, and has no `android-sdk-v*` tag yet;
+#   * the version it changed from was released, that is, has a tag. That is
+#     exactly what merging a android-sdk-version-bump.yaml pull request looks
+#     like. Any other version change, such as the one that first set up
+#     releases, only leaves a notice, and nothing is released by surprise;
+#   * the release checks pass: the version is newer than every release, and
+#     android/CHANGELOG.md has finished notes for it
+#     (scripts/android-sdk-version.sh, scripts/android-sdk-changelog.sh).
+#
+# Any other change to the catalog, such as a dependency bump, does nothing.
+#
+# A manual run (Actions → Android SDK Tag → Run workflow, on main) tags the
+# current version without the first two conditions. That is how the first
+# release, `0.1.0-beta.1`, is started, and how to start a release whose
+# automatic run was skipped.
+#
+# The tag is annotated, with the version's notes as its message, so the
+# release is recorded in git itself. A tag pushed with the workflow's own
+# token does not trigger other workflows, so this starts the release with
+# `gh workflow run` instead. Starting a workflow that way is the one
+# exception GitHub makes. The release then asks for the `maven-central`
+# environment's approval as usual.
+#
+# The tag ruleset for `android-sdk-v*` restricts updates and deletions, so a
+# release tag is never moved or removed. It must not restrict creation: this
+# workflow creates tags as the GitHub Actions app, and GitHub does not accept
+# that app as a bypass actor in an organization's repository, so a creation
+# rule would block it. An unwanted tag still cannot publish anything on its
+# own, because the release waits for the `maven-central` approval and for
+# Publish on central.sonatype.com.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/gradle/libs.versions.toml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  # Pushes the tag.
+  contents: write
+  # Starts android-sdk-release.yaml.
+  actions: write
+
+jobs:
+  tag:
+    name: 'Tag the release'
+    # Releases come from main only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # Credentials kept: this job pushes the tag. The full history is for
+      # reading the version this push changed from.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 'Decide whether to release'
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          has_tag() {
+            git ls-remote --exit-code --tags origin "refs/tags/android-sdk-v$1" >/dev/null
+          }
+          skip() {
+            echo "$1"
+            echo "release=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          version="$(scripts/android-sdk-version.sh current)"
+          if has_tag "$version"; then
+            skip "android-sdk-v$version already exists; nothing to release"
+          fi
+
+          if [[ "$EVENT" == push ]]; then
+            previous="$(git show "$BEFORE:android/gradle/libs.versions.toml" 2>/dev/null |
+              sed -n 's/^fedimintSdk = "\(.*\)"$/\1/p' || true)"
+            if [[ "$previous" == "$version" ]]; then
+              skip "fedimintSdk is still $version; this push changed something else"
+            fi
+            if [[ -z "$previous" ]] || ! has_tag "$previous"; then
+              echo "::notice::fedimintSdk changed from ${previous:-nothing} to $version, but ${previous:-that} was never released, so this is not a version bump after a release. To release $version, run the Android SDK Tag workflow by hand on main."
+              skip "not releasing $version automatically"
+            fi
+          fi
+
+          released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/android-sdk-v" \
+            --jq '.[].ref | ltrimstr("refs/tags/android-sdk-v")')"
+          # A failure here is a real problem with the release, typically notes
+          # merged as a draft. The pull request that fixes it does not change
+          # the version, so it does not bring this workflow back by itself.
+          if ! scripts/android-sdk-version.sh check-newer "$version" <<<"$released" ||
+            ! scripts/android-sdk-changelog.sh check "$version"; then
+            echo "::error::$version cannot be released as it is. Fix the problem above in a pull request, then run the Android SDK Tag workflow by hand on main."
+            exit 1
+          fi
+          echo "release=true" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: 'Tag and start the release'
+        if: steps.decide.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="android-sdk-v$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Android SDK $VERSION" -m "$(scripts/android-sdk-changelog.sh section "$VERSION")"
+          git push origin "refs/tags/$tag"
+          gh workflow run android-sdk-release.yaml --ref "$tag" -f publish=true
+          {
+            echo "Tagged \`$tag\` on \`$(git rev-parse --short HEAD)\` and started the Android SDK Release workflow on it."
+            echo
+            echo "Next: approve the \`maven-central\` environment in that run, press Publish on central.sonatype.com once the deployment is validated, then publish the draft GitHub Release."
+          } >>"$GITHUB_STEP_SUMMARY"

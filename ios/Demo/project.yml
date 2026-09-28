@@ -1,0 +1,70 @@
+# XcodeGen spec for the demo app. The .xcodeproj it produces is a build output
+# and is gitignored, the same rule the generated bindings and the XCFramework
+# follow — a checked-in project.pbxproj is a few hundred lines of UUID-keyed
+# plist that no one can review and everyone conflicts on.
+#
+# Generate it with `xcodegen generate` from this directory (the `.#ios` shell
+# ships xcodegen), or just run `just build-ios-demo`, which does both that and
+# the xcodebuild below it.
+
+name: FedimintDemo
+
+options:
+  bundleIdPrefix: org.fedimint
+  # Higher than the SDK's own floor of iOS 15 (../Package.swift), deliberately.
+  # The SDK supports 15 and that is what consumers get; this app is not the SDK,
+  # and pinning it to 17 lets the demo use plain modern SwiftUI (NavigationStack,
+  # multi-line TextField) instead of carrying availability shims that would
+  # obscure the SDK calls this screen exists to show.
+  deploymentTarget:
+    iOS: '17.0'
+  createIntermediateGroups: true
+
+packages:
+  # The SDK under test, as a local package rather than a released artifact, so
+  # a change to the Rust is one `just build-swift` away. The Android demo
+  # depends on `project(":fedimint-sdk")` for exactly this reason.
+  FedimintSdk:
+    path: ..
+
+targets:
+  FedimintDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        includes:
+          - '*.swift'
+    dependencies:
+      - package: FedimintSdk
+        product: FedimintSdk
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Fedimint Demo
+        CFBundleShortVersionString: 0.1.0-alpha.1
+        CFBundleVersion: '1'
+        UILaunchScreen: {}
+        # The SDK talks to federations and gateways over the network. iOS
+        # allows outbound TLS by default, so nothing else is needed here; this
+        # key documents that the omission is deliberate.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+    settings:
+      base:
+        # Debug only by intent: this app exists to be run, not shipped, and an
+        # unsigned release build would need a signing identity to install.
+        CODE_SIGNING_ALLOWED: 'NO'
+        CODE_SIGNING_REQUIRED: 'NO'
+        GENERATE_INFOPLIST_FILE: 'NO'
+        PRODUCT_BUNDLE_IDENTIFIER: org.fedimint.demo
+        SWIFT_VERSION: '5.9'
+        TARGETED_DEVICE_FAMILY: '1,2'
+
+schemes:
+  FedimintDemo:
+    build:
+      targets:
+        FedimintDemo: all
+    run:
+      config: Debug

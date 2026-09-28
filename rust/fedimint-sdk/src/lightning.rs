@@ -43,7 +43,11 @@ pub struct Lightning {
 // `LnQuote`, which an object can never cross as (only `Arc<LnQuote>` can),
 // and `receive`'s real return type names the generic
 // `Operation<LnReceiveState>`, which cannot cross at all.
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Lightning {
     /// Plans a payment and returns an executable quote for it.
     ///

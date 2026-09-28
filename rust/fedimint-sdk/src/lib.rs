@@ -288,15 +288,32 @@
 //! screen with no way out and no diagnostic.
 //
 // Implementation notes (delete once implemented):
-// - The wasm entry point must install a panic hook on its very first line, before anything
-//   else runs, so a panic during initialisation surfaces as a message and stack position
-//   instead of a bare `unreachable` trap with nothing to debug from.
 // - The UniFFI response path is built with `panic = "abort"`, so it must keep a strict
 //   no-panic discipline: every value crossing back out is produced without unwrapping,
 //   indexing, or slicing something that could be absent, since a panic there takes the whole
 //   host application down rather than unwinding into a catchable error.
 
-#![forbid(unsafe_code)]
+// No unsafe code, and on every target but one that is absolute.
+//
+// Android is the exception, and only because it has to be: `src/android.rs`
+// hands the platform's `JavaVM` and `Context` to `ndk_context` over JNI, so
+// that anything reading Android's DNS configuration finds them rather than
+// aborting the host app (see that module for the failure it prevents).
+// Publishing raw pointers into a global slot and exporting `JNI_OnLoad` have
+// no safe formulation, and `forbid` cannot be opted out of even locally —
+// that is exactly what distinguishes it from `deny`.
+//
+// So the exception is scoped to the target that needs it instead of being
+// spent crate-wide: every other target keeps the guarantee that no module
+// *can* opt in, and on Android the guarantee weakens only to "no module opts
+// in without saying so". `deny` still fails the build on accidental unsafe
+// there, exactly as `forbid` did; what it permits is a deliberate,
+// module-scoped `allow(unsafe_code)`, and there is one, in `src/android.rs`.
+// A second one should be argued for on its own merits rather than treated as
+// precedent. Note that the module is itself `#[cfg(target_os = "android")]`,
+// so on every other target its `allow` does not exist to be honoured.
+#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
+#![cfg_attr(target_os = "android", deny(unsafe_code))]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
 // These attributes stay: dropping them does not surface leftover skeleton work, it surfaces
@@ -312,6 +329,12 @@
 #![allow(dead_code)]
 
 mod activity;
+// Android-only, and not part of the SDK surface: logcat logging, and `JNI_OnLoad` plus
+// the publish `create_fedimint_sdk` runs, so the platform handles this crate's
+// dependencies expect (`ndk_context`'s `JavaVM` and `Context`) are in place before
+// anything reads them.
+#[cfg(target_os = "android")]
+mod android;
 mod db;
 mod ecash;
 mod error;
@@ -336,6 +359,11 @@ mod types;
 // Behind the `uniffi` feature; the wasm and plain-Rust builds never see it.
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
+
+// The wasm player calls this crate's allocator and panic hook; nothing here references it, so
+// without this line the linker drops it and the module fails to open.
+#[cfg(all(feature = "uniffi", target_family = "wasm"))]
+extern crate uniffi_runtime_wasm as _;
 
 pub use activity::{ActivityItem, ActivityPage, ActivityStatus, Direction};
 pub use ecash::{

@@ -11,7 +11,8 @@ use crate::{Federation, FederationId, InviteCode, Recovery, RecoveryState, Resul
 // generic `Operation<RecoveryState>`, neither of which can cross a UniFFI boundary as-is.
 // `recovery_status` is already FFI-safe and is routed through the same block purely so all three
 // stay together.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Sdk {
     /// See [`Sdk::recover`].
     #[uniffi::method(name = "recover")]

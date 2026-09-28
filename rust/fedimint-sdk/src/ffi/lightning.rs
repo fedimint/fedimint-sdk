@@ -14,7 +14,8 @@ use crate::{
 // use instead, and `receive`'s real return type names the generic `Operation<LnReceiveState>`,
 // which cannot cross at all. `Lightning::quote` needs no such adapter, so it keeps the export
 // attribute on the real method in `lightning.rs`.
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Lightning {
     /// See [`Lightning::send`]. Fails with
     /// [`ErrorCode::QuoteExpired`](crate::ErrorCode::QuoteExpired) if `quote` was already sent.

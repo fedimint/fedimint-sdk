@@ -94,7 +94,11 @@ pub struct Federation {
 // block already mixes `export_mnemonic` (sync) with `preview`/`join` (async).
 // `new`, below all of this, stays in its own unexported block since it is
 // `pub(crate)`.
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Federation {
     /// This federation's id.
     pub fn id(&self) -> FederationId {
@@ -269,7 +273,11 @@ impl Federation {
     }
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Federation {
     /// The metadata facade.
     ///
@@ -788,10 +796,10 @@ impl FederationInner {
     /// Swaps the live client for a freshly opened one, under the client write lock.
     ///
     /// The old client is taken out and shut down before `open` is even called: two clients open
-    /// over the same database at once is exactly what the storage lock exists to prevent, so the
-    /// old one has to be gone before the new one can be asked for. A failure shutting the old one
-    /// down is logged and does not stop the swap, because refusing to open the replacement over a
-    /// client that is already on its way out would help nobody.
+    /// over the same database at once is exactly what the single-opener claim exists to prevent,
+    /// so the old one has to be gone before the new one can be asked for. A failure shutting the
+    /// old one down is logged and does not stop the swap, because refusing to open the
+    /// replacement over a client that is already on its way out would help nobody.
     ///
     /// `closed` is left untouched throughout: unlike [`quiesce`](Self::quiesce), this is not the
     /// federation shutting down, and every handle to it stays live for the duration. On `Err`

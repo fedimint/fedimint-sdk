@@ -1,24 +1,50 @@
 set shell := ["bash", "-c"]
 
 # Native libraries only (.so), via Nix. Shared by every binding generator,
-# and what the two-job CI split (android-native.yaml, kotlin-sdk.yaml) uses
+# and what the two-job CI split (android-native.yaml, android-sdk.yaml) uses
 # so a binding job can read an artifact instead of rebuilding.
 build-android-so:
     ./scripts/nix-build-android-so.sh
 
 # The Kotlin bindings, read out of an already-built .so.
-build-kotlin-bindings:
-    ./scripts/generate-kotlin-bindings.sh
+build-android-bindings:
+    ./scripts/generate-android-bindings.sh
 
-build-kotlin:
+build-android-sdk:
     ./scripts/build-android-sdk.sh
 
 # Compile the library and the demo app against the freshly generated bindings.
-test-kotlin: build-kotlin
+test-android-sdk: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug
 
-# Assemble the release AAR (publishing is not wired up yet).
-build-android-aar: build-kotlin
+# The example APK the E2E suite installs: the native library, the Kotlin generated
+# from it, then Gradle, all in the lean `.#android` shell (Android SDK and a
+# JDK — no emulator, no devimint). CI runs the same three steps as one job each
+# (native, bindings, apk), each handed the last one's output. It is a separate
+# step from `test-android-e2e` on purpose: a Gradle
+# build alongside an emulator and a devimint federation starves the emulator
+# until Android's System UI stops responding, so the build finishes — daemon
+# and all — before either of those starts.
+build-android-apk:
+    nix develop --accept-flake-config .#android -c bash -c './scripts/build-android-sdk.sh && cd android && ./gradlew :app:assembleDebug'
+
+# Boot an emulator, install the example app and drive it with the Appium suite
+# (js/android/integration-tests) against a devimint federation — the Android
+# counterpart of `just test`, which does the same for the wasm client, through
+# the same scripts/setup_test_shell.sh. There is deliberately no federation-free
+# variant: one way to run this suite, so what CI does and what you can
+# reproduce are the same thing. Builds the APK first (see build-android-apk);
+# the script itself only installs one.
+test-android-e2e: build-android-apk
+    nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+
+# Test the release gates: the version and changelog scripts the release, tag
+# and bump workflows rely on. Needs only bash and git, no build.
+test-android-sdk-scripts:
+    ./scripts/test-android-sdk-scripts.sh
+
+# Assemble the release AAR. Publishing to Maven Central is .github/workflows/android-sdk-release.yaml.
+build-android-aar: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease
 
 # Non-nix escape hatch: cross-compile + generate locally with cargo-ndk.
@@ -26,8 +52,93 @@ build-android-aar: build-kotlin
 build-android-local:
     nix develop --accept-flake-config .#android -c ./scripts/build-android-sdk.sh --local
 
+# Boot the emulator the React Native example apps run on (created on first use, see the
+# script). Leave it running; pass emulator flags after the recipe name, e.g. -no-window.
+rn-android-emulator *ARGS:
+    nix develop --accept-flake-config .#rn-android-emulator -c scripts/rn-android-emulator.sh {{ARGS}}
+
+# Build and install one example app (react-native or expo-app) on the running emulator or a
+# connected device and launch it, from the same shell as the emulator so one adb owns the device.
+# Needs `just build-rn-android` first. See the script for why this is not `react-native
+# run-android`.
+rn-android-example app="react-native":
+    nix develop --accept-flake-config .#rn-android-emulator -c scripts/rn-android-example.sh {{app}}
+
+# The Apple native libraries only (.a), one per target. Shared by every Apple
+# binding generator, the same way build-android-so is for Android.
+#
+# Not a Nix build: every Apple target compiles against an SDK that ships inside
+# Xcode and cannot live in the store, so there is no cacheable derivation to
+# make. `.#ios` supplies the Rust targets and the C build tools; Xcode supplies
+# the SDKs. macOS host with Xcode required.
+#
+# IOS_TARGETS="aarch64-apple-darwin" narrows it to the host slice, which is all
+# `test-swift` needs and is roughly a quarter of the work.
+build-ios-lib:
+    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-lib.sh
+
+# The Apple native libraries via Nix — cachix-cached, see nix/ffi.nix. Nothing
+# compiles locally when the cache is warm; a cold run cross-compiles the crate
+# (heavy: rocksdb + aws-lc from C). This is what `build-swift` uses by default.
+build-ios-lib-nix:
+    ./scripts/nix-build-ios-lib.sh
+
+# The Swift bindings, read out of an already-built .a.
+build-swift-bindings:
+    ./scripts/generate-swift-bindings.sh
+
+build-swift:
+    ./scripts/build-ios-sdk.sh
+
+# Non-nix escape hatch: cross-compile locally with plain cargo instead of
+# fetching from Cachix, for a machine that cannot or should not use Nix.
+# Needs the `.#ios` shell (Apple Rust targets, cmake/perl/go for aws-lc-sys).
+build-swift-local:
+    nix develop --accept-flake-config .#ios -c ./scripts/build-ios-sdk.sh --local
+
+# Runs on the macOS slice of the XCFramework — no simulator boot needed.
+test-swift: build-swift
+    swift test --package-path ios
+
+# Compile the demo app against the freshly generated bindings, the Swift
+# counterpart of `test-android-sdk`'s :app:assembleDebug. The .xcodeproj is
+# generated from the committed project.yml and gitignored.
+# No ARCHS override: this depends on `build-swift`, whose default target set
+# includes both simulator architectures, so the lipo'd slice satisfies the
+# generic destination. A subset build (IOS_TARGETS) needs ARCHS narrowed to
+# match — see .github/workflows/swift-sdk.yaml.
+build-ios-demo: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Demo && xcodegen generate'
+    cd ios/Demo && xcodebuild build -project FedimintDemo.xcodeproj -scheme FedimintDemo -destination 'generic/platform=iOS Simulator'
+
 test:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test
+
+# The browser package's bindings, regenerated from the Nix-built wasm module. Run after any
+# change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-web-bindings:
+    nix develop --accept-flake-config .#wasm -c pnpm --dir js install
+    nix develop --accept-flake-config .#wasm -c scripts/generate-sdk-web-bindings.sh
+
+# The React Native package's bindings, regenerated from the nix-built Android libraries. Run after
+# any change to rust/fedimint-sdk's UniFFI surface and commit the result; CI checks it is fresh.
+generate-sdk-rn-bindings:
+    nix develop --accept-flake-config .#android -c pnpm --dir js install
+    nix develop --accept-flake-config .#android -c scripts/generate-sdk-rn-bindings.sh
+
+# Regenerate, then build the two React Native packages' JavaScript (what CI's Build Android does).
+build-rn-android: generate-sdk-rn-bindings
+    nix develop --accept-flake-config .#android -c pnpm --dir js run build:reactnative
+
+# iOS: cargo cross-compiles rust/fedimint-sdk inside the `.#ios` shell (macOS with Xcode only),
+# ubrn assembles the xcframework and regenerates the bindings. UBRN_IOS_TARGETS (comma separated)
+# narrows the slices; CI passes aarch64-apple-ios on pull requests. NIX_CONFIG serialises the
+# build so rocksdb and aws-lc-sys do not exhaust macos-latest's memory.
+build-rn-ios:
+    nix develop --accept-flake-config .#ios -c pnpm --dir js install
+    NIX_CONFIG=$'max-jobs = 1\ncores = 1' \
+      nix develop --accept-flake-config .#ios -c scripts/build-sdk-rn-ios.sh
+    nix develop --accept-flake-config .#ios -c pnpm --dir js run build:reactnative
 
 test-coverage:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:coverage

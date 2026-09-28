@@ -1,6 +1,11 @@
+# Read by `ubrn build android|ios` (scripts/generate-sdk-rn-bindings.sh,
+# scripts/build-sdk-rn-ios.sh): where the crate is, what to name the turbo-module, where the
+# generated code lands. `cargoExtras` names the crate feature that holds the UniFFI surface for
+# the builds ubrn drives itself (iOS); the Android libraries come prebuilt from nix and are read
+# with `--no-cargo`.
 rust:
-  directory: ../../../
-  manifestPath: rust/fedimint-client-uniffi/Cargo.toml
+  directory: ../../../rust
+  manifestPath: fedimint-sdk/Cargo.toml
 
 bindings:
   name: FedimintReactNativeBindings
@@ -13,6 +18,7 @@ android:
     - arm64-v8a
     - x86_64
   useSharedLibrary: true
+  cargoExtras: ["--features", "uniffi"]
 
 ios:
   tags: [ios]
@@ -20,6 +26,4 @@ ios:
     - aarch64-apple-ios
     - aarch64-apple-ios-sim
     - x86_64-apple-ios
-  frameworks: # Needed for rust bindings to work on iOS
-    - SystemConfiguration
-    - Security
+  cargoExtras: ["--features", "uniffi"]

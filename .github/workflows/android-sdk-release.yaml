@@ -1,0 +1,265 @@
+name: Android SDK Release
+
+# Publishes the Android SDK, org.fedimint:sdk, to Maven Central
+# through the Sonatype Central Portal.
+#
+# `version` checks the version and its release notes first, so a bad tag
+# fails in seconds rather than after the whole chain. `chain` then runs the
+# whole of android-sdk.yaml on the release commit: the native library, the
+# bindings read out of it, the AAR, and the example app driven on an emulator.
+# `publish` runs only if all of that passed. It reuses chain's tested inputs,
+# the jniLibs and bindings artifacts, rather than building them again, and
+# Gradle assembles the published AAR from them. So what is uploaded is a
+# fresh AAR from the tested native libraries and bindings, not the archive
+# chain assembled.
+# `github-release` then drafts the version's GitHub Release from its
+# android/CHANGELOG.md section.
+#
+# The upload is not a release. The Gradle build uses
+# `publishToMavenCentral(automaticRelease = false)`, so the job ends once the
+# upload is done. Central then validates the deployment (signatures, POM,
+# sources and javadoc jars) on its own, and this workflow does not wait for
+# that. A green run means uploaded, not validated. The deployment then waits
+# on central.sonatype.com (Publishing → Deployments) until someone presses
+# Publish. That is the last chance to drop a bad upload, because a version
+# released to Central can never be changed or deleted.
+#
+# To release:
+#
+#   1. Run android-sdk-version-bump.yaml (Actions → Android SDK Version Bump).
+#      It opens a pull request that sets `fedimintSdk` in
+#      android/gradle/libs.versions.toml and drafts the version's section in
+#      android/CHANGELOG.md. android/README.md's "Versioning" says which bump
+#      to pick.
+#   2. Rewrite the drafted notes for users in that pull request, and merge it.
+#      android-sdk-tag.yaml then tags the merge commit `android-sdk-v<version>`
+#      and starts this workflow on the tag.
+#   3. Approve the `maven-central` environment when the run asks.
+#   4. On central.sonatype.com, wait for the deployment to show VALIDATED
+#      (FAILED comes with the reason), then press Publish.
+#   5. Publish the version's draft GitHub Release.
+#
+# Pushing a `android-sdk-v*` tag by hand still releases too, and the checks
+# are the same either way.
+#
+# A manual run (workflow_dispatch) is a dry run by default. It runs the same
+# chain, signs the artifacts and publishes them to a local Maven repository,
+# which is uploaded as the `maven-central-dry-run` artifact for inspection.
+# With `publish` ticked it uploads to Central like a tag push. That is how
+# android-sdk-tag.yaml starts a release, and how to re-run one whose tag
+# already exists.
+#
+# Secrets, all four on the `maven-central` environment and none at
+# repository level. Only jobs in that environment can read them, and only
+# after its required reviewers approve. The environment must have required
+# reviewers configured (Settings → Environments → maven-central): naming it
+# here does not add any on its own.
+#
+#   MAVEN_CENTRAL_USERNAME       Central Portal user token, name part
+#   MAVEN_CENTRAL_PASSWORD       Central Portal user token, secret part
+#   MAVEN_SIGNING_KEY            ASCII-armored GPG private key
+#                                (gpg --export-secret-keys --armor <key id>)
+#   MAVEN_SIGNING_KEY_PASSWORD   its passphrase
+#
+# The key's public half must be on a keyserver Central checks, such as
+# keys.openpgp.org, or validation fails.
+#
+# Snapshots are not part of this. android-sdk-snapshot.yaml publishes
+# `<branch>-<commit>-SNAPSHOT` from whichever branch it is run on, by hand
+# only.
+
+on:
+  push:
+    tags:
+      - 'android-sdk-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to Maven Central (unticked: dry run into a local Maven repository)'
+        type: boolean
+        default: false
+
+# Two releases in flight would race for the same version. Queue them and
+# never cancel one partway through an upload.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: 'Check the version'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The catalog sets the version the artifacts are built with.
+      # scripts/android-sdk-version.sh holds the rules, the same ones the bump
+      # workflow uses:
+      #
+      #   * it is a beta or a release, `X.Y.Z-beta.N` or `X.Y.Z`;
+      #   * on a tag, it is the version the tag names, or the upload would go
+      #     out under a version nobody tagged;
+      #   * it is newer than every `android-sdk-v*` tag already pushed, so a
+      #     release can never reuse a version or go below the latest. A tag's
+      #     own run leaves that tag out.
+      #
+      # A dry run checks all of it too, so a bad version shows up before
+      # anything is tagged.
+      #
+      # The version also needs its notes: a finished `## <version>` section in
+      # android/CHANGELOG.md, which becomes its GitHub Release. A section
+      # still marked as a draft does not count.
+      - name: 'Check the version'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(scripts/android-sdk-version.sh current)"
+          except=()
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag_version="${GITHUB_REF_NAME#android-sdk-v}"
+            if [[ "$tag_version" != "$version" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is version $tag_version, but libs.versions.toml's fedimintSdk is $version"
+              exit 1
+            fi
+            except=(--except "$version")
+          fi
+          released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/android-sdk-v" \
+            --jq '.[].ref | ltrimstr("refs/tags/android-sdk-v")')"
+          scripts/android-sdk-version.sh check-newer "$version" "${except[@]}" <<<"$released"
+          scripts/android-sdk-changelog.sh check "$version"
+          echo "Version $version"
+
+      # An upload has to come from a tag, so that the check above has a tag to
+      # hold the version to. A tag push always does. A manual run may not.
+      - name: 'Refuse to upload from a branch'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type != 'tag'
+        run: |
+          echo "::error::uploading to Maven Central needs a android-sdk-v* tag; run this workflow from the tag, not from $GITHUB_REF_NAME"
+          exit 1
+
+  chain:
+    name: 'Build and test'
+    needs: version
+    uses: ./.github/workflows/android-sdk.yaml
+    secrets: inherit
+
+  publish:
+    name: ${{ (github.event_name == 'push' || inputs.publish) && 'Publish to Maven Central' || 'Dry run' }}
+    needs: chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # The `maven-central` environment holds the Central token and the
+    # signing key, and its required reviewers approve the upload. See the
+    # secrets note at the top of this file.
+    environment: maven-central
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Both are build outputs and gitignored, so both are put back from what
+      # `chain` produced and tested.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
+      - name: 'Set up JDK'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 'Set up Gradle'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # A release build should not write a cache that later PR builds
+          # would pick up.
+          cache-read-only: true
+
+      - name: 'Publish to Maven Central'
+        if: github.event_name == 'push' || inputs.publish
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew :fedimint-sdk:publishToMavenCentral
+
+      - name: 'Dry run: publish to a local Maven repository'
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew :fedimint-sdk:publishToMavenLocal -Dmaven.repo.local="$RUNNER_TEMP/m2"
+
+      - name: 'Upload the dry-run repository'
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-central-dry-run
+          path: ${{ runner.temp }}/m2/org/fedimint/
+          if-no-files-found: error
+
+  # The version's GitHub Release, with its android/CHANGELOG.md section as the
+  # notes, so the tag has a page saying what changed. It is a draft because
+  # this workflow cannot see Central's Publish button: publish the draft once
+  # the version is published on Central. A beta is marked as a pre-release.
+  # Re-running a release updates the draft's notes rather than failing.
+  github-release:
+    name: 'Draft the GitHub Release'
+    needs: publish
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Create or update the draft'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#android-sdk-v}"
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            scripts/android-sdk-changelog.sh section "$version"
+            # The backticks are a Markdown code fence, not an expansion.
+            # shellcheck disable=SC2016
+            printf '\n```kotlin\nimplementation("org.fedimint:sdk:%s")\n```\n' "$version"
+          } >"$notes"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$notes"
+            exit 0
+          fi
+          prerelease=()
+          if [[ "$version" == *-beta.* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$TAG" --draft --verify-tag "${prerelease[@]}" \
+            --title "Android SDK $version" --notes-file "$notes"

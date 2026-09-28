@@ -17,7 +17,8 @@
 //!
 //! ```ignore
 //! // in ffi/ecash.rs, next to EcashSendHandle itself
-//! #[uniffi::export(async_runtime = "tokio")]
+//! #[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+//! #[cfg_attr(target_family = "wasm", uniffi::export)]
 //! impl Ecash {
 //!     #[uniffi::method(name = "send")]
 //!     pub async fn ffi_send(&self, quote: &EcashQuote) -> Result<EcashSendHandle> { /* ... */ }

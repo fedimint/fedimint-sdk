@@ -79,15 +79,71 @@
         # `playwright` version in pnpm-lock.yaml, not the fedimint bump.
         playwrightBrowsers =
           (import nixpkgs-playwright { inherit system; }).playwright-driver.browsers;
-        # No emulator system images: nothing in this repo runs an emulator, and
-        # each ABI's image adds gigabytes to the dev shell closure.
-        androidSdk = pkgs.androidenv.composeAndroidPackages {
+        # The SDK the Gradle builds and `cargo ndk` need. The emulator and its system image
+        # add gigabytes to the closure, so they live in a second composition used only by the
+        # `.#rn-android-emulator` shell (scripts/rn-android-emulator.sh).
+        mkAndroidSdk = extra: pkgs.androidenv.composeAndroidPackages ({
           includeNDK = true;
           toolsVersion = "26.1.1";
           ndkVersions = ["27.1.12297006"];
-          buildToolsVersions = ["36.0.0"];
+          # The CMake the Android Gradle plugin asks for when a module does not pin one (React
+          # Native's app template); the SDK directory is read-only, so it cannot fetch it itself.
+          cmakeVersions = ["3.22.1"];
+          # 35.0.0 is what the Android Gradle plugin picks for a library module that names no
+          # version, the React Native bindings package among them; 36.0.0 is what the apps name.
+          buildToolsVersions = ["35.0.0" "36.0.0"];
           platformVersions = ["36"];
           cmdLineToolsVersion = "13.0";
+        } // extra);
+        androidSdk = mkAndroidSdk { };
+        # One x86_64 Google APIs image for the platform above; the React Native bindings ship
+        # arm64-v8a and x86_64, so this is the emulator ABI they run on.
+        rnAndroidEmulatorSdk = mkAndroidSdk {
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = ["google_apis"];
+          abiVersions = ["x86_64"];
+        };
+
+        # Xcode wrapper to expose system tools in the impure Nix shell.
+        xcode-wrapper = pkgs.stdenv.mkDerivation {
+          name = "xcode-wrapper-impure";
+          # Fails in sandbox. Use `--option sandbox relaxed` or `--option sandbox false`.
+          __noChroot = true;
+          buildCommand = ''
+            mkdir -p $out/bin
+            ln -s /usr/bin/ld $out/bin/ld
+            ln -s /usr/bin/clang $out/bin/clang
+            ln -s /usr/bin/clang++ $out/bin/clang++
+            # ln -s /usr/bin/xcodebuild $out/bin/xcodebuild
+            ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
+            ln -s /usr/bin/xcrun $out/bin/xcrun
+            ln -s /usr/bin/xcode-select $out/bin/xcode-select
+            ln -s /usr/bin/security $out/bin/security
+            ln -s /usr/bin/codesign $out/bin/codesign
+          '';
+        };
+
+        # The wasm2 binding generator and the wasm-bindgen version it shells out to. See
+        # nix/web-bindgen.nix.
+        webBindgen = import ./nix/web-bindgen.nix { inherit pkgs; };
+
+        # The emulator SDK for the android-tests shell, which boots a device to
+        # run the Appium suite against. Separate from rnAndroidEmulatorSdk above
+        # because the suite's AVD needs the host's ABI and the android-34 image.
+        # arm64-v8a on Apple Silicon hosts runs with hardware acceleration
+        # (Hypervisor.framework); x86_64 elsewhere (Intel Mac, Linux CI).
+        #
+        # platformVersions carries 34 alongside the 36 the Gradle project
+        # compiles against: the AVD this shell boots runs the android-34
+        # system image.
+        androidEmulatorAbi = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64-v8a" else "x86_64";
+        androidTestsSdk = mkAndroidSdk {
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = ["google_apis"];
+          abiVersions = [androidEmulatorAbi];
+          platformVersions = ["34" "36"];
         };
 
         fenixPkgs = fenix.packages.${system};
@@ -106,6 +162,17 @@
           "x86_64-linux-android"
         ];
 
+        # Apple targets for the Swift iOS SDK and React Native (ubrn): device slice,
+        # both simulator architectures, plus host aarch64-apple-darwin so package
+        # tests (`swift test --package-path ios`) run on the host without booting a
+        # simulator.
+        iosToolchain = mkToolchain [
+          "aarch64-apple-ios"
+          "aarch64-apple-ios-sim"
+          "x86_64-apple-ios"
+          "aarch64-apple-darwin"
+        ];
+
         wasmToolchain = mkToolchain [
           "wasm32-unknown-unknown"
         ];
@@ -118,7 +185,6 @@
           commonNativeBuildInputs = [
             pkgs.pnpm
             pkgs.nodejs_24
-            pkgs.gh
             pkgs.zip
             pkgs.coreutils
             pkgs.patch
@@ -132,8 +198,33 @@
             export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
           '';
 
+          # The daemons devimint drives, and devimint itself. Shared by the two
+          # shells that stand a federation up: `wasm-tests` runs the browser
+          # client against it, `android-tests` the Android one. Neither list
+          # mentions the other's client, so the Android shell never pulls the
+          # Playwright browser bundles and the wasm shell never pulls an
+          # emulator image.
+          devimintNativeBuildInputs = [
+            pkgs.bitcoind
+            pkgs.electrs
+            pkgs.jq
+            pkgs.lnd
+            pkgs.netcat
+            pkgs.perl
+            pkgs.esplora-electrs
+            pkgs.procps
+            pkgs.which
+            fedimint.packages.${system}.devimint
+            fedimint.packages.${system}.gateway-pkgs
+            fedimint.packages.${system}.fedimint-pkgs
+            fedimint.packages.${system}.fedimint-recurringd
+            fedimint.packages.${system}.fedimint-recurringdv2
+          ];
+
           # Dependencies that were previously common, likely for general dev/testing/wasm
           wasmNativeBuildInputs = commonNativeBuildInputs ++ [
+            # wasm-opt, the last step of scripts/generate-sdk-web-bindings.sh.
+            pkgs.binaryen
             pkgs.bitcoind
             pkgs.electrs
             pkgs.jq
@@ -148,6 +239,8 @@
             pkgs.cmake
             pkgs.rustPlatform.bindgenHook
             playwrightBrowsers
+            webBindgen.ubrn
+            webBindgen.wasm-bindgen-cli
           ];
 
           wasmShellHook = ''
@@ -166,8 +259,8 @@
             fi
           '';
 
-          androidShellHook = ''
-            export ANDROID_HOME=${androidSdk.androidsdk}/libexec/android-sdk
+          mkAndroidShellHook = sdk: ''
+            export ANDROID_HOME=${sdk.androidsdk}/libexec/android-sdk
             export ANDROID_SDK_ROOT=$ANDROID_HOME
             export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
             export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
@@ -216,6 +309,134 @@
               export CLANG_PATH="$TOOLCHAIN/bin/clang"
             fi
 
+            # ./gradlew needs a JVM, and so do avdmanager and the uiautomator2
+            # driver. Every android shell carries one so that assembling the example app
+            # APK needs nothing from outside the shell: it is what lets CI build
+            # the APK in the lean `android` shell, on a machine that never
+            # boots an emulator or stands a federation up.
+            export JAVA_HOME="${pkgs.jdk17.home}"
+            export PATH="$JAVA_HOME/bin:$PATH"
+
+          '';
+
+          # Adds: emulator/platform-tools/cmdline-tools on PATH, a repo-local
+          # APPIUM_HOME + ANDROID_AVD_HOME (so driver installs and AVDs don't
+          # land in ~/.appium / ~/.android on a contributor's machine), and
+          # the pnpm-installed `appium` binary on PATH. Appium itself is a
+          # plain npm devDependency of js/android/integration-tests
+          # (see its package.json), not a Nix package — only the Android SDK/
+          # emulator toolchain it drives comes from Nix here.
+          androidTestsShellHook = mkAndroidShellHook androidTestsSdk + ''
+            REPO_ROOT=$(git rev-parse --show-toplevel)
+
+            export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+            # js/pnpm-workspace.yaml sets `nodeLinker: hoisted`, so pnpm links every
+            # workspace package's binaries into the root node_modules/.bin.
+            export PATH="$REPO_ROOT/js/node_modules/.bin:$PATH"
+
+            export APPIUM_HOME="$REPO_ROOT/js/android/integration-tests/.appium"
+            mkdir -p "$APPIUM_HOME"
+            export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
+            mkdir -p "$ANDROID_AVD_HOME"
+          '';
+
+          mkAndroidShell = sdk: pkgs.mkShell {
+            # Set as derivation env var so it can't be overridden by user shell profiles
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              sdk.androidsdk
+              # The JDK Gradle runs on, the version CI's android-sdk workflow installs too.
+              pkgs.jdk17
+              # scripts/rn-android-example.sh asks Metro whether it is up.
+              pkgs.curl
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.go
+              pkgs.cargo-ndk
+              pkgs.libclang # Often needed for bindgen
+              androidToolchain
+              # The binding generator scripts/generate-sdk-rn-bindings.sh runs over the built .so.
+              webBindgen.ubrn
+            ];
+            shellHook = commonShellHook + mkAndroidShellHook sdk;
+          };
+          iosShellHook = ''
+            export PATH=${xcode-wrapper}/bin:$PATH
+
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                unset SDKROOT
+                unset NIX_CFLAGS_COMPILE
+                unset NIX_LDFLAGS
+
+                # Unset generic compiler variables to avoid Nix wrapper.
+                unset CC CXX LD AR NM RANLIB
+
+                # Force usage of system tools found in PATH (via xcode-wrapper).
+                export AR=/usr/bin/ar
+                export CC=clang
+                export CXX=clang++
+
+                # Explicitly set compilers for targets to system clang.
+                export CC_aarch64_apple_ios=clang
+                export CC_x86_64_apple_ios=clang
+                export CC_aarch64_apple_darwin=clang
+                export CC_x86_64_apple_darwin=clang
+
+                export CXX_aarch64_apple_ios=clang++
+                export CXX_x86_64_apple_ios=clang++
+                export CXX_aarch64_apple_darwin=clang++
+                export CXX_x86_64_apple_darwin=clang++
+
+                # Bypass Nix's cc-wrapper for host builds: it hardcodes --sysroot to an
+                # incompatible apple-sdk-11 store path that lacks libSystem.dylib on modern
+                # macOS runners, causing "symbol not found" errors for _writev, _sysconf, etc.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+
+                unset CC_aarch64_apple_ios_sim
+                unset CC_x86_64_apple_ios_sim
+                unset LD_aarch64_apple_ios LD_aarch64_apple_darwin LD_aarch64_apple_ios_sim
+                unset LD_x86_64_apple_ios LD_x86_64_apple_ios_sim LD_x86_64_apple_darwin
+
+                # Unset Nix include paths to prevent interference with system SDK.
+                unset CPATH
+                unset C_INCLUDE_PATH
+                unset CPLUS_INCLUDE_PATH
+                unset OBJC_INCLUDE_PATH
+
+                # Force usage of system Xcode.
+                export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+                # Do NOT set SDKROOT globally; let xcrun/rustc find the correct one (iphoneos
+                # vs iphonesimulator).
+                unset SDKROOT
+
+                export SNAPPY_STATIC=1
+
+                # Set deployment targets.
+                export MACOSX_DEPLOYMENT_TARGET="15.0"
+                export IPHONEOS_DEPLOYMENT_TARGET="15.0"
+
+                # Force bindgen to use Xcode clang instead of any Homebrew/system LLVM. This
+                # prevents aws-lc-sys build failures when Homebrew LLVM is installed.
+                export CLANG_PATH=$(xcrun --find clang 2>/dev/null || which clang)
+
+                # Set BINDGEN_EXTRA_CLANG_ARGS for iOS cross-compilation targets.
+                IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
+                SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)
+                if [ -n "$IOS_SDKROOT" ]; then
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
+                fi
+                if [ -n "$SIM_SDKROOT" ]; then
+                  # x86_64 and aarch64-sim need the simulator SDK (iPhoneOS SDK is ARM-only).
+                  export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
+                  # aws-lc-sys bundles an older bindgen that passes "aarch64-apple-ios-sim" to
+                  # clang, but clang expects "aarch64-apple-ios-simulator". Override the target
+                  # explicitly. See https://github.com/rust-lang/rust-bindgen/pull/3182.
+                  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--sysroot=$SIM_SDKROOT --target=arm64-apple-ios-simulator"
+                fi
+
+            fi
           '';
         in {
           default = pkgs.mkShell {
@@ -227,30 +448,124 @@
              shellHook = wasmShellHook;
           };
 
-          android = pkgs.mkShell {
+          android = mkAndroidShell androidSdk;
+          # The same shell plus the emulator and one system image, for running the React Native
+          # example apps: `just rn-android-emulator` boots the device, `just rn-android-example`
+          # installs an app on it. Both run in this one shell so a single `adb` talks to the
+          # device; two adb builds on one machine keep restarting each other's server and leave
+          # it "offline".
+          rn-android-emulator = mkAndroidShell rnAndroidEmulatorSdk;
+
+          # macOS only. Cargo cross-compiles rust/fedimint-sdk for the three iOS slices with
+          # Xcode's toolchain; ubrn assembles the xcframework and regenerates the bindings
+          # (just build-rn-ios).
+          ios = pkgs.mkShellNoCC {
             # Set as derivation env var so it can't be overridden by user shell profiles
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
-              androidSdk.androidsdk
+               pkgs.cmake
+               pkgs.go
+               pkgs.libclang # Needed for bindgen (aws-lc-sys etc.)
+               iosToolchain
+               webBindgen.ubrn
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+               xcode-wrapper
+            ];
+            shellHook = commonShellHook + iosShellHook;
+          };
+
+          # For js/android/integration-tests: everything `android` gives
+          # you, plus a bootable emulator, appium's PATH/APPIUM_HOME wiring,
+          # and devimint, so the suite can run against the same local
+          # federation the wasm tests use (scripts/setup_test_shell.sh execs
+          # the runner inside `devimint wasm-test-setup`). Kept separate from
+          # `android` so the plain FFI build shell doesn't pay for the
+          # emulator system image or the federation daemons it never runs.
+          android-tests = pkgs.mkShell {
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              # The shell hook and E2E runner use git to find the repo root.
+              pkgs.git
+              androidTestsSdk.androidsdk
               pkgs.cmake
               pkgs.gnumake
               pkgs.go
               pkgs.cargo-ndk
-              pkgs.libclang # Often needed for bindgen
+              pkgs.libclang
               androidToolchain
-            ];
-            shellHook = commonShellHook + androidShellHook;
+              # curl backs the Appium server health-check in
+              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # present, like `ps`/`lsof`, on minimal self-hosted runners).
+              pkgs.curl
+              # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
+              pkgs.jdk17
+            ] ++ devimintNativeBuildInputs;
+            shellHook = commonShellHook + androidTestsShellHook;
           };
 
+          # The federation half comes from the same list `android-tests` uses,
+          # so the two shells cannot drift. The daemons it repeats from
+          # wasmNativeBuildInputs are harmless duplicates.
           wasm-tests = pkgs.mkShell {
-             nativeBuildInputs = wasmNativeBuildInputs ++ [
-               fedimint.packages.${system}.devimint
-               fedimint.packages.${system}.gateway-pkgs
-               fedimint.packages.${system}.fedimint-pkgs
-               fedimint.packages.${system}.fedimint-recurringd
-               fedimint.packages.${system}.fedimint-recurringdv2
-             ] ++ [ wasmToolchain ];
+             nativeBuildInputs = wasmNativeBuildInputs ++ devimintNativeBuildInputs ++ [ wasmToolchain ];
              shellHook = wasmShellHook;
+          };
+        } // nixpkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          # Darwin-only: every target in `iosToolchain` compiles against an SDK
+          # that ships with Xcode, so the shell is useless on Linux and
+          # `eachDefaultSystem` would otherwise expose a broken `.#ios` there.
+          #
+          # Note this shell deliberately does *not* include `commonShellHook`:
+          # that exports `pkgs.libclang`, and bindgen must see the *Apple* SDK
+          # headers instead. See LIBCLANG_PATH below.
+          ios = pkgs.mkShell {
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              iosToolchain
+              # For aws-lc-sys's and librocksdb-sys's C/C++ sources: the same
+              # set nix/ffi.nix passes to the Android cross-compile, carried
+              # over so the two shells do not drift. In practice the Apple
+              # builds have only been observed to need `cmake` and `perl`;
+              # `gnumake`, `go` and `python3` are here because aws-lc and ring
+              # reach for them on some configurations and finding that out
+              # halfway through a 5-minute cross-compile is worse than the
+              # closure size.
+              pkgs.cmake
+              pkgs.gnumake
+              pkgs.perl
+              pkgs.go
+              pkgs.python3
+              # Generates ios/Demo/FedimintDemo.xcodeproj from the committed
+              # project.yml, so the Xcode project is a build output like every
+              # other generated file here.
+              pkgs.xcodegen
+            ];
+            shellHook = ''
+              # Xcode's libclang, NOT pkgs.libclang. bindgen (librocksdb-sys,
+              # aws-lc-sys) has to resolve headers out of the iPhoneOS /
+              # MacOSX SDK, and the nixpkgs build has no Apple sysroot at all —
+              # it fails with "'stdint.h' file not found" on the first header.
+              # This is the exact inverse of what androidShellHook wants, which
+              # is why that hook is not reused here.
+              export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+
+              # Both of these mirror androidShellHook rather than fixing an
+              # observed Apple failure: the Apple targets have been built
+              # without either. They are set so this shell and the Android one
+              # drive the same dependency graph the same way — aws-lc-sys's
+              # "bindgen" feature (enabled through fedimint-connectors) can
+              # otherwise fall back to a CMake source build whose CMakeLists.txt
+              # references files the crates.io tarball does not ship, and the
+              # cc-only builder compiles the same sources without touching them.
+              # Drop them if they ever get in the way; nothing here depends on
+              # them.
+              export AWS_LC_SYS_CMAKE_BUILDER=0
+              export ROCKSDB_STATIC=1
+
+              # CC/CXX are deliberately left unset, unlike androidShellHook: the
+              # `cc` and `cmake` crates must reach Xcode's clang through
+              # `xcrun` with the right `-target`/`-isysroot` per Apple triple,
+              # and pinning a single compiler here would break three of the four.
+            '';
           };
         };
         packages =
@@ -258,7 +573,9 @@
           # feature for Android, plus the Kotlin bindings generated from them:
           # `fedimint-sdk-android` (jniLibs + Kotlin), `fedimint-sdk-android-jni`
           # (jniLibs only — the React-Native-reusable half), and per-target
-          # `.so` / `-deps` derivations. See nix/ffi.nix.
+          # `.so` / `-deps` derivations. Also `fedimint-sdk-wasm` (the wasm32
+          # module the web binding is generated from) and its `-deps` build.
+          # See nix/ffi.nix.
           import ./nix/ffi.nix {
             inherit
               system
@@ -269,6 +586,10 @@
           }
           // {
             wasmBundle = fedimint-wasm.packages.${system}.wasmBundle;
+            # The wasm2 binding generator and the wasm-bindgen version it shells out to.
+            # See nix/web-bindgen.nix.
+            ubrn = webBindgen.ubrn;
+            wasm-bindgen-cli = webBindgen.wasm-bindgen-cli;
           };
       }
     );

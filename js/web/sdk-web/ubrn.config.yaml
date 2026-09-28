@@ -1,0 +1,9 @@
+# Read by `ubrn build wasm2` (scripts/generate-sdk-web-bindings.sh): where the crate is and
+# where the TypeScript lands. `features` names the crate feature that holds the UniFFI surface.
+rust:
+  directory: ../../../rust
+  manifestPath: fedimint-sdk/Cargo.toml
+
+wasm2:
+  ts: src/generated
+  features: [uniffi]

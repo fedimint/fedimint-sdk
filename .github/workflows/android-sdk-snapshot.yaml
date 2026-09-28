@@ -1,0 +1,130 @@
+name: Android SDK Snapshot
+
+# Publishes org.fedimint:sdk:<branch>-<commit>-SNAPSHOT to Central's
+# snapshots repository. It only runs by hand, on whichever branch it is run
+# from (main included); nothing publishes a snapshot automatically.
+#
+# This is not part of the release cycle (android-sdk-release.yaml). The
+# version is made of the branch and the commit, whatever the catalog's
+# `fedimintSdk` says, so it never has to be bumped:
+#
+#   <branch>   the branch name, with every character a Maven version cannot
+#              hold (`/`, `#`, ...) replaced by `-`
+#   <commit>   the first 12 characters of the commit's hash
+#
+# So `feat/x` at commit 1a2b3c4d5e6f... publishes
+# `feat-x-1a2b3c4d5e6f-SNAPSHOT`. Every commit gets its own version, and a
+# snapshot always says exactly which commit it was built from. There is no
+# version that follows a branch: to try a newer commit, use its version. The
+# run's summary shows the exact version it published. Central deletes old
+# snapshots after about 90 days. To use one:
+#
+#   repositories { maven("https://central.sonatype.com/repository/maven-snapshots/") }
+#   implementation("org.fedimint:sdk:main-1a2b3c4d5e6f-SNAPSHOT")
+#
+# Like a release, it publishes only after `chain` (the whole of
+# android-sdk.yaml, emulator run included) has passed on this commit. It
+# reuses chain's tested inputs, the native libraries and the generated
+# bindings, and Gradle assembles the published AAR from them again: the
+# archive is rebuilt, not the one chain assembled. Nothing is signed,
+# because Central does not require it for snapshots, so only the Central
+# Portal token is needed.
+#
+# That token is the same one releases use: Central Portal tokens belong to
+# the account and cannot be limited to snapshots. And this job builds
+# whatever the chosen branch contains. So it runs in the same `maven-central`
+# environment as the release: it waits for the environment's required
+# reviewers, and the token lives only in that environment's secrets, never
+# at repository level. Code on an unapproved branch therefore never runs with
+# the token.
+#
+# Snapshots must be enabled for the org.fedimint namespace on
+# central.sonatype.com, or the upload is refused.
+
+on:
+  # Manual only, from any branch: Actions → Android SDK Snapshot → Run
+  # workflow, then pick the branch. It never runs by itself, not even on main.
+  workflow_dispatch:
+
+# Keyed by the commit, which the version is made from. Two runs can only
+# publish the same version when they build the same commit under branch names
+# that clean up to the same text (`feat/x` and `feat-x` at one commit). Those
+# runs build identical content from identical source, and this key makes them
+# take turns rather than upload over each other at the same time. Runs for
+# different commits publish different versions, so they may run side by side.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chain:
+    name: 'Build and test'
+    # A tag has its own release; snapshots are for branches.
+    if: github.ref_type == 'branch'
+    uses: ./.github/workflows/android-sdk.yaml
+    secrets: inherit
+
+  publish:
+    name: 'Publish the snapshot'
+    needs: chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # The approval boundary for the Central token; see the top of this file.
+    environment: maven-central
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Both are build outputs and gitignored, so both are put back from what
+      # `chain` produced and tested.
+      - name: 'Download jniLibs'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.jni-artifact }}
+          path: android/fedimint-sdk/src/main/jniLibs/
+
+      - name: 'Download the Kotlin bindings'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.chain.outputs.bindings-artifact }}
+          path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
+
+      - name: 'Set up JDK'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 'Set up Gradle'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: 'Publish to the snapshots repository'
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: |
+          # A branch name may hold `/` and other characters a Maven version
+          # (and so a repository path) cannot, so those become `-`. The commit
+          # makes the version unique to what was built; see the top of this
+          # file.
+          branch="$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          name="$branch-${GITHUB_SHA:0:12}"
+          echo "Publishing org.fedimint:sdk:$name-SNAPSHOT"
+          {
+            echo "Published \`org.fedimint:sdk:$name-SNAPSHOT\` from \`$GITHUB_REF_NAME\` at \`$GITHUB_SHA\`."
+            echo
+            echo '```kotlin'
+            echo 'repositories { maven("https://central.sonatype.com/repository/maven-snapshots/") }'
+            echo "implementation(\"org.fedimint:sdk:$name-SNAPSHOT\")"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          ./gradlew :fedimint-sdk:publishToMavenCentral -Psnapshot="$name"

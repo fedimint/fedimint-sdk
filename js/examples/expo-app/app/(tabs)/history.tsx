@@ -1,113 +1,65 @@
 import React, { useCallback, useState } from 'react'
 import { View, Text, FlatList, RefreshControl } from 'react-native'
-import { wallet, director } from '../../src/wallet'
+import {
+  ActivityStatus,
+  Direction,
+  OperationKind,
+  type ActivityItem,
+} from '@fedimint/react-native'
+import { errorMessage, federation, msatToSat } from '../../src/sdk'
 import { SectionCard, SectionTitle } from '../../src/components'
 import s from '../../src/styles'
-import type {
-  Transactions,
-  LightningTransaction,
-  EcashTransaction,
-  WalletTransaction,
-} from '@fedimint/core'
-
-type DisplayTx = {
-  operationId: string
-  label: string
-  amountMsats: number
-  incoming: boolean
-  timestamp: number
-}
-
-async function lnAmountMsats(invoice: string): Promise<number> {
-  try {
-    const parsed = await director.parseBolt11Invoice(invoice)
-    // parseBolt11Invoice returns amount in sats, convert to msats
-    return (parsed?.amount ?? 0) * 1000
-  } catch {
-    return 0
-  }
-}
-
-function txToDisplay(tx: Transactions): Omit<DisplayTx, 'amountMsats'> & {
-  amountMsatsOrPromise: number | Promise<number>
-} {
-  const base = { operationId: tx.operationId, timestamp: tx.timestamp }
-  if (tx.kind === 'ln') {
-    const lnTx = tx as LightningTransaction
-    const incoming = lnTx.type === 'receive'
-    return {
-      ...base,
-      label: incoming ? 'ln_receive' : 'ln_pay',
-      incoming,
-      amountMsatsOrPromise: lnAmountMsats(lnTx.invoice),
-    }
-  }
-  if (tx.kind === 'mint') {
-    const mintTx = tx as EcashTransaction
-    const incoming = mintTx.type === 'reissue'
-    return {
-      ...base,
-      label: incoming ? 'mint_reissue' : 'mint_spend',
-      incoming,
-      amountMsatsOrPromise: mintTx.amountMsats,
-    }
-  }
-  const walletTx = tx as WalletTransaction
-  const incoming = walletTx.type === 'deposit'
-  return {
-    ...base,
-    label: incoming ? 'wallet_deposit' : 'wallet_withdraw',
-    incoming,
-    amountMsatsOrPromise: walletTx.amountMsats,
-  }
-}
 
 export default function HistoryScreen() {
-  const [transactions, setTransactions] = useState<DisplayTx[]>([])
+  const [items, setItems] = useState<ActivityItem[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
-  const fetchTransactions = useCallback(async () => {
+  const fetchActivity = useCallback(async () => {
     setRefreshing(true)
     setError('')
     try {
-      if (!wallet || !wallet.isOpen()) {
-        setTransactions([])
+      const fed = federation()
+      if (!fed) {
+        setItems([])
         return
       }
-      const txs = (await wallet.federation.listTransactions()) ?? []
-      const mapped = txs.map(txToDisplay)
-      const resolved: DisplayTx[] = await Promise.all(
-        mapped.map(async ({ amountMsatsOrPromise, ...rest }) => ({
-          ...rest,
-          amountMsats: await amountMsatsOrPromise,
-        })),
-      )
-      setTransactions(resolved)
+      const page = await fed.activity(undefined, 50)
+      setItems(page.items)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorMessage(e))
     } finally {
       setRefreshing(false)
     }
   }, [])
 
-  const renderItem = ({ item }: { item: DisplayTx }) => {
-    const sign = item.incoming ? '+' : '-'
+  const renderItem = ({ item }: { item: ActivityItem }) => {
+    const sign =
+      item.direction === Direction.Incoming
+        ? '+'
+        : item.direction === Direction.Outgoing
+          ? '-'
+          : ''
+    const directionStyle =
+      item.direction === Direction.Incoming
+        ? s.txIncoming
+        : item.direction === Direction.Outgoing
+          ? s.txOutgoing
+          : s.value
 
     return (
       <View style={s.txItem}>
-        <Text style={[s.txType, item.incoming ? s.txIncoming : s.txOutgoing]}>
-          {item.label}
+        <Text style={[s.txType, directionStyle]}>
+          {OperationKind[item.kind]}
         </Text>
         <Text style={s.txAmount}>
           {sign}
-          {item.amountMsats} msats
+          {msatToSat(item.amount ?? 0n)} sats
         </Text>
-        {item.timestamp > 0 && (
-          <Text style={s.txDate}>
-            {new Date(item.timestamp).toLocaleString()}
-          </Text>
-        )}
+        <Text style={s.txDate}>
+          {new Date(Number(item.time)).toLocaleString()}
+        </Text>
+        <Text style={s.txDate}>{ActivityStatus[item.status]}</Text>
       </View>
     )
   }
@@ -115,17 +67,17 @@ export default function HistoryScreen() {
   return (
     <View style={s.container}>
       <FlatList
-        data={transactions}
+        data={items}
         keyExtractor={(item) => item.operationId}
         renderItem={renderItem}
         contentContainerStyle={[
           s.contentContainer,
-          transactions.length === 0 && { flex: 1 },
+          items.length === 0 && { flex: 1 },
         ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={fetchTransactions}
+            onRefresh={fetchActivity}
             tintColor="#60a5fa"
             colors={['#60a5fa']}
           />

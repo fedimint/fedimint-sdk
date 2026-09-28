@@ -1,4 +1,5 @@
 packages:
+  - 'android/*'
   - 'shared/*'
   - 'web/*'
   - 'react-native/*'
@@ -6,8 +7,24 @@ packages:
   - 'examples/*'
   - 'docs'
 
+# A flat node_modules, as npm lays it out: React Native's Gradle plugin and Metro resolve
+# packages such as @react-native/codegen from the app directory without declaring them, which
+# pnpm's default symlinked layout does not provide. pnpm 10 and later read this setting here,
+# not from .npmrc.
+nodeLinker: hoisted
+
 allowBuilds:
+  # Appium's CLI works fine without its postinstall (verified with
+  # `appium --version`); uiautomator2 is installed explicitly via
+  # `appium driver install` at test-run time instead, not via this build
+  # script. edgedriver/geckodriver are Selenium's Edge/Firefox driver
+  # downloaders, pulled in transitively — irrelevant to Android/UiAutomator2
+  # testing. All three left disabled; flip `appium` to true if a future
+  # version's postinstall turns out to matter.
+  appium: false
+  edgedriver: false
   esbuild: true
+  geckodriver: false
   secp256k1: true
   sharp: true
   simple-git-hooks: true

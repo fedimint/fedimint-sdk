@@ -211,8 +211,8 @@ async fn stored_federation_survives_restart() {
         let id = federation.id();
         let words = sdk.export_mnemonic().words();
         sdk.shutdown().await.expect("the instance shuts down");
-        // Dropped before the second build: the embedded store's own file lock lives with the
-        // handle, and `shutdown` releases this SDK's lock, not that one.
+        // Dropped before the second build: a location stays claimed until the store on it is
+        // closed, and the store is closed by the last handle over it going, not by `shutdown`.
         drop(federation);
         drop(sdk);
         (id, words)
@@ -558,7 +558,7 @@ async fn lightning_receive_is_paid_by_the_faucet_and_survives_a_restart() {
     sdk.shutdown().await.expect("shuts down");
     // Every handle goes before the second build, as in `stored_federation_survives_restart`: a
     // subscriber and a reattached operation hold the federation's store open exactly as the
-    // federation handle does, and the embedded store's own lock waits for all of them.
+    // federation handle does, and the location stays claimed until the last of them is gone.
     drop(updates);
     drop(typed);
     drop(any);

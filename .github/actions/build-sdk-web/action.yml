@@ -1,0 +1,42 @@
+name: Build SDK web bindings
+description:
+  Builds rust/fedimint-sdk for wasm32 via Nix, regenerates js/web/sdk-web's bindings
+  from it, and fails if the committed TypeScript is stale.
+
+# Cachix is already authenticated by setup-nix earlier in the calling job, so this action takes
+# no token of its own.
+runs:
+  using: 'composite'
+  steps:
+    - name: Build the SDK wasm module
+      shell: bash
+      run: nix build -L .#fedimint-sdk-wasm -o sdk-wasm
+
+    - name: Push the module to Cachix
+      # See build-wasm/action.yml for why this is explicit.
+      shell: bash
+      continue-on-error: true
+      run: readlink -f sdk-wasm | cachix push fedimint
+
+    - name: Generate the bindings and stage the module
+      # Needs ubrn, wasm-bindgen and cargo from the shell, and `pnpm install` done before, so
+      # ubrn formats with the workspace's prettier exactly as a contributor's run does.
+      shell: bash
+      run: |
+        nix develop --accept-flake-config .#wasm --command \
+          scripts/generate-sdk-web-bindings.sh "$(readlink -f sdk-wasm)/lib/fedimint_sdk.wasm"
+
+    - name: The committed bindings must match the crate
+      # Only the three files ubrn writes from the UniFFI metadata. The three wasm-bindgen glue
+      # files (`_bg.js`, `_bg.d.ts`, `_bg.wasm.d.ts`) are regenerated here for the build and
+      # test steps but not compared: wasm-bindgen 0.2.106 orders the closure exports in the
+      # first and last of them differently from run to run.
+      shell: bash
+      run: |
+        if ! git diff --exit-code -- js/web/sdk-web/src/generated/index.ts \
+            js/web/sdk-web/src/generated/fedimint_sdk.ts \
+            js/web/sdk-web/src/generated/fedimint_sdk-ffi.ts; then
+          echo "::error::js/web/sdk-web/src/generated is stale; run" \
+            "scripts/generate-sdk-web-bindings.sh" >&2
+          exit 1
+        fi

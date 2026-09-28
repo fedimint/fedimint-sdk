@@ -186,7 +186,11 @@ impl Onchain {
 // `Operation<OnchainReceiveState>`, which cannot cross at all, and `send`'s
 // real parameter is an owned `OnchainQuote`, which an object can never
 // cross as (only `Arc<OnchainQuote>` can).
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Onchain {
     /// Plans a withdrawal and returns an executable quote for it.
     ///

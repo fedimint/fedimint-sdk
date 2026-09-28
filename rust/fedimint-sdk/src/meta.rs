@@ -91,7 +91,11 @@ pub struct Meta {
     inner: Arc<MetaInner>,
 }
 
-#[cfg_attr(feature = "uniffi", uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Meta {
     /// Looks up one key in the merged view.
     ///

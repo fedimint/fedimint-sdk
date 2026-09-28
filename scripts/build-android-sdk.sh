@@ -11,15 +11,15 @@
 # than binding-only copies of them (see rust/uniffi-bindgen/DECISION.md).
 #
 #   scripts/build-android-sdk.sh            nix-build-android-so.sh, then
-#                                            generate-kotlin-bindings.sh: the
+#                                            generate-android-bindings.sh: the
 #                                            same two scripts CI runs as
 #                                            android-native.yaml and
-#                                            kotlin-sdk.yaml
+#                                            android-sdk.yaml
 #   scripts/build-android-sdk.sh --local    cross-compile locally with
 #                                            cargo-ndk instead of Nix, for a
 #                                            machine that cannot or should not
 #                                            use it, then the same
-#                                            generate-kotlin-bindings.sh
+#                                            generate-android-bindings.sh
 #
 # Only the cargo-ndk build lives here; everything else is delegated, so a
 # local build and CI can never run different bindgen invocations.
@@ -117,4 +117,4 @@ done
 # Kotlin bindings
 # ---------------------------------------------------------------------------
 
-"$ROOT/scripts/generate-kotlin-bindings.sh" "$JNI_LIBS"
+"$ROOT/scripts/generate-android-bindings.sh" "$JNI_LIBS"

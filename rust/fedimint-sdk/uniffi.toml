@@ -8,3 +8,39 @@ cdylib_name = "fedimint_sdk"
 [bindings.swift]
 module_name = "FedimintSdk"
 cdylib_name = "fedimint_sdk"
+
+# NOTE: do not add `rename = { Error = "SdkError" }` here. It is the obvious
+# fix for `crate::Error` generating a Swift class literally named `Error` — and
+# it does not work on uniffi 0.32.0. The rename pass rewrites 59 of the 63
+# references to the error converter but misses every `#[uniffi::constructor]`
+# one (`Mnemonic::generate`, `Mnemonic::from_words`, `InviteCode::parse`,
+# `Notes::parse`), which then call a `FfiConverterTypeError__as_error_lift`
+# that was emitted as `FfiConverterTypeSdkError__as_error_lift`. The generated
+# file does not compile. The alias in
+# `ios/Sources/FedimintSdk/Version.swift` gives callers the same name without
+# depending on that pass; revisit when uniffi fixes the constructor path.
+
+# Emitted as `link framework "..."` lines in FedimintSdkFFI.modulemap, which is
+# what makes the linker pull them in for anything importing the module. Both
+# are reached from the static library and neither is auto-discovered from a
+# vendored XCFramework:
+#
+#   SystemConfiguration - `netdev` (fedimint-connectors -> iroh -> netwatch ->
+#                         netdev -> system-configuration) enumerates and
+#                         monitors network interfaces through it on Apple
+#                         platforms.
+#   Security            - `tokio` and `socket2` use it for BSD socket
+#                         operations and TLS on Apple platforms.
+#   Network             - the same `netwatch` path again, for its 19 `nw_*`
+#                         calls (`nw_path_monitor_*`, `nw_interface_*`,
+#                         `nw_endpoint_*`). Needed on *iOS specifically*: a
+#                         macOS link resolves these without it, so this one
+#                         does not show up until the first simulator or device
+#                         build, which is why the demo app compiling in CI is
+#                         a real check and not a formality.
+#
+# Without these the app fails to link with undefined symbols. The first two are
+# the same frameworks, for the same reason, as
+# js/react-native/react-native-bindings' patches/add_ios_frameworks.patch, which
+# does it imperatively in a podspec.
+link_frameworks = ["SystemConfiguration", "Security", "Network"]

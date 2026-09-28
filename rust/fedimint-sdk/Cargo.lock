@@ -2388,6 +2388,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-compat",
+ "async-trait",
  "bip39",
  "cc",
  "fd-lock",
@@ -2414,14 +2415,19 @@ dependencies = [
  "fedimint-walletv2-client",
  "fedimint-walletv2-common",
  "futures",
+ "jni 0.22.4",
  "js-sys",
+ "ndk-context",
  "serde",
  "serde_json",
  "socket2 0.5.10",
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "uniffi",
+ "uniffi-runtime-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -7829,6 +7835,12 @@ dependencies = [
  "uniffi_macros",
  "uniffi_pipeline",
 ]
+
+[[package]]
+name = "uniffi-runtime-wasm"
+version = "0.31.0-5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb05d9a7313e50a448bbf2e28804c3acf477c379f25199476a7fff231b67f2f1"
 
 [[package]]
 name = "uniffi_bindgen"

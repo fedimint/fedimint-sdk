@@ -1,14 +1,11 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.maven.publish)
 }
-
-// Publishing (maven-publish / signing / the Maven Central publication) is not
-// wired up yet — this module only builds the AAR and is verified by
-// .github/workflows/kotlin-sdk.yaml. `libs.versions.fedimintSdk` still names
-// the version for whenever it is.
 
 android {
     namespace = "org.fedimint.sdk"
@@ -85,4 +82,101 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+}
+
+// Maven Central, through the Sonatype Central Portal. The coordinates are
+// org.fedimint:sdk, so an app depends on `org.fedimint:sdk:<version>` and
+// imports `org.fedimint.sdk.*`: the artifact name matches the Kotlin package
+// (uniffi.toml's package_name), with nothing added. The Gradle module is
+// still :fedimint-sdk; only the published name differs.
+//
+// The org.fedimint namespace has to be verified on central.sonatype.com
+// before the first upload. The version is `libs.versions.fedimintSdk`, the
+// Android SDK's own, which does not follow rust/fedimint-sdk's.
+//
+// `-Psnapshot=<name>` publishes `<name>-SNAPSHOT` instead, to Central's
+// snapshots repository. .github/workflows/android-sdk-snapshot.yaml passes
+// the branch and the commit, so a snapshot names exactly what it was built
+// from, e.g. `main-85bd33d6df4b-SNAPSHOT`. It is not tied to the release
+// version, so it is never bumped along with the releases.
+// Snapshots have to be enabled for the namespace on central.sonatype.com.
+//
+// Credentials and the signing key are never in the repository. Gradle reads
+// them from project properties, which CI supplies as environment variables
+// (see .github/workflows/android-sdk-release.yaml):
+//
+//   ORG_GRADLE_PROJECT_mavenCentralUsername      Central Portal user token name
+//   ORG_GRADLE_PROJECT_mavenCentralPassword      Central Portal user token secret
+//   ORG_GRADLE_PROJECT_signingInMemoryKey        ASCII-armored GPG private key
+//   ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
+//
+// A release version is always signed, so `publishToMavenLocal` needs a
+// signing key too, though any throwaway key will do. That is how to check the
+// POM and the artifact set before a release. A snapshot is signed only if a
+// key is given; Central does not require it.
+val snapshotName = providers.gradleProperty("snapshot").orNull
+require(snapshotName == null || Regex("[A-Za-z0-9._-]+").matches(snapshotName)) {
+    "-Psnapshot=$snapshotName: use only letters, digits, '.', '_' and '-'"
+}
+
+mavenPublishing {
+    // Only the release variant. The AAR carries jniLibs. The publishing
+    // workflows assemble it from the same native libraries and generated
+    // bindings that android-sdk.yaml tested, though not as the same archive
+    // file. The sources jar is the generated bindings. AGP builds the javadoc
+    // jar with its bundled Dokka, from those same bindings. Central requires
+    // both jars.
+    configure(
+        AndroidSingleVariantLibrary(
+            variant = "release",
+            sourcesJar = true,
+            publishJavadocJar = true,
+        ),
+    )
+
+    // Uploads the deployment, but does not release it. It then waits in the
+    // Central Portal until it is published there by hand, so a bad upload can
+    // still be dropped. Release on Central cannot be undone. The build also
+    // does not wait for Central to validate the deployment, so check its
+    // status in the portal. A snapshot has no deployment: it goes straight to
+    // the snapshots repository.
+    publishToMavenCentral(automaticRelease = false)
+
+    // Central rejects unsigned releases.
+    signAllPublications()
+
+    coordinates(
+        groupId = "org.fedimint",
+        artifactId = "sdk",
+        version = snapshotName?.let { "$it-SNAPSHOT" } ?: libs.versions.fedimintSdk.get(),
+    )
+
+    pom {
+        name.set("Fedimint SDK for Android")
+        description.set(
+            "Kotlin bindings for Android over fedimint-sdk, the high-level Fedimint client SDK, " +
+                "generated with UniFFI.",
+        )
+        inceptionYear.set("2024")
+        url.set("https://github.com/fedimint/fedimint-sdk")
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("https://opensource.org/licenses/MIT")
+                distribution.set("repo")
+            }
+        }
+        developers {
+            developer {
+                id.set("fedimint")
+                name.set("The Fedimint Developers")
+                url.set("https://github.com/fedimint")
+            }
+        }
+        scm {
+            url.set("https://github.com/fedimint/fedimint-sdk")
+            connection.set("scm:git:https://github.com/fedimint/fedimint-sdk.git")
+            developerConnection.set("scm:git:ssh://git@github.com/fedimint/fedimint-sdk.git")
+        }
+    }
 }

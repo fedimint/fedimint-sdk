@@ -43,6 +43,9 @@ private const val TESTNET_FEDERATION_CODE =
  * The point of this app is to *run* the native library against a real
  * federation, not just link it. Every call here is one this SDK's `uniffi`
  * feature exports; none of it is hand-written glue over the native library.
+ * That includes loading it: the generated bindings load the library
+ * themselves, the same way for this app as for any other, so nothing here
+ * has to happen first for the SDK to work.
  *
  * Threading: each section reads its inputs on the main thread, runs the SDK
  * call on `Dispatchers.IO`, and writes its result back on the main thread.

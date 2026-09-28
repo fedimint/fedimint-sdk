@@ -1,14 +1,9 @@
 import React, { useState } from 'react'
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-} from 'react-native'
+import { View, Text, TextInput, TouchableOpacity, ScrollView } from 'react-native'
 import { useRouter } from 'expo-router'
-import { wallet, director } from '../../src/wallet'
-import { useIsOpen, useBalance, extractErrorMessage } from '../../src/hooks'
+import { InviteCode, Network, type FederationPreview } from '@fedimint/react-native'
+import { errorMessage, open } from '../../src/sdk'
+import { useBalance, useWallet } from '../../src/hooks'
 import {
   SectionCard,
   SectionTitle,
@@ -18,55 +13,54 @@ import {
   ErrorBox,
 } from '../../src/components'
 import s from '../../src/styles'
-import type { PreviewFederation } from '@fedimint/core'
 
 const TESTNET_FEDERATION_CODE =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
 
 const JoinFederation = ({
-  open,
-  checkIsOpen,
+  joined,
+  refresh,
 }: {
-  open: boolean
-  checkIsOpen: () => void | Promise<void>
+  joined: boolean
+  refresh: () => void
 }) => {
-  const [inviteCode, setInviteCode] = useState(TESTNET_FEDERATION_CODE)
-  const [previewData, setPreviewData] = useState<PreviewFederation | null>(null)
+  const [code, setCode] = useState(TESTNET_FEDERATION_CODE)
+  const [preview, setPreview] = useState<FederationPreview>()
   const [previewing, setPreviewing] = useState(false)
-  const [joinResult, setJoinResult] = useState<string | null>(null)
+  const [joinResult, setJoinResult] = useState('')
   const [joinError, setJoinError] = useState('')
   const [joining, setJoining] = useState(false)
 
-  const previewFederationHandler = async () => {
-    if (!inviteCode.trim()) return
+  const previewFederation = async () => {
+    if (!code.trim()) return
     setPreviewing(true)
     setJoinError('')
     try {
-      const data = await director.previewFederation(inviteCode)
-      setPreviewData(data)
+      const session = await open()
+      const invite = InviteCode.parse(code.trim())
+      setPreview(await session.sdk.preview(invite))
     } catch (error) {
-      setJoinError(error instanceof Error ? error.message : String(error))
-      setPreviewData(null)
+      setJoinError(errorMessage(error))
+      setPreview(undefined)
     } finally {
       setPreviewing(false)
     }
   }
 
   const joinFederation = async () => {
-    checkIsOpen()
+    setJoining(true)
+    setJoinError('')
     try {
-      if (!wallet) throw new Error('Wallet unavailable')
-      setJoining(true)
-      await wallet.joinFederation(inviteCode)
-      await wallet.open()
+      const session = await open()
+      const invite = InviteCode.parse(code.trim())
+      await session.sdk.join(invite)
       setJoinResult('Joined!')
-      setJoinError('')
-    } catch (e: any) {
-      setJoinError(typeof e === 'object' ? e.toString() : (e as string))
+      refresh()
+    } catch (error) {
+      setJoinError(errorMessage(error))
       setJoinResult('')
     } finally {
       setJoining(false)
-      checkIsOpen()
     }
   }
 
@@ -77,74 +71,46 @@ const JoinFederation = ({
         style={s.input}
         placeholder="Invite Code..."
         placeholderTextColor="#888"
-        value={inviteCode}
+        value={code}
         onChangeText={(text) => {
-          setInviteCode(text)
-          setPreviewData(null)
+          setCode(text)
+          setPreview(undefined)
         }}
-        editable={!open}
+        editable={!joined}
       />
       <Row>
         <Btn
           title={previewing ? 'Previewing...' : 'Preview'}
-          onPress={previewFederationHandler}
-          disabled={previewing || !inviteCode.trim() || open}
+          onPress={previewFederation}
+          disabled={previewing || !code.trim() || joined}
         />
         <Btn
           title={joining ? 'Joining...' : 'Join'}
           onPress={joinFederation}
-          disabled={open || joining}
+          disabled={joined || joining}
           primary
         />
       </Row>
 
-      {previewData && (
+      {preview && (
         <View style={s.previewCard}>
           <Text style={s.previewTitle}>Federation Preview</Text>
           <Text style={s.label}>
-            Federation ID:{' '}
-            <Text style={s.mono}>{previewData.federation_id}</Text>
+            Name: <Text style={s.value}>{preview.name ?? 'Unnamed'}</Text>
           </Text>
           <Text style={s.label}>
-            Name:{' '}
-            <Text style={s.value}>
-              {previewData.config.global.meta?.federation_name || 'Unnamed'}
-            </Text>
+            Network: <Text style={s.value}>{Network[preview.network]}</Text>
           </Text>
           <Text style={s.label}>
-            Consensus Version:{' '}
-            <Text style={s.value}>
-              {previewData.config.global.consensus_version.major}.
-              {previewData.config.global.consensus_version.minor}
-            </Text>
+            Guardians: <Text style={s.value}>{preview.guardians}</Text>
           </Text>
           <Text style={s.label}>
-            Guardians:{' '}
-            <Text style={s.value}>
-              {Object.keys(previewData.config.global.api_endpoints).length}
-            </Text>
+            Modules: <Text style={s.value}>{preview.modules.join(', ')}</Text>
           </Text>
-
-          <Text style={[s.label, { marginTop: 8 }]}>Guardian Endpoints:</Text>
-          {Object.entries(previewData.config.global.api_endpoints).map(
-            ([id, peer]) => (
-              <View key={id} style={s.guardianItem}>
-                <Text style={s.guardianName}>{peer.name}</Text>
-                <Text style={s.guardianUrl}>{peer.url}</Text>
-              </View>
-            ),
-          )}
-
-          <Text style={[s.label, { marginTop: 8 }]}>Modules:</Text>
-          {Object.entries(previewData.config.modules).map(([id, module]) => (
-            <Text key={id} style={s.value}>
-              • {module.kind}
-            </Text>
-          ))}
         </View>
       )}
 
-      {!joinResult && open && (
+      {!joinResult && joined && (
         <Text style={s.italic}>(You've already joined a federation)</Text>
       )}
       {!!joinResult && <SuccessBox>{joinResult}</SuccessBox>}
@@ -154,8 +120,8 @@ const JoinFederation = ({
 }
 
 export default function WalletOverview() {
-  const { open, checkIsOpen } = useIsOpen()
-  const balance = useBalance(checkIsOpen)
+  const { joined, refresh, version } = useWallet()
+  const balance = useBalance(joined, version)
   const router = useRouter()
 
   return (
@@ -167,12 +133,12 @@ export default function WalletOverview() {
       <SectionCard>
         <SectionTitle>Balance</SectionTitle>
         <Text style={s.balanceLarge}>{balance}</Text>
-        <Text style={s.balanceLabel}>msats</Text>
+        <Text style={s.balanceLabel}>sats</Text>
 
         <Row>
-          <Text style={s.label}>Wallet Status:</Text>
-          <Text style={s.value}>{open ? 'Open' : 'Closed'}</Text>
-          <Btn title="Check" onPress={checkIsOpen} small />
+          <Text style={s.label}>Federation:</Text>
+          <Text style={s.value}>{joined ? 'Joined' : 'Not joined'}</Text>
+          <Btn title="Check" onPress={refresh} small />
         </Row>
 
         <View style={s.actionRow}>
@@ -191,7 +157,7 @@ export default function WalletOverview() {
         </View>
       </SectionCard>
 
-      <JoinFederation open={open} checkIsOpen={checkIsOpen} />
+      <JoinFederation joined={joined} refresh={refresh} />
     </ScrollView>
   )
 }
