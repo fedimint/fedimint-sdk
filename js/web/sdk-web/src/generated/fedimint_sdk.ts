@@ -12474,8 +12474,10 @@ export const RecoveryState = (() => {
    *
    * This is the only state that releases the lock, and the only one for
    * which [`is_complete`](Self::is_complete) is true. It is reached once
-   * the wallet holds everything the rescan found, so the balance and
-   * activity read from then on are the restored ones.
+   * the wallet holds the ecash the rescan found, so the balance read
+   * from then on includes all of it. An on-chain deposit to the wallet
+   * that was never claimed is not part of that: it can still be claimed
+   * after `Done`, and raise the balance then.
    */
   class Done_ extends UniffiEnum implements RecoveryState_Done_interface {
     /**
@@ -13869,8 +13871,8 @@ export interface FederationLike {
    * or receive is refused with
    * [`Recovering`](crate::ErrorCode::Recovering) no matter what this
    * method returned. Once the recovery reaches
-   * [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
-   * restored balance, and the two notions coincide again: this is
+   * [`RecoveryState::Done`](crate::RecoveryState::Done) this holds all the
+   * ecash the rescan found, and the two notions coincide again: this is
    * exactly the amount a spend can draw on.
    *
    * # Errors
@@ -14126,8 +14128,8 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
    * or receive is refused with
    * [`Recovering`](crate::ErrorCode::Recovering) no matter what this
    * method returned. Once the recovery reaches
-   * [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
-   * restored balance, and the two notions coincide again: this is
+   * [`RecoveryState::Done`](crate::RecoveryState::Done) this holds all the
+   * ecash the rescan found, and the two notions coincide again: this is
    * exactly the amount a spend can draw on.
    *
    * # Errors
@@ -17445,7 +17447,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_federation_balance() !==
-    43699
+    20311
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_balance',
