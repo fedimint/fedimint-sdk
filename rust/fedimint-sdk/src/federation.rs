@@ -151,8 +151,8 @@ impl Federation {
     /// or receive is refused with
     /// [`Recovering`](crate::ErrorCode::Recovering) no matter what this
     /// method returned. Once the recovery reaches
-    /// [`RecoveryState::Done`](crate::RecoveryState::Done) this is the
-    /// restored balance, and the two notions coincide again: this is
+    /// [`RecoveryState::Done`](crate::RecoveryState::Done) this holds all the
+    /// ecash the rescan found, and the two notions coincide again: this is
     /// exactly the amount a spend can draw on.
     ///
     /// # Errors

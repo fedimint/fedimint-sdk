@@ -631,7 +631,8 @@ async fn progress_handle(
 ///   should label them as provisional rather than presenting a partial
 ///   balance as the final one. A provisional balance on a locked federation
 ///   is not spendable no matter what it says. Once the recovery reports
-///   [`RecoveryState::Done`], both are the restored ones.
+///   [`RecoveryState::Done`], the balance holds all the ecash the rescan
+///   found.
 ///
 /// Observe [`Recovery::progress`] to know when that changes, and gate
 /// anything fund-touching on [`RecoveryState::is_complete`] rather than on
@@ -697,8 +698,10 @@ pub enum RecoveryState {
     ///
     /// This is the only state that releases the lock, and the only one for
     /// which [`is_complete`](Self::is_complete) is true. It is reached once
-    /// the wallet holds everything the rescan found, so the balance and
-    /// activity read from then on are the restored ones.
+    /// the wallet holds the ecash the rescan found, so the balance read
+    /// from then on includes all of it. An on-chain deposit to the wallet
+    /// that was never claimed is not part of that: it can still be claimed
+    /// after `Done`, and raise the balance then.
     Done,
     /// Final for this attempt, and the wallet is **not** recovered.
     ///

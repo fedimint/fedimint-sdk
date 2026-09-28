@@ -136,6 +136,9 @@ pub(crate) async fn after_open(
     // until the next build: the same swap the watcher would have made is made now.
     if !client.all_modules_usable() {
         drop(client);
+        // A federation brought up at startup was built closed, and a settle only concludes on
+        // an open one.
+        federation.set_status(FederationStatus::Recovering);
         finish(sdk, federation, attempt).await;
         return;
     }
@@ -165,6 +168,11 @@ pub(crate) fn watch(
     client: ClientHandleArc,
     attempt: UpstreamOperationId,
 ) {
+    // The instance is held weakly, and its going away ends the wait: an application that lets
+    // go of every handle without shutting down must get its storage back, and this task holds
+    // the client, and with it the store, for as long as it waits.
+    let mut instance = sdk.shutdown_watch();
+    let sdk = Arc::downgrade(&sdk);
     fedimint_core::task::spawn("sdk-recovery-watch", async move {
         // A watcher starting is the one place progress is reset: whatever an earlier attempt on
         // this federation last published no longer describes anything running.
@@ -179,6 +187,8 @@ pub(crate) fn watch(
         let outcome = {
             let mut wait = std::pin::pin!(client.wait_for_all_recoveries());
             let mut close = std::pin::pin!(closed.wait_for(|closed| *closed));
+            // Resolves on shutdown, and with an error once the instance is dropped.
+            let mut gone = std::pin::pin!(instance.wait_for(|shut| *shut));
             let mut modules: BTreeMap<ModuleInstanceId, UpstreamRecoveryProgress> = BTreeMap::new();
             let mut progress = std::pin::pin!(client.subscribe_to_recovery_progress());
             let mut progress_ended = false;
@@ -186,6 +196,7 @@ pub(crate) fn watch(
                 tokio::select! {
                     outcome = &mut wait => break outcome,
                     _ = &mut close => break Err(RecoveryError::ClientStopped),
+                    _ = &mut gone => break Err(RecoveryError::ClientStopped),
                     next = progress.next(), if !progress_ended => {
                         // The stream ends only when the client's status channel closes, which
                         // ends `wait` too. It is not polled again, since an ended stream
@@ -221,7 +232,13 @@ pub(crate) fn watch(
         };
         drop(client);
         match outcome {
-            Ok(()) => complete(&sdk, &federation, attempt).await,
+            // An instance gone by now completes nothing: the next open finds the rescan over and
+            // settles the attempt itself.
+            Ok(()) => {
+                if let Some(sdk) = sdk.upgrade() {
+                    complete(&sdk, &federation, attempt).await;
+                }
+            }
             Err(RecoveryError::Failed {
                 module_instance_id,
                 error,
@@ -349,11 +366,19 @@ fn start_settle(
     let Some(identity) = federation.try_start_settle() else {
         return;
     };
-    // Held weakly for the wait, which is unbounded: this task must never be what keeps the
-    // instance alive.
+    // Held weakly, and its going away ends the wait, for the reason `watch` gives: the wait is
+    // unbounded, and it holds the client and the store under it.
+    let mut instance = sdk.shutdown_watch();
     let sdk = Arc::downgrade(&sdk);
     fedimint_core::task::spawn("sdk-recovery-settle", async move {
-        let stop = client.task_group().make_handle().make_shutdown_rx();
+        let client_stop = client.task_group().make_handle().make_shutdown_rx();
+        let stop = async move {
+            tokio::select! {
+                () = client_stop => {}
+                // Resolves on shutdown, and with an error once the instance is dropped.
+                _ = instance.wait_for(|shut| *shut) => {}
+            }
+        };
         // The recovery lock keeps every other facade off this federation for as long as the
         // attempt is not `Done`, so nothing else can have started a state machine on it while
         // this waits: every one the fresh client has right now is the recovery's own issuance
@@ -364,8 +389,9 @@ fn start_settle(
         })
         .await
         .is_ok();
-        // Otherwise the client stopped before settling finished: whoever stopped it owns the
-        // attempt's fate now, exactly as a swap refused by a closed federation does.
+        // Otherwise the client stopped, or the instance went away, before settling finished:
+        // whoever stopped it owns the attempt's fate now, exactly as a swap refused by a closed
+        // federation does, and the next open settles an attempt left without an ending.
         if settled && let Some(sdk) = sdk.upgrade() {
             conclude_settle(&sdk, &federation, identity, attempt).await;
         }
