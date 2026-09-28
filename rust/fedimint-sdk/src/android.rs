@@ -63,7 +63,7 @@
 //! showed `JNI_OnLoad` exported, and logcat showed ART's loader handling only
 //! JNA's own `libjnidispatch.so`.
 //!
-//! So `scripts/generate-kotlin-bindings.sh` patches the generated loader to
+//! So `scripts/generate-android-bindings.sh` patches the generated loader to
 //! call `System.loadLibrary` ahead of each `Native.register`. ART then loads
 //! the library and calls this, and JNA's `dlopen` that follows finds the same
 //! copy already loaded — also confirmed on a device: one copy, and

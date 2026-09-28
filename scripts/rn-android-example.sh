@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Builds one React Native example app, installs it on the running emulator (or the connected
-# device) and launches it against a Metro dev server. Run inside the `.#android-emulator` shell
-# (`just rn-example [react-native|expo-app]`), the shell that owns the device's `adb`.
+# device) and launches it against a Metro dev server. Run inside the `.#rn-android-emulator` shell
+# (`just rn-android-example [react-native|expo-app]`), the shell that owns the device's `adb`.
 #
-#   scripts/rn-example.sh [react-native|expo-app]
+#   scripts/rn-android-example.sh [react-native|expo-app]
 #
 # This is what `react-native run-android` does, spelled out: that command has been seen to sit
 # silent for good on some desktops (it opens a terminal window for Metro and waits on it), and
@@ -27,10 +27,10 @@ DIR="$ROOT/js/examples/$APP"
 
 for tool in adb pnpm java; do
   command -v "$tool" >/dev/null ||
-    { echo "$tool not on PATH; run in the .#android-emulator shell" >&2; exit 1; }
+    { echo "$tool not on PATH; run in the .#rn-android-emulator shell" >&2; exit 1; }
 done
 if [[ "$(adb get-state 2>/dev/null || true)" != "device" ]]; then
-  echo "no device is online for adb; start one with 'just android-emulator' and wait for Ready" >&2
+  echo "no device is online for adb; start one with 'just rn-android-emulator' and wait for Ready" >&2
   exit 1
 fi
 if [[ ! -d "$DIR/android" ]]; then

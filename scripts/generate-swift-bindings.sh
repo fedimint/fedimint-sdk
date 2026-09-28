@@ -14,7 +14,7 @@
 # binding generator reads that same artifact. uniffi_bindgen handles a static
 # archive directly — `Object::Archive` is one of the shapes its metadata
 # extractor dispatches on — so this reads the real `.a` that ends up in the
-# XCFramework, exactly as generate-kotlin-bindings.sh reads the arm64 `.so`.
+# XCFramework, exactly as generate-android-bindings.sh reads the arm64 `.so`.
 #
 # The generator is its own crate (rust/uniffi-bindgen) whose only dependency is
 # `uniffi`, pinned to the version rust/fedimint-sdk links. That pin is load

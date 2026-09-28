@@ -14,9 +14,18 @@ appcompat = "1.7.0"
 material = "1.12.0"
 lifecycle = "2.8.4"
 
-# The Android SDK's own version. Keep in step with
-# rust/fedimint-sdk/Cargo.toml's `version`.
-fedimintSdk = "0.1.0-alpha.1"
+# The Android SDK's own version, the one published to Maven Central. It is
+# versioned independently of rust/fedimint-sdk/Cargo.toml. Releases are
+# `X.Y.Z-beta.N` betas, then `X.Y.Z` itself; android-sdk-release.yaml refuses
+# anything else. Snapshots are `<branch>-SNAPSHOT` and do not use this.
+# Change it with the Android SDK Version Bump workflow rather than by hand;
+# android/README.md's "Versioning" has the rules.
+fedimintSdk = "0.1.0-beta.1"
+
+# Publishes :fedimint-sdk to Maven Central through the Sonatype Central
+# Portal (OSSRH is gone). 0.35.0 is the newest release that still supports
+# this build's Gradle 8.13 and Kotlin 2.0; 0.36 needs Gradle 9 and Kotlin 2.2.
+mavenPublish = "0.35.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -42,3 +51,4 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }

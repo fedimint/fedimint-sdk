@@ -2,7 +2,7 @@
 #
 # Generates the Kotlin bindings from an *already built* Android native library.
 #
-#   scripts/generate-kotlin-bindings.sh [jniLibs-dir]
+#   scripts/generate-android-bindings.sh [jniLibs-dir]
 #     -> android/fedimint-sdk/src/main/java/org/fedimint/sdk/fedimint_sdk.kt
 #
 # `uniffi-bindgen` reads the UniFFI metadata baked into the arm64 `.so` rather
@@ -98,7 +98,7 @@ fi
 # until the first iroh dial, which is exactly the failure this exists to
 # prevent, so a uniffi upgrade that reshapes these lines has to be caught here.
 ART_LOADER_HELPER="$(cat <<'KOTLIN'
-// ---- Inserted by scripts/generate-kotlin-bindings.sh; not part of uniffi's output. ----
+// ---- Inserted by scripts/generate-android-bindings.sh; not part of uniffi's output. ----
 //
 // Loads the native library through ART's own loader before JNA registers it. JNA `dlopen`s the
 // library directly, and a bare `dlopen` never runs the library's `JNI_OnLoad` — the only place

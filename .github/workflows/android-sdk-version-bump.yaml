@@ -1,0 +1,151 @@
+name: Android SDK Version Bump
+
+# Bumps the Android SDK's version, `fedimintSdk` in
+# android/gradle/libs.versions.toml, drafts the version's release notes in
+# android/CHANGELOG.md, and opens a pull request with both. It touches nothing
+# else: not the Rust crate, not the JS packages.
+#
+# Run it on main, and its pull request targets main: releases are only
+# tagged from main, so it refuses to run anywhere else.
+#
+# Pick the bump when running it (android/README.md's "Versioning" says which
+# one a change calls for):
+#
+#   patch, minor, major   from a release, start the next version. With
+#                         `beta` ticked it starts at `-beta.1`.
+#   beta                  from a beta, the next beta.
+#   release               from a beta, release it: X.Y.Z-beta.N -> X.Y.Z.
+#
+# scripts/android-sdk-version.sh works the new version out and refuses a bump
+# that does not fit, such as `patch` in the middle of a beta. It also checks
+# the new version against the `android-sdk-v*` tags already pushed, as the
+# release workflow does, so this cannot propose a version that is taken.
+#
+# The drafted notes list the commits since the last release that touched
+# the SDK (scripts/android-sdk-changelog.sh). Rewrite them for users in the
+# pull request and remove the draft comment; the release refuses a draft.
+#
+# Merging the pull request is the decision to release: android-sdk-tag.yaml
+# then tags the merge commit `android-sdk-v<version>` and starts
+# android-sdk-release.yaml on it. The `maven-central` environment approval and
+# the Publish button on central.sonatype.com still come after that.
+#
+# Two repository settings apply:
+#
+#   * Settings → Actions → General → "Allow GitHub Actions to create and
+#     approve pull requests" must be on, or opening the pull request fails.
+#   * A pull request opened with the workflow's own token does not start
+#     other workflows, so android-sdk.yaml does not run on it by itself. If
+#     that check is required, close and reopen the pull request to start it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'patch/minor/major: next version after a release. beta: next beta. release: finish the beta.'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - beta
+          - release
+      beta:
+        description: 'For patch, minor or major: start the new version at -beta.1'
+        type: boolean
+        default: true
+
+# One bump at a time: two in flight would both start from the same version.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: 'Open the version bump pull request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # Main only. The pull request goes into main, and android-sdk-tag.yaml
+      # only tags pushes to main, so a bump merged anywhere else would never
+      # be released even though its pull request says it would. Failing here,
+      # rather than skipping the job, says why.
+      - name: 'Require main'
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::run the Android SDK Version Bump on main, not $REF: releases are only tagged from main"
+          exit 1
+
+      # Credentials kept, unlike the other workflows: this job pushes the
+      # bump branch. The full history and tags are for drafting the notes,
+      # which list the commits since the last release's tag.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 'Work out the new version'
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          START_AS_BETA: ${{ inputs.beta }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current="$(scripts/android-sdk-version.sh current)"
+          args=("$BUMP")
+          case "$BUMP" in
+            patch | minor | major)
+              if [[ "$START_AS_BETA" == true ]]; then
+                args+=(--beta)
+              fi
+              ;;
+          esac
+          next="$(scripts/android-sdk-version.sh next "${args[@]}")"
+          released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/android-sdk-v" \
+            --jq '.[].ref | ltrimstr("refs/tags/android-sdk-v")')"
+          scripts/android-sdk-version.sh check-newer "$next" <<<"$released"
+          latest="$(scripts/android-sdk-version.sh latest <<<"$released")"
+          echo "Bumping $current -> $next"
+          {
+            echo "current=$current"
+            echo "next=$next"
+            echo "latest=$latest"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: 'Open the pull request'
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.version.outputs.next }}
+          LATEST: ${{ steps.version.outputs.latest }}
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/android-sdk-version.sh set "$NEXT"
+          scripts/android-sdk-changelog.sh draft "$NEXT" "$LATEST"
+          branch="android-sdk/version-$NEXT"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "chore(android): bump the Android SDK to $NEXT"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(android): bump the Android SDK to $NEXT" \
+            --body "$(cat <<EOF
+          Bumps the Android SDK from \`$CURRENT\` to \`$NEXT\` (\`$BUMP\`) in \`android/gradle/libs.versions.toml\`, and drafts its notes in \`android/CHANGELOG.md\`.
+
+          **Before merging:** rewrite the drafted \`## $NEXT\` notes in \`android/CHANGELOG.md\` for users (what was added, changed or fixed, and anything that breaks callers), and delete the draft comment. The release refuses a draft.
+
+          **Merging this releases \`$NEXT\`.** The Android SDK Tag workflow tags the merge commit \`android-sdk-v$NEXT\` and starts the release. After that, approve the \`maven-central\` environment, press Publish on central.sonatype.com once the deployment is validated, and publish the draft GitHub Release.
+
+          Opened by the Android SDK Version Bump workflow, whose token does not start other workflows. If a required check is waiting, close and reopen this pull request to start it.
+          EOF
+          )"

@@ -207,8 +207,8 @@ jobs:
       - name: Type-check the example apps against the built packages
         run: pnpm --dir js --filter react-native-sdk-example --filter expo-app-example typecheck
 
-  build-android:
-    name: Build Android
+  build-rn-android:
+    name: Build RN Android
     needs: detect-changes
     if: ${{ github.event.action != 'labeled' && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.react-native == 'true') }}
     runs-on: [self-hosted, linux, x64]
@@ -220,8 +220,8 @@ jobs:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - uses: ./.github/actions/build-rn-android
 
-  build-ios:
-    name: Build iOS
+  build-rn-ios:
+    name: Build RN iOS
     needs: detect-changes
     # macOS runners are the scarce and expensive lane, so pull requests only build iOS when asked
     # to through the `ci-ios` label. Pushes to main and manual runs always build.

@@ -13,7 +13,7 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Build iOS
+    - name: Build RN iOS
       # `NIX_CONFIG` serialises the build: one derivation at a time and single-threaded rustc/cc,
       # or rocksdb and aws-lc-sys exhaust macos-latest's memory.
       shell: bash

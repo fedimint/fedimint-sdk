@@ -6,7 +6,7 @@ name: Rust SDK Continuous Integration
 # The `--features uniffi` clippy is the cheap Android-surface gate: it
 # compiles the `#[uniffi::export]` blocks and type derives on the host, no
 # cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
-# and the `uniffi-bindgen` run over its output in kotlin-sdk.yaml.
+# and the `uniffi-bindgen` run over its output in android-sdk.yaml.
 
 on:
   push:

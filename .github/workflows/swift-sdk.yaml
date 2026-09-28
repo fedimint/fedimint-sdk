@@ -136,7 +136,7 @@ jobs:
       # The demo app is the reason this step is here: compiling it is what
       # proves the generated bindings are usable from ordinary Swift, not merely
       # that they parse. The exact role :app:assembleDebug plays in
-      # kotlin-sdk.yaml.
+      # android-sdk.yaml.
       # No ARCHS override any more. That existed because a pull request built
       # only the arm64 simulator slice, so a generic destination — which builds
       # every standard simulator architecture — failed to link x86_64. The

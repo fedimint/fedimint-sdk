@@ -5,7 +5,7 @@ against the example app in [`android/app`](../../../android).
 
 **This tests the SDK, not the example app.** `android/app` is one scrolling screen that calls
 every export of `rust/fedimint-sdk`'s `uniffi` feature through the generated Kotlin bindings
-— it has no product surface of its own. What these tests add over `kotlin-sdk.yaml`, which
+— it has no product surface of its own. What these tests add over `android-sdk.yaml`, which
 compiles the same app, is a running device: the bindings are loaded, the native `.so` is
 mapped, and the calls actually execute. Tests here are organized by SDK capability, mirroring
 the naming in `js/web/integration-tests/src/services/*.test.ts` (the WASM/browser
@@ -44,17 +44,17 @@ System UI stopped responding — every test then failed against the "System UI i
 dialog rather than against the app. So the build finishes, daemon and all, before either of
 those starts.
 
-CI makes the same split across machines, as separate jobs in `kotlin-sdk.yaml`. Each task runs
+CI makes the same split across machines, as separate jobs in `android-sdk.yaml`. Each task runs
 exactly once and the next job downloads its output rather than redoing it:
 
 | job        | workflow                            | shell             | produces                                                  |
 | ---------- | ----------------------------------- | ----------------- | --------------------------------------------------------- |
 | `native`   | `android-native.yaml` (self-hosted) | —                 | `jniLibs`, the cross-compiled `.so`                       |
-| `bindings` | `kotlin-sdk.yaml`                   | — (Rust)          | `kotlin-bindings`, generated once from that `.so`         |
+| `bindings` | `android-sdk.yaml`                  | — (Rust)          | `android-bindings`, generated once from that `.so`        |
 | `apk`      | `android-apk.yaml`                  | `.#android`       | `android-example-apk` — Gradle on the two artifacts above |
 | `e2e`      | `android-e2e.yml`                   | `.#android-tests` | the run itself — installs the APK, no Gradle              |
 
-The AAR job (`kotlin`) downloads the same `jniLibs` and `kotlin-bindings` and only assembles the
+The AAR job (`aar`) downloads the same `jniLibs` and `android-bindings` and only assembles the
 release AAR; the example app is compiled once, by `apk`.
 
 By hand, the two halves:

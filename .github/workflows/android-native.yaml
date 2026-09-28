@@ -5,7 +5,7 @@ name: Android Native Library
 # the NDK ships alongside it. No bindings of any language are generated here.
 #
 # It stands on its own because the native library is the input every binding
-# generator shares. `kotlin-sdk.yaml` calls this workflow and then runs
+# generator shares. `android-sdk.yaml` calls this workflow and then runs
 # `uniffi-bindgen` against the `.so` it produces, reading the metadata baked
 # into the binary rather than the crate source — so the bindings cannot drift
 # from what the device actually loads. A second generator added later reads
@@ -46,7 +46,7 @@ on:
       - 'scripts/nix-build-android-so.sh'
       - '.github/workflows/android-native.yaml'
 
-  # Deliberately no `pull_request` trigger. kotlin-sdk.yaml calls this workflow
+  # Deliberately no `pull_request` trigger. android-sdk.yaml calls this workflow
   # and covers the same paths, so a PR trigger here would mean two
   # cross-compiles of the same commit for any PR that touched both a Nix file
   # and something under android/ — as two separate workflows they have

@@ -58,7 +58,7 @@ When adding new features or fixing bugs, it's important to add test cases to cov
 [Appium](https://appium.io/) against the example app in `android/app`. This tests the SDK, not
 the example app — `android/app` is one screen that calls every export of `rust/fedimint-sdk`'s
 `uniffi` feature through the generated Kotlin bindings, not a product with its own UI
-surface. What it adds over `kotlin-sdk.yaml`, which compiles the same app, is a running
+surface. What it adds over `android-sdk.yaml`, which compiles the same app, is a running
 device: the bindings load, the native library is mapped, and the calls execute. Tests are
 organized by SDK capability (mirroring `js/web/integration-tests/src/services/*.test.ts`'s
 naming), not by UI flow.
