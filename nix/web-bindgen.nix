@@ -24,8 +24,8 @@ in
     src = pkgs.fetchFromGitHub {
       owner = "zeenix";
       repo = "uniffi-bindgen-react-native";
-      rev = "bca4348dcb5b60796db15b2d1bb6d4e9f43eaf5b";
-      hash = "sha256-6ldII2kUwcMg1W0OxUBhcTZju0JcuUNF5uxWuROUgPE=";
+      rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440";
+      hash = "sha256-viVRrdKnDhsMxQBHh4iFSlaQkIFl17hx3wfOv1ex5Cg=";
     };
     cargoLock.lockFile = ./ubrn-Cargo.lock;
     buildAndTestSubdir = "crates/ubrn_cli";
