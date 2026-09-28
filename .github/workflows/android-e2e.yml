@@ -17,6 +17,18 @@ name: Android E2E (Appium)
 # point over the same paths would mean two of those for one commit in two runs
 # that cannot cancel each other. A manual run is android-sdk.yaml's
 # `workflow_dispatch`, which runs the whole chain.
+#
+# It runs on a self-hosted Apple Silicon Mac rather than a GitHub-hosted
+# Ubuntu runner, because the suite was flaky there: those runners have only a
+# few cores, and an emulator plus a whole devimint federation on them left
+# the emulator short of CPU, so tests failed on timeouts and unresponsive UI
+# rather than on anything the app did. The Mac has more cores, accelerates
+# the emulator through Hypervisor.framework, and is dedicated to device tests,
+# so the emulator and the federation have the machine to themselves. The
+# `device-tests` label keeps every other job off it. Nothing here is
+# Mac-specific beyond that: `.#android-tests` provides the SDK, emulator and
+# system image for the host, and run-android-e2e.sh picks the host's ABI, so
+# pointing `runs-on` back at `ubuntu-latest` still works.
 
 on:
   workflow_call:
@@ -32,7 +44,7 @@ permissions:
 jobs:
   android-e2e:
     name: Android E2E (${{ matrix.shape }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, device-tests]
     timeout-minutes: 120
     # One federation per module generation. The SDK refuses a federation that
     # mixes them, so `mixed` has no successful payment to test and is not here.
@@ -52,6 +64,18 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
+      # A self-hosted machine outlives the job, and a run that was cancelled or
+      # timed out can leave its emulator, Appium server or federation behind:
+      # the next run would then find the ports taken and a second emulator
+      # competing for memory. Process names are matched exactly and only the
+      # runner user's own processes are touched. macOS truncates process names
+      # to 16 characters, hence the `.*` on the two long ones.
+      - name: Kill leftovers from a previous run
+        if: runner.environment == 'self-hosted'
+        run: |
+          pkill -u "$USER" -x 'qemu-system-.*|emulator|adb|devimint|fedimintd|gatewayd|fedimint-recurr.*|bitcoind|lnd|electrs|esplora' || true
+          pkill -u "$USER" -f 'node.*appium' || true
+
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
         with:
@@ -60,8 +84,10 @@ jobs:
       # GitHub-hosted Ubuntu runners have /dev/kvm but it isn't
       # world-accessible by default; without this the emulator falls back to
       # (very slow) software virtualization. Standard reactivecircus/
-      # android-emulator-runner incantation.
+      # android-emulator-runner incantation. Linux only: on macOS the emulator
+      # uses Hypervisor.framework and there is no /dev/kvm to open up.
       - name: Enable KVM group perms
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
