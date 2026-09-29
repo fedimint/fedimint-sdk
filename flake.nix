@@ -115,8 +115,9 @@
             ln -s /usr/bin/ld $out/bin/ld
             ln -s /usr/bin/clang $out/bin/clang
             ln -s /usr/bin/clang++ $out/bin/clang++
-            # ln -s /usr/bin/xcodebuild $out/bin/xcodebuild
-            ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
+            ln -s /usr/bin/cc $out/bin/cc
+            ln -s /usr/bin/c++ $out/bin/c++
+            ln -s /usr/bin/xcodebuild $out/bin/xcodebuild
             ln -s /usr/bin/xcrun $out/bin/xcrun
             ln -s /usr/bin/xcode-select $out/bin/xcode-select
             ln -s /usr/bin/security $out/bin/security
@@ -518,9 +519,11 @@
           # Note this shell deliberately does *not* include `commonShellHook`:
           # that exports `pkgs.libclang`, and bindgen must see the *Apple* SDK
           # headers instead. See LIBCLANG_PATH below.
-          ios = pkgs.mkShell {
+          ios = pkgs.mkShellNoCC {
             nativeBuildInputs = commonNativeBuildInputs ++ [
               iosToolchain
+              # React Native's build-rn-ios recipe also uses this Darwin shell.
+              webBindgen.ubrn
               # For aws-lc-sys's and librocksdb-sys's C/C++ sources: the same
               # set nix/ffi.nix passes to the Android cross-compile, carried
               # over so the two shells do not drift. In practice the Apple
@@ -540,6 +543,20 @@
               pkgs.xcodegen
             ];
             shellHook = ''
+              # Use the selected Xcode, not Nix's macOS-only SDK and xcrun.
+              # Clear flags inherited from the outer default shell too:
+              # `just build-rn-ios` enters this shell from that environment.
+              export PATH=${xcode-wrapper}/bin:$PATH
+              # nixpkgs' apple-sdk setup hook also exports DEVELOPER_DIR to
+              # its SDK-only store path. Apple's compiler shims need the full
+              # Xcode selected by xcode-select, not that directory.
+              unset DEVELOPER_DIR SDKROOT NIX_CFLAGS_COMPILE NIX_LDFLAGS
+              export CC=/usr/bin/clang
+              export CXX=/usr/bin/clang++
+              export AR=/usr/bin/ar
+              export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+              export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
+
               # Xcode's libclang, NOT pkgs.libclang. bindgen (librocksdb-sys,
               # aws-lc-sys) has to resolve headers out of the iPhoneOS /
               # MacOSX SDK, and the nixpkgs build has no Apple sysroot at all —
@@ -561,10 +578,8 @@
               export AWS_LC_SYS_CMAKE_BUILDER=0
               export ROCKSDB_STATIC=1
 
-              # CC/CXX are deliberately left unset, unlike androidShellHook: the
-              # `cc` and `cmake` crates must reach Xcode's clang through
-              # `xcrun` with the right `-target`/`-isysroot` per Apple triple,
-              # and pinning a single compiler here would break three of the four.
+              # cc-rs supplies the target and SDK flags to Apple's clang for
+              # each iOS/macOS triple; do not set a global SDKROOT.
             '';
           };
         };
