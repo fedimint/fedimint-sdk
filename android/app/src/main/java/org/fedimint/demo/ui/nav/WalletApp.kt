@@ -25,6 +25,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -32,6 +33,8 @@ import org.fedimint.demo.harness.HarnessActivity
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.ui.federations.FederationDetailScreen
+import org.fedimint.demo.ui.federations.FederationsScreen
 import org.fedimint.demo.ui.federations.JoinFederationScreen
 import org.fedimint.demo.ui.home.HomeScreen
 import org.fedimint.demo.ui.onboarding.BackupScreen
@@ -127,6 +130,7 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
         composable<Home> {
             HomeScreen(
                 onJoinFederation = { nav.navigate(JoinFederation) },
+                onOpenFederations = { nav.navigate(Federations) },
                 onOpenDeveloperTools = { context.startActivity(Intent(context, HarnessActivity::class.java)) },
             )
         }
@@ -135,6 +139,20 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 onBack = { nav.popBackStack() },
                 // Home follows the session's selected federation, which join just set.
                 onJoined = { nav.popBackStack() },
+            )
+        }
+        composable<Federations> {
+            FederationsScreen(
+                onBack = { nav.popBackStack() },
+                onOpen = { id -> nav.navigate(FederationDetail(id)) },
+                onJoin = { nav.navigate(JoinFederation) },
+            )
+        }
+        composable<FederationDetail> { entry ->
+            FederationDetailScreen(
+                id = entry.toRoute<FederationDetail>().id,
+                onBack = { nav.popBackStack() },
+                onShownOnHome = { nav.popBackStack<Home>(inclusive = false) },
             )
         }
     }
