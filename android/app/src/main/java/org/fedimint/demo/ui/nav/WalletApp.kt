@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.fedimint.demo.harness.HarnessActivity
+import org.fedimint.demo.ui.activity.ActivityScreen
+import org.fedimint.demo.ui.activity.OperationDetailScreen
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
@@ -141,7 +143,17 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 onOpenFederations = { nav.navigate(Federations) },
                 onOpenDeveloperTools = { context.startActivity(Intent(context, HarnessActivity::class.java)) },
                 onPay = { direction, rail, id -> nav.navigate(paymentRoute(direction, rail, id)) },
+                onOpenActivity = { id -> nav.navigate(Activity(id)) },
+                onOpenOperation = { id, op -> nav.navigate(OperationDetail(id, op)) },
             )
+        }
+        composable<Activity> { entry ->
+            val id = entry.toRoute<Activity>().federationId
+            ActivityScreen(id, nav::popBackStack, onOpen = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<OperationDetail> { entry ->
+            val route = entry.toRoute<OperationDetail>()
+            OperationDetailScreen(route.federationId, route.operationId, nav::popBackStack)
         }
         composable<LightningReceive> { LightningReceiveScreen(it.toRoute<LightningReceive>().federationId, nav::popBackStack) }
         composable<LightningSend> { LightningSendScreen(it.toRoute<LightningSend>().federationId, nav::popBackStack) }

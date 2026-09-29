@@ -55,7 +55,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
+import org.fedimint.demo.ui.activity.ActivityRow
 import org.fedimint.demo.ui.common.StatusBadge
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.canTransact
@@ -67,16 +69,19 @@ import org.fedimint.demo.ui.common.msatRemainder
 import org.fedimint.demo.ui.common.userMessage
 import org.fedimint.demo.ui.payments.PaymentDirection
 import org.fedimint.demo.ui.payments.Rail
+import org.fedimint.demo.wallet.History
 import org.fedimint.demo.wallet.WalletSession
+import org.fedimint.sdk.ActivityItem
 import org.fedimint.sdk.Amount
 import org.fedimint.sdk.Capabilities
 import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.FederationInfo
 import org.fedimint.sdk.FederationStatus
 import org.fedimint.sdk.Network
+import org.fedimint.sdk.OperationId
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class HomeViewModel(private val session: WalletSession) : ViewModel() {
+class HomeViewModel(private val session: WalletSession, private val history: History) : ViewModel() {
     sealed interface Balance {
         data object Loading : Balance
         data class Value(val msats: Amount) : Balance
@@ -89,6 +94,8 @@ class HomeViewModel(private val session: WalletSession) : ViewModel() {
         val active: FederationInfo? = null,
         val balance: Balance = Balance.Loading,
         val capabilities: Capabilities? = null,
+        /** The newest few history rows for the active federation. */
+        val recent: List<ActivityItem> = emptyList(),
     )
 
     private val federations = combine(session.federations, session.selectedFederationId) { list, selected ->
@@ -118,12 +125,31 @@ class HomeViewModel(private val session: WalletSession) : ViewModel() {
         flow { emit(id?.let { session.capabilities(it) }) }.catch { emit(null) }
     }
 
+    /**
+     * Reloaded whenever the balance moves: money arriving or leaving is when a
+     * row appears or settles. Its own balance subscription, since each one is
+     * an independent cursor.
+     */
+    private val recent = openActiveId.flatMapLatest { id ->
+        if (id == null) {
+            flowOf(emptyList())
+        } else {
+            session.balance(id)
+                .mapLatest { history.page(id, limit = RECENT_ROWS).items }
+                .catch { emit(emptyList()) }
+        }
+    }
+
     /** Live while the screen is visible, and for 5 s after, so rotation doesn't restart the subscriptions. */
-    val state = combine(federations, balance, capabilities) { (list, active), balance, caps ->
-        UiState(federations = list, active = active, balance = balance, capabilities = caps)
+    val state = combine(federations, balance, capabilities, recent) { (list, active), balance, caps, recent ->
+        UiState(federations = list, active = active, balance = balance, capabilities = caps, recent = recent)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState())
 
     fun select(federation: FederationInfo) = session.select(federation.id)
+
+    private companion object {
+        const val RECENT_ROWS = 5
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -133,8 +159,10 @@ fun HomeScreen(
     onOpenFederations: () -> Unit,
     onOpenDeveloperTools: () -> Unit,
     onPay: (PaymentDirection, Rail, FederationId) -> Unit,
+    onOpenActivity: (FederationId) -> Unit,
+    onOpenOperation: (FederationId, OperationId) -> Unit,
 ) {
-    val vm = appViewModel { HomeViewModel(it.session) }
+    val vm = appViewModel { HomeViewModel(it.session, it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var sheet by remember { mutableStateOf<PaymentDirection?>(null) }
 
@@ -173,6 +201,13 @@ fun HomeScreen(
                             enabled = canTransact,
                             modifier = Modifier.weight(1f),
                         ) { Text("Send") }
+                    }
+                    if (active.status.isOpen) {
+                        RecentActivity(
+                            items = state.recent,
+                            onOpen = { onOpenOperation(active.id, it) },
+                            onSeeAll = { onOpenActivity(active.id) },
+                        )
                     }
                 }
             }
@@ -330,6 +365,30 @@ private fun StatusNote(status: FederationStatus, text: String) {
             if (status is FederationStatus.Quarantined) {
                 Spacer(Modifier.height(4.dp))
                 Text("Code: ${status.diagnostic.code}", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentActivity(items: List<ActivityItem>, onOpen: (OperationId) -> Unit, onSeeAll: () -> Unit) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Recent activity", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = onSeeAll) { Text("See all") }
+        }
+        if (items.isEmpty()) {
+            Text(
+                "Nothing yet. Your payments will show up here.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Card(Modifier.fillMaxWidth()) {
+                items.forEachIndexed { i, item ->
+                    if (i > 0) HorizontalDivider()
+                    ActivityRow(item, onClick = { onOpen(item.operationId) })
+                }
             }
         }
     }

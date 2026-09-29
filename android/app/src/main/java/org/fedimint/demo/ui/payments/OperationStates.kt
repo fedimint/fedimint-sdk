@@ -8,6 +8,7 @@ import org.fedimint.sdk.LnReceiveState
 import org.fedimint.sdk.LnSendState
 import org.fedimint.sdk.OnchainReceiveState
 import org.fedimint.sdk.OnchainSendState
+import org.fedimint.sdk.RecoveryState
 
 /**
  * An operation's state, as the user should read it.
@@ -77,6 +78,12 @@ fun OnchainSendState.progress(): OpProgress = when (this) {
     is OnchainSendState.Succeeded -> done("Sent", "tx $txid")
     is OnchainSendState.Refunded -> failed("Send failed", "Refunded to your balance. $reason")
     is OnchainSendState.Failed -> failed("Send failed", reason)
+}
+
+fun RecoveryState.progress(): OpProgress = when (this) {
+    RecoveryState.Running -> OpProgress("Recovering", "Rebuilding this wallet's funds from your recovery phrase.")
+    RecoveryState.Done -> done("Recovery complete")
+    is RecoveryState.Failed -> failed("Recovery failed", reason)
 }
 
 fun LightningRoute.label(): String = when (this) {
