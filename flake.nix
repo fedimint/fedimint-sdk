@@ -185,7 +185,6 @@
           commonNativeBuildInputs = [
             pkgs.pnpm
             pkgs.nodejs_24
-            pkgs.git
             pkgs.zip
             pkgs.coreutils
             pkgs.patch
@@ -485,6 +484,8 @@
           android-tests = pkgs.mkShell {
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             nativeBuildInputs = commonNativeBuildInputs ++ [
+              # The shell hook and E2E runner use git to find the repo root.
+              pkgs.git
               androidTestsSdk.androidsdk
               pkgs.cmake
               pkgs.gnumake
