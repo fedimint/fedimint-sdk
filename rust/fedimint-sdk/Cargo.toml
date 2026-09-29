@@ -95,9 +95,8 @@ serde_json = { version = "1.0.149", features = ["arbitrary_precision"] }
 tracing = "0.1.44"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-# Pinned to fedimint's `[workspace.dependencies]` version, and it must equal the `uniffi` that
-# `rust/uniffi-bindgen` builds: the generator reads the metadata this version bakes into the
-# built library, so a mismatch fails codegen. `tokio` is what makes
+# Must equal the `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata this
+# version bakes into the built library, so a mismatch fails codegen. `tokio` is what makes
 # `#[uniffi::export(async_runtime = "tokio")]` available.
 uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
 # Never named in the source: it is here only to turn on its `multi-thread` feature, which cargo
