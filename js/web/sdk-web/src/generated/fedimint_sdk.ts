@@ -6,6 +6,7 @@
 import nativeModule from './fedimint_sdk-ffi'
 import { type UniffiRustFutureContinuationCallback } from './fedimint_sdk-ffi'
 import {
+  type Cursor as UniffiCursor,
   type FfiConverter,
   type RustBufferAllocator,
   type UniffiByteArray,
@@ -13,7 +14,6 @@ import {
   type UniffiHandle,
   type UniffiObjectFactory,
   AbstractFfiConverterByteArray,
-  Cursor,
   FfiConverterArray,
   FfiConverterArrayBuffer,
   FfiConverterBool,
@@ -198,7 +198,7 @@ export enum OperationKind {
 const FfiConverterTypeOperationKind = (() => {
   type TypeName = OperationKind
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return OperationKind.EcashSend
@@ -220,7 +220,7 @@ const FfiConverterTypeOperationKind = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case OperationKind.EcashSend:
           return c.writeI32(1)
@@ -284,7 +284,7 @@ export enum Direction {
 const FfiConverterTypeDirection = (() => {
   type TypeName = Direction
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return Direction.Incoming
@@ -294,7 +294,7 @@ const FfiConverterTypeDirection = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case Direction.Incoming:
           return c.writeI32(1)
@@ -471,7 +471,7 @@ export enum ActivityStatus {
 const FfiConverterTypeActivityStatus = (() => {
   type TypeName = ActivityStatus
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return ActivityStatus.Pending
@@ -489,7 +489,7 @@ const FfiConverterTypeActivityStatus = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case ActivityStatus.Pending:
           return c.writeI32(1)
@@ -775,7 +775,7 @@ export const ActivityItem = (() => {
 const FfiConverterTypeActivityItem = (() => {
   type TypeName = ActivityItem
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         operationId: FfiConverterTypeOperationId.readFromCursor(c),
         kind: FfiConverterTypeOperationKind.readFromCursor(c),
@@ -787,7 +787,7 @@ const FfiConverterTypeActivityItem = (() => {
         isFinal: FfiConverterBool.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeOperationId.writeIntoCursor(value.operationId, c)
       FfiConverterTypeOperationKind.writeIntoCursor(value.kind, c)
       FfiConverterTypeTimestamp.writeIntoCursor(value.time, c)
@@ -865,13 +865,13 @@ export const ActivityPage = (() => {
 const FfiConverterTypeActivityPage = (() => {
   type TypeName = ActivityPage
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         items: FfiConverterSequenceTypeActivityItem.readFromCursor(c),
         next: FfiConverterOptionalTypeCursor.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterSequenceTypeActivityItem.writeIntoCursor(value.items, c)
       FfiConverterOptionalTypeCursor.writeIntoCursor(value.next, c)
     }
@@ -931,14 +931,14 @@ export const Capabilities = (() => {
 const FfiConverterTypeCapabilities = (() => {
   type TypeName = Capabilities
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         ecash: FfiConverterBool.readFromCursor(c),
         lightning: FfiConverterBool.readFromCursor(c),
         onchain: FfiConverterBool.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterBool.writeIntoCursor(value.ecash, c)
       FfiConverterBool.writeIntoCursor(value.lightning, c)
       FfiConverterBool.writeIntoCursor(value.onchain, c)
@@ -1007,13 +1007,13 @@ export const ConsensusMetadata = (() => {
 const FfiConverterTypeConsensusMetadata = (() => {
   type TypeName = ConsensusMetadata
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         revision: FfiConverterUInt64.readFromCursor(c),
         value: FfiConverterArrayBuffer.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterUInt64.writeIntoCursor(value.revision, c)
       FfiConverterArrayBuffer.writeIntoCursor(value.value, c)
     }
@@ -1265,7 +1265,7 @@ export enum ErrorCode {
 const FfiConverterTypeErrorCode = (() => {
   type TypeName = ErrorCode
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return ErrorCode.InvalidInput
@@ -1317,7 +1317,7 @@ const FfiConverterTypeErrorCode = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case ErrorCode.InvalidInput:
           return c.writeI32(1)
@@ -1522,14 +1522,14 @@ export const RawErrorDetails = (() => {
 const FfiConverterTypeRawErrorDetails = (() => {
   type TypeName = RawErrorDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         version: FfiConverterUInt32.readFromCursor(c),
         kind: FfiConverterString.readFromCursor(c),
         payload: FfiConverterArrayBuffer.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterUInt32.writeIntoCursor(value.version, c)
       FfiConverterString.writeIntoCursor(value.kind, c)
       FfiConverterArrayBuffer.writeIntoCursor(value.payload, c)
@@ -1632,14 +1632,14 @@ export const Diagnostic = (() => {
 const FfiConverterTypeDiagnostic = (() => {
   type TypeName = Diagnostic
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         code: FfiConverterTypeErrorCode.readFromCursor(c),
         message: FfiConverterString.readFromCursor(c),
         details: FfiConverterOptionalTypeDetailEnvelope.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeErrorCode.writeIntoCursor(value.code, c)
       FfiConverterString.writeIntoCursor(value.message, c)
       FfiConverterOptionalTypeDetailEnvelope.writeIntoCursor(value.details, c)
@@ -1943,7 +1943,7 @@ export const EcashReceiveDetails = (() => {
 const FfiConverterTypeEcashReceiveDetails = (() => {
   type TypeName = EcashReceiveDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         notes: FfiConverterOptionalTypeNotes.readFromCursor(c),
         notesValue: FfiConverterTypeAmount.readFromCursor(c),
@@ -1952,7 +1952,7 @@ const FfiConverterTypeEcashReceiveDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterOptionalTypeNotes.writeIntoCursor(value.notes, c)
       FfiConverterTypeAmount.writeIntoCursor(value.notesValue, c)
       FfiConverterTypeAmount.writeIntoCursor(value.fee, c)
@@ -2028,7 +2028,7 @@ export const EcashSendDetails = (() => {
 const FfiConverterTypeEcashSendDetails = (() => {
   type TypeName = EcashSendDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         notes: FfiConverterTypeNotes.readFromCursor(c),
         requestedAmount: FfiConverterTypeAmount.readFromCursor(c),
@@ -2039,7 +2039,7 @@ const FfiConverterTypeEcashSendDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeNotes.writeIntoCursor(value.notes, c)
       FfiConverterTypeAmount.writeIntoCursor(value.requestedAmount, c)
       FfiConverterTypeAmount.writeIntoCursor(value.notesValue, c)
@@ -2110,7 +2110,7 @@ export enum EcashSendState {
 const FfiConverterTypeEcashSendState = (() => {
   type TypeName = EcashSendState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return EcashSendState.Created
@@ -2124,7 +2124,7 @@ const FfiConverterTypeEcashSendState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case EcashSendState.Created:
           return c.writeI32(1)
@@ -2991,13 +2991,13 @@ export const EcashSendHandle = (() => {
 const FfiConverterTypeEcashSendHandle = (() => {
   type TypeName = EcashSendHandle
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         notes: FfiConverterTypeNotes.readFromCursor(c),
         operation: FfiConverterTypeEcashSendOperation.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeNotes.writeIntoCursor(value.notes, c)
       FfiConverterTypeEcashSendOperation.writeIntoCursor(value.operation, c)
     }
@@ -3071,7 +3071,7 @@ export enum Network {
 const FfiConverterTypeNetwork = (() => {
   type TypeName = Network
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return Network.Bitcoin
@@ -3087,7 +3087,7 @@ const FfiConverterTypeNetwork = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case Network.Bitcoin:
           return c.writeI32(1)
@@ -3434,7 +3434,7 @@ export const FederationStatus = (() => {
 const FfiConverterTypeFederationStatus = (() => {
   type TypeName = FederationStatus
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new FederationStatus.Running()
@@ -3454,7 +3454,7 @@ const FfiConverterTypeFederationStatus = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case FederationStatus_Tags.Running: {
           c.writeI32(1)
@@ -3582,7 +3582,7 @@ export const FederationInfo = (() => {
 const FfiConverterTypeFederationInfo = (() => {
   type TypeName = FederationInfo
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         id: FfiConverterTypeFederationId.readFromCursor(c),
         name: FfiConverterOptionalString.readFromCursor(c),
@@ -3590,7 +3590,7 @@ const FfiConverterTypeFederationInfo = (() => {
         status: FfiConverterTypeFederationStatus.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeFederationId.writeIntoCursor(value.id, c)
       FfiConverterOptionalString.writeIntoCursor(value.name, c)
       FfiConverterTypeNetwork.writeIntoCursor(value.network, c)
@@ -3686,7 +3686,7 @@ export const FederationPreview = (() => {
 const FfiConverterTypeFederationPreview = (() => {
   type TypeName = FederationPreview
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         id: FfiConverterTypeFederationId.readFromCursor(c),
         name: FfiConverterOptionalString.readFromCursor(c),
@@ -3696,7 +3696,7 @@ const FfiConverterTypeFederationPreview = (() => {
         meta: FfiConverterTypeMetaMap.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeFederationId.writeIntoCursor(value.id, c)
       FfiConverterOptionalString.writeIntoCursor(value.name, c)
       FfiConverterTypeNetwork.writeIntoCursor(value.network, c)
@@ -3779,7 +3779,7 @@ export const LnFeeBreakdown = (() => {
 const FfiConverterTypeLnFeeBreakdown = (() => {
   type TypeName = LnFeeBreakdown
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         gateway: FfiConverterTypeAmount.readFromCursor(c),
         lightningModule: FfiConverterTypeAmount.readFromCursor(c),
@@ -3787,7 +3787,7 @@ const FfiConverterTypeLnFeeBreakdown = (() => {
         dust: FfiConverterTypeAmount.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAmount.writeIntoCursor(value.gateway, c)
       FfiConverterTypeAmount.writeIntoCursor(value.lightningModule, c)
       FfiConverterTypeAmount.writeIntoCursor(value.primaryModule, c)
@@ -3932,7 +3932,7 @@ export const LnReceiveDetails = (() => {
 const FfiConverterTypeLnReceiveDetails = (() => {
   type TypeName = LnReceiveDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         invoice: FfiConverterTypeBolt11Invoice.readFromCursor(c),
         description: FfiConverterString.readFromCursor(c),
@@ -3945,7 +3945,7 @@ const FfiConverterTypeLnReceiveDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeBolt11Invoice.writeIntoCursor(value.invoice, c)
       FfiConverterString.writeIntoCursor(value.description, c)
       FfiConverterTypeAmount.writeIntoCursor(value.requestedAmount, c)
@@ -4280,7 +4280,7 @@ export const LnReceiveState = (() => {
 const FfiConverterTypeLnReceiveState = (() => {
   type TypeName = LnReceiveState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new LnReceiveState.Created()
@@ -4302,7 +4302,7 @@ const FfiConverterTypeLnReceiveState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case LnReceiveState_Tags.Created: {
           c.writeI32(1)
@@ -4902,13 +4902,13 @@ export const LnReceiveHandle = (() => {
 const FfiConverterTypeLnReceiveHandle = (() => {
   type TypeName = LnReceiveHandle
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         invoice: FfiConverterTypeBolt11Invoice.readFromCursor(c),
         operation: FfiConverterTypeLnReceiveOperation.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeBolt11Invoice.writeIntoCursor(value.invoice, c)
       FfiConverterTypeLnReceiveOperation.writeIntoCursor(value.operation, c)
     }
@@ -5029,7 +5029,7 @@ export const LightningRoute = (() => {
 const FfiConverterTypeLightningRoute = (() => {
   type TypeName = LightningRoute
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new LightningRoute.Internal()
@@ -5041,7 +5041,7 @@ const FfiConverterTypeLightningRoute = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case LightningRoute_Tags.Internal: {
           c.writeI32(1)
@@ -5157,7 +5157,7 @@ export const LnSendDetails = (() => {
 const FfiConverterTypeLnSendDetails = (() => {
   type TypeName = LnSendDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         invoice: FfiConverterTypeBolt11Invoice.readFromCursor(c),
         invoiceAmount: FfiConverterTypeAmount.readFromCursor(c),
@@ -5167,7 +5167,7 @@ const FfiConverterTypeLnSendDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeBolt11Invoice.writeIntoCursor(value.invoice, c)
       FfiConverterTypeAmount.writeIntoCursor(value.invoiceAmount, c)
       FfiConverterTypeAmount.writeIntoCursor(value.fee, c)
@@ -5282,7 +5282,7 @@ export const OnchainReceiveFeeBreakdown = (() => {
 const FfiConverterTypeOnchainReceiveFeeBreakdown = (() => {
   type TypeName = OnchainReceiveFeeBreakdown
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         pegIn: FfiConverterTypeAmount.readFromCursor(c),
         networkClaim: FfiConverterTypeAmount.readFromCursor(c),
@@ -5290,7 +5290,7 @@ const FfiConverterTypeOnchainReceiveFeeBreakdown = (() => {
         dust: FfiConverterTypeAmount.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAmount.writeIntoCursor(value.pegIn, c)
       FfiConverterTypeAmount.writeIntoCursor(value.networkClaim, c)
       FfiConverterTypeAmount.writeIntoCursor(value.primaryModule, c)
@@ -5457,7 +5457,7 @@ export const OnchainReceiveDetails = (() => {
 const FfiConverterTypeOnchainReceiveDetails = (() => {
   type TypeName = OnchainReceiveDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         address: FfiConverterTypeAddress.readFromCursor(c),
         txid: FfiConverterOptionalTypeTxid.readFromCursor(c),
@@ -5469,7 +5469,7 @@ const FfiConverterTypeOnchainReceiveDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAddress.writeIntoCursor(value.address, c)
       FfiConverterOptionalTypeTxid.writeIntoCursor(value.txid, c)
       FfiConverterOptionalTypeSats.writeIntoCursor(value.grossDeposited, c)
@@ -5778,7 +5778,7 @@ export const OnchainReceiveState = (() => {
 const FfiConverterTypeOnchainReceiveState = (() => {
   type TypeName = OnchainReceiveState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new OnchainReceiveState.WaitingForTransaction()
@@ -5806,7 +5806,7 @@ const FfiConverterTypeOnchainReceiveState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case OnchainReceiveState_Tags.WaitingForTransaction: {
           c.writeI32(1)
@@ -6424,13 +6424,13 @@ export const OnchainReceiveHandle = (() => {
 const FfiConverterTypeOnchainReceiveHandle = (() => {
   type TypeName = OnchainReceiveHandle
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         address: FfiConverterTypeAddress.readFromCursor(c),
         operation: FfiConverterTypeOnchainReceiveOperation.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAddress.writeIntoCursor(value.address, c)
       FfiConverterTypeOnchainReceiveOperation.writeIntoCursor(
         value.operation,
@@ -6541,7 +6541,7 @@ export const OnchainSendDetails = (() => {
 const FfiConverterTypeOnchainSendDetails = (() => {
   type TypeName = OnchainSendDetails
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         address: FfiConverterTypeAddress.readFromCursor(c),
         amount: FfiConverterTypeSats.readFromCursor(c),
@@ -6550,7 +6550,7 @@ const FfiConverterTypeOnchainSendDetails = (() => {
         createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAddress.writeIntoCursor(value.address, c)
       FfiConverterTypeSats.writeIntoCursor(value.amount, c)
       FfiConverterTypeAmount.writeIntoCursor(value.fee, c)
@@ -6639,14 +6639,14 @@ export const OnchainSendFeeBreakdown = (() => {
 const FfiConverterTypeOnchainSendFeeBreakdown = (() => {
   type TypeName = OnchainSendFeeBreakdown
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         walletOutput: FfiConverterTypeAmount.readFromCursor(c),
         funding: FfiConverterTypeAmount.readFromCursor(c),
         change: FfiConverterTypeAmount.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAmount.writeIntoCursor(value.walletOutput, c)
       FfiConverterTypeAmount.writeIntoCursor(value.funding, c)
       FfiConverterTypeAmount.writeIntoCursor(value.change, c)
@@ -6729,14 +6729,14 @@ export const RawOperationKind = (() => {
 const FfiConverterTypeRawOperationKind = (() => {
   type TypeName = RawOperationKind
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         kind: FfiConverterString.readFromCursor(c),
         module: FfiConverterOptionalString.readFromCursor(c),
         schemaVersion: FfiConverterOptionalUInt32.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterString.writeIntoCursor(value.kind, c)
       FfiConverterOptionalString.writeIntoCursor(value.module, c)
       FfiConverterOptionalUInt32.writeIntoCursor(value.schemaVersion, c)
@@ -7432,7 +7432,7 @@ export const EcashReceiveState = (() => {
 const FfiConverterTypeEcashReceiveState = (() => {
   type TypeName = EcashReceiveState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new EcashReceiveState.Created()
@@ -7448,7 +7448,7 @@ const FfiConverterTypeEcashReceiveState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case EcashReceiveState_Tags.Created: {
           c.writeI32(1)
@@ -9240,7 +9240,7 @@ export const LnSendState = (() => {
 const FfiConverterTypeLnSendState = (() => {
   type TypeName = LnSendState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new LnSendState.Created()
@@ -9262,7 +9262,7 @@ const FfiConverterTypeLnSendState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case LnSendState_Tags.Created: {
           c.writeI32(1)
@@ -11334,7 +11334,7 @@ export const OnchainSendState = (() => {
 const FfiConverterTypeOnchainSendState = (() => {
   type TypeName = OnchainSendState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new OnchainSendState.Created()
@@ -11354,7 +11354,7 @@ const FfiConverterTypeOnchainSendState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case OnchainSendState_Tags.Created: {
           c.writeI32(1)
@@ -12359,13 +12359,13 @@ export const RecoveryProgress = (() => {
 const FfiConverterTypeRecoveryProgress = (() => {
   type TypeName = RecoveryProgress
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         complete: FfiConverterUInt32.readFromCursor(c),
         total: FfiConverterUInt32.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterUInt32.writeIntoCursor(value.complete, c)
       FfiConverterUInt32.writeIntoCursor(value.total, c)
     }
@@ -12564,7 +12564,7 @@ export const RecoveryState = (() => {
 const FfiConverterTypeRecoveryState = (() => {
   type TypeName = RecoveryState
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return new RecoveryState.Running({
@@ -12581,7 +12581,7 @@ const FfiConverterTypeRecoveryState = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
         case RecoveryState_Tags.Running: {
           c.writeI32(1)
@@ -13127,7 +13127,7 @@ export enum OperationSupport {
 const FfiConverterTypeOperationSupport = (() => {
   type TypeName = OperationSupport
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
           return OperationSupport.Observable
@@ -13139,7 +13139,7 @@ const FfiConverterTypeOperationSupport = (() => {
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value) {
         case OperationSupport.Observable:
           return c.writeI32(1)
@@ -14574,13 +14574,13 @@ export const RecoveryHandle = (() => {
 const FfiConverterTypeRecoveryHandle = (() => {
   type TypeName = RecoveryHandle
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: Cursor): TypeName {
+    readFromCursor(c: UniffiCursor): TypeName {
       return {
         federation: FfiConverterTypeFederation.readFromCursor(c),
         progress: FfiConverterTypeRecoveryOperation.readFromCursor(c),
       }
     }
-    writeIntoCursor(value: TypeName, c: Cursor): void {
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeFederation.writeIntoCursor(value.federation, c)
       FfiConverterTypeRecoveryOperation.writeIntoCursor(value.progress, c)
     }
