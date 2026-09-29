@@ -38,6 +38,14 @@ import org.fedimint.demo.ui.federations.FederationsScreen
 import org.fedimint.demo.ui.federations.JoinFederationScreen
 import org.fedimint.demo.ui.home.HomeScreen
 import org.fedimint.demo.ui.onboarding.BackupScreen
+import org.fedimint.demo.ui.payments.EcashReceiveScreen
+import org.fedimint.demo.ui.payments.EcashSendScreen
+import org.fedimint.demo.ui.payments.LightningReceiveScreen
+import org.fedimint.demo.ui.payments.LightningSendScreen
+import org.fedimint.demo.ui.payments.OnchainReceiveScreen
+import org.fedimint.demo.ui.payments.OnchainSendScreen
+import org.fedimint.demo.ui.payments.PaymentDirection
+import org.fedimint.demo.ui.payments.Rail
 import org.fedimint.demo.ui.onboarding.RestoreScreen
 import org.fedimint.demo.ui.onboarding.VerifyBackupScreen
 import org.fedimint.demo.ui.onboarding.WelcomeScreen
@@ -132,8 +140,15 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 onJoinFederation = { nav.navigate(JoinFederation) },
                 onOpenFederations = { nav.navigate(Federations) },
                 onOpenDeveloperTools = { context.startActivity(Intent(context, HarnessActivity::class.java)) },
+                onPay = { direction, rail, id -> nav.navigate(paymentRoute(direction, rail, id)) },
             )
         }
+        composable<LightningReceive> { LightningReceiveScreen(it.toRoute<LightningReceive>().federationId, nav::popBackStack) }
+        composable<LightningSend> { LightningSendScreen(it.toRoute<LightningSend>().federationId, nav::popBackStack) }
+        composable<EcashReceive> { EcashReceiveScreen(it.toRoute<EcashReceive>().federationId, nav::popBackStack) }
+        composable<EcashSend> { EcashSendScreen(it.toRoute<EcashSend>().federationId, nav::popBackStack) }
+        composable<OnchainReceive> { OnchainReceiveScreen(it.toRoute<OnchainReceive>().federationId, nav::popBackStack) }
+        composable<OnchainSend> { OnchainSendScreen(it.toRoute<OnchainSend>().federationId, nav::popBackStack) }
         composable<JoinFederation> {
             JoinFederationScreen(
                 onBack = { nav.popBackStack() },
@@ -155,6 +170,19 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 onShownOnHome = { nav.popBackStack<Home>(inclusive = false) },
             )
         }
+    }
+}
+
+private fun paymentRoute(direction: PaymentDirection, rail: Rail, id: String): Any = when (direction) {
+    PaymentDirection.Receive -> when (rail) {
+        Rail.Lightning -> LightningReceive(id)
+        Rail.Ecash -> EcashReceive(id)
+        Rail.Onchain -> OnchainReceive(id)
+    }
+    PaymentDirection.Send -> when (rail) {
+        Rail.Lightning -> LightningSend(id)
+        Rail.Ecash -> EcashSend(id)
+        Rail.Onchain -> OnchainSend(id)
     }
 }
 

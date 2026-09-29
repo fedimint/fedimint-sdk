@@ -210,13 +210,56 @@ The detail screen offers only what the SDK allows in the current status:
 - **Quarantine shows the SDK's `Diagnostic`:** the stable `ErrorCode` plus the
   message. The structured `details` envelope isn't rendered yet.
 
+### 12. Payments: quote, review and execute for sends; create, share and follow for receives
+
+Every send screen has the same three steps, and every receive screen has its own
+three. All six screens share one base ViewModel (`ui/payments/PaymentViewModel.kt`),
+so a new payment method only adds the SDK calls.
+
+- **A send never moves money without a reviewed quote.** The SDK splits every
+  send into `quote(...)` and `send(quote)`. The review card shows amount, fee,
+  total and, for Lightning, the route (inside the federation or through a
+  gateway). A live countdown to the quote's `expiresAt` runs, because past it the
+  SDK refuses with `QUOTE_EXPIRED`. Editing the input discards the quote. A quote
+  is single use, so the ViewModel takes it out of its field before sending, and a
+  double tap can't submit it twice.
+- **A receive hands something to the other party, then follows the operation.**
+  Lightning shows an invoice, on-chain a deposit address, ecash send the notes.
+  Each is shown as a QR code plus a copy button. The live state comes from the
+  operation's `updates()`, whose first `next()` is the current state and which
+  returns null once the state is final (`Payments.states`).
+- **What each state means to the user is in one place** (`OperationStates.kt`):
+  a label, an optional detail, whether it has settled, and whether it went well.
+  Every `when` is exhaustive over the generated sealed class or enum, so a state
+  the SDK adds later breaks the build instead of showing nothing. Step 5's
+  operation detail screen reuses the same mapping.
+- **`Payments` sits beside `WalletSession`** (the growth path decision #3
+  planned). It owns the facade calls (`lightning()`, `ecash()`, `onchain()`), and
+  reports a missing module as an error instead of a crash. `WalletSession` only
+  lends out a federation handle for the length of a call (`withFederation`).
+- **Handles are closed with the screen.** Quotes, notes and operations are
+  UniFFI handles. The base ViewModel registers each one (`owned()`) and closes
+  them all in `onCleared()`. The SDK keeps running an operation after its screen
+  is gone; only this screen's view of it ends.
+- **Amounts:** users type whole sats; the SDK counts Lightning and ecash in msats
+  (`Amount`) and on-chain sends in sats (`Sats`). Each screen converts at the call.
+- **Ecash notes are a bearer instrument.** They leave the SDK only through
+  `display()`, the pasted text on the redeem screen lives in ViewModel memory
+  (never saved state), and the send screen warns that whoever holds them can
+  redeem them. Redeeming shows the notes' value before the user commits.
+- **Errors:** the user sees a message chosen by `ErrorCode`. The SDK's own
+  `reason()` goes to logcat under the `Payments` tag, for developers.
+- **QR codes:** ZXing core, a small pure-Java library with no Kotlin-version
+  coupling (decision #7). Anything too long to scan reliably (large note bundles)
+  shows copy-only.
+
 ## Package layout
 
 ```
 org.fedimint.demo
 ├── FedimintApp.kt          Application + AppContainer (manual DI)
 ├── MainActivity.kt         the single Compose activity
-├── wallet/                 SDK ownership: WalletSession, and repositories as they come
+├── wallet/                 SDK ownership: WalletSession; Payments (module facades)
 ├── ui/
 │   ├── nav/                routes, NavHost, start-screen decision
 │   ├── theme/              Material 3 theme
@@ -224,7 +267,9 @@ org.fedimint.demo
 │   │                       formatting, federation status labels and badge
 │   ├── onboarding/         Welcome, Backup, VerifyBackup, Restore
 │   ├── home/               Home: balance, status, send/receive entry
-│   └── federations/        Federations list, FederationDetail, JoinFederation
+│   ├── federations/        Federations list, FederationDetail, JoinFederation
+│   └── payments/           Lightning, Ecash, Onchain send/receive; shared base ViewModel,
+│                           components (QR, review, progress), operation-state mapping
 └── harness/                the original one-screen harness (removed in step 7)
 ```
 
@@ -242,7 +287,7 @@ without a joined federation.
 | 1 | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()` | done |
 | 2 | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join) | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join` | done |
 | 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic` | done |
-| 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive` | |
+| 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | built |
 | 5 | Activity: paginated history, operation detail with live state and cancel | `activity(cursor)`, `operation(id)`, `AnyOperation`, `updates()`, `requestCancel` | |
 | 6 | Recovery progress and resume; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta`, `ConsensusMetadata` | |
 | 7 | Remove the harness once every API above has a wallet screen | | |
@@ -308,3 +353,31 @@ Join the Mutinynet federation first (step 2) if the wallet has none.
    empty, and Home shows its "Join a federation" state.
 7. **Not testable yet:** a refused Remove (needs a balance, so step 4) and
    quarantine (needs a federation whose configuration the SDK rejects).
+
+## Testing step 4
+
+On Mutinynet (Signet). The faucet at faucet.mutinynet.com pays Lightning invoices
+and sends on-chain coins.
+
+1. **Lightning receive:** Home → Receive → Lightning. Enter 1000 sats and create
+   the invoice. A QR code and invoice appear, with "Waiting for payment". Pay it
+   from the faucet. The state moves to Received, and Home's balance goes up live.
+2. **Ecash send:** Send → Ecash, 100 sats → Review (amount, fee, total, countdown)
+   → Create notes. The notes appear with a QR code and "Notes ready".
+3. **Ecash receive:** Receive → Ecash, paste the notes from step 2 → Check notes
+   (shows their value) → Redeem. The state becomes Redeemed. Going back to the
+   step 2 screen, it reads "Redeemed by the receiver".
+4. **Lightning send:** create an invoice on the faucet (or any Signet wallet) and
+   paste it into Send → Lightning → Review. Check the fee, the route and the
+   countdown, then Pay. The state becomes Paid.
+5. **Quote expiry:** get a review and wait for the countdown to reach zero, then
+   tap Pay. You get "That quote expired. Get a new one."
+6. **On-chain receive:** Receive → On-chain shows a `tb1…` address and QR. Send
+   from the faucet. The state steps through "Deposit seen" and "Confirmed" to
+   Received, which can take several blocks.
+7. **On-chain send:** Send → On-chain, with a Signet address and an amount →
+   Review → Send.
+8. **Gating:** Receive and Send only list the methods the federation supports.
+9. **Refused remove (from step 3):** with a balance, Federations → detail →
+   Remove. It's refused with "still holds funds", and the federation is now
+   closed. Reopen it.
