@@ -37,8 +37,10 @@ The `Federation` that `join` returns carries the rest of the surface: `balance()
 `capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
 `lightning()` and `onchain()` facades (each `null` when the federation lacks that
 module), whose `quote` → `send` and `receive` calls return operation handles to
-observe with `state()`, `updates()` and `awaitFinal()`. The example app
-(`android/app`) drives each of them once.
+observe with `state()`, `updates()` and `awaitFinal()`. The app in `android/app`
+is becoming a reference wallet built on this surface; until it covers all of it,
+its SDK harness (`harness/HarnessActivity.kt`, under Developer tools) drives each
+call once. See [`app/DECISION.md`](app/DECISION.md).
 
 ## Using it
 
