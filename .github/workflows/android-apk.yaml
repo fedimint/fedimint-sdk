@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 'Setup Nix'
         uses: ./.github/actions/setup-nix
@@ -73,13 +73,13 @@ jobs:
       # so both have to be put back before Gradle can see them. Neither is made
       # here: `native` built the .so and `bindings` read the Kotlin out of it.
       - name: 'Download jniLibs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.jni-artifact }}
           path: android/fedimint-sdk/src/main/jniLibs/
 
       - name: 'Download the Kotlin bindings'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.bindings-artifact }}
           path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
@@ -95,7 +95,7 @@ jobs:
           EOF
 
       - name: 'Upload the APK'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-example-apk
           path: android/app/build/outputs/apk/debug/*.apk

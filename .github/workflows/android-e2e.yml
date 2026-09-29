@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -64,7 +64,7 @@ jobs:
       # looks: the script neither knows nor cares whether this machine or
       # another built the file.
       - name: Download the example APK
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.apk-artifact }}
           path: android/app/build/outputs/apk/debug/
@@ -94,7 +94,7 @@ jobs:
           EOF
 
       - name: Upload logs & screenshots
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ always() }}
         continue-on-error: true
         with:
