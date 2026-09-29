@@ -547,7 +547,10 @@
               # Clear flags inherited from the outer default shell too:
               # `just build-rn-ios` enters this shell from that environment.
               export PATH=${xcode-wrapper}/bin:$PATH
-              unset SDKROOT NIX_CFLAGS_COMPILE NIX_LDFLAGS
+              # nixpkgs' apple-sdk setup hook also exports DEVELOPER_DIR to
+              # its SDK-only store path. Apple's compiler shims need the full
+              # Xcode selected by xcode-select, not that directory.
+              unset DEVELOPER_DIR SDKROOT NIX_CFLAGS_COMPILE NIX_LDFLAGS
               export CC=/usr/bin/clang
               export CXX=/usr/bin/clang++
               export AR=/usr/bin/ar
