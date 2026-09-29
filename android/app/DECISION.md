@@ -148,6 +148,37 @@ removed from the back stack, because the seed now exists and "create or restore"
 no longer applies. After a verified backup or a restore, the whole onboarding stack
 is cleared, so Back from Home leaves the app.
 
+### 10. Federation state comes from the SDK's status stream, not per-screen polling
+
+`WalletSession.federations` is one `StateFlow<List<FederationInfo>>`, seeded from
+`storedFederations()` and then updated from `federationStatusUpdates()`: each update
+replaces the row with the same id, and `Forgotten` removes it. Every screen that
+lists or badges federations reads this single flow.
+
+- **Why `storedFederations` and not `federations()`:** the SDK docs are explicit.
+  `federations()` answers "what can I act on" and silently drops closed or
+  quarantined federations. `storedFederations` answers "what does this user have",
+  so a federation that can't be used right now shows up labelled instead of
+  vanishing along with the user's view of their money.
+- **Why one app-level subscription:** a status can change with nobody asking, for
+  example guardians publish a config the SDK refuses and the federation is
+  quarantined. One long-lived subscriber in the session catches that for every
+  screen, rather than each screen opening its own.
+- **Live data per screen (the balance):** the ViewModel follows `balanceUpdates()`,
+  whose first `next()` is the current amount and each later one a change. It is
+  keyed on *(federation id, is open)*, so it restarts when the user switches
+  federation or the federation closes or reopens, and not on unrelated status
+  changes. `SharingStarted.WhileSubscribed(5_000)` stops it 5 s after the screen
+  leaves (for example the app goes to the background), but not during a rotation.
+- **Capabilities gate the UI before the user taps:** Send and Receive are enabled
+  only on a `Running` federation with at least one capability, and the method
+  sheet lists only what `capabilities()` reports. A `Recovering` federation shows
+  its provisional balance but keeps both disabled, because the SDK refuses every
+  send and receive until recovery completes.
+- **Which federation Home shows** is app state (`selected_federation` in
+  `SharedPreferences`). If the selected federation was forgotten, Home falls back to
+  the first running one (`WalletSession.pickActive`).
+
 ## Package layout
 
 ```
@@ -158,9 +189,11 @@ org.fedimint.demo
 ├── ui/
 │   ├── nav/                routes, NavHost, start-screen decision
 │   ├── theme/              Material 3 theme
-│   ├── common/             shared helpers: errors, attempt, SecureScreen, appViewModel
+│   ├── common/             shared helpers: errors, attempt, SecureScreen, appViewModel,
+│   │                       formatting, federation status labels and badge
 │   ├── onboarding/         Welcome, Backup, VerifyBackup, Restore
-│   └── home/               Home
+│   ├── home/               Home: balance, status, send/receive entry
+│   └── federations/        JoinFederation (the manager arrives in step 3)
 └── harness/                the original one-screen harness (removed in step 7)
 ```
 
@@ -170,12 +203,14 @@ per screen, each holding the screen's ViewModel and composable.
 ## Steps
 
 All in one PR, one step at a time, each tested on a device before the next.
+Preview and join moved from step 3 to step 2, because Home can't be tested
+without a joined federation.
 
 | Step | Scope | SDK surface | Status |
 |---|---|---|---|
 | 1 | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()` | done |
-| 2 | Home: live balance, capability-gated actions, connectivity | `balanceUpdates`, `capabilities`, `federationStatus` | |
-| 3 | Federations: list, details, join/preview, reopen/close/forget, quarantine diagnostics | `storedFederations`, `federationStatusUpdates`, `preview`, `join`, `reopenFederation`, `closeFederation`, `forgetFederation`, `Diagnostic` | |
+| 2 | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join) | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join` | done |
+| 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics | `reopenFederation`, `closeFederation`, `forgetFederation`, `federationStatus`, `Diagnostic` | |
 | 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive` | |
 | 5 | Activity: paginated history, operation detail with live state and cancel | `activity(cursor)`, `operation(id)`, `AnyOperation`, `updates()`, `requestCancel` | |
 | 6 | Recovery progress and resume; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta`, `ConsensusMetadata` | |
@@ -204,3 +239,21 @@ cd android && ./gradlew :app:installDebug
 7. **Rotation** on any screen keeps what was typed.
 8. **Developer tools** on Home opens the old harness, which still works on its own
    data.
+
+## Testing step 2
+
+1. **No federation:** Home shows "Join a federation" with a button.
+2. **Join:** tap it, then "Use the Mutinynet test federation", then Preview. It
+   shows mutinynet-05-alephbft on Signet with 4 guardians. Preview can take a
+   minute on a loaded machine; a TIMEOUT error just means try again.
+3. Tap Join. Home shows the federation name, a balance (0 sats), Signet, Connected,
+   and a test-network note.
+4. **Capabilities:** Receive and Send each open a sheet listing only the methods
+   this federation supports (here Lightning, Ecash and On-chain; they're wired up in
+   step 4).
+5. **Live balance:** not testable yet. The harness under Developer tools has its
+   own separate wallet, so it can't fund this one. The live update is checked in
+   step 4, with the first real receive.
+6. **Relaunch:** Home comes straight back to the same federation and balance.
+7. **Join again** from the ⋮ menu with the same code: no error, it just selects it.
+8. **Bad code:** type anything else and Preview. You get "That input isn't valid."

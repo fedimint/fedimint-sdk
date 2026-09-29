@@ -32,6 +32,7 @@ import org.fedimint.demo.harness.HarnessActivity
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.ui.federations.JoinFederationScreen
 import org.fedimint.demo.ui.home.HomeScreen
 import org.fedimint.demo.ui.onboarding.BackupScreen
 import org.fedimint.demo.ui.onboarding.RestoreScreen
@@ -125,7 +126,15 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
         }
         composable<Home> {
             HomeScreen(
+                onJoinFederation = { nav.navigate(JoinFederation) },
                 onOpenDeveloperTools = { context.startActivity(Intent(context, HarnessActivity::class.java)) },
+            )
+        }
+        composable<JoinFederation> {
+            JoinFederationScreen(
+                onBack = { nav.popBackStack() },
+                // Home follows the session's selected federation, which join just set.
+                onJoined = { nav.popBackStack() },
             )
         }
     }
