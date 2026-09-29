@@ -1,5 +1,6 @@
 package org.fedimint.demo.ui.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -64,9 +65,12 @@ import org.fedimint.demo.ui.common.isOpen
 import org.fedimint.demo.ui.common.label
 import org.fedimint.demo.ui.common.msatRemainder
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.ui.payments.PaymentDirection
+import org.fedimint.demo.ui.payments.Rail
 import org.fedimint.demo.wallet.WalletSession
 import org.fedimint.sdk.Amount
 import org.fedimint.sdk.Capabilities
+import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.FederationInfo
 import org.fedimint.sdk.FederationStatus
 import org.fedimint.sdk.Network
@@ -122,18 +126,17 @@ class HomeViewModel(private val session: WalletSession) : ViewModel() {
     fun select(federation: FederationInfo) = session.select(federation.id)
 }
 
-private enum class Direction { Send, Receive }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onJoinFederation: () -> Unit,
     onOpenFederations: () -> Unit,
     onOpenDeveloperTools: () -> Unit,
+    onPay: (PaymentDirection, Rail, FederationId) -> Unit,
 ) {
     val vm = appViewModel { HomeViewModel(it.session) }
     val state by vm.state.collectAsStateWithLifecycle()
-    var sheet by remember { mutableStateOf<Direction?>(null) }
+    var sheet by remember { mutableStateOf<PaymentDirection?>(null) }
 
     Scaffold(
         topBar = {
@@ -161,12 +164,12 @@ fun HomeScreen(
                     val canTransact = active.status.canTransact && state.capabilities.hasAny()
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
-                            onClick = { sheet = Direction.Receive },
+                            onClick = { sheet = PaymentDirection.Receive },
                             enabled = canTransact,
                             modifier = Modifier.weight(1f),
                         ) { Text("Receive") }
                         Button(
-                            onClick = { sheet = Direction.Send },
+                            onClick = { sheet = PaymentDirection.Send },
                             enabled = canTransact,
                             modifier = Modifier.weight(1f),
                         ) { Text("Send") }
@@ -178,8 +181,17 @@ fun HomeScreen(
 
     val caps = state.capabilities
     val direction = sheet
-    if (direction != null && caps != null) {
-        PaymentMethodSheet(direction, caps, onDismiss = { sheet = null })
+    val active = state.active
+    if (direction != null && caps != null && active != null) {
+        PaymentMethodSheet(
+            direction,
+            caps,
+            onPick = { rail ->
+                sheet = null
+                onPay(direction, rail, active.id)
+            },
+            onDismiss = { sheet = null },
+        )
     }
 }
 
@@ -326,34 +338,36 @@ private fun StatusNote(status: FederationStatus, text: String) {
 /** The methods this federation offers in one direction. Only supported ones are listed. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PaymentMethodSheet(direction: Direction, caps: Capabilities, onDismiss: () -> Unit) {
+private fun PaymentMethodSheet(
+    direction: PaymentDirection,
+    caps: Capabilities,
+    onPick: (Rail) -> Unit,
+    onDismiss: () -> Unit,
+) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
             Text(
-                if (direction == Direction.Send) "Send with" else "Receive with",
+                if (direction == PaymentDirection.Send) "Send with" else "Receive with",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
             )
-            methods(direction, caps).forEachIndexed { i, (name, detail) ->
+            methods(direction, caps).forEachIndexed { i, (rail, detail) ->
                 if (i > 0) HorizontalDivider()
                 ListItem(
-                    headlineContent = { Text(name) },
-                    supportingContent = { Text("$detail · Arrives in step 4") },
+                    headlineContent = { Text(rail.title) },
+                    supportingContent = { Text(detail) },
+                    modifier = Modifier.clickable { onPick(rail) },
                 )
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
-                Text("Close")
             }
         }
     }
 }
 
-private fun methods(direction: Direction, caps: Capabilities): List<Pair<String, String>> = buildList {
-    val send = direction == Direction.Send
-    if (caps.lightning) add("Lightning" to if (send) "Pay an invoice" else "Create an invoice")
-    if (caps.ecash) add("Ecash" to if (send) "Hand over notes directly" else "Redeem notes you were given")
-    if (caps.onchain) add("On-chain" to if (send) "Send to a bitcoin address" else "Deposit from a bitcoin address")
+private fun methods(direction: PaymentDirection, caps: Capabilities): List<Pair<Rail, String>> = buildList {
+    val send = direction == PaymentDirection.Send
+    if (caps.lightning) add(Rail.Lightning to if (send) "Pay an invoice" else "Create an invoice")
+    if (caps.ecash) add(Rail.Ecash to if (send) "Hand over notes directly" else "Redeem notes you were given")
+    if (caps.onchain) add(Rail.Onchain to if (send) "Send to a bitcoin address" else "Deposit from a bitcoin address")
 }
 
 private fun Capabilities?.hasAny(): Boolean = this != null && (ecash || lightning || onchain)
