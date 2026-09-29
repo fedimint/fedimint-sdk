@@ -390,8 +390,8 @@ async fn fund(lightning: &fedimint_sdk::Lightning, msats: u64) -> fedimint_sdk::
 /// Waits until the federation's balance reads `expected`, through a fresh balance stream, and
 /// panics with the last figure seen if it has not within a minute.
 ///
-/// A recovered wallet's notes are re-signed by state machines that resume on the client the
-/// recovery's end swaps in, so the balance can land a moment after the recovery reads `Done`.
+/// For a balance that lands a moment after the operation moving it is observed ending, as each
+/// call site explains.
 async fn balance_settles_at(federation: &fedimint_sdk::Federation, expected: fedimint_sdk::Amount) {
     let mut updates = federation.balance_updates();
     settles_at(&mut updates, expected).await;
@@ -1103,6 +1103,12 @@ async fn recovery_restores_a_wallet_with_history() {
         .await
         .expect("the recovery finishes");
     assert_eq!(last, RecoveryState::Done);
+    // `Done` waits for the notes the rescan found to be issued, so the balance read the moment it
+    // is observed is the restored one.
+    assert_eq!(
+        recovery.federation.balance().await.expect("balance"),
+        funded
+    );
     assert_eq!(
         sdk_b.recovery_status(&id).await.expect("readable"),
         Some(RecoveryState::Done)
@@ -1112,7 +1118,8 @@ async fn recovery_restores_a_wallet_with_history() {
         Some(FederationStatus::Running)
     );
     // The stream reports changes only, so a provisional reading that was already the funded
-    // figure (a rescan that ended before the subscription) is not waited for a second time.
+    // figure (a rescan that ended before the subscription) has nothing left to report. Any other
+    // is caught up here, so that the next reading below is the payment's.
     if provisional != funded {
         settles_at(&mut updates, funded).await;
     }
@@ -1317,7 +1324,11 @@ async fn recovery_locks_the_federation_while_it_runs() {
         sdk_b.federation_status(&id),
         Some(FederationStatus::Running)
     );
-    balance_settles_at(&recovery.federation, funded).await;
+    assert_eq!(
+        recovery.federation.balance().await.expect("balance"),
+        funded,
+        "the balance at `Done` is the restored one"
+    );
 
     sdk_b.shutdown().await.expect("the instance shuts down");
 }

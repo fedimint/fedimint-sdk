@@ -2763,20 +2763,12 @@ mod tests {
         }
 
         // No test here exercises `close_federation`'s write-failure -> quarantine path (the
-        // federation is already stopped, but the durable write of `Closed` fails). That needs a
-        // `Database` whose commit fails on demand, and no such backend exists among the ones this
-        // crate already builds: `MemDatabase` always commits. Building one means implementing
-        // `fedimint_core::db::IRawDatabase` by hand, whose trait methods are `async fn` desugared
-        // by the `async-trait` crate; `fedimint_core::async_trait_maybe_send!`, upstream's own
-        // helper for implementing its traits from another crate, expands to `::async_trait::
-        // async_trait`, a path resolved in *this* crate's extern prelude, not `fedimint-core`'s,
-        // so using it here needs `async-trait` added as this crate's own direct dependency.
-        // Adding a dependency to cover one test is not the cheap fault injection this warranted.
-        // The fix is reviewed by inspection instead: setting the in-memory status right after the
+        // federation is already stopped, but the durable write of `Closed` fails);
+        // `crate::db::failing` provides a `Database` whose commits fail on demand for one. The fix
+        // is reviewed by inspection instead: setting the in-memory status right after the
         // federation is retired, before its durable write is even attempted, is the same ordering
         // `forget_federation` below already uses (its own phase 1 sets `Closed` right after
-        // `quiesce`); the quarantine-on-failure half is new here and has no analogue to lean on,
-        // which is exactly why a dedicated test was attempted before settling for this note.
+        // `quiesce`); the quarantine-on-failure half is new here and has no analogue to lean on.
 
         // No test here exercises `reopen_federation`/`restore` preserving `start`'s revalidated
         // record instead of clobbering it with the pre-revalidation snapshot: `start` only

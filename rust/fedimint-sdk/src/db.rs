@@ -1276,3 +1276,233 @@ mod operation_record_tests {
         assert!(now < 4_102_444_800_000);
     }
 }
+
+/// A database whose commits can be made to fail on demand, for tests that need to see what
+/// the SDK does when a durable write fails.
+#[cfg(test)]
+pub(crate) mod failing {
+    use std::ops::Range;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use fedimint_core::db::mem_impl::{MemDatabase, MemTransaction};
+    use fedimint_core::db::{
+        Database, DatabaseError, DatabaseResult, IDatabaseTransactionOps,
+        IDatabaseTransactionOpsCore, IRawDatabase, IRawDatabaseTransaction, PrefixStream,
+    };
+    use fedimint_core::module::registry::ModuleDecoderRegistry;
+    use fedimint_core::{apply, async_trait_maybe_send};
+
+    /// The shared switch a [`FailingCommitsDb`] transaction consults when it commits.
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct CommitFailures(Arc<AtomicBool>);
+
+    impl CommitFailures {
+        /// Turns commit failures on (`true`) or back off (`false`).
+        pub(crate) fn fail(&self, on: bool) {
+            self.0.store(on, Ordering::SeqCst);
+        }
+
+        fn is_on(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A raw database over in-memory storage whose commits fail while [`CommitFailures`] is on.
+    #[derive(Debug)]
+    struct FailingCommitsDb {
+        inner: MemDatabase,
+        failures: CommitFailures,
+    }
+
+    #[apply(async_trait_maybe_send!)]
+    impl IRawDatabase for FailingCommitsDb {
+        type Transaction<'a> = FailingCommitsTransaction<'a>;
+
+        async fn begin_transaction<'a>(&'a self) -> Self::Transaction<'a> {
+            FailingCommitsTransaction {
+                inner: self.inner.begin_transaction().await,
+                failures: self.failures.clone(),
+            }
+        }
+
+        fn checkpoint(&self, backup_path: &Path) -> DatabaseResult<()> {
+            self.inner.checkpoint(backup_path)
+        }
+    }
+
+    /// The transaction type of [`FailingCommitsDb`]. Every op but `commit_tx` delegates to the
+    /// wrapped in-memory transaction verbatim.
+    #[derive(Debug)]
+    struct FailingCommitsTransaction<'a> {
+        inner: MemTransaction<'a>,
+        failures: CommitFailures,
+    }
+
+    #[apply(async_trait_maybe_send!)]
+    impl IDatabaseTransactionOpsCore for FailingCommitsTransaction<'_> {
+        async fn raw_insert_bytes(
+            &mut self,
+            key: &[u8],
+            value: &[u8],
+        ) -> DatabaseResult<Option<Vec<u8>>> {
+            self.inner.raw_insert_bytes(key, value).await
+        }
+
+        async fn raw_get_bytes(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+            self.inner.raw_get_bytes(key).await
+        }
+
+        async fn raw_remove_entry(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+            self.inner.raw_remove_entry(key).await
+        }
+
+        async fn raw_find_by_prefix(
+            &mut self,
+            key_prefix: &[u8],
+        ) -> DatabaseResult<PrefixStream<'_>> {
+            self.inner.raw_find_by_prefix(key_prefix).await
+        }
+
+        async fn raw_find_by_prefix_sorted_descending(
+            &mut self,
+            key_prefix: &[u8],
+        ) -> DatabaseResult<PrefixStream<'_>> {
+            self.inner
+                .raw_find_by_prefix_sorted_descending(key_prefix)
+                .await
+        }
+
+        async fn raw_find_by_range(
+            &mut self,
+            range: Range<&[u8]>,
+        ) -> DatabaseResult<PrefixStream<'_>> {
+            self.inner.raw_find_by_range(range).await
+        }
+
+        async fn raw_remove_by_prefix(&mut self, key_prefix: &[u8]) -> DatabaseResult<()> {
+            self.inner.raw_remove_by_prefix(key_prefix).await
+        }
+    }
+
+    impl IDatabaseTransactionOps for FailingCommitsTransaction<'_> {}
+
+    #[apply(async_trait_maybe_send!)]
+    impl IRawDatabaseTransaction for FailingCommitsTransaction<'_> {
+        async fn commit_tx(self) -> DatabaseResult<()> {
+            if self.failures.is_on() {
+                return Err(DatabaseError::backend(std::io::Error::other(
+                    "commit failures are switched on for this test",
+                )));
+            }
+            self.inner.commit_tx().await
+        }
+    }
+
+    /// A fresh in-memory [`Database`] plus the handle that can make its commits fail.
+    ///
+    /// Commits succeed until [`CommitFailures::fail`] turns the switch on, and succeed again
+    /// once it is turned back off.
+    pub(crate) fn failing_commits_db() -> (Database, CommitFailures) {
+        let failures = CommitFailures::default();
+        let raw = FailingCommitsDb {
+            inner: MemDatabase::new(),
+            failures: failures.clone(),
+        };
+        (
+            Database::new(raw, ModuleDecoderRegistry::default()),
+            failures,
+        )
+    }
+
+    mod tests {
+        use super::*;
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn commits_fail_only_while_the_switch_is_on() {
+            let (db, failures) = failing_commits_db();
+
+            // Off by default: a commit succeeds and the write reads back.
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.raw_insert_bytes(b"key", b"first")
+                .await
+                .expect("insert");
+            dbtx.commit_tx_result()
+                .await
+                .expect("commit succeeds while off");
+            let mut dbtx = db.begin_transaction_nc().await;
+            assert_eq!(
+                dbtx.raw_get_bytes(b"key").await.expect("read"),
+                Some(b"first".to_vec())
+            );
+            drop(dbtx);
+
+            // On: the commit fails and the write is not persisted.
+            failures.fail(true);
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.raw_insert_bytes(b"key", b"second")
+                .await
+                .expect("insert");
+            dbtx.commit_tx_result()
+                .await
+                .expect_err("commit fails while on");
+            let mut dbtx = db.begin_transaction_nc().await;
+            assert_eq!(
+                dbtx.raw_get_bytes(b"key").await.expect("read"),
+                Some(b"first".to_vec()),
+                "the failed commit must not have changed the stored value"
+            );
+            drop(dbtx);
+
+            // Off again: commits succeed once more.
+            failures.fail(false);
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.raw_insert_bytes(b"key", b"third")
+                .await
+                .expect("insert");
+            dbtx.commit_tx_result()
+                .await
+                .expect("commit succeeds again once off");
+            let mut dbtx = db.begin_transaction_nc().await;
+            assert_eq!(
+                dbtx.raw_get_bytes(b"key").await.expect("read"),
+                Some(b"third".to_vec())
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn autocommit_reports_the_commit_error_after_its_retries_are_exhausted() {
+            // This is the path the SDK's own writes go through: `autocommit` retries a failed
+            // commit, backing off between attempts, until `max_attempts` is reached and then
+            // reports the last commit error. `Some(2)` keeps this test's total backoff small: the
+            // delay before each retry is `(2^attempt * 10).min(1000)` ms, jittered up to 2x, so
+            // two attempts wait roughly 20-40ms between them.
+            let (db, failures) = failing_commits_db();
+            failures.fail(true);
+
+            let result = db
+                .autocommit::<_, _, ()>(
+                    |dbtx, _| {
+                        Box::pin(async move {
+                            dbtx.raw_insert_bytes(b"key", b"value")
+                                .await
+                                .expect("insert");
+                            Ok(())
+                        })
+                    },
+                    Some(2),
+                )
+                .await;
+
+            match result {
+                Err(fedimint_core::db::AutocommitError::CommitFailed { attempts, .. }) => {
+                    assert_eq!(attempts, 2, "autocommit retries until max_attempts");
+                }
+                other => {
+                    panic!("expected a commit failure after exhausting retries, got {other:?}")
+                }
+            }
+        }
+    }
+}
