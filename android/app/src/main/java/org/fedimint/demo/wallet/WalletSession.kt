@@ -161,6 +161,34 @@ class WalletSession(
         }
     }.flowOn(Dispatchers.IO)
 
+    /** The federation's invite code as text, for sharing, or null if it isn't open. */
+    suspend fun inviteCode(id: FederationId): String? = withContext(Dispatchers.IO) {
+        federationHandle(id)?.use { federation -> federation.inviteCode().use { it.display() } }
+    }
+
+    /**
+     * Stops a federation without deleting anything: its balance and history
+     * stay on the device, and [reopen] brings it back. Closing a quarantined
+     * federation marks it deliberately closed, so it stops being retried.
+     */
+    suspend fun close(id: FederationId) = withContext(Dispatchers.IO) {
+        requireOpen().closeFederation(id)
+    }
+
+    /** Starts a closed or quarantined federation again, from the state already on the device. */
+    suspend fun reopen(id: FederationId) = withContext(Dispatchers.IO) {
+        requireOpen().reopenFederation(id).close()
+    }
+
+    /**
+     * Erases the federation from this device. The SDK refuses with
+     * BALANCE_NOT_EMPTY or PENDING_OPERATIONS while it still holds value
+     * (unless it is recovering), and a refusal still leaves it closed.
+     */
+    suspend fun forget(id: FederationId) = withContext(Dispatchers.IO) {
+        requireOpen().forgetFederation(id)
+    }
+
     private fun federationHandle(id: FederationId): Federation? = requireOpen().federation(id)
 
     /**

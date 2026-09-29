@@ -17,3 +17,7 @@ import kotlinx.serialization.Serializable
 @Serializable data object Home
 
 @Serializable data object JoinFederation
+
+@Serializable data object Federations
+
+@Serializable data class FederationDetail(val id: String)
