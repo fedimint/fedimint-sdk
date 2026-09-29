@@ -521,6 +521,8 @@
           ios = pkgs.mkShell {
             nativeBuildInputs = commonNativeBuildInputs ++ [
               iosToolchain
+              # React Native's build-rn-ios recipe also uses this Darwin shell.
+              webBindgen.ubrn
               # For aws-lc-sys's and librocksdb-sys's C/C++ sources: the same
               # set nix/ffi.nix passes to the Android cross-compile, carried
               # over so the two shells do not drift. In practice the Apple
