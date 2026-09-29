@@ -189,6 +189,17 @@ class WalletSession(
         requireOpen().forgetFederation(id)
     }
 
+    /**
+     * Runs [block] with a live handle to the federation on [Dispatchers.IO],
+     * then releases the handle. Anything the block returns (a quote, an
+     * operation) holds its own reference and outlives the federation handle.
+     */
+    suspend fun <T> withFederation(id: FederationId, block: suspend (Federation) -> T): T =
+        withContext(Dispatchers.IO) {
+            val federation = federationHandle(id) ?: throw IllegalStateException("This federation isn't open.")
+            federation.use { block(it) }
+        }
+
     private fun federationHandle(id: FederationId): Federation? = requireOpen().federation(id)
 
     /**

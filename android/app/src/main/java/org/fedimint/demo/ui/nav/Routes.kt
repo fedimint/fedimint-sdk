@@ -21,3 +21,17 @@ import kotlinx.serialization.Serializable
 @Serializable data object Federations
 
 @Serializable data class FederationDetail(val id: String)
+
+// Payments: every screen works on one federation, named by id.
+
+@Serializable data class LightningReceive(val federationId: String)
+
+@Serializable data class LightningSend(val federationId: String)
+
+@Serializable data class EcashReceive(val federationId: String)
+
+@Serializable data class EcashSend(val federationId: String)
+
+@Serializable data class OnchainReceive(val federationId: String)
+
+@Serializable data class OnchainSend(val federationId: String)
