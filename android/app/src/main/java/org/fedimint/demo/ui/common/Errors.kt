@@ -21,6 +21,9 @@ fun userMessage(e: Throwable): String = when (e) {
         ErrorCode.QUOTE_CHANGED -> "The terms changed since the quote. Get a new one."
         ErrorCode.INSUFFICIENT_BALANCE -> "Not enough balance for that."
         ErrorCode.RECOVERING -> "Recovery is still running for this federation."
+        ErrorCode.BALANCE_NOT_EMPTY -> "This federation still holds funds. Spend or move them first."
+        ErrorCode.PENDING_OPERATIONS -> "This federation has payments still in progress. Wait for them to finish."
+        ErrorCode.FEDERATION_CLOSED -> "This federation is closed. Reopen it first."
         else -> "Something went wrong (${e.code()})."
     }
     else -> e.message ?: "Something went wrong."

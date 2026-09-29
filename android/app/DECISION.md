@@ -179,6 +179,37 @@ lists or badges federations reads this single flow.
   `SharedPreferences`). If the selected federation was forgotten, Home falls back to
   the first running one (`WalletSession.pickActive`).
 
+### 11. Federation lifecycle actions follow the status, and results come from the stream
+
+The detail screen offers only what the SDK allows in the current status:
+
+| Status | Actions |
+|---|---|
+| Running, Recovering | Show on Home, Close, Remove |
+| Closed | Reopen, Remove |
+| Quarantined | Reopen (retry), Close (stop retrying), Remove |
+| Forgetting | Retry removal |
+
+- **The screen never assumes an action's result.** After Close, Reopen or Remove
+  it waits for the new status to arrive on `federationStatusUpdates()` (decision
+  #10) and renders that. What's shown is always what the SDK reports, including
+  the cases where an action lands somewhere unexpected (for example a failed
+  reopen leaves the federation quarantined).
+- **Close is safe, Remove is not, and the UI says so.** Both are confirmed.
+  Close's dialog says the balance and history stay and it can be reopened. Remove's
+  dialog says the history is deleted, and that it only works at zero balance with
+  no payments in progress.
+- **A refused Remove still closes the federation.** The SDK stops the federation
+  before checking whether it may erase it, so a `BALANCE_NOT_EMPTY` or
+  `PENDING_OPERATIONS` refusal leaves it Closed. The error message says exactly
+  that and points to Reopen, so the user isn't left wondering why their federation
+  stopped.
+- **Removing during recovery gets its own warning.** It is the SDK's only way out
+  of a recovery that can't finish, and it throws away everything recovered so far.
+  The dialog spells that out before the user confirms.
+- **Quarantine shows the SDK's `Diagnostic`:** the stable `ErrorCode` plus the
+  message. The structured `details` envelope isn't rendered yet.
+
 ## Package layout
 
 ```
@@ -193,7 +224,7 @@ org.fedimint.demo
 │   │                       formatting, federation status labels and badge
 │   ├── onboarding/         Welcome, Backup, VerifyBackup, Restore
 │   ├── home/               Home: balance, status, send/receive entry
-│   └── federations/        JoinFederation (the manager arrives in step 3)
+│   └── federations/        Federations list, FederationDetail, JoinFederation
 └── harness/                the original one-screen harness (removed in step 7)
 ```
 
@@ -210,7 +241,7 @@ without a joined federation.
 |---|---|---|---|
 | 1 | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()` | done |
 | 2 | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join) | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join` | done |
-| 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics | `reopenFederation`, `closeFederation`, `forgetFederation`, `federationStatus`, `Diagnostic` | |
+| 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic` | done |
 | 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive` | |
 | 5 | Activity: paginated history, operation detail with live state and cancel | `activity(cursor)`, `operation(id)`, `AnyOperation`, `updates()`, `requestCancel` | |
 | 6 | Recovery progress and resume; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta`, `ConsensusMetadata` | |
@@ -257,3 +288,23 @@ cd android && ./gradlew :app:installDebug
 6. **Relaunch:** Home comes straight back to the same federation and balance.
 7. **Join again** from the ⋮ menu with the same code: no error, it just selects it.
 8. **Bad code:** type anything else and Preview. You get "That input isn't valid."
+
+## Testing step 3
+
+Join the Mutinynet federation first (step 2) if the wallet has none.
+
+1. **List:** Home → ⋮ → Federations lists every federation with its network and a
+   status badge. Join (the button at the bottom right) opens the join screen.
+2. **Detail:** tap a federation to see its status, network and id, plus Copy invite
+   code (paste it somewhere to check).
+3. **Close:** confirm the dialog. The status becomes Closed, and the actions change
+   to Reopen and Remove. Back on Home: balance "—", a "Closed on this device"
+   note, and Send and Receive disabled.
+4. **Reopen:** the status returns to Connected (this contacts the guardians, so it
+   can take a while), and Home shows the balance again.
+5. **Show on Home:** returns to Home with this federation selected. It's useful
+   with two or more federations.
+6. **Remove at zero balance:** confirm. You're taken back to the list, which is now
+   empty, and Home shows its "Join a federation" state.
+7. **Not testable yet:** a refused Remove (needs a balance, so step 4) and
+   quarantine (needs a federation whose configuration the SDK rejects).

@@ -126,7 +126,11 @@ private enum class Direction { Send, Receive }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onJoinFederation: () -> Unit, onOpenDeveloperTools: () -> Unit) {
+fun HomeScreen(
+    onJoinFederation: () -> Unit,
+    onOpenFederations: () -> Unit,
+    onOpenDeveloperTools: () -> Unit,
+) {
     val vm = appViewModel { HomeViewModel(it.session) }
     val state by vm.state.collectAsStateWithLifecycle()
     var sheet by remember { mutableStateOf<Direction?>(null) }
@@ -135,7 +139,7 @@ fun HomeScreen(onJoinFederation: () -> Unit, onOpenDeveloperTools: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { FederationSwitcher(state.federations.orEmpty(), state.active, vm::select) },
-                actions = { OverflowMenu(onJoinFederation, onOpenDeveloperTools) },
+                actions = { OverflowMenu(onOpenFederations, onJoinFederation, onOpenDeveloperTools) },
             )
         },
     ) { padding ->
@@ -210,12 +214,20 @@ private fun FederationSwitcher(
 }
 
 @Composable
-private fun OverflowMenu(onJoinFederation: () -> Unit, onOpenDeveloperTools: () -> Unit) {
+private fun OverflowMenu(
+    onOpenFederations: () -> Unit,
+    onJoinFederation: () -> Unit,
+    onOpenDeveloperTools: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
         Icon(Icons.Filled.MoreVert, contentDescription = "More")
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenuItem(text = { Text("Federations") }, onClick = {
+            open = false
+            onOpenFederations()
+        })
         DropdownMenuItem(text = { Text("Join a federation") }, onClick = {
             open = false
             onJoinFederation()
