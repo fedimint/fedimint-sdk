@@ -35,3 +35,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class OnchainReceive(val federationId: String)
 
 @Serializable data class OnchainSend(val federationId: String)
+
+@Serializable data class Activity(val federationId: String)
+
+@Serializable data class OperationDetail(val federationId: String, val operationId: String)

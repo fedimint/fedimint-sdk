@@ -253,13 +253,42 @@ so a new payment method only adds the SDK calls.
   coupling (decision #7). Anything too long to scan reliably (large note bundles)
   shows copy-only.
 
+### 13. Activity: SDK paging, and operations narrowed only after `support()`
+
+- **History is the SDK's local, newest-first log, paged by cursor.**
+  `History.page(cursor)` returns a page and the `next` cursor, and a page with no
+  `next` is the last. The list asks for the next page when the last few rows
+  scroll into view, and pull-to-refresh starts again from the first page. The SDK
+  brings in-flight rows up to date when it builds a page, so a refresh is also how
+  a pending row picks up its latest status. No app-side cache: the SDK's log is
+  already persistent, and a second copy could drift from it.
+- **Home shows the newest five rows and reloads them whenever the balance moves**,
+  because money arriving or leaving is when a row appears or settles. It uses its
+  own `balanceUpdates()` subscription, since each one is an independent cursor.
+- **An operation is opened untyped, then narrowed.** `federation.operation(id)`
+  returns an `AnyOperation`. The detail screen asks `support()` first: an
+  operation written by a newer SDK, or for a module this build doesn't know, is
+  still real but has no typed handle. It is shown as "Unrecognised operation",
+  with its raw kind, module and schema version and a plain reason (for example
+  "update the app"), not as an error. Only an `OBSERVABLE` operation is narrowed
+  (`asLnSend()` and so on) to read its `details()` and follow its `updates()`,
+  using the same state text as the payment screens (decision #12).
+- **Reclaiming ecash is the one cancel the SDK exposes** (`requestCancel()` on an
+  ecash send). It is offered while the notes are unredeemed, after a confirmation
+  that says the receiver wins if they redeem first. The request is durable when
+  the call returns; the outcome (Reclaimed, or Redeemed by the receiver) arrives
+  as a state change. While unredeemed, the notes can be shown again, in case the
+  first hand-over failed. The automatic reclaim time from `details()` is shown too.
+- **Row wording is by kind and status**, with `UNKNOWN` status shown as "details
+  unavailable" instead of a guessed outcome, as the SDK's docs ask.
+
 ## Package layout
 
 ```
 org.fedimint.demo
 ├── FedimintApp.kt          Application + AppContainer (manual DI)
 ├── MainActivity.kt         the single Compose activity
-├── wallet/                 SDK ownership: WalletSession; Payments (module facades)
+├── wallet/                 SDK ownership: WalletSession; Payments (module facades); History
 ├── ui/
 │   ├── nav/                routes, NavHost, start-screen decision
 │   ├── theme/              Material 3 theme
@@ -268,6 +297,7 @@ org.fedimint.demo
 │   ├── onboarding/         Welcome, Backup, VerifyBackup, Restore
 │   ├── home/               Home: balance, status, send/receive entry
 │   ├── federations/        Federations list, FederationDetail, JoinFederation
+│   ├── activity/           Activity (paged history), OperationDetail, ActivityRow
 │   └── payments/           Lightning, Ecash, Onchain send/receive; shared base ViewModel,
 │                           components (QR, review, progress), operation-state mapping
 └── harness/                the original one-screen harness (removed in step 7)
@@ -287,8 +317,8 @@ without a joined federation.
 | 1 | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()` | done |
 | 2 | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join) | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join` | done |
 | 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic` | done |
-| 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | built |
-| 5 | Activity: paginated history, operation detail with live state and cancel | `activity(cursor)`, `operation(id)`, `AnyOperation`, `updates()`, `requestCancel` | |
+| 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | done |
+| 5 | Activity: paged history, recent activity on Home, operation detail with live state, reclaim ecash | `activity(cursor)`, `operation(id)`, `AnyOperation`, `support()`, `details()`, `updates()`, `requestCancel` | done |
 | 6 | Recovery progress and resume; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta`, `ConsensusMetadata` | |
 | 7 | Remove the harness once every API above has a wallet screen | | |
 
@@ -381,3 +411,23 @@ and sends on-chain coins.
 9. **Refused remove (from step 3):** with a balance, Federations → detail →
    Remove. It's refused with "still holds funds", and the federation is now
    closed. Reopen it.
+
+## Testing step 5
+
+Needs a funded wallet (step 4's Lightning receive via faucet.mutinynet.com).
+
+1. **Recent activity on Home:** up to five rows, newest first, each with kind,
+   status, relative time and a signed amount (incoming in the accent colour;
+   failed, refunded or canceled rows muted). Receive or send something and watch
+   a row appear without refreshing.
+2. **See all** opens Activity. Pull down to refresh. With more than 20 payments,
+   scrolling to the bottom loads the next page.
+3. **Detail:** tap a row. A Lightning receive shows requested, fee, credited, the
+   description, created and expiry times, and the invoice with Copy, plus its live
+   state.
+4. **Reclaim:** send 100 sats of ecash (Send → Ecash), don't redeem the notes, and
+   open the row from Home. It shows "Notes ready", the automatic reclaim time, Show
+   notes again, and Reclaim. Reclaim and confirm: the state becomes Reclaimed, and
+   the balance comes back.
+5. **Unrecognised operations** can't be produced on demand. The path is written
+   from the SDK's documented contract.

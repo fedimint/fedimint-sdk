@@ -2,6 +2,7 @@ package org.fedimint.demo
 
 import android.app.Application
 import java.io.File
+import org.fedimint.demo.wallet.History
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.demo.wallet.WalletSession
 
@@ -18,6 +19,7 @@ class AppContainer(app: Application) {
         prefs = app.getSharedPreferences("wallet", Application.MODE_PRIVATE),
     )
     val payments = Payments(session)
+    val history = History(session)
 }
 
 class FedimintApp : Application() {
