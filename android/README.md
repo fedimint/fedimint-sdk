@@ -45,7 +45,10 @@ exception: `onchain.receive()` returns an address to pay and no operation, becau
 a deposit becomes an operation only once the federation's wallet finds the
 payment. Open `onchain.deposits()` before showing the address, so that a payment
 found right away is not missed, and call `next()` on it to wait for the next
-deposit's operation. The example app (`android/app`) drives each of them once.
+deposit's operation. The app in `android/app`
+is becoming a reference wallet built on this surface; until it covers all of it,
+its SDK harness (`harness/HarnessActivity.kt`, under Developer tools) drives each
+call once. See [`app/DECISION.md`](app/DECISION.md).
 
 ## Using it
 
