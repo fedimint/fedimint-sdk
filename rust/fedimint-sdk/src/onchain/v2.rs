@@ -343,9 +343,10 @@ pub(super) async fn receive(
     // so an address an SDK record already names is never recorded again. While that record is
     // unfinished nothing will change until its address is paid, and the call is refused at
     // once. Once it has finished, the scanner is at work on the next address, which it can take
-    // a while to find (it is a hash-prefix search), so the call waits for it the way the very
-    // first `receive` on a fresh wallet waits for the scanner's first address, up to the same
-    // bound every federation round trip gets.
+    // a while to find (it is a hash-prefix search), so the call waits for it up to
+    // `SCANNER_WAIT_TIMEOUT`, intentionally longer than the `CONTACT_TIMEOUT` used for
+    // guardian round trips because the scanner performs a CPU-intensive derivation that
+    // can exceed 30 seconds on loaded machines (see fedimint/fedimint-sdk#418).
     let mut waited = core::time::Duration::ZERO;
     let (cursor, checked) = loop {
         let cursor = event_log_tail(client).await;
@@ -364,8 +365,12 @@ pub(super) async fn receive(
                 owner.id.fmt_full()
             )));
         }
-        if waited >= CONTACT_TIMEOUT {
-            return Err(timeout());
+        if waited >= SCANNER_WAIT_TIMEOUT {
+            return Err(Error::new(
+                ErrorCode::Timeout,
+                "the wallet's address scanner did not produce a fresh address in time; \
+                 the previous deposit's address may still be scanning",
+            ));
         }
         fedimint_core::runtime::sleep(RETIRED_ADDRESS_POLL).await;
         waited += RETIRED_ADDRESS_POLL;
@@ -388,6 +393,12 @@ pub(super) async fn receive(
         .await?;
     Ok(OnchainReceive { address, operation })
 }
+
+/// How long [`receive`] waits for the walletv2 scanner to derive a fresh address after the
+/// previous one's deposit has finished. Intentionally longer than [`CONTACT_TIMEOUT`] because
+/// the scanner performs a CPU-intensive hash-prefix search that can take well over 30 seconds
+/// on loaded CI runners or constrained hardware (fedimint/fedimint-sdk#418).
+const SCANNER_WAIT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(120);
 
 /// How often [`receive`] asks the wallet module again for an address, while the module is still
 /// handing back one whose deposit this SDK has already seen through to its end.
