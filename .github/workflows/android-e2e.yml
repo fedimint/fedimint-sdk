@@ -23,12 +23,23 @@ name: Android E2E (Appium)
 # few cores, and an emulator plus a whole devimint federation on them left
 # the emulator short of CPU, so tests failed on timeouts and unresponsive UI
 # rather than on anything the app did. The Mac has more cores, accelerates
-# the emulator through Hypervisor.framework, and is dedicated to device tests,
-# so the emulator and the federation have the machine to themselves. The
-# `device-tests` label keeps every other job off it. Nothing here is
-# Mac-specific beyond that: `.#android-tests` provides the SDK, emulator and
-# system image for the host, and run-android-e2e.sh picks the host's ABI, so
-# pointing `runs-on` back at `ubuntu-latest` still works.
+# the emulator through Hypervisor.framework, and is registered to this
+# repository alone, for device tests. Nothing here is Mac-specific beyond
+# that: `.#android-tests` provides the SDK, emulator and system image for the
+# host, and run-android-e2e.sh picks the host's ABI, so pointing `runs-on`
+# back at `ubuntu-latest` still works.
+#
+# Unlike a hosted runner, the Mac outlives the job, so whatever runs here can
+# leave something behind for the next job, including one that is handed
+# CACHIX_AUTH_TOKEN. A fork's pull request therefore reaches it only after a
+# maintainer approves the run: the repository requires approval for every
+# outside contributor's workflow run (Settings → Actions → General → "Approval
+# for running fork pull request workflows from contributors"). That gate is
+# GitHub's, not this file's, and has to be: a fork's `pull_request` run uses
+# the fork's own copy of this workflow, so any guard written here the fork
+# could simply delete. Approving a run is approving its code to run on this
+# machine, so read the diff first — .github/, scripts/, the flake and the
+# test package especially.
 
 on:
   workflow_call:
@@ -59,22 +70,17 @@ jobs:
     # range it picks the same way, so two runs on two runners no longer
     # collide. The `adb reverse` mappings are per-device, so they cannot
     # collide either.
+    #
+    # Nothing here kills a previous run's emulator or federation. The runner
+    # does that itself when the job ends, cancelled or timed out included: its
+    # "Cleaning up orphan processes" step terminates every process this job
+    # started, and only those, since it finds them by the RUNNER_TRACKING_ID
+    # each one inherits. A `pkill` by name would reach processes of any other
+    # work under the same account too.
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
-      # A self-hosted machine outlives the job, and a run that was cancelled or
-      # timed out can leave its emulator, Appium server or federation behind:
-      # the next run would then find the ports taken and a second emulator
-      # competing for memory. Process names are matched exactly and only the
-      # runner user's own processes are touched. macOS truncates process names
-      # to 16 characters, hence the `.*` on the two long ones.
-      - name: Kill leftovers from a previous run
-        if: runner.environment == 'self-hosted'
-        run: |
-          pkill -u "$USER" -x 'qemu-system-.*|emulator|adb|devimint|fedimintd|gatewayd|fedimint-recurr.*|bitcoind|lnd|electrs|esplora' || true
-          pkill -u "$USER" -f 'node.*appium' || true
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
