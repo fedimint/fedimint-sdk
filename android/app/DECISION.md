@@ -167,11 +167,11 @@ pinned Kotlin version.
 
 `LaunchViewModel` (`ui/nav/WalletApp.kt`) decides once per launch:
 
-| State on disk | Start screen |
-|---|---|
-| No wallet directory | Welcome (create or restore) |
+| State on disk                       | Start screen                               |
+| ----------------------------------- | ------------------------------------------ |
+| No wallet directory                 | Welcome (create or restore)                |
 | Wallet exists, backup not confirmed | Backup (the app was closed mid-onboarding) |
-| Wallet exists, backup confirmed | Home |
+| Wallet exists, backup confirmed     | Home                                       |
 
 The SDK has no "does a seed exist" call short of opening it, so "a wallet exists"
 means the SDK's data directory is non-empty. After creating a wallet, Welcome is
@@ -197,7 +197,7 @@ lists or badges federations reads this single flow.
   screen, rather than each screen opening its own.
 - **Live data per screen (the balance):** the ViewModel follows `balanceUpdates()`,
   whose first `next()` is the current amount and each later one a change. It is
-  keyed on *(federation id, is open)*, so it restarts when the user switches
+  keyed on _(federation id, is open)_, so it restarts when the user switches
   federation or the federation closes or reopens, and not on unrelated status
   changes. `SharingStarted.WhileSubscribed(5_000)` stops it 5 s after the screen
   leaves (for example the app goes to the background), but not during a rotation.
@@ -214,12 +214,12 @@ lists or badges federations reads this single flow.
 
 The detail screen offers only what the SDK allows in the current status:
 
-| Status | Actions |
-|---|---|
-| Running, Recovering | Show on Home, Close, Remove |
-| Closed | Reopen, Remove |
-| Quarantined | Reopen (retry), Close (stop retrying), Remove |
-| Forgetting | Retry removal |
+| Status              | Actions                                       |
+| ------------------- | --------------------------------------------- |
+| Running, Recovering | Show on Home, Close, Remove                   |
+| Closed              | Reopen, Remove                                |
+| Quarantined         | Reopen (retry), Close (stop retrying), Remove |
+| Forgetting          | Retry removal                                 |
 
 - **The screen never assumes an action's result.** After Close, Reopen or Remove
   it waits for the new status to arrive on `federationStatusUpdates()` (decision
@@ -396,15 +396,15 @@ All in one PR, one step at a time, each tested on a device before the next.
 Preview and join moved from step 3 to step 2, because Home can't be tested
 without a joined federation.
 
-| Step | Scope | SDK surface | Status |
-|---|---|---|---|
-| 1 | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()` | done |
-| 2 | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join) | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join` | done |
-| 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic` | done |
-| 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | done |
-| 5 | Activity: paged history, recent activity on Home, operation detail with live state, reclaim ecash | `activity(cursor)`, `operation(id)`, `AnyOperation`, `support()`, `details()`, `updates()`, `requestCancel` | done |
-| 6 | Join-and-recover after a restore, recovery progress and retry; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta()`, `all`, `configMetadata`, `consensusMetadata` | done |
-| 7 | Harness to debug builds only, for upstream's Appium suite (coverage checked: 42 of its 43 SDK calls are in the wallet); AppCompat and Material Components debug-only | | done |
+| Step | Scope                                                                                                                                                                | SDK surface                                                                                                 | Status |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------ |
+| 1    | Compose, navigation, `WalletSession`; onboarding: create, back up, verify, restore                                                                                   | `createFedimintSdk`, `Mnemonic.fromWords`, `exportMnemonic().words()`                                       | done   |
+| 2    | Home: live balance, status, capability-gated actions, federation switcher; join a federation (preview, then join)                                                    | `storedFederations`, `federationStatusUpdates`, `balanceUpdates`, `capabilities`, `preview`, `join`         | done   |
+| 3    | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code                                                                     | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic`                       | done   |
+| 4    | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute                                                                                      | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()`             | done   |
+| 5    | Activity: paged history, recent activity on Home, operation detail with live state, reclaim ecash                                                                    | `activity(cursor)`, `operation(id)`, `AnyOperation`, `support()`, `details()`, `updates()`, `requestCancel` | done   |
+| 6    | Join-and-recover after a restore, recovery progress and retry; federation metadata                                                                                   | `recover`, `recoveryStatus`, `resumeRecovery`, `meta()`, `all`, `configMetadata`, `consensusMetadata`       | done   |
+| 7    | Harness to debug builds only, for upstream's Appium suite (coverage checked: 42 of its 43 SDK calls are in the wallet); AppCompat and Material Components debug-only |                                                                                                             | done   |
 
 ## Testing step 1
 
