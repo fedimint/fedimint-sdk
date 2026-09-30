@@ -69,8 +69,9 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 /// open, by another [`Sdk`](crate::Sdk) in this process, by another process, or by another
 /// browser tab or worker, fails with
 /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse), with no override: two writers
-/// over one wallet's state could corrupt it and double-spend notes. That refusal is immediate;
-/// an open never waits for the opener that is in the way.
+/// over one wallet's state could corrupt it and double-spend notes. An open never waits for the
+/// opener that is in the way: on native targets it retries for a fraction of a second, for the
+/// reason below, and then refuses.
 ///
 /// The claim lasts as long as the open store, not as long as one [`Sdk`](crate::Sdk) handle.
 /// [`SdkBuilder::build`](crate::SdkBuilder::build) takes it, and it is given back when the store
@@ -84,8 +85,16 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 /// is dropped, until its background work has stopped.
 ///
 /// A claim left behind by a process that died is reclaimed by the next opener rather than left
-/// stuck: `StorageInUse` always means genuinely concurrent use, never a stale marker. This
-/// protects against concurrent use of one location, not against a second copy of the data:
+/// stuck: `StorageInUse` means genuinely concurrent use, never a stale marker.
+///
+/// On native targets a child process shares the claim with the process that starts it, from the
+/// moment it is forked until it executes its program. An instance that closes its store while a
+/// child is being started therefore leaves the location held for that short window, and an open
+/// retries briefly to see it through rather than refusing. A child that forks without ever
+/// executing a program keeps the location held for as long as it runs, and opens are refused
+/// until it exits.
+///
+/// This protects against concurrent use of one location, not against a second copy of the data:
 /// copying a location's contents elsewhere and opening both is the same mistake as restoring
 /// one wallet's backup onto two devices, and the SDK cannot detect it.
 ///
@@ -127,7 +136,7 @@ impl Storage {
     ///
     /// Everything that depends on the file system itself is reported by
     /// [`SdkBuilder::build`](crate::SdkBuilder::build) instead: a directory that cannot be
-    /// created or is not readable and writable, as
+    /// created, is not readable and writable, or cannot be locked, as
     /// [`ErrorCode::Storage`](crate::ErrorCode::Storage), and a location already open, as
     /// [`ErrorCode::StorageInUse`](crate::ErrorCode::StorageInUse).
     // `doc` keeps both persistent constructors visible in one rendering of the
@@ -346,7 +355,9 @@ struct Claim {
     /// The open `LOCK` file whose advisory lock this instance holds. The lock was taken with
     /// `try_write` and its guard forgotten, so it lives exactly as long as this value: `flock`
     /// belongs to the open file description, so closing the file releases it, and so does the
-    /// kernel when the process dies.
+    /// kernel when the process dies. For the same reason a child forked while this is open holds
+    /// the lock too, until it executes its program: nothing unlocks it explicitly, unlike the
+    /// embedded store's own lock. See [`claim_lock_file`].
     _file: fd_lock::RwLock<std::fs::File>,
 }
 
@@ -408,26 +419,101 @@ fn take_claim(directory: &std::path::Path, location: &str) -> Result<Claim> {
                 format!("could not open the storage at {location}: {err}"),
             )
         })?;
+    claim_lock_file(file, location)
+}
 
+/// How long a claim is retried before an open is refused.
+///
+/// Long enough to outlast a child process that is being started at the moment the previous
+/// opener closes, and short enough that a genuine refusal still comes back well within any
+/// reasonable UI wait. See [`claim_lock_file`].
+#[cfg(not(target_family = "wasm"))]
+const CLAIM_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Takes the advisory lock on an open `LOCK` file, retrying for at most [`CLAIM_RETRY_BUDGET`].
+///
+/// The retry exists because `flock` belongs to the open file description, not to the fd. A child
+/// process started between `fork` and `exec` holds a copy of every fd its parent has open, and
+/// `O_CLOEXEC` only closes that copy at `exec`. An opener that closes inside that window leaves
+/// the lock held by the child until it execs, so an immediate reopen would be refused even though
+/// nothing has the location open. The window cannot outlive the children already forked when the
+/// fd was closed, since no later child can inherit it, so a short bounded retry covers it.
+///
+/// The embedded store's own `db.db.lock` is an `flock` too, but it plays no part in that window:
+/// `fs-lock` unlocks it explicitly when the store is dropped, and an explicit unlock releases the
+/// whole open file description, the child's copy included. This claim lingers only because its
+/// guard is forgotten and nothing unlocks it.
+///
+/// A claim that children do not inherit (`fcntl` record locks) would still be worse, in the case
+/// where no destructor runs. If the process dies while a child still holds its descriptors,
+/// nothing unlocks `db.db.lock`, and the child keeps it held. An `fcntl` claim would have been
+/// released by the death, letting the next opener past it into the store's wait for
+/// `db.db.lock`, which has no timeout, for as long as the child lives. This claim is held by the
+/// same child, so that opener is refused instead. `fcntl` locks also belong to the whole process,
+/// so a second opener in the same process would need a registry of its own to be refused.
+///
+/// Only contention is retried. Any other failure to lock means the location cannot be locked at
+/// all, a file system without advisory locks for instance, and waiting will not change that, so
+/// it is reported straight away as [`ErrorCode::Storage`] rather than as a location in use.
+#[cfg(not(target_family = "wasm"))]
+fn claim_lock_file(file: std::fs::File, location: &str) -> Result<Claim> {
     let mut file = fd_lock::RwLock::new(file);
-    let Ok(guard) = file.try_write() else {
-        return Err(Error::with_details(
-            ErrorCode::StorageInUse,
-            format!(
-                "the storage at {location} is already open, in this process or another one: \
-                 shutting an instance down does not close its storage, dropping every handle \
-                 over it does"
-            ),
-            ErrorDetails::StorageInUse {
-                location: location.to_owned(),
-            },
-        ));
-    };
     // Forgetting the guard keeps the advisory lock without keeping a borrow of the `RwLock` that
     // would make this value self-referential. Nothing leaks: the guard owns only a reference, and
     // the lock is released when the file below is closed.
-    core::mem::forget(guard);
+    retry_while_contended(location, || file.try_write().map(core::mem::forget))?;
     Ok(Claim { _file: file })
+}
+
+/// Runs `attempt` until it succeeds, retrying contention for at most [`CLAIM_RETRY_BUDGET`].
+///
+/// fd-lock reports contention as [`std::io::ErrorKind::WouldBlock`] on every platform: it maps
+/// `EWOULDBLOCK` on Unix and `ERROR_LOCK_VIOLATION` on Windows to it. That is the only error that
+/// means someone else holds the lock, so it is the only one that can end in `StorageInUse`.
+/// `Interrupted` is a signal landing during the call and is retried the same way.
+#[cfg(not(target_family = "wasm"))]
+fn retry_while_contended(
+    location: &str,
+    mut attempt: impl FnMut() -> std::io::Result<()>,
+) -> Result<()> {
+    const FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(1);
+    const LONGEST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let deadline = std::time::Instant::now() + CLAIM_RETRY_BUDGET;
+    let mut pause = FIRST_PAUSE;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(err) => {
+                return Err(Error::new(
+                    ErrorCode::Storage,
+                    format!("could not lock the storage at {location}: {err}"),
+                ));
+            }
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(pause.min(deadline - now));
+        pause = (pause * 2).min(LONGEST_PAUSE);
+    }
+    Err(Error::with_details(
+        ErrorCode::StorageInUse,
+        format!(
+            "the storage at {location} is already open, in this process or another one: \
+             shutting an instance down does not close its storage, dropping every handle over it \
+             does"
+        ),
+        ErrorDetails::StorageInUse {
+            location: location.to_owned(),
+        },
+    ))
 }
 
 /// Opens an origin-private store: find the origin's directory, claim the file, open redb on it.
@@ -571,6 +657,113 @@ mod tests {
             .await
             .expect("the claim is reclaimed once the store is closed");
         drop(third);
+    }
+
+    /// Claims `directory` the way `take_claim` does, and returns the claim together with a second
+    /// descriptor on the same open file description.
+    ///
+    /// `try_clone` is `dup`, and a dup shares the open file description, which is exactly what a
+    /// child process holds between `fork` and `exec`. Dropping the claim while keeping the copy is
+    /// therefore the situation a process-spawning thread creates, without depending on hitting
+    /// that window by timing.
+    fn claim_with_inherited_copy(directory: &std::path::Path) -> (Claim, std::fs::File) {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("LOCK"))
+            .expect("the lock file opens");
+        let inherited = file.try_clone().expect("the descriptor duplicates");
+        let claim = claim_lock_file(file, "held").expect("a free location is claimed");
+        (claim, inherited)
+    }
+
+    #[test]
+    fn a_claim_held_by_an_inherited_descriptor_is_reclaimed_once_it_closes() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let (claim, inherited) = claim_with_inherited_copy(dir.path());
+        drop(claim);
+
+        // Stands in for the child reaching `exec`, well inside the retry budget.
+        let child = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(inherited);
+        });
+
+        let reclaimed = take_claim(dir.path(), "reopened")
+            .expect("the location comes free once the inherited copy closes");
+        drop(reclaimed);
+        child.join().expect("the stand-in child finishes");
+    }
+
+    #[test]
+    fn a_claim_held_past_the_retry_budget_is_still_refused() {
+        // The retry covers a child on its way to `exec`; it must not turn into waiting for a
+        // holder that stays. A child that forks and never execs is that holder.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+        let (claim, inherited) = claim_with_inherited_copy(dir.path());
+        drop(claim);
+
+        let started = std::time::Instant::now();
+        let err = take_claim(dir.path(), &path).expect_err("a held location is refused");
+        let waited = started.elapsed();
+
+        assert_eq!(err.code, ErrorCode::StorageInUse);
+        match err.detail() {
+            Some(ErrorDetails::StorageInUse { location }) => assert_eq!(location, &path),
+            other => panic!("expected the location, got {other:?}"),
+        }
+        assert!(
+            waited >= CLAIM_RETRY_BUDGET,
+            "refused after {waited:?}, before the budget"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "refused after {waited:?}: the retry is not bounded"
+        );
+        drop(inherited);
+    }
+
+    #[test]
+    fn a_lock_failure_other_than_contention_is_reported_at_once() {
+        // A file system without advisory locks fails every attempt the same way. Retrying it only
+        // delays the answer, and calling it `StorageInUse` sends the caller looking for an opener
+        // that does not exist.
+        let mut attempts = 0;
+        let started = std::time::Instant::now();
+        let err = retry_while_contended("unlockable", || {
+            attempts += 1;
+            Err(std::io::ErrorKind::Unsupported.into())
+        })
+        .expect_err("a location that cannot be locked is refused");
+
+        assert_eq!(err.code, ErrorCode::Storage);
+        assert_eq!(
+            attempts, 1,
+            "a failure that is not contention is not retried"
+        );
+        assert!(
+            started.elapsed() < CLAIM_RETRY_BUDGET,
+            "reported after {:?}, not at once",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn contention_is_retried_until_the_lock_comes_free() {
+        let mut attempts = 0;
+        retry_while_contended("contended", || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            } else {
+                Ok(())
+            }
+        })
+        .expect("the lock is taken once the holder lets go");
+        assert_eq!(attempts, 3);
     }
 
     #[tokio::test(flavor = "multi_thread")]
