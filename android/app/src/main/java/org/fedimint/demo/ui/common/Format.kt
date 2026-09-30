@@ -33,3 +33,10 @@ fun absoluteTime(ts: Timestamp): String =
     DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(ts.toLong()))
+
+/**
+ * A long hex id shortened to its ends, e.g. `02a1b2c3…e4f5a6b7`: enough to
+ * compare against another display of the same id. Short ids are left whole.
+ */
+fun shortId(id: String, keep: Int = 8): String =
+    if (id.length <= keep * 2 + 1) id else "${id.take(keep)}…${id.takeLast(keep)}"
