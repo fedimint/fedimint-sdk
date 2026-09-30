@@ -1,6 +1,5 @@
 package org.fedimint.demo.ui.nav
 
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -16,7 +15,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,7 +27,6 @@ import androidx.navigation.toRoute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.fedimint.demo.harness.HarnessActivity
 import org.fedimint.demo.ui.activity.ActivityScreen
 import org.fedimint.demo.ui.activity.OperationDetailScreen
 import org.fedimint.demo.ui.common.appViewModel
@@ -114,8 +111,6 @@ fun WalletApp() {
 
 @Composable
 private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavController()) {
-    val context = LocalContext.current
-
     NavHost(navController = nav, startDestination = start) {
         composable<Welcome> {
             WelcomeScreen(
@@ -146,7 +141,6 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
             HomeScreen(
                 onJoinFederation = { nav.navigate(JoinFederation) },
                 onOpenFederations = { nav.navigate(Federations) },
-                onOpenDeveloperTools = { context.startActivity(Intent(context, HarnessActivity::class.java)) },
                 onPay = { direction, rail, id -> nav.navigate(paymentRoute(direction, rail, id)) },
                 onOpenActivity = { id -> nav.navigate(Activity(id)) },
                 onOpenOperation = { id, op -> nav.navigate(OperationDetail(id, op)) },

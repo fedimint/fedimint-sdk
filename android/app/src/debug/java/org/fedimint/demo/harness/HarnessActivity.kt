@@ -52,9 +52,10 @@ private const val TESTNET_FEDERATION_CODE =
  * Threading: each section reads its inputs on the main thread, runs the SDK
  * call on `Dispatchers.IO`, and writes its result back on the main thread.
  *
- * Kept beside the reference wallet (reachable from its Developer screen) until
- * the wallet's own screens cover the whole surface; see android/app/DECISION.md.
- * It keeps its own data directory, so it never contends with the wallet for the
+ * Debug builds only (src/debug), with its own launcher entry: the Appium suite
+ * in js/android/integration-tests drives this screen by its view ids, while the
+ * reference wallet (MainActivity) is the app; see android/app/DECISION.md. It
+ * keeps its own data directory, so it never contends with the wallet for the
  * storage lock and never touches the wallet's seed.
  */
 class HarnessActivity : AppCompatActivity() {

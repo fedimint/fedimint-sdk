@@ -87,10 +87,11 @@ if [[ -z "$APP_ID" ]]; then
   echo "Could not extract applicationId from android/app/build.gradle.kts."
   exit 1
 fi
-# The one activity android/app/src/main/AndroidManifest.xml declares, exported
-# with the LAUNCHER intent. Named once here because both the launch below and
-# the runner's own capabilities need it.
-APP_ACTIVITY="$APP_ID.MainActivity"
+# The SDK harness the suite drives by view id: declared, exported, only in the
+# debug build's manifest (android/app/src/debug), beside the reference wallet
+# (MainActivity), which the suite does not drive. Named once here because both
+# the launch below and the runner's own capabilities need it.
+APP_ACTIVITY="$APP_ID.harness.HarnessActivity"
 
 # Appium is a plain npm devDependency of the test package; the `android-tests`
 # shell puts the workspace's hoisted js/node_modules/.bin on PATH, but the

@@ -9,7 +9,7 @@
         android:allowBackup="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FedimintDemo">
+        android:theme="@style/Theme.FedimintWallet">
 
         <!-- The reference wallet: one activity hosting every Compose screen. -->
         <activity
@@ -20,12 +20,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- The original one-screen SDK harness, opened from the wallet's Developer screen. -->
-        <activity
-            android:name=".harness.HarnessActivity"
-            android:exported="false"
-            android:label="SDK harness" />
     </application>
 
 </manifest>

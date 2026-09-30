@@ -2,6 +2,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Debug builds load the SDK before the Application is in place; see DebugApplication. -->
-    <application android:name=".DebugApplication" />
+    <application android:name=".DebugApplication">
+
+        <!-- The SDK harness: every call on one screen, driven by the Appium suite
+             (js/android/integration-tests) by its view ids. Debug builds only, with
+             its own launcher entry; exported so `am start` can open it. -->
+        <activity
+            android:name=".harness.HarnessActivity"
+            android:exported="true"
+            android:label="SDK harness"
+            android:theme="@style/Theme.FedimintHarness">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
 
 </manifest>
