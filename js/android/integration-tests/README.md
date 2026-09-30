@@ -84,7 +84,7 @@ PLATFORM=android \
 AVD=<avd-name> \
 BUNDLE_PATH=android/app/build/outputs/apk/debug/app-debug.apk \
 APP_PACKAGE=org.fedimint.demo \
-APP_ACTIVITY=org.fedimint.demo.MainActivity \
+APP_ACTIVITY=org.fedimint.demo.harness.HarnessActivity \
 FM_SDK_SHAPE=v1 \
 ts-node --project tsconfig.json src/runner.ts mnemonic
 ```
