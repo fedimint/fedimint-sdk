@@ -8,8 +8,9 @@ store open in the background, or a storage backend.
 
 Two writers over one wallet's state can corrupt it and double-spend notes. A storage location is
 therefore open in at most one place at a time: one instance, in one process, browser tab or
-worker. A second open is refused with `StorageInUse` straight away. It never waits for the opener
-in its way, and there is no override.
+worker. A second open is refused with `StorageInUse` after a short bounded retry
+(`CLAIM_RETRY_BUDGET`, 200 ms on native). It never waits for the opener in its way, and there is no
+override.
 
 `Storage::open` in `src/storage.rs` is the only production code that opens a location's store.
 `db::open_native_root` opens one without a claim, and exists only in tests.
@@ -26,7 +27,22 @@ in its way, and there is no override.
   drop in declaration order, so the store has closed before the claim is released. There is no
   moment when a location looks free while its store is still open.
 - The kernel releases the lock when the process dies, so a crashed process never leaves a stale
-  claim behind, and `StorageInUse` always means a live opener.
+  claim behind, and `StorageInUse` means a live opener: another instance, or a child process that
+  forked without executing a program while the location was open.
+- The lock is an `flock`, which belongs to the open file description, so a child process holds it
+  from `fork` until `exec` closes its copy. A store closed inside that window leaves the location
+  held for a moment with nothing open on it, which is why `claim_lock_file` retries for at most
+  `CLAIM_RETRY_BUDGET` before refusing. Only contention (`WouldBlock`) is retried or reported as
+  `StorageInUse`; any other failure to lock means the location cannot be locked at all and is
+  reported as `Storage` at once. `db.db.lock` is an `flock` too, but a normal close unlocks
+  it explicitly, which frees it even while a child holds a copy. The claim lingers because its
+  guard is forgotten and nothing unlocks it.
+- Do not replace the retry with a lock that children do not inherit (`fcntl` record locks). The
+  reason is the path where no destructor runs: if the process dies while a child still holds its
+  descriptors, nothing unlocks `db.db.lock` and the child keeps it held. An `fcntl` claim would be
+  released by the death and let the next opener into the store's wait for `db.db.lock`, which has
+  no timeout, while the inherited claim turns that into a refusal. `fcntl` locks are also
+  per-process, so an opener in the same process would need its own registry to be refused.
 
 ### Browser
 
@@ -86,5 +102,9 @@ restoring one wallet's backup onto two devices, and nothing here can detect it.
 These tests pin the invariant down:
 
 - `storage::tests::a_second_opener_is_refused_and_the_claim_returns_when_the_store_closes`
+- `storage::tests::a_claim_held_by_an_inherited_descriptor_is_reclaimed_once_it_closes`
+- `storage::tests::a_claim_held_past_the_retry_budget_is_still_refused`
+- `storage::tests::a_lock_failure_other_than_contention_is_reported_at_once`
+- `storage::tests::contention_is_retried_until_the_lock_comes_free`
 - `sdk::tests::building::a_location_is_refused_while_the_instance_on_it_is_still_held`
 - `sdk::tests::building::a_federation_handle_holds_the_location_on_its_own`
