@@ -157,7 +157,6 @@ class HomeViewModel(private val session: WalletSession, private val history: His
 fun HomeScreen(
     onJoinFederation: () -> Unit,
     onOpenFederations: () -> Unit,
-    onOpenDeveloperTools: () -> Unit,
     onPay: (PaymentDirection, Rail, FederationId) -> Unit,
     onOpenActivity: (FederationId) -> Unit,
     onOpenOperation: (FederationId, OperationId) -> Unit,
@@ -172,7 +171,7 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = { FederationSwitcher(state.federations.orEmpty(), state.active, vm::select) },
-                actions = { OverflowMenu(onOpenFederations, onJoinFederation, onOpenRecoveryPhrase, onOpenDeveloperTools) },
+                actions = { OverflowMenu(onOpenFederations, onJoinFederation, onOpenRecoveryPhrase) },
             )
         },
     ) { padding ->
@@ -267,7 +266,6 @@ private fun OverflowMenu(
     onOpenFederations: () -> Unit,
     onJoinFederation: () -> Unit,
     onOpenRecoveryPhrase: () -> Unit,
-    onOpenDeveloperTools: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
@@ -285,10 +283,6 @@ private fun OverflowMenu(
         DropdownMenuItem(text = { Text("Recovery phrase") }, onClick = {
             open = false
             onOpenRecoveryPhrase()
-        })
-        DropdownMenuItem(text = { Text("Developer tools") }, onClick = {
-            open = false
-            onOpenDeveloperTools()
         })
     }
 }

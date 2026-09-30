@@ -22,7 +22,8 @@ class AppContainer(app: Application) {
     val history = History(session)
 }
 
-class FedimintApp : Application() {
+/** Open for DebugApplication (src/debug), which loads the SDK earlier on purpose. */
+open class FedimintApp : Application() {
     lateinit var container: AppContainer
         private set
 

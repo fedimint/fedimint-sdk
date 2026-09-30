@@ -23,8 +23,8 @@ android {
     }
 
     buildTypes {
-        // Debug only: this app exists to be run, not shipped, and an unsigned
-        // release build would need a keystore to install.
+        // Debug only: this is a reference app to read and run, not to ship, and
+        // an unsigned release build would need a keystore to install.
         release {
             isMinifyEnabled = false
         }
@@ -56,9 +56,6 @@ dependencies {
     implementation(project(":fedimint-sdk"))
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.material)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
 
     // The reference wallet: Compose screens, one NavHost, a ViewModel per
@@ -73,4 +70,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.core)
+
+    // The SDK harness (src/debug) is AppCompat views, for the Appium suite. Debug only.
+    debugImplementation(libs.androidx.appcompat)
+    debugImplementation(libs.material)
 }

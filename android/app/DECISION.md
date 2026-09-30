@@ -2,7 +2,7 @@
 
 Tracking issue: [#399](https://github.com/fedimint/fedimint-sdk/issues/399).
 
-`android/app` is turning from a one-screen SDK test harness into a reference wallet:
+`android/app` was a one-screen SDK test harness and is now a reference wallet:
 an app someone building on the Fedimint Android SDK can read and copy. This file
 records the decisions behind its structure and why each alternative was turned down,
 so reviewers can check the reasoning and later contributors can extend it without
@@ -27,7 +27,7 @@ re-arguing it.
 
 ### 1. Jetpack Compose for the UI (not XML Views)
 
-The harness uses XML layouts and `findViewById`, and updates each widget by hand.
+The old harness used XML layouts and `findViewById`, and updated each widget by hand.
 A wallet with 10+ screens and several live streams needs UI that redraws itself
 from state.
 
@@ -93,20 +93,41 @@ immutable `UiState` and plain functions for user actions (`create()`, `verify()`
   by hand. `appViewModel { }` mirrors `hiltViewModel()`, so a later move would only
   touch the call sites.
 
-### 6. Build in place in `android/app`, and keep the harness until the end
+### 6. Built in place in `android/app`; the harness became debug-only
 
-The old screen moved unchanged to `harness/HarnessActivity.kt`, and the wallet's
-Home screen links to it ("Developer tools").
+The old one-screen harness moved unchanged to `harness/HarnessActivity.kt` in step 1,
+reachable from Home ("Developer tools"). In step 7 it moved to **debug builds only**
+(`app/src/debug`), with its own "SDK harness" launcher entry, and left the wallet's
+menu.
 
-- **Why:** CI's `:app:assembleDebug` only proves the bindings are usable because the
-  app calls every API. While the wallet screens are being built, the harness keeps
-  the untouched APIs compiled and reachable on a device. It is deleted in the last
-  step, once the wallet covers the whole surface.
-- The harness opens its SDK over `files/harness`, and the wallet uses `files/wallet`.
-  Separate directories mean the two never contend for the storage lock, and the
-  harness can't touch the wallet's seed.
-- **Rejected: a separate `android/wallet` module.** That means two apps to keep
-  building and a CI change, for no benefit once the harness is gone.
+- **Why it existed alongside the wallet:** CI compiles `android/app` to prove the
+  bindings are usable, which only means something because the app calls the SDK
+  surface. While the wallet screens were being built, the harness kept the
+  not-yet-covered APIs compiled and reachable. It opens its SDK over `files/harness`
+  and the wallet uses `files/wallet`, so the two never contend for the storage lock
+  and the harness can't touch the wallet's seed.
+- **Why it stays, debug-only:** upstream's Appium e2e suite (#353,
+  `js/android/integration-tests`) drives this screen by its view ids (`openWallet`,
+  `join`, `lnReceive`, `ecashNotes` and so on), and runs against the debug APK. The
+  suite now launches `org.fedimint.demo.harness.HarnessActivity` instead of
+  `MainActivity`, a one-line change in its config and in
+  `scripts/e2e-android/run-android-e2e.sh`. Release builds don't contain the harness
+  at all, so it never ships in the wallet. Porting the suite to drive the wallet's
+  Compose screens (test tags exposed as resource ids) is a sensible follow-up, not
+  part of this change.
+- **Coverage:** the wallet itself calls 42 of the 43 SDK members the harness calls.
+  The one it doesn't is `awaitFinal()`: the wallet follows `updates()` live, as #399
+  asks. It also calls much the harness never did: `storedFederations`,
+  `federationStatusUpdates`, close/reopen/forget, `operation(id)` and the
+  `AnyOperation` downcasts, `details()`, `requestCancel`,
+  `recoveryStatus`/`resumeRecovery`, and `meta()`.
+- **Debug builds** use upstream's `DebugApplication` (it loads the SDK before the
+  `Application` exists, on purpose). It now extends `FedimintApp`, so the wallet's
+  object graph is set up the same way in debug and release. AppCompat and Material
+  Components are `debugImplementation` only, for the harness's XML views. The
+  wallet's launch theme is a platform theme, and Compose styles the rest.
+- **Rejected: a separate `android/wallet` module,** which would mean two apps to
+  keep building and wire into CI.
 
 ### 7. Library versions stay on Kotlin 2.0
 
@@ -357,7 +378,6 @@ org.fedimint.demo
 │   ├── activity/           Activity (paged history), OperationDetail, ActivityRow
 │   └── payments/           Lightning, Ecash, Onchain send/receive; shared base ViewModel,
 │                           components (QR, review, progress), operation-state mapping
-└── harness/                the original one-screen harness (removed in step 7)
 ```
 
 Organized by feature: a new area gets its own `ui/<feature>/` package, one file
@@ -377,7 +397,7 @@ without a joined federation.
 | 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | done |
 | 5 | Activity: paged history, recent activity on Home, operation detail with live state, reclaim ecash | `activity(cursor)`, `operation(id)`, `AnyOperation`, `support()`, `details()`, `updates()`, `requestCancel` | done |
 | 6 | Join-and-recover after a restore, recovery progress and retry; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta()`, `all`, `configMetadata`, `consensusMetadata` | done |
-| 7 | Remove the harness once every API above has a wallet screen | | |
+| 7 | Harness to debug builds only, for upstream's Appium suite (coverage checked: 42 of its 43 SDK calls are in the wallet); AppCompat and Material Components debug-only | | done |
 
 ## Testing step 1
 
@@ -400,8 +420,7 @@ cd android && ./gradlew :app:installDebug
    and enter the words. It goes to Home. A made-up phrase shows "That input isn't
    valid."
 7. **Rotation** on any screen keeps what was typed.
-8. **Developer tools** on Home opens the old harness, which still works on its own
-   data.
+8. (Until step 7) Developer tools on Home opened the old harness, on its own data.
 
 ## Testing step 2
 
@@ -414,9 +433,7 @@ cd android && ./gradlew :app:installDebug
 4. **Capabilities:** Receive and Send each open a sheet listing only the methods
    this federation supports (here Lightning, Ecash and On-chain; they're wired up in
    step 4).
-5. **Live balance:** not testable yet. The harness under Developer tools has its
-   own separate wallet, so it can't fund this one. The live update is checked in
-   step 4, with the first real receive.
+5. **Live balance:** checked from step 4 on, with the first real receive.
 6. **Relaunch:** Home comes straight back to the same federation and balance.
 7. **Join again** from the ⋮ menu with the same code: no error, it just selects it.
 8. **Bad code:** type anything else and Preview. You get "That input isn't valid."
@@ -512,3 +529,17 @@ From its configuration, and "doesn't run a meta module" under Consensus metadata
    recovery; nothing restarts.
 7. **Contrast:** on a wallet created on this device, the join screen only offers
    Join.
+
+## Testing step 7
+
+1. `cd android && ./gradlew :fedimint-sdk:assembleRelease :app:assembleDebug`
+   succeeds, and so does `./gradlew :app:assembleRelease`.
+2. The debug build installs two launcher entries: **Fedimint Wallet** (the wallet)
+   and **SDK harness** (the old one-screen page, for the Appium suite). A release
+   build has only the wallet.
+3. Home → ⋮ lists Federations, Join a federation and Recovery phrase, and no
+   Developer tools.
+4. The wallet launches without a flash of the wrong colour, in light and dark mode,
+   and an existing wallet opens as before.
+5. `just test-android-e2e` (needs the `.#android-tests` shell and devimint) runs the
+   Appium suite against the harness, as upstream CI does.
