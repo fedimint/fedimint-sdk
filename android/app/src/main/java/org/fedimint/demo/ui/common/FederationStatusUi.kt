@@ -31,8 +31,8 @@ fun FederationStatus.label(): String = when (this) {
 fun FederationStatus.explanation(): String? = when (this) {
     FederationStatus.Running -> null
     FederationStatus.Recovering ->
-        "Rebuilding this wallet from your recovery phrase. The balance may still grow, and " +
-            "sending and receiving unlock when it finishes."
+        "Scanning this federation's history for your funds. It can take a long time, and " +
+            "your balance may show 0 until it finishes. Sending and receiving unlock then."
     is FederationStatus.Quarantined ->
         "This federation couldn't be opened safely, so it has been set aside. Your funds are " +
             "not spent. ${diagnostic.message}"

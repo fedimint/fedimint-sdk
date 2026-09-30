@@ -45,6 +45,7 @@ import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.label
 import org.fedimint.demo.ui.common.userMessage
 import org.fedimint.demo.wallet.WalletSession
+import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.FederationPreview
 import org.fedimint.sdk.Network
 
@@ -60,13 +61,22 @@ class JoinFederationViewModel(private val session: WalletSession) : ViewModel() 
         val preview: FederationPreview? = null,
         val joining: Boolean = false,
         val error: String? = null,
-        val joined: Boolean = false,
+        /** Set once joined: the federation, and whether it is recovering. */
+        val joined: Joined? = null,
     ) {
         val busy: Boolean get() = previewing || joining
     }
 
+    data class Joined(val id: FederationId, val recovering: Boolean)
+
     private val _state = MutableStateFlow(UiState())
     val state = _state.asStateFlow()
+
+    /**
+     * A restored seed may already have funds in this federation, and only a
+     * recovery finds them; a plain join can't be turned into one later.
+     */
+    val restoredWallet: Boolean = session.isRestored
 
     /** Editing the code invalidates a preview of the old one. */
     fun onInviteChange(text: String) {
@@ -86,14 +96,26 @@ class JoinFederationViewModel(private val session: WalletSession) : ViewModel() 
         }
     }
 
-    fun join() {
+    fun join() = enter(recover = false)
+
+    fun recover() = enter(recover = true)
+
+    private fun enter(recover: Boolean) {
         val invite = _state.value.invite
         if (_state.value.busy) return
         _state.update { it.copy(joining = true, error = null) }
         viewModelScope.launch {
-            attempt { session.join(invite) }
-                .onSuccess { _state.update { it.copy(joining = false, joined = true) } }
-                .onFailure { e -> _state.update { it.copy(joining = false, error = userMessage(e)) } }
+            attempt { if (recover) session.recover(invite) else session.join(invite) }
+                .onSuccess { id -> _state.update { it.copy(joining = false, joined = Joined(id, recover)) } }
+                .onFailure { e ->
+                    val message = userMessage(e) + if (recover) {
+                        // A failed recover may still have joined; the way back is Reopen.
+                        " If the federation now shows in your list as needing attention, reopen it there."
+                    } else {
+                        ""
+                    }
+                    _state.update { it.copy(joining = false, error = message) }
+                }
         }
     }
 
@@ -106,11 +128,11 @@ class JoinFederationViewModel(private val session: WalletSession) : ViewModel() 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun JoinFederationScreen(onBack: () -> Unit, onJoined: () -> Unit) {
+fun JoinFederationScreen(onBack: () -> Unit, onJoined: (FederationId, recovering: Boolean) -> Unit) {
     val vm = appViewModel { JoinFederationViewModel(it.session) }
     val state by vm.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(state.joined) { if (state.joined) onJoined() }
+    LaunchedEffect(state.joined) { state.joined?.let { onJoined(it.id, it.recovering) } }
 
     Scaffold(
         topBar = {
@@ -168,11 +190,27 @@ fun JoinFederationScreen(onBack: () -> Unit, onJoined: () -> Unit) {
             } else {
                 PreviewCard(preview)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = vm::join, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-                    if (state.joining) {
-                        CircularProgressIndicator(Modifier.height(20.dp))
-                    } else {
-                        Text("Join ${preview.name ?: "federation"}")
+                if (vm.restoredWallet) {
+                    Text(
+                        "You restored this wallet from a recovery phrase. Recovering scans this " +
+                            "federation for funds that belong to it. Sending and receiving unlock " +
+                            "when the scan finishes.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = vm::recover, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+                        if (state.joining) CircularProgressIndicator(Modifier.height(20.dp)) else Text("Join and recover funds")
+                    }
+                    TextButton(onClick = vm::join, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Join without recovering (I never used it)")
+                    }
+                } else {
+                    Button(onClick = vm::join, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+                        if (state.joining) {
+                            CircularProgressIndicator(Modifier.height(20.dp))
+                        } else {
+                            Text("Join ${preview.name ?: "federation"}")
+                        }
                     }
                 }
             }

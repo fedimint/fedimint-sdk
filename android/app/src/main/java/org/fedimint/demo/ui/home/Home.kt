@@ -161,6 +161,8 @@ fun HomeScreen(
     onPay: (PaymentDirection, Rail, FederationId) -> Unit,
     onOpenActivity: (FederationId) -> Unit,
     onOpenOperation: (FederationId, OperationId) -> Unit,
+    onOpenRecovery: (FederationId) -> Unit,
+    onOpenRecoveryPhrase: () -> Unit,
 ) {
     val vm = appViewModel { HomeViewModel(it.session, it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
@@ -170,7 +172,7 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = { FederationSwitcher(state.federations.orEmpty(), state.active, vm::select) },
-                actions = { OverflowMenu(onOpenFederations, onJoinFederation, onOpenDeveloperTools) },
+                actions = { OverflowMenu(onOpenFederations, onJoinFederation, onOpenRecoveryPhrase, onOpenDeveloperTools) },
             )
         },
     ) { padding ->
@@ -188,7 +190,7 @@ fun HomeScreen(
                 active == null -> NoFederation(onJoinFederation)
                 else -> {
                     BalanceCard(active, state.balance)
-                    active.status.explanation()?.let { StatusNote(active.status, it) }
+                    active.status.explanation()?.let { StatusNote(active.status, it, onViewRecovery = { onOpenRecovery(active.id) }) }
                     val canTransact = active.status.canTransact && state.capabilities.hasAny()
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
@@ -264,6 +266,7 @@ private fun FederationSwitcher(
 private fun OverflowMenu(
     onOpenFederations: () -> Unit,
     onJoinFederation: () -> Unit,
+    onOpenRecoveryPhrase: () -> Unit,
     onOpenDeveloperTools: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -278,6 +281,10 @@ private fun OverflowMenu(
         DropdownMenuItem(text = { Text("Join a federation") }, onClick = {
             open = false
             onJoinFederation()
+        })
+        DropdownMenuItem(text = { Text("Recovery phrase") }, onClick = {
+            open = false
+            onOpenRecoveryPhrase()
         })
         DropdownMenuItem(text = { Text("Developer tools") }, onClick = {
             open = false
@@ -352,7 +359,7 @@ private fun BalanceCard(federation: FederationInfo, balance: HomeViewModel.Balan
 }
 
 @Composable
-private fun StatusNote(status: FederationStatus, text: String) {
+private fun StatusNote(status: FederationStatus, text: String, onViewRecovery: () -> Unit) {
     val error = status is FederationStatus.Quarantined
     Card(
         colors = CardDefaults.cardColors(
@@ -365,6 +372,9 @@ private fun StatusNote(status: FederationStatus, text: String) {
             if (status is FederationStatus.Quarantined) {
                 Spacer(Modifier.height(4.dp))
                 Text("Code: ${status.diagnostic.code}", style = MaterialTheme.typography.labelSmall)
+            }
+            if (status is FederationStatus.Recovering) {
+                TextButton(onClick = onViewRecovery) { Text("View progress") }
             }
         }
     }

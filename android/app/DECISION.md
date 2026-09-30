@@ -131,6 +131,16 @@ pinned Kotlin version.
 - The backup is confirmed by asking for 3 words at random positions. That proves a
   complete, ordered copy without making the user retype all 12 or 24 words.
 - "Backed up" is app state in `SharedPreferences`. The SDK has no notion of it.
+- The phrase can be viewed again later (Home → ⋮ → Recovery phrase), because
+  users lose paper backups and need to re-copy them. It reuses the Backup screen
+  (same `FLAG_SECURE`), but the words stay hidden until the user taps Reveal, so
+  opening the menu with someone watching doesn't expose them.
+- The phrase can be copied (for a password manager), with the precautions wallets
+  use (`ui/common/Clipboard.kt`). A dialog first says the clipboard can be read by
+  other apps and keyboards. The clip is flagged `EXTRA_IS_SENSITIVE`, so Android 13+
+  hides it from clipboard previews. It is cleared after 60 seconds, but only if the
+  clipboard still holds the phrase. The timer runs on the main looper, not the
+  screen, so leaving the screen doesn't leave the phrase behind.
 
 ### 9. Which screen the app starts on
 
@@ -282,6 +292,52 @@ so a new payment method only adds the SDK calls.
 - **Row wording is by kind and status**, with `UNKNOWN` status shown as "details
   unavailable" instead of a guessed outcome, as the SDK's docs ask.
 
+### 14. Recovery: recover after a restore, reattach to running recoveries, retry only on request
+
+- **A restored wallet joins by recovering.** The SDK's docs are explicit: after a
+  seed is restored, a federation that may hold its funds must be joined with
+  `recover()`, and a plain `join()` can never be turned into a recovery later
+  (`resumeRecovery` refuses it). The app records "restored" when the seed is
+  restored (app state, like "backed up"). On a restored wallet, the join screen
+  makes **Join and recover funds** the main action and leaves plain join as a
+  secondary "I never used it" option. A wallet created on this device only ever
+  sees Join.
+- **A failed recover may still have joined.** The SDK can report an error after
+  the federation is joined and committed to recovering. It then shows up
+  quarantined, and Reopen resumes the recovery. The error message says so, and the
+  federation manager (decision #11) already offers Reopen.
+- **The recovery screen reattaches without restarting anything.**
+  `recoveryStatus()` says where things stand: `null` means joined plainly, nothing
+  to recover; otherwise Running, Failed or Done. For Running (or Done),
+  `resumeRecovery()` only returns the existing operation to follow, which is how
+  the app reattaches after a restart without storing an operation id. For Failed
+  the same call **starts a new attempt**, so the screen never makes it on its own
+  and leaves it to the user's **Try again**.
+- **Progress is the state, plus how long the scan has run.** The SDK reports no
+  percentage (`RecoveryState` is only Running, Done or Failed). The screen shows
+  "Running for 1 h 6 min", timed from the recovery operation's start in the
+  activity history, as the sign the scan is alive. It also shows the balance, but
+  doesn't promise it will climb: on Mutinynet it stayed at 0 for over an hour of
+  scanning, and it seems funds appear only when the scan completes, even though
+  the SDK docs describe a provisional balance. The text says a long history can
+  take a long time, and that closing the app is fine because the scan resumes.
+  Sending and receiving stay disabled (decision #10) until it is Done.
+- **SDK gap:** a real progress figure (for example sessions scanned out of total)
+  would let this be a proper progress bar, as #399 asks. The SDK doesn't expose one
+  yet; worth raising upstream.
+- **Entry points:** after a recovering join, the join screen hands over to the
+  recovery screen; Home's "Recovering" note has **View progress**; the federation
+  detail has **Recovery progress**.
+
+### 15. Federation metadata is shown read-only, in the SDK's three views
+
+`federation.meta()` offers three views, and the info screen (Federation detail →
+Federation info) shows each one as the SDK labels it: `all()` (the merged view,
+meant for rendering), `configMetadata()` (exactly what the configuration declares),
+and `consensusMetadata()` (the meta module's raw document and revision). No meta
+module is an ordinary `null`, shown as such. The document is shown as indented JSON
+when it parses; the SDK leaves parsing to the app.
+
 ## Package layout
 
 ```
@@ -296,7 +352,8 @@ org.fedimint.demo
 │   │                       formatting, federation status labels and badge
 │   ├── onboarding/         Welcome, Backup, VerifyBackup, Restore
 │   ├── home/               Home: balance, status, send/receive entry
-│   ├── federations/        Federations list, FederationDetail, JoinFederation
+│   ├── federations/        Federations list, FederationDetail, JoinFederation, Recovery,
+│   │                       FederationMeta
 │   ├── activity/           Activity (paged history), OperationDetail, ActivityRow
 │   └── payments/           Lightning, Ecash, Onchain send/receive; shared base ViewModel,
 │                           components (QR, review, progress), operation-state mapping
@@ -319,7 +376,7 @@ without a joined federation.
 | 3 | Federation manager: list, details, reopen/close/forget, quarantine diagnostics, copy invite code | `reopenFederation`, `closeFederation`, `forgetFederation`, `inviteCode`, `Diagnostic` | done |
 | 4 | Send and receive: Lightning, ecash, on-chain; quote, then approve, then execute | `lightning()`, `ecash()`, `onchain()`, `quote`/`send`/`receive`, `Notes`, operation `updates()` | done |
 | 5 | Activity: paged history, recent activity on Home, operation detail with live state, reclaim ecash | `activity(cursor)`, `operation(id)`, `AnyOperation`, `support()`, `details()`, `updates()`, `requestCancel` | done |
-| 6 | Recovery progress and resume; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta`, `ConsensusMetadata` | |
+| 6 | Join-and-recover after a restore, recovery progress and retry; federation metadata | `recover`, `recoveryStatus`, `resumeRecovery`, `meta()`, `all`, `configMetadata`, `consensusMetadata` | done |
 | 7 | Remove the harness once every API above has a wallet screen | | |
 
 ## Testing step 1
@@ -431,3 +488,27 @@ Needs a funded wallet (step 4's Lightning receive via faucet.mutinynet.com).
    the balance comes back.
 5. **Unrecognised operations** can't be produced on demand. The path is written
    from the SDK's documented contract.
+
+## Testing step 6
+
+**Federation info:** Home → ⋮ → Federations → the federation → Federation info. On
+Mutinynet it shows `federation_name` and `meta_external_url` under both Metadata and
+From its configuration, and "doesn't run a meta module" under Consensus metadata.
+
+**Recovery (erases the wallet on the device; you need its recovery phrase):**
+
+1. Fund the wallet (step 4), and have its recovery phrase from step 1.
+2. `adb shell pm clear org.fedimint.demo`, then relaunch → Restore → enter the
+   phrase.
+3. Join a federation → Mutinynet → Preview. It explains recovery and offers
+   **Join and recover funds** (with plain join as a secondary option). Tap it.
+4. The recovery screen shows Recovering and "Running for …". On Mutinynet the scan
+   takes over an hour on a loaded machine, and the balance can stay at 0 until it
+   completes. Home meanwhile shows "Recovering", a View progress link, and Send and
+   Receive disabled.
+5. When it reads **Recovery complete**, the balance matches what you had, and Send
+   and Receive unlock.
+6. Close and relaunch the app mid-recovery. View progress reattaches to the running
+   recovery; nothing restarts.
+7. **Contrast:** on a wallet created on this device, the join screen only offers
+   Join.
