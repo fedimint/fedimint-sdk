@@ -9,6 +9,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
+import org.fedimint.demo.ui.common.shortId
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.LnQuote
@@ -70,10 +71,11 @@ class LightningSendViewModel(private val payments: Payments, private val federat
         val q = payments.lightningQuote(federationId, invoice).owned()
         quote = q
         val review = Review(
-            rows = listOf(
+            rows = listOfNotNull(
                 "Invoice amount" to sats(q.invoiceAmount()),
                 "Fee" to sats(q.fee()),
                 "Route" to q.route().label(),
+                q.route().gatewayId()?.let { "Gateway" to shortId(it) },
             ),
             total = sats(q.total()),
             expiresAtMillis = expiry(q.expiresAt()),

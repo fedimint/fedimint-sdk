@@ -86,6 +86,9 @@ fun RecoveryState.progress(): OpProgress = when (this) {
     is RecoveryState.Failed -> failed("Recovery failed", reason)
 }
 
+/** The gateway a payment goes through, or null when it stays inside the federation. */
+fun LightningRoute.gatewayId(): String? = (this as? LightningRoute.Gateway)?.gatewayId
+
 fun LightningRoute.label(): String = when (this) {
     LightningRoute.Internal -> "within the federation, no gateway"
     is LightningRoute.Gateway -> "via a Lightning gateway"

@@ -272,6 +272,11 @@ so a new payment method only adds the SDK calls.
   UniFFI handles. The base ViewModel registers each one (`owned()`) and closes
   them all in `onCleared()`. The SDK keeps running an operation after its screen
   is gone; only this screen's view of it ends.
+- **Ids shown so the user can check them:** the Join preview shows the full
+  federation id (to compare with the one the federation publishes, where a
+  shortened id could hide a look-alike). The Lightning review and payment details
+  show the gateway id shortened to its ends (`02f7b3fe…d0e934ef`, `shortId()`),
+  enough to tell gateways apart.
 - **Amounts:** users type whole sats; the SDK counts Lightning and ecash in msats
   (`Amount`) and on-chain sends in sats (`Sats`). Each screen converts at the call.
 - **Ecash notes are a bearer instrument.** They leave the SDK only through

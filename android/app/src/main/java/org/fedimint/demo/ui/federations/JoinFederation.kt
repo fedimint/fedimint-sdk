@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -31,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -231,6 +233,13 @@ private fun PreviewCard(preview: FederationPreview) {
             Fact("Network", preview.network.label())
             Fact("Guardians", preview.guardians.toString())
             Fact("Modules", preview.modules.joinToString())
+            Spacer(Modifier.height(8.dp))
+            // In full: this is what to compare against the federation's published id
+            // before joining, and a shortened form would hide a look-alike.
+            Text("Federation ID", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SelectionContainer {
+                Text(preview.id, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            }
             if (preview.network != Network.BITCOIN) {
                 Spacer(Modifier.height(8.dp))
                 Text(

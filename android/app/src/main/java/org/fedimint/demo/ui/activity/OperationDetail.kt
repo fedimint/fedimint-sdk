@@ -30,11 +30,13 @@ import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.absoluteTime
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
+import org.fedimint.demo.ui.common.shortId
 import org.fedimint.demo.ui.payments.ErrorText
 import org.fedimint.demo.ui.payments.OutputCard
 import org.fedimint.demo.ui.payments.PaymentScreen
 import org.fedimint.demo.ui.payments.PaymentViewModel
 import org.fedimint.demo.ui.payments.ProgressCard
+import org.fedimint.demo.ui.payments.gatewayId
 import org.fedimint.demo.ui.payments.label
 import org.fedimint.demo.ui.payments.progress
 import org.fedimint.demo.wallet.History
@@ -114,6 +116,7 @@ class OperationDetailViewModel(
                         "Fee" to sats(d.fee),
                         "Credited" to sats(d.netCredit),
                         d.description.takeIf { it.isNotBlank() }?.let { "Description" to it },
+                        d.gatewayId?.let { "Gateway" to shortId(it) },
                         "Created" to absoluteTime(d.createdAt),
                         "Invoice expires" to absoluteTime(d.expiresAt),
                     ),
@@ -126,11 +129,12 @@ class OperationDetailViewModel(
                 val d = o.details()
                 _detail.value = Detail(
                     title = "Lightning payment",
-                    rows = listOf(
+                    rows = listOfNotNull(
                         "Invoice amount" to sats(d.invoiceAmount),
                         "Fee" to sats(d.fee),
                         "Total" to sats(d.total),
                         "Route" to d.route.label(),
+                        d.route.gatewayId()?.let { "Gateway" to shortId(it) },
                         "Created" to absoluteTime(d.createdAt),
                     ),
                     copyable = listOf("Invoice" to d.invoice),
