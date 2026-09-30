@@ -27,6 +27,8 @@ import org.fedimint.sdk.FederationPreview
 import org.fedimint.sdk.FederationStatus
 import org.fedimint.sdk.InviteCode
 import org.fedimint.sdk.Mnemonic
+import org.fedimint.sdk.RecoveryOperation
+import org.fedimint.sdk.RecoveryState
 import org.fedimint.sdk.Sdk
 import org.fedimint.sdk.createFedimintSdk
 import org.fedimint.sdk.Exception as SdkException
@@ -113,6 +115,20 @@ class WalletSession(
         isBackedUp = true
     }
 
+    /**
+     * Whether this wallet's seed was restored from a phrase rather than
+     * created here. A restored seed may already hold funds in a federation,
+     * so joining one should be a recovery ([recover]), not a plain [join]:
+     * a plainly joined federation can never be recovered afterwards.
+     */
+    var isRestored: Boolean
+        get() = prefs.getBoolean(KEY_RESTORED, false)
+        private set(value) = prefs.edit().putBoolean(KEY_RESTORED, value).apply()
+
+    fun markRestored() {
+        isRestored = true
+    }
+
     fun select(id: FederationId) {
         _selectedId.value = id
         prefs.edit().putString(KEY_SELECTED, id).apply()
@@ -137,6 +153,52 @@ class WalletSession(
             }
             select(id)
             id
+        }
+    }
+
+    /**
+     * Joins the federation and rescans its history for this seed's funds: the
+     * way to join after restoring a wallet. The federation stays locked (no
+     * sends or receives) until the rescan finishes; follow it with
+     * [resumeRecovery]. Selected once joined.
+     *
+     * If it was already joined, returns its id: the recovery screen then
+     * reattaches through [resumeRecovery]. A failure may still have joined it,
+     * in which case it shows up quarantined and Reopen resumes the recovery.
+     */
+    suspend fun recover(invite: String): FederationId = withContext(Dispatchers.IO) {
+        InviteCode.parse(invite.trim()).use { code ->
+            val id = try {
+                requireOpen().recover(code).let { handle ->
+                    handle.progress.close()
+                    handle.federation.use { it.id() }
+                }
+            } catch (e: SdkException) {
+                if (e.code() != ErrorCode.ALREADY_JOINED) throw e
+                code.federationId()
+            }
+            select(id)
+            id
+        }
+    }
+
+    /**
+     * Where this federation's recovery stands: null if it was joined plainly
+     * and never recovered; otherwise Running, Failed (still locked), or Done.
+     */
+    suspend fun recoveryStatus(id: FederationId): RecoveryState? = withContext(Dispatchers.IO) {
+        requireOpen().recoveryStatus(id)
+    }
+
+    /**
+     * The recovery operation to follow. On a running recovery this reattaches
+     * without starting anything; on a failed one it starts a new attempt; on
+     * a finished one it returns that one, reading Done.
+     */
+    suspend fun resumeRecovery(id: FederationId): RecoveryOperation = withContext(Dispatchers.IO) {
+        requireOpen().resumeRecovery(id).let { handle ->
+            handle.federation.close()
+            handle.progress
         }
     }
 
@@ -237,6 +299,7 @@ class WalletSession(
     companion object {
         private const val TAG = "WalletSession"
         private const val KEY_BACKED_UP = "backed_up"
+        private const val KEY_RESTORED = "restored"
         private const val KEY_SELECTED = "selected_federation"
 
         /**

@@ -36,6 +36,8 @@ import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
 import org.fedimint.demo.ui.federations.FederationDetailScreen
+import org.fedimint.demo.ui.federations.FederationMetaScreen
+import org.fedimint.demo.ui.federations.RecoveryScreen
 import org.fedimint.demo.ui.federations.FederationsScreen
 import org.fedimint.demo.ui.federations.JoinFederationScreen
 import org.fedimint.demo.ui.home.HomeScreen
@@ -131,6 +133,9 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
         composable<Backup> {
             BackupScreen(onContinue = { nav.navigate(VerifyBackup) })
         }
+        composable<RecoveryPhrase> {
+            BackupScreen(onContinue = {}, onBack = { nav.popBackStack() })
+        }
         composable<VerifyBackup> {
             VerifyBackupScreen(
                 onBack = { nav.popBackStack() },
@@ -145,6 +150,8 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 onPay = { direction, rail, id -> nav.navigate(paymentRoute(direction, rail, id)) },
                 onOpenActivity = { id -> nav.navigate(Activity(id)) },
                 onOpenOperation = { id, op -> nav.navigate(OperationDetail(id, op)) },
+                onOpenRecovery = { id -> nav.navigate(Recovery(id)) },
+                onOpenRecoveryPhrase = { nav.navigate(RecoveryPhrase) },
             )
         }
         composable<Activity> { entry ->
@@ -165,7 +172,14 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
             JoinFederationScreen(
                 onBack = { nav.popBackStack() },
                 // Home follows the session's selected federation, which join just set.
-                onJoined = { nav.popBackStack() },
+                // A recovering join goes on to its progress instead, in place of this screen.
+                onJoined = { id, recovering ->
+                    if (recovering) {
+                        nav.navigate(Recovery(id)) { popUpTo<JoinFederation> { inclusive = true } }
+                    } else {
+                        nav.popBackStack()
+                    }
+                },
             )
         }
         composable<Federations> {
@@ -180,8 +194,12 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
                 id = entry.toRoute<FederationDetail>().id,
                 onBack = { nav.popBackStack() },
                 onShownOnHome = { nav.popBackStack<Home>(inclusive = false) },
+                onOpenMeta = { nav.navigate(FederationMeta(entry.toRoute<FederationDetail>().id)) },
+                onOpenRecovery = { nav.navigate(Recovery(entry.toRoute<FederationDetail>().id)) },
             )
         }
+        composable<Recovery> { RecoveryScreen(it.toRoute<Recovery>().federationId, nav::popBackStack) }
+        composable<FederationMeta> { FederationMetaScreen(it.toRoute<FederationMeta>().federationId, nav::popBackStack) }
     }
 }
 

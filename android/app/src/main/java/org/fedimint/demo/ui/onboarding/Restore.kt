@@ -76,6 +76,8 @@ class RestoreViewModel(private val session: WalletSession) : ViewModel() {
                 session.open(mnemonic)
                 // They typed the phrase in, so they demonstrably have it: no backup step.
                 session.markBackedUp()
+                // Federations joined from here on should be recovered, not joined fresh.
+                session.markRestored()
             }
                 .onSuccess { _state.update { it.copy(working = false, restored = true) } }
                 .onFailure { e -> _state.update { it.copy(working = false, error = userMessage(e)) } }

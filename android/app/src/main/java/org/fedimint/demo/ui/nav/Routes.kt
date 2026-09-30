@@ -39,3 +39,10 @@ import kotlinx.serialization.Serializable
 @Serializable data class Activity(val federationId: String)
 
 @Serializable data class OperationDetail(val federationId: String, val operationId: String)
+
+@Serializable data class Recovery(val federationId: String)
+
+@Serializable data class FederationMeta(val federationId: String)
+
+/** The recovery phrase again, from Home's menu (onboarding's [Backup] in review mode). */
+@Serializable data object RecoveryPhrase

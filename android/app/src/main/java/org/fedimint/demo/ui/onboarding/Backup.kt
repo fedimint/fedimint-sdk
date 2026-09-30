@@ -1,5 +1,6 @@
 package org.fedimint.demo.ui.onboarding
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,15 +13,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -40,6 +49,7 @@ import kotlinx.coroutines.launch
 import org.fedimint.demo.ui.common.SecureScreen
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
+import org.fedimint.demo.ui.common.copySecret
 import org.fedimint.demo.ui.common.userMessage
 import org.fedimint.demo.wallet.WalletSession
 
@@ -61,16 +71,40 @@ class BackupViewModel(session: WalletSession) : ViewModel() {
     }
 }
 
-/** Shows the recovery phrase once, and asks the user to write it down before moving on. */
+/**
+ * Shows the recovery phrase.
+ *
+ * During onboarding it asks the user to confirm they wrote it down before
+ * moving on. Later, from Home's menu ([onBack] given), it is a way to see the
+ * phrase again: the words stay hidden until the user taps Reveal, so opening
+ * the screen with someone looking over a shoulder doesn't expose them.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BackupScreen(onContinue: () -> Unit) {
+fun BackupScreen(onContinue: () -> Unit, onBack: (() -> Unit)? = null) {
     SecureScreen()
     val vm = appViewModel { BackupViewModel(it.session) }
     val state by vm.state.collectAsStateWithLifecycle()
     var acknowledged by remember { mutableStateOf(false) }
+    val reviewing = onBack != null
+    var revealed by remember { mutableStateOf(!reviewing) }
+    var confirmCopy by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Your recovery phrase") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Your recovery phrase") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                },
+            )
+        },
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -98,10 +132,34 @@ fun BackupScreen(onContinue: () -> Unit) {
             when (val s = state) {
                 BackupViewModel.UiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
                 is BackupViewModel.UiState.Failed -> Text(s.message, color = MaterialTheme.colorScheme.error)
-                is BackupViewModel.UiState.Ready -> WordGrid(s.words)
+                is BackupViewModel.UiState.Ready ->
+                    if (revealed) {
+                        WordGrid(s.words)
+                        TextButton(onClick = { confirmCopy = true }, modifier = Modifier.align(Alignment.End)) {
+                            Text("Copy")
+                        }
+                        if (confirmCopy) {
+                            CopyPhraseDialog(
+                                onConfirm = {
+                                    confirmCopy = false
+                                    copySecret(context, "Recovery phrase", s.words.joinToString(" "))
+                                    Toast.makeText(context, "Copied. Clears from the clipboard in 60 seconds.", Toast.LENGTH_LONG).show()
+                                },
+                                onDismiss = { confirmCopy = false },
+                            )
+                        }
+                    } else {
+                        OutlinedButton(onClick = { revealed = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Reveal (make sure no one can see your screen)")
+                        }
+                    }
             }
 
             Spacer(Modifier.height(20.dp))
+            if (reviewing) {
+                Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+                return@Column
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable { acknowledged = !acknowledged },
@@ -120,6 +178,24 @@ fun BackupScreen(onContinue: () -> Unit) {
             Spacer(Modifier.height(16.dp))
         }
     }
+}
+
+/** Copying puts the phrase where other apps can read it; say so before doing it. */
+@Composable
+private fun CopyPhraseDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Copy your recovery phrase?") },
+        text = {
+            Text(
+                "While it's on the clipboard, other apps and your keyboard may be able to read " +
+                    "it. Paste it only somewhere safe and offline, such as a password manager. " +
+                    "It's cleared from the clipboard after 60 seconds.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Copy") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** The words in two numbered columns, read top to bottom then left to right like a paper backup card. */

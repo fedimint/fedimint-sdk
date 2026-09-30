@@ -139,7 +139,13 @@ class FederationDetailViewModel(private val session: WalletSession, private val 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FederationDetailScreen(id: FederationId, onBack: () -> Unit, onShownOnHome: () -> Unit) {
+fun FederationDetailScreen(
+    id: FederationId,
+    onBack: () -> Unit,
+    onShownOnHome: () -> Unit,
+    onOpenMeta: () -> Unit,
+    onOpenRecovery: () -> Unit,
+) {
     val vm = appViewModel { FederationDetailViewModel(it.session, id) }
     val state by vm.state.collectAsStateWithLifecycle()
     var confirm by remember { mutableStateOf<FederationDetailViewModel.Action?>(null) }
@@ -173,6 +179,12 @@ fun FederationDetailScreen(id: FederationId, onBack: () -> Unit, onShownOnHome: 
                 else status.explanation()?.let { Note(it) }
             }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (federation.status is FederationStatus.Recovering) {
+                Button(onClick = onOpenRecovery, modifier = Modifier.fillMaxWidth()) { Text("Recovery progress") }
+            }
+            if (federation.status.isOpen) {
+                OutlinedButton(onClick = onOpenMeta, modifier = Modifier.fillMaxWidth()) { Text("Federation info") }
+            }
             Actions(
                 status = federation.status,
                 working = state.working,
