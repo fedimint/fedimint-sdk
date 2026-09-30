@@ -15,12 +15,14 @@ import org.fedimint.sdk.RecoveryState
  *
  * @property settled no further change is expected from the user's point of view
  * @property ok for a settled state: whether it went the way the user wanted
+ * @property fraction how far along, 0 to 1, when the SDK reports it; null shows an indeterminate bar
  */
 data class OpProgress(
     val label: String,
     val detail: String? = null,
     val settled: Boolean = false,
     val ok: Boolean = false,
+    val fraction: Float? = null,
 )
 
 private fun done(label: String, detail: String? = null) = OpProgress(label, detail, settled = true, ok = true)
@@ -80,8 +82,29 @@ fun OnchainSendState.progress(): OpProgress = when (this) {
     is OnchainSendState.Failed -> failed("Send failed", reason)
 }
 
+/**
+ * Recovery reports how far its rescan has got. Only the ratio means anything,
+ * and `complete` reaching `total` ends the scan, not the recovery: the state
+ * stays Running while the wallet takes in what was found, then turns Done.
+ */
 fun RecoveryState.progress(): OpProgress = when (this) {
-    RecoveryState.Running -> OpProgress("Recovering", "Scanning the federation's history for funds that belong to your recovery phrase.")
+    is RecoveryState.Running -> {
+        val p = progress
+        when {
+            p == null || p.total == 0u ->
+                OpProgress("Recovering", "Starting the scan of this federation's history…")
+            p.complete >= p.total ->
+                OpProgress("Recovering", "Scan complete. Adding what was found to your wallet…", fraction = 1f)
+            else -> {
+                val fraction = p.complete.toFloat() / p.total.toFloat()
+                OpProgress(
+                    "Recovering",
+                    "Scanned ${(fraction * 100).toInt()}% of this federation's history for your funds.",
+                    fraction = fraction,
+                )
+            }
+        }
+    }
     RecoveryState.Done -> done("Recovery complete")
     is RecoveryState.Failed -> failed("Recovery failed", reason)
 }
