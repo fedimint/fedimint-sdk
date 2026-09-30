@@ -339,18 +339,20 @@ so a new payment method only adds the SDK calls.
   the app reattaches after a restart without storing an operation id. For Failed
   the same call **starts a new attempt**, so the screen never makes it on its own
   and leaves it to the user's **Try again**.
-- **Progress is the state, plus how long the scan has run.** The SDK reports no
-  percentage (`RecoveryState` is only Running, Done or Failed). The screen shows
-  "Running for 1 h 6 min", timed from the recovery operation's start in the
-  activity history, as the sign the scan is alive. It also shows the balance, but
-  doesn't promise it will climb: on Mutinynet it stayed at 0 for over an hour of
-  scanning, and it seems funds appear only when the scan completes, even though
-  the SDK docs describe a provisional balance. The text says a long history can
-  take a long time, and that closing the app is fine because the scan resumes.
-  Sending and receiving stay disabled (decision #10) until it is Done.
-- **SDK gap:** a real progress figure (for example sessions scanned out of total)
-  would let this be a proper progress bar, as #399 asks. The SDK doesn't expose one
-  yet; worth raising upstream.
+- **Progress is a real bar, plus how long the scan has run.** Since upstream #413,
+  `RecoveryState.Running` carries `progress: RecoveryProgress?` (`complete` of
+  `total`), and the screen shows it as a determinate bar with a percentage. It's
+  `null` right after a start or restart (an indeterminate bar, "Starting the scan…").
+  `complete == total` means the **scan** is done, not the recovery: the state stays
+  Running while the wallet takes in what was found ("Adding what was found…"), then
+  turns Done. The elapsed time ("Running for 1 h 6 min", from the recovery
+  operation's start in the activity history) sits beside it, because on a federation
+  with a long history the scan takes hours. Before #413 there was no progress at
+  all: on Mutinynet the screen showed only Running for about an hour of real
+  scanning, with the balance at 0 until the end.
+- **The balance is shown but described as incomplete.** The SDK says balance and
+  activity are incomplete while Running, and reaches Done once the wallet holds what
+  the scan found. Sending and receiving stay disabled (decision #10) until then.
 - **Entry points:** after a recovering join, the join screen hands over to the
   recovery screen; Home's "Recovering" note has **View progress**; the federation
   detail has **Recovery progress**.
@@ -524,9 +526,9 @@ From its configuration, and "doesn't run a meta module" under Consensus metadata
    phrase.
 3. Join a federation → Mutinynet → Preview. It explains recovery and offers
    **Join and recover funds** (with plain join as a secondary option). Tap it.
-4. The recovery screen shows Recovering and "Running for …". On Mutinynet the scan
-   takes over an hour on a loaded machine, and the balance can stay at 0 until it
-   completes. Home meanwhile shows "Recovering", a View progress link, and Send and
+4. The recovery screen shows Recovering with a progress bar and percentage, and
+   "Running for …". On Mutinynet the scan takes over an hour on a loaded machine, and
+   the balance is incomplete until it's Done. Home meanwhile shows "Recovering", a View progress link, and Send and
    Receive disabled.
 5. When it reads **Recovery complete**, the balance matches what you had, and Send
    and Receive unlock.

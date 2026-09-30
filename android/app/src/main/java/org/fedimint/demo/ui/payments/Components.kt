@@ -226,7 +226,14 @@ fun ProgressCard(progress: OpProgress) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(progress.label, style = MaterialTheme.typography.titleMedium)
             progress.detail?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-            if (!progress.settled) LinearProgressIndicator(Modifier.fillMaxWidth().height(4.dp))
+            if (!progress.settled) {
+                val fraction = progress.fraction
+                if (fraction != null) {
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth().height(4.dp))
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().height(4.dp))
+                }
+            }
         }
     }
 }

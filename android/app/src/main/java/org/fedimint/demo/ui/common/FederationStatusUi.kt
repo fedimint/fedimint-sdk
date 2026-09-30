@@ -32,7 +32,7 @@ fun FederationStatus.explanation(): String? = when (this) {
     FederationStatus.Running -> null
     FederationStatus.Recovering ->
         "Scanning this federation's history for your funds. It can take a long time, and " +
-            "your balance may show 0 until it finishes. Sending and receiving unlock then."
+            "your balance is incomplete until it finishes. Sending and receiving unlock then."
     is FederationStatus.Quarantined ->
         "This federation couldn't be opened safely, so it has been set aside. Your funds are " +
             "not spent. ${diagnostic.message}"

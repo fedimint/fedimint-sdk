@@ -51,11 +51,12 @@ import org.fedimint.sdk.Timestamp
  * balance is shown and keeps growing as funds are found, but every send and
  * receive is refused.
  *
- * The SDK reports no percentage (only Running, Done or Failed), so the screen
- * shows how long the scan has been running, from the recovery operation's
- * start in the activity history, as the sign it's alive. The balance is shown
- * too, but in practice funds tend to appear only when the scan completes, so
- * the screen doesn't promise it will climb. `resumeRecovery` is called automatically only for a
+ * Progress comes from the SDK: `Running` carries how far the rescan has got
+ * (`complete` of `total`), shown as a determinate bar. The elapsed time, from
+ * the recovery operation's start in the activity history, sits beside it,
+ * because a long history can take hours. The balance is shown too, but it is
+ * incomplete until Done, which the SDK reaches once the wallet holds what the
+ * scan found. `resumeRecovery` is called automatically only for a
  * running recovery, where it merely reattaches; on a failed one it starts a
  * new attempt, so that is left to the user's Retry.
  */
@@ -91,7 +92,7 @@ class RecoveryViewModel(
                     _status.value = Status.Failed
                     mutableState.update { it.copy(progress = RecoveryState.Failed("The last attempt stopped.").progress()) }
                 }
-                RecoveryState.Running, RecoveryState.Done -> reattach()
+                is RecoveryState.Running, RecoveryState.Done -> reattach()
             }
         }
         viewModelScope.launch {
@@ -161,11 +162,10 @@ private fun RecoveredCard(recovered: Amount?, progress: OpProgress?, startedAt: 
             if (!finished) {
                 startedAt?.let { Elapsed(it) }
                 Text(
-                    "The wallet is scanning this federation's history for your funds. On a " +
-                        "federation with a long history this can take a long time, and the " +
-                        "balance may stay at 0 until the scan completes. Sending and receiving " +
-                        "unlock when it finishes. You can leave this screen or close the app; " +
-                        "the scan resumes where it left off.",
+                    "On a federation with a long history this can take a long time. The " +
+                        "balance is incomplete until recovery finishes, and sending and " +
+                        "receiving unlock then. You can leave this screen or close the app; " +
+                        "the scan carries on.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
