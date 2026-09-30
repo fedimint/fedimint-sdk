@@ -81,7 +81,7 @@ fun OnchainSendState.progress(): OpProgress = when (this) {
 }
 
 fun RecoveryState.progress(): OpProgress = when (this) {
-    RecoveryState.Running -> OpProgress("Recovering", "Rebuilding this wallet's funds from your recovery phrase.")
+    RecoveryState.Running -> OpProgress("Recovering", "Scanning the federation's history for funds that belong to your recovery phrase.")
     RecoveryState.Done -> done("Recovery complete")
     is RecoveryState.Failed -> failed("Recovery failed", reason)
 }
