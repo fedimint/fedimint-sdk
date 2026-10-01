@@ -43,6 +43,9 @@ import org.fedimint.sdk.Exception as SdkException
  *
  * Every method is main-safe: blocking and suspending SDK calls are moved to
  * [Dispatchers.IO] here, so callers never have to think about it.
+ *
+ * It holds the seed's storage and its origin record: read android/app/SECURITY.md
+ * before changing how either is written.
  */
 class WalletSession(
     private val dataDir: File,
@@ -52,10 +55,9 @@ class WalletSession(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val openLock = Mutex()
-    private val _sdk = MutableStateFlow<Sdk?>(null)
 
-    /** The open SDK, or null before [open]. */
-    val sdk: StateFlow<Sdk?> = _sdk.asStateFlow()
+    /** The open SDK, or null before [open]. Never handed out: screens go through this class. */
+    private val _sdk = MutableStateFlow<Sdk?>(null)
 
     private val _federations = MutableStateFlow<List<FederationInfo>?>(null)
 
@@ -94,15 +96,20 @@ class WalletSession(
      * Opens the SDK over this app's data directory, once. With a [mnemonic]
      * over an empty directory it restores that seed; with none it loads the
      * stored seed, or creates and persists a fresh one if there is none.
-     * Calling it again returns the instance already open.
+     * Calling it again when it is already open does nothing.
+     *
+     * Opening over an empty directory persists a seed, so record its origin
+     * with [recordSeedOrigin] first.
      */
-    suspend fun open(mnemonic: Mnemonic? = null): Sdk = openLock.withLock {
-        _sdk.value ?: withContext(Dispatchers.IO) {
-            dataDir.mkdirs()
-            createFedimintSdk(dataDir.path, mnemonic)
-        }.also {
-            _sdk.value = it
-            watchStatuses(it)
+    suspend fun open(mnemonic: Mnemonic? = null) {
+        openLock.withLock {
+            if (_sdk.value != null) return@withLock
+            val sdk = withContext(Dispatchers.IO) {
+                dataDir.mkdirs()
+                createFedimintSdk(dataDir.path, mnemonic)
+            }
+            _sdk.value = sdk
+            watchStatuses(sdk)
         }
     }
 
@@ -116,17 +123,24 @@ class WalletSession(
     }
 
     /**
-     * Whether this wallet's seed was restored from a phrase rather than
-     * created here. A restored seed may already hold funds in a federation,
-     * so joining one should be a recovery ([recover]), not a plain [join]:
-     * a plainly joined federation can never be recovered afterwards.
+     * Where this wallet's seed came from; see [SeedOrigin] for why an unknown
+     * origin is treated like a restore when joining.
      */
-    var isRestored: Boolean
-        get() = prefs.getBoolean(KEY_RESTORED, false)
-        private set(value) = prefs.edit().putBoolean(KEY_RESTORED, value).apply()
+    val seedOrigin: SeedOrigin
+        get() = SeedOrigin.fromStored(prefs.getString(KEY_SEED_ORIGIN, null), prefs.getBoolean(KEY_RESTORED_LEGACY, false))
 
-    fun markRestored() {
-        isRestored = true
+    /**
+     * Records where the seed [open] is about to persist comes from. Call it
+     * before [open], and it is written synchronously (`commit`, not `apply`):
+     * a process death between the two then leaves the record ahead of the
+     * seed, never behind it. A record with no seed is harmless; the next
+     * create or restore overwrites it.
+     */
+    suspend fun recordSeedOrigin(origin: SeedOrigin) {
+        require(origin != SeedOrigin.UNKNOWN) { "record a known origin" }
+        withContext(Dispatchers.IO) {
+            check(prefs.edit().putString(KEY_SEED_ORIGIN, origin.name).commit()) { "couldn't save the wallet's setup" }
+        }
     }
 
     fun select(id: FederationId) {
@@ -299,7 +313,10 @@ class WalletSession(
     companion object {
         private const val TAG = "WalletSession"
         private const val KEY_BACKED_UP = "backed_up"
-        private const val KEY_RESTORED = "restored"
+        private const val KEY_SEED_ORIGIN = "seed_origin"
+
+        /** Written by an earlier build, only for restores, and only after the seed. Read, never written. */
+        private const val KEY_RESTORED_LEGACY = "restored"
         private const val KEY_SELECTED = "selected_federation"
 
         /**
