@@ -55,10 +55,11 @@ When adding new features or fixing bugs, it's important to add test cases to cov
 ## Android E2E (Appium)
 
 `js/android/integration-tests` tests the SDK on a real Android runtime, driven via
-[Appium](https://appium.io/) against the example app in `android/app`. This tests the SDK, not
-the example app — `android/app` is one screen that calls every export of `rust/fedimint-sdk`'s
-`uniffi` feature through the generated Kotlin bindings, not a product with its own UI
-surface. What it adds over `android-sdk.yaml`, which compiles the same app, is a running
+[Appium](https://appium.io/) against the SDK harness in the debug build of `android/app`. This
+tests the SDK, not the wallet: `android/app` is a reference wallet, and the suite drives its
+debug-only harness (`harness.HarnessActivity`), one screen that calls every export of
+`rust/fedimint-sdk`'s `uniffi` feature through the generated Kotlin bindings. The wallet's own
+flows are not covered by it. What it adds over `android-sdk.yaml`, which compiles the same app, is a running
 device: the bindings load, the native library is mapped, and the calls execute. Tests are
 organized by SDK capability (mirroring `js/web/integration-tests/src/services/*.test.ts`'s
 naming), not by UI flow.
