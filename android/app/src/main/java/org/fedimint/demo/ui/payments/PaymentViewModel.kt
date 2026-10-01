@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.Timestamp
 import org.fedimint.sdk.Exception as SdkException
 
@@ -22,6 +23,15 @@ import org.fedimint.sdk.Exception as SdkException
  * Subclasses supply the SDK calls; this class runs them one at a time, turns
  * failures into messages, follows the operation's states, and releases every
  * SDK handle it was given when the screen goes away.
+ *
+ * Two rules keep money from moving twice (see android/app/SECURITY.md):
+ *
+ * - An operation is recorded ([UiState.operationId]) the moment the SDK call
+ *   that creates it returns, not when its first state update arrives. From
+ *   then on the inputs stay locked, whatever happens to the observation.
+ * - A quote is single use and the SDK consumes it even on a failed send, so a
+ *   failed [execute] drops the review: the next tap fetches a fresh quote for
+ *   the same inputs instead of resubmitting a spent one.
  */
 abstract class PaymentViewModel : ViewModel() {
     /** A quote the user must approve before anything is sent. */
@@ -36,9 +46,16 @@ abstract class PaymentViewModel : ViewModel() {
         val review: Review? = null,
         val output: Output? = null,
         val progress: OpProgress? = null,
+        /** The operation this screen created, set as soon as the SDK returned it. */
+        val operationId: OperationId? = null,
+        /** Following the operation's updates failed. The operation itself is unaffected. */
+        val followFailed: Boolean = false,
     ) {
         /** Once an operation exists, the inputs are locked: this screen is now following it. */
-        val started: Boolean get() = progress != null || output != null
+        val started: Boolean get() = operationId != null || progress != null || output != null
+
+        /** The operation exists but this screen can't show its state: point to it instead. */
+        val needsActivityLink: Boolean get() = operationId != null && (progress == null || followFailed)
     }
 
     protected val mutableState = MutableStateFlow(UiState())
@@ -49,23 +66,51 @@ abstract class PaymentViewModel : ViewModel() {
     /** Registers an SDK handle to be closed with this ViewModel. */
     protected fun <T : AutoCloseable> T.owned(): T = also { synchronized(handles) { handles += it } }
 
-    /** Runs one step, unless one is already running. Failures land in [UiState.error]. */
-    protected fun step(block: suspend () -> Unit) {
+    /**
+     * Runs one step, unless one is already running. Failures land in
+     * [UiState.error], after [onFailure] has had a chance to adjust the state.
+     */
+    protected fun step(onFailure: () -> Unit = {}, block: suspend () -> Unit) {
         if (mutableState.value.working) return
         mutableState.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
             val error = attempt { block() }.exceptionOrNull()
-            // The screen shows a message chosen by error code; the SDK's own reason goes to the log.
-            error?.let { Log.w(TAG, "payment step failed: ${describe(it)}", it) }
+            if (error != null) {
+                // The screen shows a message chosen by error code; the SDK's own reason goes to the log.
+                Log.w(TAG, "payment step failed: ${describe(error)}", error)
+                onFailure()
+            }
             mutableState.update { it.copy(working = false, error = error?.let(::userMessage)) }
         }
     }
 
-    /** Mirrors an operation's states into [UiState.progress] until it is final. */
+    /**
+     * Creates an operation: [create] makes the SDK call (a send, a receive)
+     * and returns the new operation's id, after starting to follow it.
+     *
+     * On success the id is recorded straight away, which locks the screen.
+     * On failure any review is dropped: a send has consumed its quote either
+     * way, so approving again must start from a fresh one.
+     */
+    protected fun execute(create: suspend () -> OperationId) = step(
+        onFailure = { mutableState.update { it.copy(review = null) } },
+    ) {
+        val id = create()
+        mutableState.update { it.copy(review = null, operationId = id) }
+    }
+
+    /**
+     * Mirrors an operation's states into [UiState.progress] until it is final.
+     * If the updates fail, the operation is still recorded; the screen offers
+     * the activity entry rather than anything that could send again.
+     */
     protected fun <S> follow(states: Flow<S>, describe: (S) -> OpProgress) {
         viewModelScope.launch {
             states
-                .catch { e -> mutableState.update { it.copy(error = userMessage(e)) } }
+                .catch { e ->
+                    Log.w(TAG, "following an operation failed: ${describe(e)}", e)
+                    mutableState.update { it.copy(followFailed = true, error = userMessage(e)) }
+                }
                 .collect { s -> mutableState.update { it.copy(progress = describe(s)) } }
         }
     }

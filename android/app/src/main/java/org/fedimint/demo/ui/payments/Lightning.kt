@@ -12,6 +12,7 @@ import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.ui.common.shortId
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
+import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.LnQuote
 
 // ── Receive ──────────────────────────────────────────────────────────────
@@ -19,17 +20,18 @@ import org.fedimint.sdk.LnQuote
 class LightningReceiveViewModel(private val payments: Payments, private val federationId: FederationId) :
     PaymentViewModel() {
 
-    fun create(sats: ULong, description: String) = step {
+    fun create(sats: ULong, description: String) = execute {
         val handle = payments.lightningReceive(federationId, sats * 1_000uL, description)
         val operation = handle.operation.owned()
         // Upper case packs into a denser QR code; BOLT11 is case-insensitive.
         mutableState.update { it.copy(output = Output("Lightning invoice", handle.invoice, handle.invoice.uppercase())) }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit) {
+fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { LightningReceiveViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
@@ -49,6 +51,7 @@ fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit) {
         }
         state.output?.let { OutputCard(it) }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
@@ -83,18 +86,19 @@ class LightningSendViewModel(private val payments: Payments, private val federat
         mutableState.update { it.copy(review = review) }
     }
 
-    fun pay() = step {
-        // A quote is single use: take it, so a second tap can't resubmit it.
-        val q = quote ?: return@step
+    fun pay() = execute {
+        // A quote is single use, and spent even by a failed send: take it, so
+        // nothing can submit it twice. A failure drops the review (execute).
+        val q = checkNotNull(quote) { "That quote was already used. Review the payment again." }
         quote = null
         val operation = payments.lightningSend(federationId, q).owned()
-        mutableState.update { it.copy(review = null) }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit) {
+fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { LightningSendViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
     var invoice by rememberSaveable { mutableStateOf("") }
@@ -120,6 +124,7 @@ fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit) {
             }
         }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }

@@ -11,6 +11,7 @@ import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
+import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.OnchainQuote
 
 // ── Receive ──────────────────────────────────────────────────────────────
@@ -23,24 +24,26 @@ class OnchainReceiveViewModel(private val payments: Payments, private val federa
         newAddress()
     }
 
-    fun newAddress() = step {
+    fun newAddress() = execute {
         val handle = payments.onchainReceive(federationId)
         val operation = handle.operation.owned()
         mutableState.update {
             it.copy(output = Output("Deposit address", handle.address, qr = "bitcoin:${handle.address}"))
         }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun OnchainReceiveScreen(federationId: FederationId, onBack: () -> Unit) {
+fun OnchainReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { OnchainReceiveViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
 
     PaymentScreen("Deposit bitcoin", onBack) {
         state.output?.let { OutputCard(it) }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         if (state.output == null && !state.working) PrimaryButton("Try again", vm::newAddress, enabled = true, working = false)
         DoneButton(state, onBack)
@@ -73,17 +76,17 @@ class OnchainSendViewModel(private val payments: Payments, private val federatio
         mutableState.update { it.copy(review = review) }
     }
 
-    fun send() = step {
-        val q = quote ?: return@step
+    fun send() = execute {
+        val q = checkNotNull(quote) { "That quote was already used. Review the send again." }
         quote = null
         val operation = payments.onchainSend(federationId, q).owned()
-        mutableState.update { it.copy(review = null) }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit) {
+fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { OnchainSendViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
     var address by rememberSaveable { mutableStateOf("") }
@@ -115,6 +118,7 @@ fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit) {
             }
         }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }

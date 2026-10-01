@@ -56,6 +56,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
+import org.fedimint.sdk.OperationId
 
 /** The frame every payment screen shares: title, back, scrolling content that clears the keyboard. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -258,5 +259,29 @@ private const val MAX_QR_CHARS = 1_500
 fun DoneButton(state: PaymentViewModel.UiState, onDone: () -> Unit) {
     if (state.progress?.settled == true) {
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+    }
+}
+
+/**
+ * Shown once an operation exists but this screen has no state for it yet, or
+ * lost its updates. It points at the existing operation; it never offers
+ * anything that could send again.
+ */
+@Composable
+fun SubmittedNotice(state: PaymentViewModel.UiState, onOpenOperation: (OperationId) -> Unit) {
+    val id = state.operationId ?: return
+    if (!state.needsActivityLink) return
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                if (state.followFailed) {
+                    "This was submitted, but its live status couldn't be loaded here. It carries on regardless."
+                } else {
+                    "Submitted. Waiting for its first status update…"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            OutlinedButton(onClick = { onOpenOperation(id) }) { Text("View in Activity") }
+        }
     }
 }
