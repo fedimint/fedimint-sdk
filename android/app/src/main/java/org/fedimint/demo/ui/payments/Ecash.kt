@@ -15,6 +15,7 @@ import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.EcashQuote
 import org.fedimint.sdk.FederationId
+import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.Notes
 
 // ── Send ─────────────────────────────────────────────────────────────────
@@ -41,21 +42,22 @@ class EcashSendViewModel(private val payments: Payments, private val federationI
         mutableState.update { it.copy(review = Review(rows, sats(q.total()), expiry(q.expiresAt()))) }
     }
 
-    fun send() = step {
-        val q = quote ?: return@step
+    fun send() = execute {
+        val q = checkNotNull(quote) { "That quote was already used. Review it again." }
         quote = null
         val handle = payments.ecashSend(federationId, q)
         val notes = handle.notes.owned()
         val operation = handle.operation.owned()
         // `display()` is the deliberate way to take notes out as text; the
         // handle never prints them. They are a bearer instrument, like cash.
-        mutableState.update { it.copy(review = null, output = Output("Ecash notes", notes.display())) }
+        mutableState.update { it.copy(output = Output("Ecash notes", notes.display())) }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit) {
+fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { EcashSendViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
@@ -83,6 +85,7 @@ fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit) {
             )
         }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
@@ -116,17 +119,17 @@ class EcashReceiveViewModel(private val payments: Payments, private val federati
         mutableState.update { it.copy(review = Review(listOf("Value" to value), value, expiresAtMillis = null)) }
     }
 
-    fun redeem() = step {
-        val n = notes ?: return@step
+    fun redeem() = execute {
+        val n = checkNotNull(notes) { "Check the notes again." }
         notes = null
         val operation = payments.ecashReceive(federationId, n).owned()
-        mutableState.update { it.copy(review = null) }
         follow(Payments.states(operation::updates) { it.next() }) { it.progress() }
+        operation.id()
     }
 }
 
 @Composable
-fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit) {
+fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
     val vm = appViewModel { EcashReceiveViewModel(it.payments, federationId) }
     val state by vm.state.collectAsStateWithLifecycle()
     val notesText by vm.notesText.collectAsStateWithLifecycle()
@@ -143,6 +146,7 @@ fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit) {
             }
         }
         state.progress?.let { ProgressCard(it) }
+        SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
