@@ -8,6 +8,9 @@ records the decisions behind its structure and why each alternative was turned d
 so reviewers can check the reasoning and later contributors can extend it without
 re-arguing it.
 
+**Before changing anything that shows, stores or moves the recovery phrase, ecash
+notes or the seed's origin, read [SECURITY.md](SECURITY.md).**
+
 ## Constraints the design has to respect
 
 - **One SDK instance per process.** `createFedimintSdk` takes an exclusive lock on
@@ -143,7 +146,11 @@ pinned Kotlin version.
 ### 8. Handling recovery phrases
 
 - The Backup, Verify and Restore screens set `FLAG_SECURE` (`SecureScreen()`): no
-  screenshots, no screen recording, and a blank recent-apps thumbnail.
+  screenshots, no screen recording, and a blank recent-apps thumbnail. The flag
+  belongs to the window, which all screens share, and navigation overlaps them
+  (Verify is shown before Backup is disposed), so it is counted per window and
+  cleared only when the last secure screen leaves (`SecureFlagCounter`). The rules
+  for every sensitive value are in [SECURITY.md](SECURITY.md).
 - The phrase is held only in ViewModel memory, never in `rememberSaveable` or saved
   instance state, because Android can write saved state to disk.
 - Seed text fields use a password keyboard type with autocorrect off, so most
@@ -254,6 +261,14 @@ so a new payment method only adds the SDK calls.
   SDK refuses with `QUOTE_EXPIRED`. Editing the input discards the quote. A quote
   is single use, so the ViewModel takes it out of its field before sending, and a
   double tap can't submit it twice.
+- **An operation is recorded the moment it exists** (`PaymentViewModel.execute`).
+  When the send (or receive) returns, its operation id is stored and the inputs
+  lock, before any state update arrives. If the first update is slow or the
+  updates fail, the screen points to the operation in Activity and never offers a
+  new send for it.
+- **A failed send drops its review.** The SDK spends a quote even on a failed send
+  (expired, changed, insufficient balance), so the review disappears with the
+  error, and Review fetches a fresh quote for the same inputs.
 - **A receive hands something to the other party, then follows the operation.**
   Lightning shows an invoice, on-chain a deposit address, ecash send the notes.
   Each is shown as a QR code plus a copy button. The live state comes from the
@@ -298,6 +313,12 @@ so a new payment method only adds the SDK calls.
   brings in-flight rows up to date when it builds a page, so a refresh is also how
   a pending row picks up its latest status. No app-side cache: the SDK's log is
   already persistent, and a second copy could drift from it.
+- **Refresh and paging can overlap, so loads carry a generation.** A refresh starts
+  a new one and cancels any page in flight. A page is applied only if its
+  generation is current and it continues from the cursor it asked for, and rows
+  are unique by operation id (the list's keys require it). `ActivityViewModel`
+  takes the page loader as a function, so this is unit tested
+  (`ActivityViewModelTest`).
 - **Home shows the newest five rows and reloads them whenever the balance moves**,
   because money arriving or leaving is when a row appears or settles. It uses its
   own `balanceUpdates()` subscription, since each one is an independent cursor.
@@ -323,11 +344,13 @@ so a new payment method only adds the SDK calls.
 - **A restored wallet joins by recovering.** The SDK's docs are explicit: after a
   seed is restored, a federation that may hold its funds must be joined with
   `recover()`, and a plain `join()` can never be turned into a recovery later
-  (`resumeRecovery` refuses it). The app records "restored" when the seed is
-  restored (app state, like "backed up"). On a restored wallet, the join screen
-  makes **Join and recover funds** the main action and leaves plain join as a
-  secondary "I never used it" option. A wallet created on this device only ever
-  sees Join.
+  (`resumeRecovery` refuses it). The app records the seed's origin (`SeedOrigin`:
+  created or restored) **before** the SDK persists the seed, synchronously
+  (`commit`), so a crash can't leave a restored seed recorded as fresh. A missing
+  record (an install from before it existed, or an interrupted setup) is
+  "unknown" and treated like a restore. Unless the seed is known to be created
+  here, the join screen makes **Join and recover funds** the main action and
+  leaves plain join as a secondary "I never used it" option.
 - **A failed recover may still have joined.** The SDK can report an error after
   the federation is joined and committed to recovering. It then shows up
   quarantined, and Reopen resumes the recovery. The error message says so, and the
@@ -435,7 +458,7 @@ cd android && ./gradlew :app:installDebug
 2. **Join:** tap it, then "Use the Mutinynet test federation", then Preview. It
    shows mutinynet-05-alephbft on Signet with 4 guardians. Preview can take a
    minute on a loaded machine; a TIMEOUT error just means try again.
-3. Tap Join. Home shows the federation name, a balance (0 sats), Signet, Connected,
+3. Tap Join. Home shows the federation name, a balance (0 sats), Signet, Open,
    and a test-network note.
 4. **Capabilities:** Receive and Send each open a sheet listing only the methods
    this federation supports (here Lightning, Ecash and On-chain; they're wired up in
@@ -456,7 +479,7 @@ Join the Mutinynet federation first (step 2) if the wallet has none.
 3. **Close:** confirm the dialog. The status becomes Closed, and the actions change
    to Reopen and Remove. Back on Home: balance "—", a "Closed on this device"
    note, and Send and Receive disabled.
-4. **Reopen:** the status returns to Connected (this contacts the guardians, so it
+4. **Reopen:** the status returns to Open (this contacts the guardians, so it
    can take a while), and Home shows the balance again.
 5. **Show on Home:** returns to Home with this federation selected. It's useful
    with two or more federations.
