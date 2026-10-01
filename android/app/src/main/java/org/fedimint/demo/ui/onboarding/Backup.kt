@@ -72,7 +72,7 @@ class BackupViewModel(session: WalletSession) : ViewModel() {
 }
 
 /**
- * Shows the recovery phrase.
+ * Shows the recovery phrase. Sensitive: see android/app/SECURITY.md.
  *
  * During onboarding it asks the user to confirm they wrote it down before
  * moving on. Later, from Home's menu ([onBack] given), it is a way to see the
