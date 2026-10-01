@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -42,8 +43,8 @@ import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.ui.common.relativeTime
 import org.fedimint.demo.ui.common.userMessage
-import org.fedimint.demo.wallet.History
 import org.fedimint.sdk.ActivityItem
+import org.fedimint.sdk.ActivityPage
 import org.fedimint.sdk.ActivityStatus
 import org.fedimint.sdk.Cursor
 import org.fedimint.sdk.Direction
@@ -55,8 +56,16 @@ import org.fedimint.sdk.OperationKind
  * The federation's history, newest first, a page at a time. The next page
  * loads as the user nears the end of the list; pulling down starts over from
  * the first page, which is also how pending rows get their latest status.
+ *
+ * Refresh and paging can overlap, so every load carries the generation it was
+ * started in. A refresh starts a new generation and cancels any page still
+ * loading; a result lands only if its generation is current and, for a later
+ * page, it continues from the cursor it was asked for. Rows are also kept
+ * unique by operation id, which the list's keys require.
+ *
+ * Takes the page loader rather than the SDK, so the rules are testable.
  */
-class ActivityViewModel(private val history: History, private val federationId: FederationId) : ViewModel() {
+class ActivityViewModel(private val load: suspend (cursor: Cursor?) -> ActivityPage) : ViewModel() {
     data class UiState(
         val items: List<ActivityItem> = emptyList(),
         /** The cursor for the page after [items], or null once the end is reached. */
@@ -72,30 +81,60 @@ class ActivityViewModel(private val history: History, private val federationId: 
     private val _state = MutableStateFlow(UiState())
     val state = _state.asStateFlow()
 
+    private var generation = 0
+    private var refreshJob: Job? = null
+    private var moreJob: Job? = null
+
     init {
         refresh()
     }
 
     fun refresh() {
         if (_state.value.refreshing) return
-        _state.update { it.copy(refreshing = true, error = null) }
-        viewModelScope.launch {
-            attempt { history.page(federationId) }
-                .onSuccess { page -> _state.update { UiState(items = page.items, next = page.next, loaded = true) } }
-                .onFailure { e -> _state.update { it.copy(refreshing = false, loaded = true, error = userMessage(e)) } }
+        val gen = ++generation
+        moreJob?.cancel()
+        _state.update { it.copy(refreshing = true, loadingMore = false, error = null) }
+        refreshJob = viewModelScope.launch {
+            attempt { load(null) }
+                .onSuccess { page ->
+                    if (gen != generation) return@onSuccess
+                    _state.value = UiState(items = page.items.distinctBy { it.operationId }, next = page.next, loaded = true)
+                }
+                .onFailure { e ->
+                    if (gen != generation) return@onFailure
+                    _state.update { it.copy(refreshing = false, loaded = true, error = userMessage(e)) }
+                }
         }
     }
 
     fun loadMore() {
-        val cursor = _state.value.next ?: return
-        if (_state.value.loadingMore || _state.value.refreshing) return
+        val s = _state.value
+        val cursor = s.next ?: return
+        if (s.loadingMore || s.refreshing) return
+        val gen = generation
         _state.update { it.copy(loadingMore = true) }
-        viewModelScope.launch {
-            attempt { history.page(federationId, cursor) }
+        moreJob = viewModelScope.launch {
+            attempt { load(cursor) }
                 .onSuccess { page ->
-                    _state.update { it.copy(items = it.items + page.items, next = page.next, loadingMore = false) }
+                    _state.update {
+                        // Stale: a refresh happened, or another page already continued from here.
+                        if (gen != generation) {
+                            it
+                        } else if (it.next != cursor) {
+                            it.copy(loadingMore = false)
+                        } else {
+                            it.copy(
+                                items = (it.items + page.items).distinctBy { item -> item.operationId },
+                                next = page.next,
+                                loadingMore = false,
+                            )
+                        }
+                    }
                 }
-                .onFailure { e -> _state.update { it.copy(loadingMore = false, error = userMessage(e)) } }
+                .onFailure { e ->
+                    if (gen != generation) return@onFailure
+                    _state.update { it.copy(loadingMore = false, error = userMessage(e)) }
+                }
         }
     }
 }
@@ -103,7 +142,7 @@ class ActivityViewModel(private val history: History, private val federationId: 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActivityScreen(federationId: FederationId, onBack: () -> Unit, onOpen: (OperationId) -> Unit) {
-    val vm = appViewModel { ActivityViewModel(it.history, federationId) }
+    val vm = appViewModel { c -> ActivityViewModel { cursor -> c.history.page(federationId, cursor) } }
     val state by vm.state.collectAsStateWithLifecycle()
     val list = rememberLazyListState()
 
