@@ -160,8 +160,8 @@ impl Onchain {
     /// first address has been paid; the address is not handed out again, and
     /// the operation already following it is unaffected. Right after such
     /// an address's deposit is claimed, the same wallet may still be
-    /// deriving its next address: the call waits for it within the usual
-    /// contact timeout and is [`Timeout`](crate::ErrorCode::Timeout) past
+    /// deriving its next address: the call waits for it using a dedicated
+    /// 120-second scanner wait timeout, and is [`Timeout`](crate::ErrorCode::Timeout) past
     /// it, never a repeat of the funded address.
     pub async fn receive(&self) -> Result<OnchainReceive> {
         let federation = &self.inner.federation;
