@@ -19,7 +19,9 @@ val FederationStatus.canTransact: Boolean
     get() = this is FederationStatus.Running
 
 fun FederationStatus.label(): String = when (this) {
-    FederationStatus.Running -> "Connected"
+    // Running is the local client's lifecycle (open, handle live), not whether
+    // the guardians are reachable right now; live connectivity isn't shown yet.
+    FederationStatus.Running -> "Open"
     FederationStatus.Recovering -> "Recovering"
     is FederationStatus.Quarantined -> "Needs attention"
     FederationStatus.Closed -> "Closed"
