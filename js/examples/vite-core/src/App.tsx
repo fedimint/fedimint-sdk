@@ -185,7 +185,12 @@ const AppContent = () => {
         </div>
       </header>
       <main>
-        <WalletStatus open={open} checkIsOpen={checkIsOpen} balance={balance} />
+        <WalletStatus
+          open={open}
+          checkIsOpen={checkIsOpen}
+          balance={balance}
+          wallet={wallet}
+        />
         <JoinFederation open={open} checkIsOpen={checkIsOpen} />
         <GenerateLightningInvoice />
         <RedeemEcash />
@@ -611,19 +616,41 @@ const WalletStatus = ({
   open,
   checkIsOpen,
   balance,
+  wallet,
 }: {
   open: boolean
   checkIsOpen: () => void
   balance: number
+  wallet: FedimintWallet | null
 }) => {
+  const [error, setError] = useState<string | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleCheck = () => {
+    if (!wallet || typeof wallet.isOpen !== 'function' || !wallet.isOpen()) {
+      setError('You must join a federation first.')
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      timeoutRef.current = setTimeout(() => setError(null), 3000)
+    } else {
+      setError(null)
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      checkIsOpen()
+    }
+  }
+
   return (
     <div className="section">
       <h3>Wallet Status</h3>
       <div className="row">
         <strong>Is Wallet Open?</strong>
         <div>{open ? 'Yes' : 'No'}</div>
-        <button onClick={() => checkIsOpen()}>Check</button>
+        <button onClick={handleCheck}>Check</button>
       </div>
+      {error && (
+        <div className="error" style={{ color: 'red', marginTop: '8px' }}>
+          {error}
+        </div>
+      )}
       <div className="row">
         <strong>Balance:</strong>
         <div className="balance">{balance}</div>
