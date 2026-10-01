@@ -38,6 +38,7 @@ import org.fedimint.demo.ui.common.SecureScreen
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.wallet.SeedOrigin
 import org.fedimint.demo.wallet.WalletSession
 import org.fedimint.sdk.Mnemonic
 
@@ -73,11 +74,12 @@ class RestoreViewModel(private val session: WalletSession) : ViewModel() {
             attempt {
                 // Validates the words (count, wordlist, checksum) before any storage is touched.
                 val mnemonic = Mnemonic.fromWords(s.words)
+                // Before the seed is persisted, so no interruption can leave a restored
+                // seed recorded as fresh (federations joined later must be recovered).
+                session.recordSeedOrigin(SeedOrigin.RESTORED)
                 session.open(mnemonic)
                 // They typed the phrase in, so they demonstrably have it: no backup step.
                 session.markBackedUp()
-                // Federations joined from here on should be recovered, not joined fresh.
-                session.markRestored()
             }
                 .onSuccess { _state.update { it.copy(working = false, restored = true) } }
                 .onFailure { e -> _state.update { it.copy(working = false, error = userMessage(e)) } }

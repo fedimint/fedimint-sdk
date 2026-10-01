@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.wallet.SeedOrigin
 import org.fedimint.demo.wallet.WalletSession
 
 class WelcomeViewModel(private val session: WalletSession) : ViewModel() {
@@ -47,7 +48,11 @@ class WelcomeViewModel(private val session: WalletSession) : ViewModel() {
         if (_state.value.working) return
         _state.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
-            attempt { session.open() }
+            attempt {
+                // Recorded before the seed exists; see WalletSession.recordSeedOrigin.
+                session.recordSeedOrigin(SeedOrigin.CREATED)
+                session.open()
+            }
                 .onSuccess { _state.update { it.copy(working = false, created = true) } }
                 .onFailure { e -> _state.update { it.copy(working = false, error = userMessage(e)) } }
         }

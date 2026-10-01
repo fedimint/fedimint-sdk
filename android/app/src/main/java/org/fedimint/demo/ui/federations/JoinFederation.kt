@@ -75,10 +75,12 @@ class JoinFederationViewModel(private val session: WalletSession) : ViewModel() 
     val state = _state.asStateFlow()
 
     /**
-     * A restored seed may already have funds in this federation, and only a
-     * recovery finds them; a plain join can't be turned into one later.
+     * Whether to lead with recovery: true unless the seed is known to have
+     * been created on this device (see SeedOrigin). A seed that was used
+     * before may have funds here, only a recovery finds them, and a plain join
+     * can't be turned into one later.
      */
-    val restoredWallet: Boolean = session.isRestored
+    val recoverByDefault: Boolean = session.seedOrigin.recoverByDefault
 
     /** Editing the code invalidates a preview of the old one. */
     fun onInviteChange(text: String) {
@@ -192,10 +194,10 @@ fun JoinFederationScreen(onBack: () -> Unit, onJoined: (FederationId, recovering
             } else {
                 PreviewCard(preview)
                 Spacer(Modifier.height(16.dp))
-                if (vm.restoredWallet) {
+                if (vm.recoverByDefault) {
                     Text(
-                        "You restored this wallet from a recovery phrase. Recovering scans this " +
-                            "federation for funds that belong to it. Sending and receiving unlock " +
+                        "If this wallet's recovery phrase was used with this federation before, " +
+                            "recovering scans it for those funds. Sending and receiving unlock " +
                             "when the scan finishes.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
