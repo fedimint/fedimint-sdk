@@ -184,6 +184,40 @@ directory; across process restarts, which is the normal case, there is nothing
 to do. `.storageInUse` is the _other_ case — a second opener while the first
 still holds the lock — and that one throws immediately rather than waiting.
 
+### Cancelling a `Task` does not cancel an SDK call
+
+Every export is `async`, but cancelling the Swift `Task` awaiting one does
+nothing to the call itself: it runs to completion and its result is
+delivered. This is a gap in the Swift that UniFFI 0.32 generates — the Rust
+side can cancel, the generated Swift never asks it to — and the fix belongs
+upstream rather than in a local patch to generated code. Until then, treat a
+call as running once started; a timeout can stop *waiting* for one, not stop
+it.
+
+### Logs
+
+The SDK routes its own logs, and those of everything underneath it, to
+unified logging under the subsystem `org.fedimint.sdk`, starting at the first
+`createFedimintSdk`:
+
+```sh
+log stream --predicate 'subsystem == "org.fedimint.sdk"' --level debug
+# or, after the fact
+log show --last 10m --predicate 'subsystem == "org.fedimint.sdk"'
+```
+
+The default filter is `warn,fm=info,fedimint=info`. To change it, set
+`FEDIMINT_SDK_LOG` (same syntax as `RUST_LOG`) in the Xcode scheme's
+environment, with `xcrun simctl launch --setenv FEDIMINT_SDK_LOG=debug …`, or in
+the shell for `swift test`. The filter in force is logged once at startup as
+`logging to os_log filter=…`. Lines below `info` are logged as private, so
+they show as `<private>` unless the device has a logging profile that reveals
+them.
+
+A Rust panic is logged there too, with its thread, file and line, as a fault.
+**It still terminates the app**: the release build aborts on panic, by design.
+The log line is what tells you where.
+
 ## Building
 
 The native library and the Swift are **generated**, not committed. Building them

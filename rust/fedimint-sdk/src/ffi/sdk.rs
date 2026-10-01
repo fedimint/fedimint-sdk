@@ -32,6 +32,11 @@ pub async fn create_fedimint_sdk(
         crate::android::init_logging();
         crate::android::publish_context();
     }
+    // A Swift host cannot install a Rust log subscriber either, so on Apple targets the SDK
+    // installs one, with a panic hook, at the same point. Nothing needs publishing there. See
+    // `crate::apple`.
+    #[cfg(target_vendor = "apple")]
+    crate::apple::init_logging();
 
     #[cfg(not(target_family = "wasm"))]
     let storage = Storage::at(&data_dir)?;

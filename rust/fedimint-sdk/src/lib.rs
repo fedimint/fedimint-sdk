@@ -293,9 +293,9 @@
 //   indexing, or slicing something that could be absent, since a panic there takes the whole
 //   host application down rather than unwinding into a catchable error.
 
-// No unsafe code, and on every target but one that is absolute.
+// No unsafe code, and on every target but Android's and Apple's that is absolute.
 //
-// Android is the exception, and only because it has to be: `src/android.rs`
+// Android is the first exception, and only because it has to be: `src/android.rs`
 // hands the platform's `JavaVM` and `Context` to `ndk_context` over JNI, so
 // that anything reading Android's DNS configuration finds them rather than
 // aborting the host app (see that module for the failure it prevents).
@@ -303,17 +303,34 @@
 // no safe formulation, and `forbid` cannot be opted out of even locally —
 // that is exactly what distinguishes it from `deny`.
 //
-// So the exception is scoped to the target that needs it instead of being
+// So the exception is scoped to the targets that need it instead of being
 // spent crate-wide: every other target keeps the guarantee that no module
-// *can* opt in, and on Android the guarantee weakens only to "no module opts
-// in without saying so". `deny` still fails the build on accidental unsafe
-// there, exactly as `forbid` did; what it permits is a deliberate,
-// module-scoped `allow(unsafe_code)`, and there is one, in `src/android.rs`.
-// A second one should be argued for on its own merits rather than treated as
-// precedent. Note that the module is itself `#[cfg(target_os = "android")]`,
-// so on every other target its `allow` does not exist to be honoured.
-#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
-#![cfg_attr(target_os = "android", deny(unsafe_code))]
+// *can* opt in, and on Android and Apple the guarantee weakens only to "no
+// module opts in without saying so". `deny` still fails the build on
+// accidental unsafe there, exactly as `forbid` did; what it permits is a
+// deliberate, module-scoped `allow(unsafe_code)`, and there is one per
+// platform: `src/android.rs` and `src/apple.rs`. Each module is itself
+// `#[cfg]`-gated to its platform, so elsewhere its `allow` does not exist to
+// be honoured.
+//
+// Apple is the second exception, argued on its own merits rather than taken
+// as precedent. Under the release profile's `panic = "abort"`, a Rust panic
+// kills the host app, and on Apple targets it did so with no message, file
+// or line anywhere: the default hook writes to stderr, which a device
+// discards. `src/apple.rs` routes logging and the panic hook to os_log, and
+// os_log is only reachable through C — `os_log_with_type` is a macro, so it
+// is expanded in oslog_shim.c and called from Rust. The unsafe this permits
+// is the `extern "C"` declaration of, and calls into, those two shim
+// functions plus `os_log_create` and `os_log_type_enabled` from libSystem,
+// and the `Send`/`Sync` assertion on the handle they share, which the module
+// caches privately. No raw pointer is published to another crate through a
+// global slot, and there is no `#[no_mangle]` export: strictly narrower than
+// Android's exception.
+#![cfg_attr(
+    not(any(target_os = "android", target_vendor = "apple")),
+    forbid(unsafe_code)
+)]
+#![cfg_attr(any(target_os = "android", target_vendor = "apple"), deny(unsafe_code))]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
 // These attributes stay: dropping them does not surface leftover skeleton work, it surfaces
@@ -335,6 +352,11 @@ mod activity;
 // anything reads them.
 #[cfg(target_os = "android")]
 mod android;
+// Apple-only (iOS, and the macOS slice `swift test` runs against), and not part of the SDK
+// surface: os_log logging and a panic hook, so a panic under `panic = "abort"` leaves a
+// message, file and line behind rather than a bare `abort()` frame.
+#[cfg(target_vendor = "apple")]
+mod apple;
 mod db;
 mod ecash;
 mod error;
@@ -343,6 +365,9 @@ mod federation;
 mod ffi;
 mod inputs;
 mod lightning;
+// What the platform log writers in `android` and `apple` share.
+#[cfg(any(target_os = "android", target_vendor = "apple"))]
+mod logging;
 mod meta;
 mod modules;
 mod onchain;

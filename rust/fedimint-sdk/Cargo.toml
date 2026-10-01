@@ -163,6 +163,19 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
     "std",
 ] }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Logging to os_log (src/apple/oslog.rs), for the same reason as on Android: a
+# Swift host cannot install a Rust subscriber, so on Apple targets the SDK
+# installs one itself. As there, neither adds a crate or a feature to the
+# build — fedimint-logging already enables `fmt`, `env-filter` and the `log`
+# bridge underneath us — they are named so this crate states what it relies on.
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+    "env-filter",
+    "fmt",
+    "std",
+] }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 # Same version as the native entry above; see the `uniffi` feature for the split.
 uniffi = { version = "0.32.0", optional = true, features = ["wasm-unstable-single-threaded"] }
@@ -190,7 +203,7 @@ web-sys = { version = "0.3.83", features = [
 ] }
 
 [build-dependencies]
-# Only ever invoked on Android, to compile sdallocx_stub.c; see build.rs.
+# Compiles sdallocx_stub.c on Android and oslog_shim.c on Apple targets; see build.rs.
 cc = "1"
 
 # Tuned for the artifact this crate ships as on mobile: the `cdylib` goes
