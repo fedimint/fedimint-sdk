@@ -156,12 +156,30 @@ private fun WalletNavHost(start: Any, nav: NavHostController = rememberNavContro
             val route = entry.toRoute<OperationDetail>()
             OperationDetailScreen(route.federationId, route.operationId, nav::popBackStack)
         }
-        composable<LightningReceive> { LightningReceiveScreen(it.toRoute<LightningReceive>().federationId, nav::popBackStack) }
-        composable<LightningSend> { LightningSendScreen(it.toRoute<LightningSend>().federationId, nav::popBackStack) }
-        composable<EcashReceive> { EcashReceiveScreen(it.toRoute<EcashReceive>().federationId, nav::popBackStack) }
-        composable<EcashSend> { EcashSendScreen(it.toRoute<EcashSend>().federationId, nav::popBackStack) }
-        composable<OnchainReceive> { OnchainReceiveScreen(it.toRoute<OnchainReceive>().federationId, nav::popBackStack) }
-        composable<OnchainSend> { OnchainSendScreen(it.toRoute<OnchainSend>().federationId, nav::popBackStack) }
+        composable<LightningReceive> {
+            val id = it.toRoute<LightningReceive>().federationId
+            LightningReceiveScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<LightningSend> {
+            val id = it.toRoute<LightningSend>().federationId
+            LightningSendScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<EcashReceive> {
+            val id = it.toRoute<EcashReceive>().federationId
+            EcashReceiveScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<EcashSend> {
+            val id = it.toRoute<EcashSend>().federationId
+            EcashSendScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<OnchainReceive> {
+            val id = it.toRoute<OnchainReceive>().federationId
+            OnchainReceiveScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
+        composable<OnchainSend> {
+            val id = it.toRoute<OnchainSend>().federationId
+            OnchainSendScreen(id, nav::popBackStack, onOpenOperation = { op -> nav.navigate(OperationDetail(id, op)) })
+        }
         composable<JoinFederation> {
             JoinFederationScreen(
                 onBack = { nav.popBackStack() },

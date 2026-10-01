@@ -39,6 +39,12 @@ android {
         viewBinding = false
         compose = true
     }
+
+    // JVM unit tests (src/test) cover the wallet's state rules without a device.
+    // android.util.Log is a stub there; let it return defaults instead of throwing.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // The Kotlin side of `compileOptions` above, and it must agree with it. Set through the Kotlin
@@ -70,6 +76,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.core)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 
     // The SDK harness (src/debug) is AppCompat views, for the Appium suite. Debug only.
     debugImplementation(libs.androidx.appcompat)
