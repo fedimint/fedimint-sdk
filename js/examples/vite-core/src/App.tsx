@@ -632,6 +632,8 @@ const WalletStatus = ({
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
       timeoutRef.current = setTimeout(() => setError(null), 3000)
     } else {
+      setError(null)
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
       checkIsOpen()
     }
   }
