@@ -133,9 +133,10 @@ const DEFAULT_DIRECTIVES: &str = "warn,fm=info,fedimint=info";
 /// under the limit for os_log's own framing.
 const MAX_ENTRY_BYTES: usize = 1000;
 
-/// The least room [`write_with_private_tail`] leaves for the private part of
-/// an entry, however long the public part is, so a long header cannot shrink
-/// the private chunks to nothing.
+/// The least room [`write_with_private_tail`] requires for the private part of
+/// a combined entry. If the public part is longer than
+/// `MAX_ENTRY_BYTES - MIN_PRIVATE_CHUNK_BYTES`, public and private are emitted as
+/// separate entries so the combined size never exceeds [`MAX_ENTRY_BYTES`].
 const MIN_PRIVATE_CHUNK_BYTES: usize = 256;
 
 /// An `os_log_type_t`, as `<os/log.h>` numbers them.
@@ -243,14 +244,26 @@ fn write(kind: LogType, public: bool, message: &str) {
 ///
 /// Only the private part is split: each entry repeats the public part ahead
 /// of its piece, so every entry still says what it belongs to.
+///
+/// If `public` is longer than `MAX_ENTRY_BYTES - MIN_PRIVATE_CHUNK_BYTES`,
+/// combining them into one entry would either shrink the private chunks to
+/// near-zero or exceed [`MAX_ENTRY_BYTES`] and trigger hard OS-level truncation.
+/// In that case, `public` and `private` are emitted as separate entries.
 fn write_with_private_tail(kind: LogType, public: &str, private: &str) {
     let Some(log) = enabled_handle(kind) else {
         return;
     };
+    let max_public = MAX_ENTRY_BYTES.saturating_sub(MIN_PRIVATE_CHUNK_BYTES);
+    if public.len() > max_public {
+        write(kind, true, public);
+        if !private.is_empty() {
+            write(kind, false, private);
+        }
+        return;
+    }
+
     let head = c_string(public);
-    let room = MAX_ENTRY_BYTES
-        .saturating_sub(public.len())
-        .max(MIN_PRIVATE_CHUNK_BYTES);
+    let room = MAX_ENTRY_BYTES - public.len();
     let private = private.trim_end_matches('\n');
     // An empty payload still deserves its entry: `chunks` yields nothing for
     // it, so one empty piece stands in.
@@ -643,6 +656,15 @@ mod tests {
         write_with_private_tail(LogType::Fault, &header, &"é".repeat(1_500));
         write_with_private_tail(LogType::Fault, &header, "a \0 NUL and %s %n");
         write_with_private_tail(LogType::Fault, &header, "");
+    }
+
+    #[test]
+    fn writing_a_panic_with_long_header_does_not_crash() {
+        // A header longer than MAX_ENTRY_BYTES - MIN_PRIVATE_CHUNK_BYTES (744 bytes)
+        // routes public and private as separate entries so neither exceeds the entry limit.
+        let long_header = "h".repeat(800);
+        write_with_private_tail(LogType::Fault, &long_header, &"é".repeat(1_500));
+        write_with_private_tail(LogType::Fault, &long_header, "");
     }
 
     /// Records each formatted event with the privacy the real writer would
