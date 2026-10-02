@@ -191,7 +191,7 @@ nothing to the call itself: it runs to completion and its result is
 delivered. This is a gap in the Swift that UniFFI 0.32 generates — the Rust
 side can cancel, the generated Swift never asks it to — and the fix belongs
 upstream rather than in a local patch to generated code. Until then, treat a
-call as running once started; a timeout can stop *waiting* for one, not stop
+call as running once started; a timeout can stop _waiting_ for one, not stop
 it.
 
 ### Logs

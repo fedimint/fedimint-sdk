@@ -102,19 +102,21 @@ let
 
   craneLib = toolchain.craneLib;
 
-  # `.cargo/config.toml` carries the Android 16 KB page-align rustflags and
-  # `sdallocx_stub.c` is compiled by `build.rs` on Android — both must be in
-  # the copied source. `uniffi*.toml` are read by the bindgen step from the
-  # crate path directly, not from here.
+  # `.cargo/config.toml` carries the Android 16 KB page-align rustflags,
+  # `sdallocx_stub.c` is compiled by `build.rs` on Android, and
+  # `oslog_shim.c` on Apple targets — all must be in the copied source.
+  # `uniffi*.toml` are read by the bindgen step from the crate path directly,
+  # not from here.
   src =
     let
       crateDir = ../rust/fedimint-sdk;
       # `.cargo` (the dir) and `config.toml` (the file inside it) so crane does
       # not prune the subtree before reaching the rustflags; `sdallocx_stub.c`
-      # for `build.rs`.
+      # and `oslog_shim.c` for `build.rs`.
       keep = [
         ".cargo"
         "config.toml"
+        "oslog_shim.c"
         "sdallocx_stub.c"
       ];
       filter =
