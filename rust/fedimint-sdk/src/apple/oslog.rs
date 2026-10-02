@@ -37,21 +37,41 @@
 //!
 //! The contract in `android::logcat`'s module docs ("What must never reach
 //! this") applies here unchanged; it is not restated so the two cannot drift.
-//! os_log adds one layer on top: lines at `info` and above are written
-//! `%{public}`, and lines below it `%{private}`, so the more detailed levels
-//! show as `<private>` in a sysdiagnose unless the device carries a profile
-//! that reveals them. That is defence in depth, not a licence: the guarantee
-//! is still that nothing at `info` or above formats a secret.
+//!
+//! os_log adds a layer on top, its `%{private}` redaction: a private argument
+//! shows as `<private>` in a sysdiagnose unless the device carries a profile
+//! that reveals it. Public text is persisted as written, so what goes public
+//! is decided per piece of text, never by a record's severity alone:
+//!
+//! - An event at `info` or above is public; below it, private. See
+//!   [`is_public`].
+//! - A public event carries the context of enclosing spans at `info` and
+//!   above only. The formatter would otherwise prefix it with the fields of
+//!   every active span, and with a `debug` filter that includes `debug`
+//!   spans — whose fields (request parameters, payment outcomes) are exactly
+//!   what the contract keeps out of `info`. See [`RedactingFormat`].
+//! - A panic's thread and location are public; its payload is always
+//!   private, even though it is logged as a fault. A payload is arbitrary
+//!   text from wherever the panic was raised — an `expect` on a decoded
+//!   database value includes the value's bytes, credentials among them — and
+//!   the hook runs regardless of the filter.
+//!
+//! That is defence in depth, not a licence: the guarantee is still that
+//! nothing at `info` or above formats a secret.
 
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::fmt;
 use std::io;
-use std::panic::{self, PanicHookInfo};
+use std::panic::{self, Location, PanicHookInfo};
 use std::sync::{Once, OnceLock};
 
-use tracing::{Level, Metadata};
+use tracing::{Event, Level, Metadata, Subscriber};
+use tracing_log::NormalizeEvent;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::{DefaultFields, Writer};
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields, MakeWriter};
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
 
 use crate::logging::chunks;
 
@@ -78,6 +98,12 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn fedimint_os_log_public(log: OsLog, kind: u8, message: *const c_char);
     fn fedimint_os_log_private(log: OsLog, kind: u8, message: *const c_char);
+    fn fedimint_os_log_public_private(
+        log: OsLog,
+        kind: u8,
+        public_part: *const c_char,
+        private_part: *const c_char,
+    );
 }
 
 /// The subsystem every line from Rust is logged under.
@@ -107,6 +133,11 @@ const DEFAULT_DIRECTIVES: &str = "warn,fm=info,fedimint=info";
 /// under the limit for os_log's own framing.
 const MAX_ENTRY_BYTES: usize = 1000;
 
+/// The least room [`write_with_private_tail`] leaves for the private part of
+/// an entry, however long the public part is, so a long header cannot shrink
+/// the private chunks to nothing.
+const MIN_PRIVATE_CHUNK_BYTES: usize = 256;
+
 /// An `os_log_type_t`, as `<os/log.h>` numbers them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -130,6 +161,8 @@ impl LogType {
     /// persisted, so `info` goes there, and each level above moves with it.
     /// `debug` and `trace` share `DEBUG`, which is memory-only and off unless
     /// streamed, matching how rarely they are enabled.
+    ///
+    /// Says nothing about privacy, which is [`is_public`]'s to decide.
     fn from_level(level: &Level) -> Self {
         // Compared rather than matched: `Level`'s variants are associated
         // constants on an opaque struct, not an enum.
@@ -143,13 +176,15 @@ impl LogType {
             LogType::Debug
         }
     }
+}
 
-    /// Whether a line at this type is written `%{public}`; see the module
-    /// docs. Everything persisted is public, and only the `debug`/`trace`
-    /// tier is private.
-    fn is_public(self) -> bool {
-        self != LogType::Debug
-    }
+/// Whether text at `level` — an event, or a span's fields — may be written
+/// `%{public}`: `info` and above. The one rule both the writer and
+/// [`RedactingFormat`] apply, so the record's privacy and the span context
+/// inside it cannot disagree. See the module docs.
+fn is_public(level: &Level) -> bool {
+    // `tracing` orders more verbose levels as greater: `TRACE > DEBUG > INFO`.
+    *level <= Level::INFO
 }
 
 /// The one `os_log_t` this module writes through, created on first use.
@@ -164,26 +199,37 @@ fn handle() -> OsLog {
     *HANDLE.get_or_init(|| unsafe { os_log_create(SUBSYSTEM.as_ptr(), CATEGORY.as_ptr()) })
 }
 
-/// Writes `message` to os_log under [`SUBSYSTEM`] and [`CATEGORY`].
-///
-/// Never panics, and never drops a message it could deliver: interior NULs
-/// (which a C string cannot carry) are replaced rather than causing the line
-/// to be skipped, and anything over [`MAX_ENTRY_BYTES`] is split across
-/// entries on character boundaries. Callable before logging is installed and
-/// from a panic hook, since it touches nothing but libSystem.
-fn write(kind: LogType, message: &str) {
+/// The handle, if an entry of type `kind` would be recorded at all.
+fn enabled_handle(kind: LogType) -> Option<OsLog> {
     let log = handle();
     // SAFETY: `log` is a valid handle (see `handle`).
-    if !unsafe { os_log_type_enabled(log, kind as u8) } {
+    unsafe { os_log_type_enabled(log, kind as u8) }.then_some(log)
+}
+
+/// `text` as a C string, with interior NULs (which a C string cannot carry)
+/// replaced rather than causing the line to be dropped.
+fn c_string(text: &str) -> CString {
+    CString::new(text.replace('\0', "\u{FFFD}")).unwrap_or_default()
+}
+
+/// Writes `message` to os_log under [`SUBSYSTEM`] and [`CATEGORY`], all of it
+/// `%{public}` or all of it `%{private}`.
+///
+/// Never panics, and never drops a message it could deliver: interior NULs
+/// are replaced, and anything over [`MAX_ENTRY_BYTES`] is split across
+/// entries on character boundaries. Callable before logging is installed and
+/// from a panic hook, since it touches nothing but libSystem.
+fn write(kind: LogType, public: bool, message: &str) {
+    let Some(log) = enabled_handle(kind) else {
         return;
-    }
+    };
     for chunk in chunks(message.trim_end_matches('\n'), MAX_ENTRY_BYTES) {
-        let text = CString::new(chunk.replace('\0', "\u{FFFD}")).unwrap_or_default();
+        let text = c_string(chunk);
         // SAFETY: `log` is valid, `text` is a NUL-terminated string that
         // outlives the call, and os_log copies the argument into its own
         // buffer before returning rather than retaining the pointer.
         unsafe {
-            if kind.is_public() {
+            if public {
                 fedimint_os_log_public(log, kind as u8, text.as_ptr());
             } else {
                 fedimint_os_log_private(log, kind as u8, text.as_ptr());
@@ -192,15 +238,46 @@ fn write(kind: LogType, message: &str) {
     }
 }
 
+/// Writes one entry whose `public` part is `%{public}` and whose `private`
+/// part is `%{private}`, under the same guarantees as [`write`].
+///
+/// Only the private part is split: each entry repeats the public part ahead
+/// of its piece, so every entry still says what it belongs to.
+fn write_with_private_tail(kind: LogType, public: &str, private: &str) {
+    let Some(log) = enabled_handle(kind) else {
+        return;
+    };
+    let head = c_string(public);
+    let room = MAX_ENTRY_BYTES
+        .saturating_sub(public.len())
+        .max(MIN_PRIVATE_CHUNK_BYTES);
+    let private = private.trim_end_matches('\n');
+    // An empty payload still deserves its entry: `chunks` yields nothing for
+    // it, so one empty piece stands in.
+    let pieces: Box<dyn Iterator<Item = &str>> = if private.is_empty() {
+        Box::new(std::iter::once(""))
+    } else {
+        Box::new(chunks(private, room))
+    };
+    for piece in pieces {
+        let tail = c_string(piece);
+        // SAFETY: as in `write`; both strings outlive the call and are copied
+        // by os_log before it returns.
+        unsafe {
+            fedimint_os_log_public_private(log, kind as u8, head.as_ptr(), tail.as_ptr());
+        }
+    }
+}
+
 /// Installs logging, once per process. Every call after the first is a no-op.
 ///
 /// Installs, in order:
 ///
-/// 1. A panic hook that writes the panic's message, location and thread to
-///    os_log before chaining to the previous hook. **This does not prevent
-///    the abort**: under `panic = "abort"` the process still dies with
-///    `SIGABRT`. What changes is that the crash now comes with a persisted
-///    line saying where and why.
+/// 1. A panic hook that writes the panic's thread and location (public) and
+///    message (private) to os_log before chaining to the previous hook.
+///    **This does not prevent the abort**: under `panic = "abort"` the
+///    process still dies with `SIGABRT`. What changes is that the crash now
+///    comes with a persisted line saying where.
 /// 2. A `tracing` subscriber writing to os_log, filtered as the module docs
 ///    describe — unless one is already installed, in which case it is left
 ///    alone and nothing else here is touched either.
@@ -220,16 +297,9 @@ fn install() {
         rejected,
     } = Filter::from_configured(configured_directives());
 
-    let subscriber = tracing_subscriber::registry().with(filter).with(
-        tracing_subscriber::fmt::layer()
-            .with_writer(OsLogMakeWriter)
-            // os_log renders neither ANSI colour nor a second timestamp, and
-            // records the type itself, so all three would only be noise.
-            .with_ansi(false)
-            .without_time()
-            .with_level(false)
-            .with_target(true),
-    );
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(layer(OsLogMakeWriter));
 
     if tracing::subscriber::set_global_default(subscriber).is_err() {
         // Only possible if something in this process installed one first —
@@ -237,6 +307,7 @@ fn install() {
         // stop here rather than also replacing their `log` logger.
         write(
             LogType::Default,
+            true,
             "a tracing subscriber was already installed; leaving it in place",
         );
         return;
@@ -260,6 +331,22 @@ fn install() {
     // distinguishes "installed, and nothing to say at this level" from "not
     // installed", and names the filter in force.
     tracing::info!(filter = %effective, "logging to os_log");
+}
+
+/// The `fmt` layer this module installs, writing through `writer`.
+///
+/// A function of the writer so the tests run exactly this configuration
+/// against a capturing writer instead of os_log.
+fn layer<S, W>(writer: W) -> tracing_subscriber::fmt::Layer<S, DefaultFields, RedactingFormat, W>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    W: for<'w> MakeWriter<'w> + 'static,
+{
+    tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        // os_log renders no ANSI colour, and records the type itself.
+        .with_ansi(false)
+        .event_format(RedactingFormat)
 }
 
 /// The filter to install, and how it was arrived at.
@@ -305,38 +392,104 @@ fn configured_directives() -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// Writes the panic's message, location and thread to os_log, then runs the
-/// previous hook.
+/// Writes the panic's thread and location (public) and message (private) to
+/// os_log, then runs the previous hook.
 ///
-/// Writes through [`write`] directly rather than through `tracing`: the panic
-/// may have been raised inside the subscriber, or while it held a lock, and
-/// the one thing this hook must not do is fail to report.
+/// Writes through [`write_with_private_tail`] directly rather than through
+/// `tracing`: the panic may have been raised inside the subscriber, or while
+/// it held a lock, and the one thing this hook must not do is fail to report.
+///
+/// The payload is private although the entry is a fault: privacy here is
+/// deliberately independent of severity. The hook runs whatever the filter
+/// says, and a payload is arbitrary text — upstream's database decoding
+/// panics with the undecodable value's bytes in the message.
 fn install_panic_hook() {
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {
         let thread = std::thread::current();
-        let thread = thread.name().unwrap_or("<unnamed>");
-        let location = info.location().map_or_else(String::new, |location| {
-            format!(
-                " at {}:{}:{}",
-                location.file(),
-                location.line(),
-                location.column()
-            )
-        });
+        let header = panic_header(thread.name().unwrap_or("<unnamed>"), info.location());
         let message = info
             .payload_as_str()
             .unwrap_or("<panic payload is not a string>");
-        write(
-            LogType::Fault,
-            &format!("panic on thread '{thread}'{location}: {message}"),
-        );
+        write_with_private_tail(LogType::Fault, &header, message);
         previous(info);
     }));
 }
 
+/// The public part of a panic's entry: thread and location, never the
+/// payload.
+fn panic_header(thread: &str, location: Option<&Location<'_>>) -> String {
+    let location = location.map_or_else(String::new, |location| {
+        format!(
+            " at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        )
+    });
+    format!("panic on thread '{thread}'{location}: ")
+}
+
+/// The event formatter this module installs: `fmt`'s default layout, without
+/// the level and timestamp os_log records itself, and without the context of
+/// any span a public entry must not carry.
+///
+/// The stock formatter prefixes every event with the fields of every span it
+/// is inside. That is the right choice for a terminal and the wrong one here,
+/// where a `warn` inside a `debug` span would carry that span's fields into a
+/// public entry. So a public event (see [`is_public`]) is rendered with only
+/// the spans that are themselves public, and a private one with all of them,
+/// since nothing in it is persisted readable.
+#[derive(Debug)]
+pub(crate) struct RedactingFormat;
+
+impl<S, N> FormatEvent<S, N> for RedactingFormat
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        // A record bridged from the `log` crate arrives under a generic
+        // callsite; normalizing recovers its real target, as the stock
+        // formatter does.
+        let normalized = event.normalized_metadata();
+        let meta: &Metadata<'_> = normalized.as_ref().unwrap_or_else(|| event.metadata());
+        let event_is_public = is_public(meta.level());
+
+        if let Some(scope) = ctx.event_scope() {
+            let mut seen = false;
+            for span in scope.from_root() {
+                if event_is_public && !is_public(span.metadata().level()) {
+                    continue;
+                }
+                write!(writer, "{}", span.metadata().name())?;
+                seen = true;
+                let extensions = span.extensions();
+                if let Some(fields) = extensions.get::<FormattedFields<N>>()
+                    && !fields.is_empty()
+                {
+                    write!(writer, "{{{fields}}}")?;
+                }
+                writer.write_char(':')?;
+            }
+            if seen {
+                writer.write_char(' ')?;
+            }
+        }
+
+        write!(writer, "{}: ", meta.target())?;
+        ctx.format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
 /// Hands the `fmt` layer a fresh [`OsLogWriter`] per event, carrying that
-/// event's os_log type.
+/// event's os_log type and privacy.
 #[derive(Debug)]
 struct OsLogMakeWriter;
 
@@ -344,11 +497,11 @@ impl<'a> MakeWriter<'a> for OsLogMakeWriter {
     type Writer = OsLogWriter;
 
     fn make_writer(&'a self) -> Self::Writer {
-        OsLogWriter::new(LogType::Default)
+        OsLogWriter::new(LogType::Default, true)
     }
 
     fn make_writer_for(&'a self, meta: &Metadata<'_>) -> Self::Writer {
-        OsLogWriter::new(LogType::from_level(meta.level()))
+        OsLogWriter::new(LogType::from_level(meta.level()), is_public(meta.level()))
     }
 }
 
@@ -358,13 +511,15 @@ impl<'a> MakeWriter<'a> for OsLogMakeWriter {
 #[derive(Debug)]
 struct OsLogWriter {
     kind: LogType,
+    public: bool,
     buffer: Vec<u8>,
 }
 
 impl OsLogWriter {
-    fn new(kind: LogType) -> Self {
+    fn new(kind: LogType, public: bool) -> Self {
         Self {
             kind,
+            public,
             buffer: Vec::new(),
         }
     }
@@ -384,16 +539,30 @@ impl io::Write for OsLogWriter {
 impl Drop for OsLogWriter {
     fn drop(&mut self) {
         if !self.buffer.is_empty() {
-            write(self.kind, &String::from_utf8_lossy(&self.buffer));
+            write(
+                self.kind,
+                self.public,
+                &String::from_utf8_lossy(&self.buffer),
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use tracing::Level;
+    use std::io;
+    use std::panic::Location;
+    use std::sync::{Arc, Mutex};
 
-    use super::{DEFAULT_DIRECTIVES, Filter, LogType, write};
+    use tracing::{Level, Metadata};
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    use super::{
+        DEFAULT_DIRECTIVES, Filter, LogType, is_public, layer, panic_header, write,
+        write_with_private_tail,
+    };
 
     #[test]
     fn levels_map_one_tier_up_so_info_persists() {
@@ -406,11 +575,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_debug_tier_is_private() {
-        assert!(LogType::Fault.is_public());
-        assert!(LogType::Error.is_public());
-        assert!(LogType::Default.is_public());
-        assert!(!LogType::Debug.is_public());
+    fn only_info_and_above_is_public() {
+        assert!(is_public(&Level::ERROR));
+        assert!(is_public(&Level::WARN));
+        assert!(is_public(&Level::INFO));
+        assert!(!is_public(&Level::DEBUG));
+        assert!(!is_public(&Level::TRACE));
     }
 
     #[test]
@@ -440,7 +610,133 @@ mod tests {
         // Exercises the real FFI path on the host: an entry over the size
         // limit, an interior NUL, and a `%` that must not be read as a format.
         let long = "é".repeat(1_500);
-        write(LogType::Default, &long);
-        write(LogType::Debug, "contains a \0 NUL and a %s %n format");
+        write(LogType::Default, true, &long);
+        write(
+            LogType::Debug,
+            false,
+            "contains a \0 NUL and a %s %n format",
+        );
+    }
+
+    #[test]
+    fn a_panic_header_carries_no_payload() {
+        let location = Location::caller();
+        let header = panic_header("worker-1", Some(location));
+        assert_eq!(
+            header,
+            format!(
+                "panic on thread 'worker-1' at {}:{}:{}: ",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        );
+        assert_eq!(
+            panic_header("<unnamed>", None),
+            "panic on thread '<unnamed>': "
+        );
+    }
+
+    #[test]
+    fn writing_a_panic_through_the_shim_does_not_crash() {
+        let header = panic_header("worker-1", Some(Location::caller()));
+        write_with_private_tail(LogType::Fault, &header, &"é".repeat(1_500));
+        write_with_private_tail(LogType::Fault, &header, "a \0 NUL and %s %n");
+        write_with_private_tail(LogType::Fault, &header, "");
+    }
+
+    /// Records each formatted event with the privacy the real writer would
+    /// give it, instead of sending it to os_log.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<(bool, String)>>>);
+
+    struct CaptureWriter {
+        public: bool,
+        buffer: Vec<u8>,
+        sink: Arc<Mutex<Vec<(bool, String)>>>,
+    }
+
+    impl io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.buffer.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for CaptureWriter {
+        fn drop(&mut self) {
+            let text = String::from_utf8_lossy(&self.buffer).into_owned();
+            self.sink
+                .lock()
+                .expect("not poisoned")
+                .push((self.public, text));
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            unreachable!("the fmt layer always asks with the event's metadata")
+        }
+
+        fn make_writer_for(&'a self, meta: &Metadata<'_>) -> Self::Writer {
+            CaptureWriter {
+                public: is_public(meta.level()),
+                buffer: Vec::new(),
+                sink: self.0.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_debug_span_around_a_warning_stays_out_of_the_public_record() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("debug"))
+            .with(layer(capture.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _pay = tracing::debug_span!("pay", preimage = "dummy-preimage").entered();
+            tracing::warn!("payment failed");
+            tracing::debug!("payment detail");
+            let _op = tracing::info_span!("op", operation_id = "op-1").entered();
+            tracing::warn!("still failing");
+        });
+
+        let records = capture.0.lock().expect("not poisoned").clone();
+        assert_eq!(records.len(), 3, "{records:?}");
+
+        let (public, private): (Vec<_>, Vec<_>) =
+            records.into_iter().partition(|(public, _)| *public);
+        assert_eq!(public.len(), 2, "{public:?}");
+        for (_, text) in &public {
+            assert!(!text.contains("dummy-preimage"), "leaked: {text}");
+            assert!(
+                !text.contains("pay{") && !text.contains("pay:"),
+                "named a private span: {text}"
+            );
+        }
+        assert!(public[0].1.contains("payment failed"), "{public:?}");
+        // Context from a public span still comes through.
+        assert!(
+            public[1].1.contains("op{operation_id=\"op-1\"}"),
+            "{public:?}"
+        );
+        assert!(public[1].1.contains("still failing"), "{public:?}");
+
+        // Where the record is private anyway, nothing is held back.
+        let [(_, detail)] = private.as_slice() else {
+            panic!("one private record expected: {private:?}");
+        };
+        assert!(
+            detail.contains("pay{preimage=\"dummy-preimage\"}"),
+            "{detail}"
+        );
+        assert!(detail.contains("payment detail"), "{detail}");
     }
 }
