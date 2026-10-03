@@ -29,6 +29,10 @@ case "$(command -v ubrn)" in
     ;;
 esac
 
+# Match the Swift build's minimum iOS version for both Rust and native dependencies.
+# Without this, rustc defaults to iOS 10 while C/C++ builds can use the SDK's version.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
+
 targets=()
 if [[ -n "${UBRN_IOS_TARGETS:-}" ]]; then
   targets=(--targets "$UBRN_IOS_TARGETS")

@@ -1,0 +1,28 @@
+# Loads libfedimint_sdk.so through `System.loadLibrary` before the bindings library, so that ART
+# calls the SDK's `JNI_OnLoad`.
+#
+# On Android the SDK hands the platform's `JavaVM` and `Context` to the `ndk-context` crate, which
+# is where its DNS resolver (hickory, under iroh) looks them up to read the network's resolvers.
+# The `JavaVM` only reaches the SDK through its `JNI_OnLoad`; without it the slot stays empty and
+# the first iroh connection, such as joining a federation whose guardians use `iroh://` URLs,
+# aborts the app with "android context was not initialized" (rust/fedimint-sdk/src/android.rs).
+#
+# ubrn's template loads only libfedimint-react-native-bindings.so, which links the SDK library as
+# a plain dependency. ART then looks `JNI_OnLoad` up breadth-first through that library's
+# dependencies and finds libreactnative.so's first, so the SDK's is never called. Loaded on its
+# own, the SDK library is the one searched first, and the bindings' dependency then resolves to
+# that same, already loaded copy.
+#
+# Applied by scripts/generate-sdk-rn-bindings.sh after ubrn writes the module.
+--- android/src/main/java/com/fedimint/reactnative/ReactNativeBindingsModule.kt
++++ android/src/main/java/com/fedimint/reactnative/ReactNativeBindingsModule.kt
+@@ -37,6 +37,9 @@
+     const val NAME = "ReactNativeBindings"
+
+     init {
++      // Load the SDK's own library first: pulled in only as a dependency of the bindings below,
++      // its JNI_OnLoad would never run, and without it the SDK aborts on its first DNS lookup.
++      System.loadLibrary("fedimint_sdk")
+       System.loadLibrary("fedimint-react-native-bindings")
+     }
+   }
