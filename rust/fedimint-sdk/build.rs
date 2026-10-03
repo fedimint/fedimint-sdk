@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=sdallocx_stub.c");
+    println!("cargo:rerun-if-changed=oslog_shim.c");
 
     // On Android, aws-lc (reached through rustls, via iroh, via
     // fedimint-connectors) declares `sdallocx` as a weak symbol and checks
@@ -21,5 +22,18 @@ fn main() {
             .file("sdallocx_stub.c")
             .compile("sdallocx_stub");
         println!("cargo:rustc-link-arg=-Wl,-u,sdallocx");
+    }
+
+    // On Apple targets, the two calls src/apple/oslog.rs makes into unified
+    // logging. `os_log_with_type` is a C macro that places its format string
+    // in a section Rust cannot emit into, so it is expanded here; see
+    // oslog_shim.c. `target_vendor` rather than `target_os = "ios"`: the
+    // XCFramework's macOS slice is what `swift test` runs against, and it
+    // should log the same way.
+    let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
+    if target_vendor == "apple" {
+        cc::Build::new()
+            .file("oslog_shim.c")
+            .compile("fedimint_oslog_shim");
     }
 }

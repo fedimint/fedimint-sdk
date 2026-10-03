@@ -57,6 +57,8 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 
+use crate::logging::chunks;
+
 // Android's own logging. Part of the NDK's stable surface, present on every
 // device, and thread-safe, which the writer below relies on: events arrive
 // from whichever runtime worker produced them.
@@ -160,30 +162,6 @@ pub(crate) fn write(priority: Priority, message: &str) {
             __android_log_write(priority as c_int, TAG.as_ptr(), text.as_ptr());
         }
     }
-}
-
-/// Splits `text` into pieces of at most `max` bytes, each ending on a
-/// character boundary.
-fn chunks(text: &str, max: usize) -> impl Iterator<Item = &str> {
-    let mut rest = text;
-    std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
-        let mut end = rest.len().min(max);
-        while !rest.is_char_boundary(end) {
-            end -= 1;
-        }
-        // Only reachable if `max` is smaller than the first character, which
-        // the constant above rules out; taking that one character regardless
-        // keeps a future caller from spinning forever on an empty chunk.
-        if end == 0 {
-            end = rest.chars().next().map_or(rest.len(), char::len_utf8);
-        }
-        let (head, tail) = rest.split_at(end);
-        rest = tail;
-        Some(head)
-    })
 }
 
 /// Installs logging, once per process. Every call after the first is a no-op.
@@ -368,31 +346,5 @@ impl Drop for LogcatWriter {
         if !self.buffer.is_empty() {
             write(self.priority, &String::from_utf8_lossy(&self.buffer));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::chunks;
-
-    #[test]
-    fn chunks_respect_the_limit_and_character_boundaries() {
-        // 'é' is two bytes, so a 3-byte limit has to stop before splitting one.
-        let pieces: Vec<&str> = chunks("aéé", 3).collect();
-        assert_eq!(pieces, ["aé", "é"]);
-        assert!(pieces.iter().all(|piece| piece.len() <= 3));
-    }
-
-    #[test]
-    fn chunks_of_nothing_is_nothing() {
-        assert_eq!(chunks("", 10).count(), 0);
-    }
-
-    #[test]
-    fn a_limit_smaller_than_a_character_still_makes_progress() {
-        // '€' is three bytes; with a limit of one it must still be emitted
-        // whole rather than looping on an empty chunk.
-        let pieces: Vec<&str> = chunks("€€", 1).collect();
-        assert_eq!(pieces, ["€", "€"]);
     }
 }
