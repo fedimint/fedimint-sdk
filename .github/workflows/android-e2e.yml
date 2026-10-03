@@ -17,6 +17,29 @@ name: Android E2E (Appium)
 # point over the same paths would mean two of those for one commit in two runs
 # that cannot cancel each other. A manual run is android-sdk.yaml's
 # `workflow_dispatch`, which runs the whole chain.
+#
+# It runs on a self-hosted Apple Silicon Mac rather than a GitHub-hosted
+# Ubuntu runner, because the suite was flaky there: those runners have only a
+# few cores, and an emulator plus a whole devimint federation on them left
+# the emulator short of CPU, so tests failed on timeouts and unresponsive UI
+# rather than on anything the app did. The Mac has more cores, accelerates
+# the emulator through Hypervisor.framework, and is registered to this
+# repository alone, for device tests. Nothing here is Mac-specific beyond
+# that: `.#android-tests` provides the SDK, emulator and system image for the
+# host, and run-android-e2e.sh picks the host's ABI, so pointing `runs-on`
+# back at `ubuntu-latest` still works.
+#
+# Unlike a hosted runner, the Mac outlives the job, so whatever runs here can
+# leave something behind for the next job, including one that is handed
+# CACHIX_AUTH_TOKEN. A fork's pull request therefore reaches it only after a
+# maintainer approves the run: the repository requires approval for every
+# outside contributor's workflow run (Settings → Actions → General → "Approval
+# for running fork pull request workflows from contributors"). That gate is
+# GitHub's, not this file's, and has to be: a fork's `pull_request` run uses
+# the fork's own copy of this workflow, so any guard written here the fork
+# could simply delete. Approving a run is approving its code to run on this
+# machine, so read the diff first — .github/, scripts/, the flake and the
+# test package especially.
 
 on:
   workflow_call:
@@ -32,7 +55,7 @@ permissions:
 jobs:
   android-e2e:
     name: Android E2E
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, device-tests]
     timeout-minutes: 120
     # Runs its own devimint federation, and does not join verify.yml's
     # `devimint-tests` concurrency group: devimint now allocates a free
@@ -40,6 +63,13 @@ jobs:
     # range it picks the same way, so two runs on two runners no longer
     # collide. The `adb reverse` mappings are per-device, so they cannot
     # collide either.
+    #
+    # Nothing here kills a previous run's emulator or federation. The runner
+    # does that itself when the job ends, cancelled or timed out included: its
+    # "Cleaning up orphan processes" step terminates every process this job
+    # started, and only those, since it finds them by the RUNNER_TRACKING_ID
+    # each one inherits. A `pkill` by name would reach processes of any other
+    # work under the same account too.
 
     steps:
       - name: Clone repository
@@ -53,8 +83,10 @@ jobs:
       # GitHub-hosted Ubuntu runners have /dev/kvm but it isn't
       # world-accessible by default; without this the emulator falls back to
       # (very slow) software virtualization. Standard reactivecircus/
-      # android-emulator-runner incantation.
+      # android-emulator-runner incantation. Linux only: on macOS the emulator
+      # uses Hypervisor.framework and there is no /dev/kvm to open up.
       - name: Enable KVM group perms
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
