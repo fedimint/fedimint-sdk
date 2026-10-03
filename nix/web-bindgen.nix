@@ -2,10 +2,14 @@
 # it drives never drift from each other.
 #
 #   ubrn              uniffi-bindgen-react-native, from the fork branch that reads UniFFI 0.32
-#                     metadata (jhugman/uniffi-bindgen-react-native#468); rust/fedimint-sdk
-#                     links uniffi 0.32.0 and the released tool stops at 0.31. Its `wasm2` flavor
-#                     generates the TypeScript in js/web/sdk-web/src/generated from the built
-#                     `.wasm`. Move `rev` (and nix/ubrn-Cargo.lock) together when the branch moves.
+#                     metadata (jhugman/uniffi-bindgen-react-native#468), plus
+#                     jhugman/uniffi-bindgen-react-native#491, without which the generated
+#                     TypeScript types the SDK's `Cursor` as the runtime's own `Cursor` class
+#                     rather than a string. rust/fedimint-sdk links uniffi 0.32.0 and the
+#                     released tool stops at 0.31. Its `wasm2` flavor generates the TypeScript
+#                     in js/web/sdk-web/src/generated from the built `.wasm`, and the React
+#                     Native bindings come from the same build. Move `rev` (and
+#                     nix/ubrn-Cargo.lock) together when the branch moves.
 #   wasm-bindgen-cli  exactly the `wasm-bindgen` crate version the SDK's dependency tree links
 #                     (`=0.2.106` in rust/fedimint-sdk/Cargo.toml); ubrn shells out to it to
 #                     rewrite the module's wasm-bindgen imports into the `_bg.js` glue.
@@ -18,10 +22,10 @@ in
     pname = "uniffi-bindgen-react-native";
     version = "0.31.0-5-uniffi-0.32";
     src = pkgs.fetchFromGitHub {
-      owner = "Dzejkop";
+      owner = "zeenix";
       repo = "uniffi-bindgen-react-native";
-      rev = "06f0a30d257573ffcc852e84e814670d53085979";
-      hash = "sha256-Y1QMxMtwzBEVzlo7GohvecTYAMZsMQTqH99cagnzbzQ=";
+      rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440";
+      hash = "sha256-viVRrdKnDhsMxQBHh4iFSlaQkIFl17hx3wfOv1ex5Cg=";
     };
     cargoLock.lockFile = ./ubrn-Cargo.lock;
     buildAndTestSubdir = "crates/ubrn_cli";
