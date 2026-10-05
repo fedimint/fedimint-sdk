@@ -696,7 +696,6 @@ const JoinFederation = ({
 
   const joinFederation = async (e: React.FormEvent) => {
     e.preventDefault()
-    checkIsOpen()
 
     console.log('Joining federation:', inviteCode)
     try {
@@ -706,6 +705,7 @@ const JoinFederation = ({
       console.log('join federation res', res)
       setJoinResult('Joined!')
       setJoinError('')
+      checkIsOpen()
     } catch (e: any) {
       console.log('Error joining federation', e)
       setJoinError(typeof e === 'object' ? e.toString() : (e as string))
@@ -904,6 +904,7 @@ const GenerateLightningInvoice = () => {
   const [invoice, setInvoice] = useState('')
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -964,8 +965,18 @@ const GenerateLightningInvoice = () => {
         <div className="success">
           <strong>Generated Invoice:</strong>
           <pre className="invoice-wrap">{invoice}</pre>
-          <button onClick={() => navigator.clipboard.writeText(invoice)}>
-            Copy
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(invoice)
+                setCopyFeedback('Copied!')
+              } catch (err) {
+                setCopyFeedback('Failed to copy')
+              }
+              setTimeout(() => setCopyFeedback(''), 2000)
+            }}
+          >
+            {copyFeedback || 'Copy'}
           </button>
         </div>
       )}
@@ -1077,7 +1088,10 @@ const ParseLightningInvoice = () => {
           </div>
           <div className="row">
             <strong>Expiry :</strong>
-            <div className="url">{parseResult.expiry}</div>
+            <div className="url">
+              {parseResult.expiry} ({Math.floor(parseResult.expiry / 60)}{' '}
+              minutes)
+            </div>
           </div>
           <div className="row">
             <strong>Memo :</strong>
