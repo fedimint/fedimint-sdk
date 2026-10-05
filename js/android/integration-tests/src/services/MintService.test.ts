@@ -124,8 +124,13 @@ export class MintService extends AppiumTestBase {
     // shows now is generation-specific: v1's executor settles an out-of-band
     // send only when its reclaim timer fires (a day away), and mintv2's
     // reclaim is driven by observing the send past its deadline — so neither
-    // has to say `Redeemed` yet. What neither may say is `Canceled`: that
+    // has to say `REDEEMED` yet. What neither may say is `CANCELED`: that
     // would mean the notes came back to this wallet a second time.
+    //
+    // `EcashSendState` has no data-carrying variant, so UniFFI generates it as
+    // a plain Kotlin enum and the example app prints `state.name` — the
+    // SCREAMING_SNAKE constants, not the PascalCase names the Rust enum and
+    // the sealed-class states (LnReceiveState, OnchainSendState, ...) use.
     const record = await lookupOperation(this, sendId)
     if (!record.includes('kind ECASH_SEND')) {
       throw new Error(
@@ -133,7 +138,7 @@ export class MintService extends AppiumTestBase {
       )
     }
     const state = stateFrom(record)
-    if (!['Created', 'Redeemed', 'CancelRequested'].includes(state)) {
+    if (!['CREATED', 'REDEEMED', 'CANCEL_REQUESTED'].includes(state)) {
       throw new Error(`The redeemed send ${sendId} reports "${state}"`)
     }
     console.log(`Send ${sendId} reports ${state}`)

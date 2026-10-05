@@ -124,7 +124,7 @@ Listed in the order `all` runs them; each also runs on its own, with the fixture
 | `inviteCode`       | `InviteCode.parse` and its federation id (no federation)                                                                                                                                                                                                                                                     |
 | `federation`       | the join: regtest, all three capabilities, the module kinds of this shape and none of the other, an empty balance                                                                                                                                                                                            |
 | `lightning`        | lightning in: the faucet pays an app invoice and the live balance rises by at most the invoice                                                                                                                                                                                                               |
-| `mint`             | ecash out and back in: the debit is exactly the quoted notes + fee, the notes redeem (`Done`), and the send's own record is `ECASH_SEND` and not `Canceled`                                                                                                                                                  |
+| `mint`             | ecash out and back in: the debit is exactly the quoted notes + fee, the notes redeem (`Done`), and the send's own record is `ECASH_SEND` and not `CANCELED`                                                                                                                                                  |
 | `lightningSend`    | lightning out: quote → pay a faucet invoice; the payee's node reports it paid, the balance drops by exactly the quoted total, and on v2 the preimage hashes to the invoice's payment hash                                                                                                                    |
 | `errors`           | `INVALID_INPUT` for bad notes, a bad invoice and a zero amount; `INSUFFICIENT_BALANCE` quoting an invoice over the balance, with Pay left disabled and no balance or history change                                                                                                                          |
 | `persistence`      | restart without clearing data: the same seed, the same federation (reattached on open), the same balance                                                                                                                                                                                                     |
@@ -142,7 +142,8 @@ The tests assert what each generation documents rather than identical behaviour:
   generation-specific list of amounts and only moves on after `NOT_SUPPORTED`.
 - **Ecash reclaim.** v1 reclaims an unredeemed send from a background timer (a day away); mintv2
   reclaims only when the send is observed after its deadline. Neither has to report a redeemed
-  send as `Redeemed` straight away, so `mint` requires only that it is not `Canceled`.
+  send as `REDEEMED` straight away, so `mint` requires only that it is not `CANCELED` (the generated
+  Kotlin enum constant the example app prints).
 - **Lightning send outcome on v1.** The v1 client cannot decode the success state
   (fedimint/fedimint#8969), so `awaitFinal` ends in `INTERNAL` mentioning the preimage. `lightningSend`
   accepts exactly that, and only on v1, and still requires the payee to report the invoice
