@@ -86,10 +86,18 @@ import FedimintSdk
 // 1. Open the SDK over an app-private directory. `nil` loads the seed already
 //    there, or generates one when the directory is empty; pass a Mnemonic
 //    (Mnemonic.fromWords(words:)) to restore.
-let dataDir = FileManager.default
+//    Protect it before the first open; see "Protecting the wallet directory".
+var dataDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("fedimint")
-try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+let protection: [FileAttributeKey: Any] =
+    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+try FileManager.default.createDirectory(
+    at: dataDir, withIntermediateDirectories: true, attributes: protection)
+try FileManager.default.setAttributes(protection, ofItemAtPath: dataDir.path)
+var values = URLResourceValues()
+values.isExcludedFromBackup = true
+try dataDir.setResourceValues(values)
 
 let sdk = try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
 
@@ -111,6 +119,27 @@ let balanceMsats: UInt64 = try await federation.balance()
 Every call that touches disk or the network is `async throws`, so it needs an
 `await` and a `Task` — there is no synchronous variant and no completion-handler
 variant.
+
+### Protecting the wallet directory
+
+The SDK stores the seed phrase unencrypted inside its directory, and it does not
+protect that directory itself. That is the app's job, and the snippet above
+does both parts:
+
+- **Data Protection class `completeUntilFirstUserAuthentication`**, and *not*
+  `complete`. `complete` locks the files whenever the device is locked, so an
+  SDK still working in the background, or woken for a notification, fails its
+  next read with `.storage`. Until-first-unlock keeps the store encrypted from
+  boot until the first unlock. `createDirectory`'s `attributes` only apply when
+  it creates the directory, hence the separate `setAttributes` for an existing
+  one.
+- **`isExcludedFromBackup`**, or the store goes into iCloud and into computer
+  backups, which may not be encrypted. The written-down seed phrase is the
+  backup. A restored device recovers from it rather than from a copied store.
+
+Keep the directory in Application Support, not Documents, so it never shows up
+in the Files app. `DemoModel.dataDirectory()` in [`Demo/`](Demo) is the worked
+example, and `Storage` in the Rust crate documents the reasoning.
 
 ### Error handling
 

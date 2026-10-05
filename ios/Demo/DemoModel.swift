@@ -556,10 +556,40 @@ final class DemoModel: ObservableObject {
     /// An app-private directory. `.applicationSupportDirectory` rather than
     /// `.documentDirectory`: the store is the app's own state, not a user
     /// document, and should not show up in Files.
+    ///
+    /// The SDK stores the seed phrase unencrypted inside it (see `Storage` in
+    /// the Rust crate), so the directory also gets the two protections the SDK
+    /// cannot set for itself.
+    ///
+    /// The Data Protection class is `completeUntilFirstUserAuthentication`, and
+    /// deliberately not the stricter-looking `complete`. `complete` makes the
+    /// files unreadable whenever the device is locked, so an SDK that keeps
+    /// running in the background, or wakes for a notification, fails its next
+    /// database read as a storage error. Until-first-unlock keeps the files
+    /// encrypted from boot until the user first unlocks, which covers a device
+    /// that is powered off or seized at rest. It is also iOS's default class
+    /// for app files. Setting it here pins it, rather than leaving it to
+    /// whatever an entitlement or a later default says.
+    ///
+    /// Excluded from backup: otherwise the seed goes into iCloud and into
+    /// computer backups, which may not be encrypted. The seed phrase the user
+    /// writes down is the backup.
     private static func dataDirectory() throws -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("fedimint", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var dir = base.appendingPathComponent("fedimint", isDirectory: true)
+        let protection: [FileAttributeKey: Any] = [
+            .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication,
+        ]
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true, attributes: protection)
+        // `createDirectory` applies `attributes` only when it creates the
+        // directory, so set them again for one an earlier launch made. Files
+        // created inside it afterwards inherit the directory's class.
+        try FileManager.default.setAttributes(protection, ofItemAtPath: dir.path)
+
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try dir.setResourceValues(values)
         return dir
     }
 
