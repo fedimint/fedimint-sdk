@@ -136,7 +136,7 @@ jobs:
                 # The Justfile also holds the web binding recipe.
                 web=true
                 ;;
-              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh)
+              rust/fedimint-sdk/**|scripts/run-sdk-integration-tests.sh|scripts/devimint-shape.sh|scripts/devimint-modules.sh)
                 rust_sdk=true
                 # The web and React Native bindings are generated from the crate; their
                 # freshness checks run in the web test job and the Android job.

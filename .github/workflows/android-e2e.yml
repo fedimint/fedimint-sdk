@@ -31,9 +31,16 @@ permissions:
 
 jobs:
   android-e2e:
-    name: Android E2E
+    name: Android E2E (${{ matrix.shape }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # One federation per module generation. The SDK refuses a federation that
+    # mixes them, so `mixed` has no successful payment to test and is not here.
+    # fail-fast off: a v2-only failure should not hide whether v1 still passes.
+    strategy:
+      fail-fast: false
+      matrix:
+        shape: [v1, v2]
     # Runs its own devimint federation, and does not join verify.yml's
     # `devimint-tests` concurrency group: devimint now allocates a free
     # faucet port per run (issue #340) and its federation ports come from a
@@ -83,6 +90,9 @@ jobs:
         shell: bash
         env:
           TESTS_TO_RUN: all
+          # Read by scripts/setup_test_shell.sh, which turns it into the
+          # FM_ENABLE_MODULE_* flags devimint starts the federation with.
+          FM_SDK_SHAPE: ${{ matrix.shape }}
         run: |
           nix develop --accept-flake-config .#android-tests --command bash << 'EOF'
             set -euo pipefail
@@ -98,7 +108,7 @@ jobs:
         if: ${{ always() }}
         continue-on-error: true
         with:
-          name: android-e2e-logs
+          name: android-e2e-logs-${{ matrix.shape }}
           include-hidden-files: true
           path: |
             js/android/integration-tests/.appium/*.log

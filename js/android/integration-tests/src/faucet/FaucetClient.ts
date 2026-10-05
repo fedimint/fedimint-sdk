@@ -5,9 +5,6 @@
 // (see scripts/setup_test_shell.sh), so any test here can join the same
 // local regtest federation the WASM integration tests use.
 //
-// Not exercised by the v1 MnemonicService smoke test (deliberately
-// federation-free) — this exists for the next test that needs one, e.g. a
-// FederationService.test.ts that joins via invite code and pays an invoice.
 export class FaucetClient {
   private readonly baseUrl: string
 
@@ -32,10 +29,12 @@ export class FaucetClient {
     return text
   }
 
-  async createInvoice(amountSats: number): Promise<string> {
+  /** An invoice from devimint's LDK gateway node — a payee outside the
+   * federation. The faucet reads the amount as millisatoshis. */
+  async createInvoice(amountMsats: number): Promise<string> {
     const res = await fetch(`${this.baseUrl}/invoice`, {
       method: 'POST',
-      body: amountSats.toString(),
+      body: amountMsats.toString(),
     })
     const text = await res.text()
     if (!res.ok) throw new Error(`Failed to generate faucet invoice: ${text}`)

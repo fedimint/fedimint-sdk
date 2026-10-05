@@ -729,6 +729,59 @@ export class AppiumTestBase {
     )
   }
 
+  /**
+   * Waits for a section's result line to hold an outcome: some text other
+   * than the "working…" placeholder every section writes before its SDK call.
+   * For a call whose outcome is not known in advance — a success or a
+   * structured error — where `waitForTextInElement` would need to know which.
+   * `unless` names further texts that are not an outcome yet (an earlier
+   * call's result still on screen, say).
+   */
+  async waitForResultInElement(
+    key: string,
+    timeout = DEFAULT_TIMEOUT,
+    unless: (text: string) => boolean = () => false,
+  ): Promise<string> {
+    const startTime = Date.now()
+    let last = ''
+    while (Date.now() - startTime < timeout) {
+      const element =
+        (await this.findElementByKey(key)) ?? (await this.scrollToElement(key))
+      if (element) {
+        last = await element.getText()
+        if (last && !last.startsWith('working') && !unless(last)) return last
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    throw new Error(
+      `Element "${key}" never held an outcome within ${timeout}ms — last read: "${last}"`,
+    )
+  }
+
+  /** Whether the view `key` is enabled, scrolling to it if needed. */
+  async isEnabledByKey(key: string): Promise<boolean> {
+    const element = await this.bringIntoView(key, DEFAULT_TIMEOUT)
+    return (await element.getAttribute('enabled')) === 'true'
+  }
+
+  /**
+   * Kills the app's process and launches it again, keeping its data — what a
+   * user closing and reopening the app does, as opposed to `resetAppToFresh`.
+   * The SDK's storage, seed and operations survive; every in-memory handle,
+   * subscription and lock does not, so the next open has to reattach.
+   */
+  async restartApp(): Promise<void> {
+    console.log('Restarting the app, keeping its data...')
+    const appId = process.env.APP_PACKAGE
+    if (!appId) {
+      throw new Error('restartApp requires APP_PACKAGE to be set')
+    }
+    await this.driver.executeScript('mobile: terminateApp', [{ appId }])
+    await this.driver.executeScript('mobile: activateApp', [{ appId }])
+    await this.waitForText(APP_TITLE, 0, true, 30000)
+    console.log('App restarted')
+  }
+
   async resetAppToFresh(): Promise<void> {
     console.log('Resetting app to fresh-install state...')
     const appId = process.env.APP_PACKAGE

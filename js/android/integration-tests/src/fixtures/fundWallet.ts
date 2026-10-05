@@ -5,9 +5,11 @@ import { receiveOverLightning } from '../flows/wallet'
 import { Fixture } from './types'
 
 /** What the faucet pays in, in millisatoshis. The wasm suite's `fundedWallet`
- * uses 10_000; this asks for more so a test can spend a few times without
- * arranging its own funding. */
-export const FUNDING_MSATS = 50_000
+ * uses 10_000; this asks for what the Rust lightning-send test funds with, so
+ * the tests that inherit it — an ecash round trip, a lightning send, the
+ * error checks — fit after v2's per-transaction fees without each arranging
+ * its own funding. */
+export const FUNDING_MSATS = 200_000
 
 /**
  * Leaves the wallet holding ecash, so a test that spends doesn't have to set

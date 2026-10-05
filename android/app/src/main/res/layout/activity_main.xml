@@ -349,5 +349,28 @@
                 android:id="@+id/activityResult"
                 style="@style/Result" />
         </LinearLayout>
+
+        <!-- federation.operation -->
+        <LinearLayout style="@style/Section">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="Look Up Operation" />
+
+            <EditText
+                android:id="@+id/operationId"
+                style="@style/Input"
+                android:hint="operation id" />
+
+            <Button
+                android:id="@+id/operationLookup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Look up and follow" />
+
+            <TextView
+                android:id="@+id/operationResult"
+                style="@style/Result" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>

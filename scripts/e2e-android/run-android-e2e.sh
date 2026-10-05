@@ -52,7 +52,29 @@ MSG
   exit 1
 fi
 
-echo "=== Android E2E (SDK) tests ==="
+# Which module generation the federation runs. scripts/setup_test_shell.sh
+# exports it (v1 unless the caller asked otherwise) when it sets the module
+# flags, so an unset value means the federation was not started by it.
+# `mixed` is refused rather than run: the SDK rejects a federation that mixes
+# module generations by design, so there is no successful payment to test.
+case "${FM_SDK_SHAPE:-}" in
+  v1 | v2) ;;
+  mixed)
+    echo "FM_SDK_SHAPE=mixed is not an Android E2E target: the SDK refuses federations" \
+      "that mix module generations. Use v1 or v2." >&2
+    exit 1
+    ;;
+  *)
+    echo "FM_SDK_SHAPE is '${FM_SDK_SHAPE:-}' — expected v1 or v2. Start the run through" \
+      "scripts/setup_test_shell.sh, which sets it." >&2
+    exit 1
+    ;;
+esac
+
+echo "=== Android E2E (SDK) tests — federation shape ${FM_SDK_SHAPE} ==="
+echo "module flags: mint=${FM_ENABLE_MODULE_MINT:-?} wallet=${FM_ENABLE_MODULE_WALLET:-?}" \
+  "ln=${FM_ENABLE_MODULE_LNV1:-?} mintv2=${FM_ENABLE_MODULE_MINTV2:-?}" \
+  "walletv2=${FM_ENABLE_MODULE_WALLETV2:-?} lnv2=${FM_ENABLE_MODULE_LNV2:-?}"
 
 cd "$REPO_ROOT"
 
@@ -268,7 +290,8 @@ else
   done
 
   if [[ -z "${TESTS_TO_RUN:-}" ]]; then
-    echo "Which tests to run? (mnemonic, inviteCode, federation, lightning, mint, all)"
+    echo "Which tests to run? (mnemonic, inviteCode, federation, lightning, mint," \
+      "lightningSend, errors, persistence, operationRestart, onchain, all)"
     read -r TESTS_TO_RUN
     TESTS_TO_RUN=${TESTS_TO_RUN:-all}
   fi
@@ -299,20 +322,63 @@ fi
 #              from the gateway's own API, not through the federation.
 #   faucet     FM_PORT_FAUCET, so a test could reach it from the device too;
 #              the runner itself talks to it from the host.
+#   esplora    FM_PORT_ESPLORA — the wallet client watches deposit addresses
+#              and broadcasts through the esplora URL in the federation's
+#              config, which names it on 127.0.0.1 like everything else.
 reverse_devimint_ports() {
   local base="$FM_FEDERATION_BASE_PORT"
   local fed_size="${FM_FED_SIZE:-4}"
   local ports_per_peer=4
   local last=$((base + fed_size * ports_per_peer - 1))
 
-  echo "Forwarding devimint ports into the emulator: $base-$last plus gateways/faucet"
+  echo "Forwarding devimint ports into the emulator: $base-$last plus gateways/faucet/esplora"
   local port
   for port in $(seq "$base" "$last") \
-    "${FM_PORT_GW_LND:-}" "${FM_PORT_GW_LDK:-}" "${FM_PORT_FAUCET:-}"; do
+    "${FM_PORT_GW_LND:-}" "${FM_PORT_GW_LDK:-}" "${FM_PORT_FAUCET:-}" \
+    "${FM_PORT_ESPLORA:-}"; do
     [[ -n "$port" ]] || continue
     adb -s "$DEVICE_ID" reverse "tcp:$port" "tcp:$port" >/dev/null
   done
 }
+
+# ── lnv2: one gateway, the funded one ──────────────────────────────────
+#
+# The lnv2 client picks a gateway at random from the guardians' list on
+# purpose, and devimint's wasm-test-setup funds only the LND gateway's ecash,
+# so a receive through either LDK gateway cannot be funded and a send through
+# the faucet's own LDK gateway to the faucet's invoice is a self-payment.
+# Removing the LDK entries through the same admin call devimint used to add
+# them leaves the funded gateway as the SDK's only choice, and the faucet's LDK
+# node as the counterparty — as on v1, where the SDK picks the cheapest gateway
+# and wasm-test-setup sets the LND gateway's fees to zero. The same step as
+# rust/fedimint-sdk/tests/integration.rs's pin_lnv2_gateway_to_lnd and
+# scripts/run-sdk-examples-inner.sh, except once per guardian: this federation
+# has FM_FED_SIZE of them, and the client reads every guardian's list.
+#
+# FM_MINT_CLIENT is a ready-to-run command line, deliberately left unquoted so
+# it splits into a program and its arguments. `pass` is the admin password
+# devimint sets everywhere.
+pin_lnv2_gateways() {
+  [[ "$FM_SDK_SHAPE" == v2 ]] || return 0
+  local fed_size="${FM_FED_SIZE:-4}"
+  local lnd_needle=":${FM_PORT_GW_LND:?FM_PORT_GW_LND is not set}/"
+  local peer listed url
+  for ((peer = 0; peer < fed_size; peer++)); do
+    # shellcheck disable=SC2086
+    listed="$($FM_MINT_CLIENT --our-id "$peer" --password pass module lnv2 gateways list)"
+    if ! grep -qF "$lnd_needle" <<<"$listed"; then
+      echo "Guardian $peer does not list the LND gateway among its lnv2 gateways: $listed" >&2
+      exit 1
+    fi
+    while IFS= read -r url; do
+      [[ "$url" == *"$lnd_needle"* ]] && continue
+      echo "guardian $peer: removing lnv2 gateway not on LND: $url"
+      # shellcheck disable=SC2086
+      $FM_MINT_CLIENT --our-id "$peer" --password pass module lnv2 gateways remove "$url" >/dev/null
+    done < <(grep -o '"http[^"]*"' <<<"$listed" | tr -d '"')
+  done
+}
+pin_lnv2_gateways
 
 echo "Installing APK on $DEVICE_ID..."
 adb -s "$DEVICE_ID" install -r "$APK_PATH"
@@ -372,6 +438,15 @@ check_dns_config() {
     echo "$found"
     return 0
   fi
+  # Only v1 has to have built a resolver: on v2 the lnv2 gateway list is pinned
+  # to devimint's LND gateway (see pin_lnv2_gateways), which is plain HTTP, so
+  # no lightning test dials the iroh gateway that builds one. The fallback
+  # warning above still fails a v2 run.
+  if [[ "$FM_SDK_SHAPE" != v1 ]]; then
+    echo "No DNS resolver read the device's DNS configuration during this ${FM_SDK_SHAPE} run" \
+      "(expected: lnv2 is pinned to the HTTP LND gateway)."
+    return 0
+  fi
   # Word-split on purpose: TESTS_TO_RUN is the runner's argument list.
   # shellcheck disable=SC2086
   if printf '%s\n' $TESTS_TO_RUN | grep -qxE 'all|lightning'; then
@@ -401,6 +476,7 @@ PLATFORM=android \
   APP_PACKAGE="$APP_ID" \
   APP_ACTIVITY="$APP_ACTIVITY" \
   FAUCET="${FAUCET:-http://localhost:${FM_PORT_FAUCET:-15243}}" \
+  FM_SDK_SHAPE="$FM_SDK_SHAPE" \
   pnpm exec ts-node --project tsconfig.json src/runner.ts $TESTS_TO_RUN &&
   tests_status=0 || tests_status=$?
 

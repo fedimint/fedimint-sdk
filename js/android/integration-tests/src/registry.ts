@@ -1,9 +1,14 @@
 import { AppiumTestBase } from './configs/appium/AppiumTestBase'
+import { ErrorService } from './services/ErrorService.test'
 import { FederationService } from './services/FederationService.test'
 import { InviteCodeService } from './services/InviteCodeService.test'
+import { LightningSendService } from './services/LightningSendService.test'
 import { LightningService } from './services/LightningService.test'
 import { MintService } from './services/MintService.test'
 import { MnemonicService } from './services/MnemonicService.test'
+import { OnchainService } from './services/OnchainService.test'
+import { OperationRestartService } from './services/OperationRestartService.test'
+import { PersistenceService } from './services/PersistenceService.test'
 
 export type TestClass = (new () => AppiumTestBase) & {
   prerequisites: readonly string[]
@@ -15,12 +20,21 @@ export type TestClass = (new () => AppiumTestBase) & {
 // lets each inherit the last one's state (joined, then funded) instead of
 // resetting the app and joining again. The runner enforces the states
 // regardless — this ordering only decides how much work it repeats.
+//
+// The restart tests come after everything that only reads the wallet, and the
+// on-chain round trip last: it is the slowest, and the one most likely to be
+// what a failure in CI needs a fresh look at.
 export const availableTests: Record<string, TestClass> = {
   mnemonic: MnemonicService,
   inviteCode: InviteCodeService,
   federation: FederationService,
   lightning: LightningService,
   mint: MintService,
+  lightningSend: LightningSendService,
+  errors: ErrorService,
+  persistence: PersistenceService,
+  operationRestart: OperationRestartService,
+  onchain: OnchainService,
 }
 
 export type TestName = keyof typeof availableTests

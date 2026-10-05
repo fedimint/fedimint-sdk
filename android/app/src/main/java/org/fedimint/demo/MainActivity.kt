@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fedimint.sdk.AnyOperation
 import org.fedimint.sdk.EcashReceiveState
 import org.fedimint.sdk.ErrorCode
 import org.fedimint.sdk.Federation
@@ -37,8 +38,8 @@ private const val TESTNET_FEDERATION_CODE =
 /**
  * Every SDK action on one scrolling screen, section by section, mirroring
  * js/examples/vite-core: wallet status, join, generate an invoice, redeem and
- * send ecash, pay lightning, parse an invite code, deposit, send on-chain, and
- * recent activity.
+ * send ecash, pay lightning, parse an invite code, deposit, send on-chain,
+ * recent activity, and looking an operation up by id.
  *
  * The point of this app is to *run* the native library against a real
  * federation, not just link it. Every call here is one this SDK's `uniffi`
@@ -120,11 +121,12 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.onchainQuote).setOnClickListener { onOnchainQuote() }
         onchainSend.setOnClickListener { onOnchainSend() }
         findViewById<Button>(R.id.activity).setOnClickListener { onActivity() }
+        findViewById<Button>(R.id.operationLookup).setOnClickListener { onOperationLookup() }
 
         needsSdk = listOf(R.id.preview, R.id.join, R.id.recover).map { findViewById(it) }
         needsFederation = listOf(
             R.id.lnReceive, R.id.ecashReceive, R.id.ecashSend, R.id.lnQuote,
-            R.id.deposit, R.id.onchainQuote, R.id.activity,
+            R.id.deposit, R.id.onchainQuote, R.id.activity, R.id.operationLookup,
         ).map { findViewById(it) }
 
         refreshState()
@@ -267,10 +269,8 @@ class MainActivity : AppCompatActivity() {
             val sdk = sdk ?: return@section "open the wallet first"
             val recovery = sdk.recover(InviteCode.parse(inviteText))
             val header = "Recovering ${recovery.federation.id()}"
-            withContext(Dispatchers.Main) {
-                attach(recovery.federation)
-                watch(result, header, recovery.progress.updates()) { it.next() }
-            }
+            withContext(Dispatchers.Main) { attach(recovery.federation) }
+            afterRender { watch(result, header, recovery.progress.updates()) { it.next() } }
             "$header\n\nstate: ${describeState(recovery.progress.state())}"
         }
     }
@@ -291,8 +291,8 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 lastInvoice = receive.invoice
                 lnReceiveCopy.isEnabled = true
-                watch(result, header, receive.operation.updates()) { it.next() }
             }
+            afterRender { watch(result, header, receive.operation.updates()) { it.next() } }
             header
         }
     }
@@ -410,8 +410,8 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 lastAddress = receive.address
                 depositCopy.isEnabled = true
-                watch(result, header, receive.operation.updates()) { it.next() }
             }
+            afterRender { watch(result, header, receive.operation.updates()) { it.next() } }
             header
         }
     }
@@ -447,9 +447,7 @@ class MainActivity : AppCompatActivity() {
         section(R.id.onchainSendResult) {
             val operation = onchain.send(quote)
             val header = "operation ${operation.id()}"
-            withContext(Dispatchers.Main) {
-                watch(result, header, operation.updates()) { it.next() }
-            }
+            afterRender { watch(result, header, operation.updates()) { it.next() } }
             "$header\nstate: ${describeState(operation.state())}"
         }
     }
@@ -467,9 +465,59 @@ class MainActivity : AppCompatActivity() {
                     append("${item.kind} ${item.direction ?: ""} ${item.status}")
                     item.amount?.let { append("  ${formatMsats(it)}") }
                     item.fee?.let { append("  fee ${formatMsats(it)}") }
+                    append("\nop ${item.operationId}")
                 }
             }
         }
+    }
+
+    // ── Operation lookup ─────────────────────────────────────────────────
+
+    /**
+     * Reattaches to a recorded operation by id — the path an application
+     * takes after a restart to pick up something it started earlier — and
+     * follows its typed state to the end.
+     *
+     * `federation.operation` hands back the type-erased handle; `kind()`
+     * labels it and the matching `as*` downcast gives the typed one whose
+     * `updates()` this follows like any freshly started operation.
+     */
+    private fun onOperationLookup() {
+        val idText = findViewById<EditText>(R.id.operationId).text.toString().trim()
+        val result = findViewById<TextView>(R.id.operationResult)
+        section(R.id.operationResult) {
+            val federation = federation ?: return@section "join a federation first"
+            if (idText.isEmpty()) return@section "enter an operation id"
+
+            val any = federation.operation(idText) ?: return@section "not found: $idText"
+            any.use { op ->
+                val header = "operation ${op.id()}\nkind ${op.kind()}"
+                val typed = typedOperation(op)
+                    ?: return@section "$header\n\nno typed handle in this build"
+                val state = typed.state()
+                afterRender { typed.follow(result, header) }
+                "$header\n\nstate: ${describeState(state)}"
+            }
+        }
+    }
+
+    /** One typed operation handle, with what the lookup needs from it. */
+    private class TypedOperation(
+        val state: suspend () -> Any?,
+        val follow: (TextView, String) -> Unit,
+    )
+
+    /** Downcasts the type-erased handle to whichever typed handle it is. */
+    private fun typedOperation(op: AnyOperation): TypedOperation? {
+        fun <T : AutoCloseable> typed(state: suspend () -> Any?, updates: () -> T, next: suspend (T) -> Any?) =
+            TypedOperation(state) { view, header -> watch(view, header, updates(), next) }
+        return op.asEcashSend()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asEcashReceive()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asLnSend()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asLnReceive()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asOnchainSend()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asOnchainReceive()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
+            ?: op.asRecovery()?.let { h -> typed({ h.state() }, h::updates) { it.next() } }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -483,16 +531,37 @@ class MainActivity : AppCompatActivity() {
      * the main dispatcher — which is why every caller reads its input fields
      * before handing `block` over, and switches back to Main to update state.
      */
-    private fun section(resultId: Int, block: suspend () -> String) {
+    private fun section(resultId: Int, block: suspend Section.() -> String) {
         val result = findViewById<TextView>(resultId)
         result.text = "working…"
         lifecycleScope.launch {
+            val section = Section()
             result.text = try {
-                withContext(Dispatchers.IO) { block() }
+                withContext(Dispatchers.IO) { section.block() }
             } catch (e: SdkException) {
+                section.followUps.clear()
                 describe(e)
             }
+            section.followUps.forEach { it() }
             refreshState()
+        }
+    }
+
+    /**
+     * What a [section] block can ask for besides its result: work to run on
+     * the main thread once that result is on screen.
+     *
+     * That is where a [watch] belongs. Started from inside the block, its
+     * first states could land before the block's own result and be
+     * overwritten by it — and when the operation finishes that quickly, the
+     * terminal state would be lost behind the stale one with nothing left to
+     * correct it.
+     */
+    private class Section {
+        val followUps = mutableListOf<() -> Unit>()
+
+        fun afterRender(action: () -> Unit) {
+            synchronized(followUps) { followUps += action }
         }
     }
 
@@ -571,12 +640,18 @@ class MainActivity : AppCompatActivity() {
         null -> "null"
         is Enum<*> -> state.name
         is org.fedimint.sdk.EcashReceiveState.Failed -> "Failed(${state.reason})"
-        is org.fedimint.sdk.LnSendState.Success -> "Success(fee=${state.fee})"
+        is org.fedimint.sdk.LnSendState.Success -> "Success(fee=${state.fee}, preimage=${state.preimage})"
         is org.fedimint.sdk.LnSendState.Failed -> "Failed(${state.reason})"
         is org.fedimint.sdk.LnReceiveState.Canceled -> "Canceled(${state.reason})"
         is org.fedimint.sdk.OnchainSendState.Succeeded -> "Succeeded(txid=${state.txid})"
         is org.fedimint.sdk.OnchainSendState.Refunded -> "Refunded(${state.reason})"
         is org.fedimint.sdk.OnchainSendState.Failed -> "Failed(${state.reason})"
+        is org.fedimint.sdk.OnchainReceiveState.WaitingForConfirmation ->
+            "WaitingForConfirmation(txid=${state.txid}, gross=${state.grossDeposited} sat)"
+        is org.fedimint.sdk.OnchainReceiveState.Confirmed ->
+            "Confirmed(txid=${state.txid}, gross=${state.grossDeposited} sat)"
+        is org.fedimint.sdk.OnchainReceiveState.Claimed ->
+            "Claimed(txid=${state.txid}, gross=${state.grossDeposited} sat, net=${state.netCredit} msat)"
         is org.fedimint.sdk.OnchainReceiveState.Failed -> "Failed(${state.reason})"
         is org.fedimint.sdk.RecoveryState.Failed -> "Failed(${state.reason})"
         is org.fedimint.sdk.LightningRoute.Gateway -> "Gateway(${state.gatewayId})"
