@@ -347,7 +347,8 @@ export class AppiumTestBase {
     key: string,
     timeout: number,
   ): Promise<ChainablePromiseElement> {
-    if (!(await this.findElementByKey(key))) {
+    const element = await this.findElementByKey(key)
+    if (!element || !(await this.isElementVisible(element))) {
       await this.scrollToElement(key)
     }
     return this.waitForElementDisplayed(key, timeout)
@@ -387,9 +388,45 @@ export class AppiumTestBase {
     timeout = DEFAULT_TIMEOUT,
   ): Promise<void> {
     console.log(`Attempting to type into element: ${key}`)
-    const element = await this.bringIntoView(key, timeout)
-    await element.setValue(text)
-    console.log(`Successfully typed into element: ${key}`)
+
+    // Clear and type as two steps, finding the field again in between, rather
+    // than one `setValue` (which is clear-then-type on a single reference).
+    // A multiline field still holding a long value from an earlier test — the
+    // ecash notes field after MintService, say — is often only partly on
+    // screen, and clearing it shrinks it: the layout moves, the field can end
+    // up above the viewport, and the reference the clear used goes stale, so
+    // the typing half fails against an app that is working fine.
+    const cleared = await this.bringIntoView(key, timeout)
+    await cleared.clearValue()
+
+    // A field can still go stale between being found and being typed into
+    // (the keyboard opening resizes the window, too), so that is retried
+    // with a fresh lookup a few times before giving up.
+    const attempts = 3
+    let lastError: unknown
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const element = await this.bringIntoView(key, timeout)
+        await element.setValue(text)
+        // Read back rather than trust the call: a field that lost the text,
+        // or kept part of the old value, would otherwise fail much later, in
+        // whatever the test does with it.
+        const typed = (await element.getText()).trim()
+        if (typed !== text.trim()) {
+          throw new Error(`"${key}" holds "${typed}" after typing "${text}"`)
+        }
+        console.log(`Successfully typed into element: ${key}`)
+        return
+      } catch (error) {
+        lastError = error
+        console.log(
+          `Typing into "${key}" failed (attempt ${attempt}/${attempts}): ${(error as Error).message}`,
+        )
+      }
+    }
+    throw new Error(
+      `Could not type into "${key}" after ${attempts} attempts: ${(lastError as Error).message}`,
+    )
   }
 
   async elementIsDisplayed(
