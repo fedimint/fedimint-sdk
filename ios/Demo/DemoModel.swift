@@ -401,13 +401,21 @@ final class DemoModel: ObservableObject {
             // the run was superseded loses funds outright. Showing it under a
             // federation the user has since switched away from is the lesser
             // evil.
+            //
+            // The token leaves only through `lastNotes` and "Copy notes". The
+            // summary names the notes but never prints them, because it renders
+            // as selectable text, and a long-press copy
+            // would put bearer value on the pasteboard without the local-only,
+            // expiring write that button makes. `attach` clears `lastNotes` and
+            // this summary together, so leaving the token out of it loses
+            // nothing.
             self.lastNotes = sent.notes
 
             let summary = """
                 notes \(formatMsats(quote.notesValue())) + fee \(formatMsats(quote.fee()))
 
-                hand these notes to the receiver:
-                \(sent.notes.display())
+                hand these notes to the receiver: tap Copy notes. The copy stays
+                on this device and leaves the pasteboard after two minutes.
 
                 operation \(sent.operation.id()) — \(state.map { "\($0)" } ?? "state unavailable")
                 """
