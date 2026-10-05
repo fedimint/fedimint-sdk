@@ -27,4 +27,3 @@ clap = "4.6.0"
 # uniffi 0.32, and the released tool stops at 0.31.
 git = "https://github.com/zeenix/uniffi-bindgen-react-native"
 rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440"
-version = "0.31.0-5"
