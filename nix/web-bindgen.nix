@@ -1,15 +1,10 @@
 # The two host tools the web binding needs, pinned so the generated TypeScript and the module
 # it drives never drift from each other.
 #
-#   ubrn              uniffi-bindgen-react-native, from the fork branch that reads UniFFI 0.32
-#                     metadata (jhugman/uniffi-bindgen-react-native#468), plus
-#                     jhugman/uniffi-bindgen-react-native#491, without which the generated
-#                     TypeScript types the SDK's `Cursor` as the runtime's own `Cursor` class
-#                     rather than a string. rust/fedimint-sdk links uniffi 0.32.0 and the
-#                     released tool stops at 0.31. Its `wasm2` flavor generates the TypeScript
-#                     in js/web/sdk-web/src/generated from the built `.wasm`, and the React
-#                     Native bindings come from the same build. Move `rev` (and
-#                     nix/ubrn-Cargo.lock) together when the branch moves.
+#   ubrn              uniffi-bindgen-react-native, built from rust/ubrn, whose Cargo.toml and
+#                     Cargo.lock pin the tool's version. Its `wasm2` flavor generates the
+#                     TypeScript in js/web/sdk-web/src/generated from the built `.wasm`, and the
+#                     React Native bindings come from the same build.
 #   wasm-bindgen-cli  exactly the `wasm-bindgen` crate version the SDK's dependency tree links
 #                     (`=0.2.106` in rust/fedimint-sdk/Cargo.toml); ubrn shells out to it to
 #                     rewrite the module's wasm-bindgen imports into the `_bg.js` glue.
@@ -18,24 +13,23 @@ let
   lib = pkgs.lib;
 in
 {
-  ubrn = pkgs.rustPlatform.buildRustPackage {
-    pname = "uniffi-bindgen-react-native";
-    version = "0.31.0-5-uniffi-0.32";
-    src = pkgs.fetchFromGitHub {
-      owner = "zeenix";
-      repo = "uniffi-bindgen-react-native";
-      rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440";
-      hash = "sha256-viVRrdKnDhsMxQBHh4iFSlaQkIFl17hx3wfOv1ex5Cg=";
+  ubrn =
+    let
+      cargoToml = lib.importTOML ../rust/ubrn/Cargo.toml;
+    in
+    pkgs.rustPlatform.buildRustPackage {
+      pname = cargoToml.package.name;
+      version = cargoToml.package.version;
+      src = ../rust/ubrn;
+      cargoLock = {
+        lockFile = ../rust/ubrn/Cargo.lock;
+        # The tool is a git dependency. This fetches it at the commit Cargo.lock records, so
+        # moving the pin is a Cargo.toml edit and `cargo update`, with no hash to update here.
+        allowBuiltinFetchGit = true;
+      };
+      doCheck = false;
+      meta.mainProgram = "ubrn";
     };
-    cargoLock.lockFile = ./ubrn-Cargo.lock;
-    buildAndTestSubdir = "crates/ubrn_cli";
-    doCheck = false;
-    # `ubrn` is the name the tool's own docs and npm launcher use.
-    postInstall = ''
-      ln -s $out/bin/uniffi-bindgen-react-native $out/bin/ubrn
-    '';
-    meta.mainProgram = "uniffi-bindgen-react-native";
-  };
 
   wasm-bindgen-cli = pkgs.rustPlatform.buildRustPackage rec {
     pname = "wasm-bindgen-cli";
