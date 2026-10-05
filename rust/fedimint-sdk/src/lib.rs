@@ -425,3 +425,53 @@ pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
     Mnemonic, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
 };
+
+// The `async-compat` dependency in Cargo.toml is never named in the source: it is there only to
+// turn on its `multi-thread` feature, which cargo unifies onto the copy `uniffi_core` polls every
+// exported async fn inside. Lose that and nothing fails to compile; the process aborts on the
+// first `fedimint-rocksdb` transaction instead. These tests are what turns that into a failure
+// before release rather than on a device.
+#[cfg(all(test, feature = "uniffi", not(target_family = "wasm")))]
+mod async_compat_runtime {
+    /// What an exported async fn sees: no runtime is current on the foreign thread polling it,
+    /// so `Compat` enters its process-wide fallback.
+    #[test]
+    fn uniffi_fallback_runtime_is_multi_threaded() {
+        let flavor = futures::executor::block_on(async_compat::Compat::new(async {
+            tokio::runtime::Handle::current().runtime_flavor()
+        }));
+        assert_eq!(
+            flavor,
+            tokio::runtime::RuntimeFlavor::MultiThread,
+            "async-compat's fallback runtime is not multi-threaded: `block_in_place` in \
+             fedimint-rocksdb would abort the process. See the `async-compat` entry in Cargo.toml."
+        );
+
+        // The failure mode itself, on a task the future spawns, the way the client's
+        // `sm-executor` is. On a current-thread runtime this panics inside the task.
+        let spawned = futures::executor::block_on(async_compat::Compat::new(async {
+            tokio::spawn(async { tokio::task::block_in_place(|| 1) }).await
+        }));
+        assert_eq!(
+            spawned.expect("block_in_place panicked on the fallback runtime"),
+            1
+        );
+    }
+
+    /// The test above checks this crate's copy. Only one copy in the graph makes it the one
+    /// `uniffi_core` uses too: an `async-compat` release uniffi moves to that does not unify
+    /// with ours would leave uniffi's fallback current-thread with this crate's still passing.
+    #[test]
+    fn async_compat_resolves_to_one_copy() {
+        let lock = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
+        let copies = lock
+            .lines()
+            .filter(|line| line.trim() == r#"name = "async-compat""#)
+            .count();
+        assert_eq!(
+            copies, 1,
+            "Cargo.lock resolves {copies} copies of async-compat; uniffi_core's no longer gets \
+             the `multi-thread` feature. See the `async-compat` entry in Cargo.toml."
+        );
+    }
+}
