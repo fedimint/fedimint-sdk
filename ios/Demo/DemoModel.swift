@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import SwiftUI
 
 import FedimintSdk
@@ -170,16 +171,42 @@ final class DemoModel: ObservableObject {
 
     /// `exportMnemonic()` hands back an opaque `Mnemonic`; `words()` is the
     /// deliberate step that takes the phrase out as plain strings.
+    ///
+    /// Showing the phrase needs device-owner authentication first: Face ID or
+    /// Touch ID, falling back to the passcode. Hiding it needs nothing. It fails
+    /// closed: a device with no passcode cannot authenticate the owner, so it
+    /// never shows the phrase.
     func toggleSeed() {
         guard seed == nil else {
             seed = nil
             return
         }
-        guard let sdk else { return }
-        seed = sdk.exportMnemonic().words()
-            .enumerated()
-            .map { "\($0.offset + 1). \($0.element)" }
-            .joined(separator: "\n")
+        guard sdk != nil else { return }
+
+        Task {
+            let context = LAContext()
+            var unavailable: NSError?
+            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &unavailable) else {
+                results[.wallet] = "set a device passcode to view the seed"
+                return
+            }
+            do {
+                try await context.evaluatePolicy(
+                    .deviceOwnerAuthentication,
+                    localizedReason: "Show the wallet's recovery phrase")
+            } catch {
+                results[.wallet] = "seed stays hidden: \(error.localizedDescription)"
+                return
+            }
+            // Read the handle after the prompt, not before: an Open Wallet
+            // that lands while it is up replaces the instance, and the phrase
+            // shown has to be the open wallet's.
+            guard let sdk = self.sdk else { return }
+            seed = sdk.exportMnemonic().words()
+                .enumerated()
+                .map { "\($0.offset + 1). \($0.element)" }
+                .joined(separator: "\n")
+        }
     }
 
     func refreshBalance() {

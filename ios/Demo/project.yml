@@ -50,6 +50,14 @@ targets:
         # key documents that the omission is deliberate.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
+        # Showing the seed asks for device-owner authentication (`toggleSeed`).
+        # Without this string iOS terminates the app the first time Face ID is
+        # tried, rather than prompting.
+        NSFaceIDUsageDescription: Confirm it is you before the wallet's recovery phrase is shown.
+        # Answers App Store Connect's export-compliance question up front, so an
+        # upload does not stall on it. See "App Store export compliance" in
+        # ../README.md before copying this into a wallet that ships.
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
         # Debug only by intent: this app exists to be run, not shipped, and an

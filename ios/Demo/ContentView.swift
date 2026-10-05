@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 import FedimintSdk
 
@@ -56,8 +57,8 @@ struct ContentView: View {
             .buttonStyle(.bordered)
 
             if let seed = model.seed {
-                // The one place the phrase leaves the SDK's care. A real wallet
-                // would gate this behind device authentication.
+                // The one place the phrase leaves the SDK's care, so it only
+                // gets here past device-owner authentication (`toggleSeed`).
                 Text(seed).font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
@@ -132,7 +133,7 @@ struct ContentView: View {
                     .disabled(!model.hasFederation || model.isSendingEcash || model.isAttaching)
                 // `notes` is an opaque handle, so nothing prints the token by
                 // accident; `display()` is the deliberate way to take it out.
-                CopyButton("Copy notes", value: model.lastNotes?.display())
+                CopyButton("Copy notes", value: model.lastNotes?.display(), bearer: true)
             }
             .buttonStyle(.bordered)
 
@@ -255,18 +256,41 @@ private struct ResultText: View {
     }
 }
 
+/// Copies `value` to the general pasteboard.
+///
+/// A `bearer` value is money to whoever reads it: e-cash notes, not an invoice
+/// or an address, which are useless to anyone but the payer. Those stay on this
+/// device, so Universal Clipboard never syncs them to the user's other devices,
+/// and they expire after two minutes rather than sitting there for any app that
+/// reads the pasteboard later. The other values keep the plain copy, because
+/// pasting an invoice or address on another device is the point.
 private struct CopyButton: View {
+    private static let bearerLifetime: TimeInterval = 120
+
     private let title: String
     private let value: String?
+    private let bearer: Bool
 
-    init(_ title: String, value: String?) {
+    init(_ title: String, value: String?, bearer: Bool = false) {
         self.title = title
         self.value = value
+        self.bearer = bearer
     }
 
     var body: some View {
         Button(title) {
-            if let value { UIPasteboard.general.string = value }
+            guard let value else { return }
+            if bearer {
+                UIPasteboard.general.setItems(
+                    [[UTType.plainText.identifier: value]],
+                    options: [
+                        .localOnly: true,
+                        .expirationDate: Date().addingTimeInterval(Self.bearerLifetime),
+                    ]
+                )
+            } else {
+                UIPasteboard.general.string = value
+            }
         }
         .disabled(value == nil)
     }
