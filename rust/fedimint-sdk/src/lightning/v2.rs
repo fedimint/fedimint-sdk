@@ -464,7 +464,15 @@ pub(super) async fn receive(
     amount: Amount,
     description: &str,
 ) -> Result<LnReceive> {
-    let (gateway, routing) = module.select_gateway(None).await.map_err(select_error)?;
+    let gateways = module
+        .list_gateways(None)
+        .await
+        .map_err(|err| unreachable(err.fmt_compact()))?;
+    let (gateway, routing) = receive_gateway(gateways, |gateway| async move {
+        module.routing_info(&gateway).await.ok().flatten()
+    })
+    .await
+    .map_err(select_error)?;
     let mut receive_fee = routing.receive_fee;
     let (mut fee, mut net_credit) = receive_terms(client, module, amount, receive_fee).await?;
     let created_at = now();
@@ -570,6 +578,44 @@ async fn receive_terms(
     // seen from the other side.
     let net_credit = amount.checked_sub(fee).ok_or_else(amount_too_small)?;
     Ok((fee, net_credit))
+}
+
+/// The first of `gateways` that answers `routing_info` and accepts incoming payments for this
+/// federation, with the routing info it answered.
+///
+/// A gateway that does not answer, or does not serve this federation, yields `None` from
+/// `routing_info` and is skipped, as is one that answers with receives turned off.
+// `LightningClientModule::select_gateway` returns the first gateway that answers whether or not it
+// accepts receives, and `receive_with_terms` then refuses one that does not, even when another
+// registered gateway would have issued the invoice. The module's own receive-aware selection
+// (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1049-1077`) is private, so this
+// makes the same pass and reports the same refusals.
+async fn receive_gateway<F, Fut>(
+    gateways: Vec<SafeUrl>,
+    routing_info: F,
+) -> core::result::Result<(SafeUrl, RoutingInfo), SelectGatewayError>
+where
+    F: Fn(SafeUrl) -> Fut,
+    Fut: Future<Output = Option<RoutingInfo>>,
+{
+    if gateways.is_empty() {
+        return Err(SelectGatewayError::NoGatewaysAvailable);
+    }
+    let mut any_answered = false;
+    for gateway in gateways {
+        let Some(routing) = routing_info(gateway.clone()).await else {
+            continue;
+        };
+        if routing.receive_enabled {
+            return Ok((gateway, routing));
+        }
+        any_answered = true;
+    }
+    Err(if any_answered {
+        SelectGatewayError::NoGatewayAcceptsReceives
+    } else {
+        SelectGatewayError::GatewaysUnresponsive
+    })
 }
 
 /// The contract amount and gateway fee an lnv2 receive of `amount` would use at `receive_fee`.
@@ -981,6 +1027,80 @@ mod tests {
             }
             other => panic!("expected NetworkMismatch details, got {other:?}"),
         }
+    }
+
+    /// What a gateway answers a routing-info request with, receives on or off.
+    fn routing(receive_enabled: bool) -> RoutingInfo {
+        let key: fedimint_core::secp256k1::PublicKey = GATEWAY_ID.parse().expect("a key");
+        let fee = PaymentFee {
+            base: fedimint_core::Amount::from_msats(1_000),
+            parts_per_million: 10_000,
+        };
+        RoutingInfo {
+            lightning_public_key: key,
+            lightning_alias: None,
+            module_public_key: key,
+            send_fee_minimum: fee,
+            send_fee_default: fee,
+            expiration_delta_minimum: 144,
+            expiration_delta_default: 500,
+            receive_fee: fee,
+            receive_enabled,
+        }
+    }
+
+    fn gateway(name: &str) -> SafeUrl {
+        format!("https://{name}.example")
+            .parse()
+            .expect("a gateway url")
+    }
+
+    #[tokio::test]
+    async fn a_receive_goes_to_the_first_gateway_that_accepts_receives() {
+        let (silent, off, on, also_on) = (
+            gateway("silent"),
+            gateway("off"),
+            gateway("on"),
+            gateway("also-on"),
+        );
+        let answer = |asked: SafeUrl| {
+            let routing = if asked == off {
+                Some(routing(false))
+            } else if asked == on || asked == also_on {
+                Some(routing(true))
+            } else {
+                None
+            };
+            async move { routing }
+        };
+
+        // A gateway that does not answer and one with receives off are both passed over, and of
+        // the two that accept receives the one registered first is taken.
+        let registered = vec![silent.clone(), off.clone(), on.clone(), also_on.clone()];
+        let (chosen, info) = receive_gateway(registered, &answer)
+            .await
+            .expect("a gateway accepts receives");
+        assert_eq!(chosen, on);
+        assert!(info.receive_enabled);
+
+        assert_eq!(
+            receive_gateway(vec![silent.clone(), off.clone()], &answer)
+                .await
+                .expect_err("the only gateway that answers has receives off"),
+            SelectGatewayError::NoGatewayAcceptsReceives
+        );
+        assert_eq!(
+            receive_gateway(vec![silent.clone()], &answer)
+                .await
+                .expect_err("no gateway answers"),
+            SelectGatewayError::GatewaysUnresponsive
+        );
+        assert_eq!(
+            receive_gateway(Vec::new(), &answer)
+                .await
+                .expect_err("no gateway is registered"),
+            SelectGatewayError::NoGatewaysAvailable
+        );
     }
 
     #[test]
