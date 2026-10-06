@@ -10,6 +10,7 @@ import { joinFederation } from './fixtures/joinFederation'
 import { openWallet } from './fixtures/openWallet'
 import { Fixture } from './fixtures/types'
 import { availableTests, resolveTestNames, TestName } from './registry'
+import { currentShape } from './shape'
 
 // Keyed by the state each one produces; `resolvePlan` walks `requires` from
 // here, so a test naming "funded" gets the open, join and fund chain without
@@ -102,13 +103,29 @@ async function runTests(testNames: string[]): Promise<void> {
       Object.keys(availableTests).includes(name),
     ) as TestName[]
 
-    if (validTestNames.length === 0) {
+    // A misspelt name fails the run rather than being skipped: a run that
+    // quietly tested less than it was asked to would pass for the wrong
+    // reason.
+    const unknown = testNames.filter(
+      (name) => !Object.keys(availableTests).includes(name),
+    )
+    if (validTestNames.length === 0 || unknown.length > 0) {
       console.error(
-        'No valid tests selected. Available tests:',
+        `Unknown or no tests selected (${unknown.join(', ') || 'none'}). Available tests:`,
         Object.keys(availableTests).join(', '),
       )
       anyTestFailed = true
       return
+    }
+
+    // Every federation-backed test depends on knowing the module generation
+    // it runs against; check that once here instead of failing partway in.
+    if (
+      validTestNames.some((name) =>
+        availableTests[name].prerequisites.includes('joinedFederation'),
+      )
+    ) {
+      console.log(`Federation shape: ${currentShape()}`)
     }
 
     console.log(`Running the following tests: ${validTestNames.join(', ')}`)

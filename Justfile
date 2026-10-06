@@ -34,9 +34,10 @@ build-android-apk:
 # the same scripts/setup_test_shell.sh. There is deliberately no federation-free
 # variant: one way to run this suite, so what CI does and what you can
 # reproduce are the same thing. Builds the APK first (see build-android-apk);
-# the script itself only installs one.
-test-android-e2e: build-android-apk
-    nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+# the script itself only installs one. `shape` picks the federation's module
+# generation: v1 (mint, wallet, ln) or v2 (mintv2, walletv2, lnv2).
+test-android-e2e shape="v1": build-android-apk
+    FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
 # Test the release gates: the version and changelog scripts the release, tag
 # and bump workflows rely on. Needs only bash and git, no build.

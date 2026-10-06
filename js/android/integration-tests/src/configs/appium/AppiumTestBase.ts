@@ -347,7 +347,8 @@ export class AppiumTestBase {
     key: string,
     timeout: number,
   ): Promise<ChainablePromiseElement> {
-    if (!(await this.findElementByKey(key))) {
+    const element = await this.findElementByKey(key)
+    if (!element || !(await this.isElementVisible(element))) {
       await this.scrollToElement(key)
     }
     return this.waitForElementDisplayed(key, timeout)
@@ -387,9 +388,45 @@ export class AppiumTestBase {
     timeout = DEFAULT_TIMEOUT,
   ): Promise<void> {
     console.log(`Attempting to type into element: ${key}`)
-    const element = await this.bringIntoView(key, timeout)
-    await element.setValue(text)
-    console.log(`Successfully typed into element: ${key}`)
+
+    // Clear and type as two steps, finding the field again in between, rather
+    // than one `setValue` (which is clear-then-type on a single reference).
+    // A multiline field still holding a long value from an earlier test — the
+    // ecash notes field after MintService, say — is often only partly on
+    // screen, and clearing it shrinks it: the layout moves, the field can end
+    // up above the viewport, and the reference the clear used goes stale, so
+    // the typing half fails against an app that is working fine.
+    const cleared = await this.bringIntoView(key, timeout)
+    await cleared.clearValue()
+
+    // A field can still go stale between being found and being typed into
+    // (the keyboard opening resizes the window, too), so that is retried
+    // with a fresh lookup a few times before giving up.
+    const attempts = 3
+    let lastError: unknown
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const element = await this.bringIntoView(key, timeout)
+        await element.setValue(text)
+        // Read back rather than trust the call: a field that lost the text,
+        // or kept part of the old value, would otherwise fail much later, in
+        // whatever the test does with it.
+        const typed = (await element.getText()).trim()
+        if (typed !== text.trim()) {
+          throw new Error(`"${key}" holds "${typed}" after typing "${text}"`)
+        }
+        console.log(`Successfully typed into element: ${key}`)
+        return
+      } catch (error) {
+        lastError = error
+        console.log(
+          `Typing into "${key}" failed (attempt ${attempt}/${attempts}): ${(error as Error).message}`,
+        )
+      }
+    }
+    throw new Error(
+      `Could not type into "${key}" after ${attempts} attempts: ${(lastError as Error).message}`,
+    )
   }
 
   async elementIsDisplayed(
@@ -727,6 +764,59 @@ export class AppiumTestBase {
             ? ' — element appeared but never had readable text'
             : ' — element never appeared, including after scrolling to it'),
     )
+  }
+
+  /**
+   * Waits for a section's result line to hold an outcome: some text other
+   * than the "working…" placeholder every section writes before its SDK call.
+   * For a call whose outcome is not known in advance — a success or a
+   * structured error — where `waitForTextInElement` would need to know which.
+   * `unless` names further texts that are not an outcome yet (an earlier
+   * call's result still on screen, say).
+   */
+  async waitForResultInElement(
+    key: string,
+    timeout = DEFAULT_TIMEOUT,
+    unless: (text: string) => boolean = () => false,
+  ): Promise<string> {
+    const startTime = Date.now()
+    let last = ''
+    while (Date.now() - startTime < timeout) {
+      const element =
+        (await this.findElementByKey(key)) ?? (await this.scrollToElement(key))
+      if (element) {
+        last = await element.getText()
+        if (last && !last.startsWith('working') && !unless(last)) return last
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    throw new Error(
+      `Element "${key}" never held an outcome within ${timeout}ms — last read: "${last}"`,
+    )
+  }
+
+  /** Whether the view `key` is enabled, scrolling to it if needed. */
+  async isEnabledByKey(key: string): Promise<boolean> {
+    const element = await this.bringIntoView(key, DEFAULT_TIMEOUT)
+    return (await element.getAttribute('enabled')) === 'true'
+  }
+
+  /**
+   * Kills the app's process and launches it again, keeping its data — what a
+   * user closing and reopening the app does, as opposed to `resetAppToFresh`.
+   * The SDK's storage, seed and operations survive; every in-memory handle,
+   * subscription and lock does not, so the next open has to reattach.
+   */
+  async restartApp(): Promise<void> {
+    console.log('Restarting the app, keeping its data...')
+    const appId = process.env.APP_PACKAGE
+    if (!appId) {
+      throw new Error('restartApp requires APP_PACKAGE to be set')
+    }
+    await this.driver.executeScript('mobile: terminateApp', [{ appId }])
+    await this.driver.executeScript('mobile: activateApp', [{ appId }])
+    await this.waitForText(APP_TITLE, 0, true, 30000)
+    console.log('App restarted')
   }
 
   async resetAppToFresh(): Promise<void> {

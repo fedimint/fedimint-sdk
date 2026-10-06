@@ -58,6 +58,7 @@ on:
       # android-e2e.yml runs the suite through this, the same entry
       # point the wasm tests use to stand a federation up.
       - 'scripts/setup_test_shell.sh'
+      - 'scripts/devimint-modules.sh'
       - 'js/android/integration-tests/**'
       - '.github/workflows/android-sdk.yaml'
       - '.github/workflows/android-native.yaml'
