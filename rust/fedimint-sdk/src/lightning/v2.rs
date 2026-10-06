@@ -5,7 +5,7 @@ use std::sync::Arc;
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
 use fedimint_core::core::OperationId;
-use fedimint_core::util::{BoxStream, SafeUrl};
+use fedimint_core::util::{BoxStream, FmtCompact, SafeUrl};
 use fedimint_lnv2_client::{
     LightningClientModule, LightningOperationMeta, ReceiveError, ReceiveOperationState,
     ReceiveWithTermsError, SelectGatewayError, SendOperationMeta, SendOperationState,
@@ -232,21 +232,14 @@ async fn terms_for(
         internal("the gateway's fee schedule produced a contract below the amount")
     })?;
     // The dry run balances the transaction against the real notes, so it fails when they
-    // cannot cover the contract; the mint reports that as either a typed error (mint v1) or a
-    // plain-text one (mint v2, `fee_quote_failure`'s doc comment says where).
-    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            return Err(fee_quote_failure(
-                client,
-                err.as_ref(),
-                Shortfall::Balance,
-                contract_amount,
-                "could not quote the funding fee",
-            )
-            .await);
-        }
-    };
+    // cannot cover the contract; that is reported as the balance problem it is, on either mint
+    // generation this module can run against.
+    let quote = module
+        .send_fee_quote(to_upstream(contract_amount))
+        .await
+        .map_err(|err| {
+            fee_quote_failure(&err, Shortfall::Balance, "could not quote the funding fee")
+        })?;
     let lightning_module = from_upstream(
         fee_consensus(client)
             .await?
@@ -277,7 +270,10 @@ async fn fee_consensus(client: &Client) -> Result<fedimint_lnv2_common::config::
         .map_err(|err| {
             Error::new(
                 ErrorCode::NotSupported,
-                format!("this federation's lnv2 configuration is unreadable: {err}"),
+                format!(
+                    "this federation's lnv2 configuration is unreadable: {}",
+                    err.fmt_compact()
+                ),
             )
         })?;
     Ok(config.fee_consensus.clone())
@@ -295,7 +291,7 @@ pub(super) async fn send(
     expiration_delta: u64,
 ) -> Result<Operation<LnSendState>> {
     // The module derives this invoice's operation id independently of the gateway or fee
-    // schedule (`fedimint-lnv2-client/src/lib.rs:567-574`) and later refuses a duplicate
+    // schedule (`fedimint-lnv2-client/src/lib.rs:650-653`) and later refuses a duplicate
     // attempt against it with `DuplicatePaymentAttempt`, which `send_error` below maps to the
     // same `QuoteExpired` this reports. Checking first, before the gateway is asked to
     // re-quote, keeps an already-paid or still-in-flight invoice from being reported as a
@@ -313,7 +309,7 @@ pub(super) async fn send(
     // notes are still selected inside it: the mint's fees and the dust the re-quote computes are
     // therefore only the figures for the balance at this moment, and a wallet whose notes change
     // in the same instant can still fund at a different figure. That remainder is tracked as
-    // fedimint/fedimint#9124.
+    // fedimint/fedimint#9098.
     let available = balance_of(client).await?;
     if available < quote.plan.total {
         return Err(insufficient(quote.plan.total, available));
@@ -321,7 +317,7 @@ pub(super) async fn send(
     let Some(routing) = module
         .routing_info(&gateway)
         .await
-        .map_err(gateway_unavailable)?
+        .map_err(|err| gateway_unavailable(err.fmt_compact()))?
     else {
         return Err(Error::new(
             ErrorCode::QuoteChanged,
@@ -390,7 +386,7 @@ pub(super) async fn send(
         // `SendWithTermsError` is `#[non_exhaustive]`; a variant added upstream after this was
         // written carries no case this SDK can act on, so it is reported as unexpected rather
         // than silently folded into one of the arms above.
-        Err(other) => return Err(internal(other)),
+        Err(other) => return Err(internal(other.fmt_compact())),
     };
     federation
         .create_operation(
@@ -406,10 +402,18 @@ pub(super) async fn send(
 fn select_error(err: SelectGatewayError) -> Error {
     match err {
         SelectGatewayError::FailedToRequestGateways(cause) => unreachable(cause),
-        SelectGatewayError::NoGatewaysAvailable | SelectGatewayError::GatewaysUnresponsive => {
-            gateway_unavailable(err)
-        }
+        SelectGatewayError::NoGatewaysAvailable
+        | SelectGatewayError::GatewaysUnresponsive
+        | SelectGatewayError::NoGatewayAcceptsReceives => gateway_unavailable(err.fmt_compact()),
     }
+}
+
+/// A gateway that could not be connected to, for a send or a receive.
+// `SendPaymentError` and `ReceiveError` both carry the reason as a plain field of
+// `FailedToConnectToGateway` rather than as its `source()`, so rendering the error's chain would
+// leave it out.
+fn connect_error(cause: &str) -> Error {
+    gateway_unavailable(format!("could not connect to the gateway: {cause}"))
 }
 
 fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) -> Error {
@@ -421,17 +425,17 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         SendPaymentError::InvoiceExpired => quote_expired(quote.expires_at, false),
         SendPaymentError::DuplicatePaymentAttempt(_) => quote_expired(quote.expires_at, true),
         SendPaymentError::SelectGateway(inner) => select_error(inner),
-        SendPaymentError::FailedToConnectToGateway(_)
-        | SendPaymentError::FederationNotSupported
+        SendPaymentError::FailedToConnectToGateway(cause) => connect_error(&cause),
+        SendPaymentError::FederationNotSupported
         | SendPaymentError::GatewayFeeExceedsLimit
-        | SendPaymentError::GatewayExpirationExceedsLimit => gateway_unavailable(err),
+        | SendPaymentError::GatewayExpirationExceedsLimit => gateway_unavailable(err.fmt_compact()),
         SendPaymentError::FailedToRequestBlockCount(cause) => unreachable(cause),
-        // The wording differs by which mint funds the contract: the v1 mint says "Insufficient
-        // balance" (`fedimint-mint-client/src/lib.rs:2917`), the v2 mint says "Insufficient
-        // funds" (`fedimint-mintv2-client/src/lib.rs:503`).
-        SendPaymentError::FailedToFundPayment(cause)
-            if cause.contains("Insufficient balance") || cause.contains("Insufficient funds") =>
-        {
+        // Upstream hands the funding failure over as the rendered text of a
+        // `TransactionSubmitError` (`fedimint-lnv2-client/src/lib.rs:772`), so the typed
+        // `InsufficientFunds` and its figures are out of reach and the text is all there is to
+        // match on. A shortfall renders as that variant's own message, "Insufficient funds",
+        // first in the chain, for both mint generations.
+        SendPaymentError::FailedToFundPayment(cause) if cause.starts_with("Insufficient funds") => {
             Error::new(ErrorCode::InsufficientBalance, cause)
         }
         SendPaymentError::FailedToFundPayment(cause) => {
@@ -439,7 +443,7 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         }
         // Reachable on a testnet4 federation: lnv2 compares the invoice's currency to the
         // configured network strictly (`self.cfg.network != invoice.currency().into()`,
-        // fedimint-lnv2-client/src/lib.rs:560-565), but BOLT11 spells testnet3 and testnet4
+        // fedimint-lnv2-client/src/lib.rs:640), but BOLT11 spells testnet3 and testnet4
         // the same way (`tb`), so a `tb` invoice this SDK's own `check_network` accepts is
         // still refused by the module. Both generations are affected, not lnv2 alone: v1
         // converts the configured network through lightning-invoice's
@@ -512,7 +516,7 @@ pub(super) async fn receive(
             // `ReceiveWithTermsError` is `#[non_exhaustive]`; a variant added upstream after
             // this was written carries no case this SDK can act on, so it is reported as
             // unexpected rather than silently folded into an arm above.
-            Err(other) => return Err(internal(other)),
+            Err(other) => return Err(internal(other.fmt_compact())),
         }
     };
     let invoice = Bolt11Invoice::from_upstream(invoice);
@@ -550,23 +554,16 @@ async fn receive_terms(
     receive_fee: PaymentFee,
 ) -> Result<(Amount, Amount)> {
     let (contract_amount, gateway_fee) = receive_contract_and_gateway_fee(amount, receive_fee)?;
-    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1146`) quotes the contract as the
+    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1194`) quotes the contract as the
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount problem,
     // not a balance one.
-    let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            return Err(fee_quote_failure(
-                client,
-                err.as_ref(),
-                Shortfall::Amount,
-                contract_amount,
-                "could not quote the claim fee",
-            )
-            .await);
-        }
-    };
+    let quote = module
+        .receive_fee_quote(to_upstream(contract_amount))
+        .await
+        .map_err(|err| {
+            fee_quote_failure(&err, Shortfall::Amount, "could not quote the claim fee")
+        })?;
     let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
     // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
     // (the wallet was funded), so the net credit going negative here is the same amount problem
@@ -577,7 +574,7 @@ async fn receive_terms(
 
 /// The contract amount and gateway fee an lnv2 receive of `amount` would use at `receive_fee`.
 /// The contract the gateway funds is the invoice amount less its fee
-/// (`fedimint-lnv2-client/src/lib.rs:1064`); the federation's own claim fee comes off that
+/// (`fedimint-lnv2-client/src/lib.rs:1110`); the federation's own claim fee comes off that
 /// contract separately, once the module quotes it for the returned `contract_amount`. Pure in
 /// `receive_fee` so a retry after the gateway's fee changed shares this step with the first
 /// attempt instead of duplicating it.
@@ -595,14 +592,15 @@ fn receive_contract_and_gateway_fee(
 fn receive_error(err: ReceiveError) -> Error {
     match err {
         ReceiveError::SelectGateway(inner) => select_error(inner),
-        ReceiveError::FailedToConnectToGateway(_)
-        | ReceiveError::FederationNotSupported
+        ReceiveError::FailedToConnectToGateway(cause) => connect_error(&cause),
+        ReceiveError::FederationNotSupported
+        | ReceiveError::ReceiveDisabled
         | ReceiveError::GatewayFeeExceedsLimit
         | ReceiveError::InvalidInvoice
-        | ReceiveError::IncorrectInvoiceAmount => gateway_unavailable(err),
+        | ReceiveError::IncorrectInvoiceAmount => gateway_unavailable(err.fmt_compact()),
         ReceiveError::AmountTooSmall => amount_too_small(),
         // The expiry is this facade's own constant, well under the module's cap.
-        ReceiveError::InvoiceExpiryTooLong => internal(err),
+        ReceiveError::InvoiceExpiryTooLong => internal(err.fmt_compact()),
     }
 }
 
@@ -983,6 +981,90 @@ mod tests {
             }
             other => panic!("expected NetworkMismatch details, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_gateway_that_cannot_be_selected_is_a_gateway_problem() {
+        for refusal in [
+            SelectGatewayError::NoGatewaysAvailable,
+            SelectGatewayError::GatewaysUnresponsive,
+            SelectGatewayError::NoGatewayAcceptsReceives,
+        ] {
+            assert_eq!(select_error(refusal).code, ErrorCode::GatewayUnavailable);
+        }
+        assert_eq!(
+            select_error(SelectGatewayError::FailedToRequestGateways(
+                "down".to_owned()
+            ))
+            .code,
+            ErrorCode::FederationUnreachable
+        );
+    }
+
+    #[test]
+    fn a_gateway_that_cannot_be_connected_to_is_reported_with_the_reason() {
+        let sending = send_error(
+            SendPaymentError::FailedToConnectToGateway("connection refused".to_owned()),
+            &a_quote(),
+            Network::Regtest,
+        );
+        let receiving = receive_error(ReceiveError::FailedToConnectToGateway(
+            "connection refused".to_owned(),
+        ));
+        for err in [sending, receiving] {
+            assert_eq!(err.code, ErrorCode::GatewayUnavailable);
+            assert!(
+                err.message.contains("connection refused"),
+                "{}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateway_with_receives_turned_off_is_a_gateway_problem() {
+        assert_eq!(
+            receive_error(ReceiveError::ReceiveDisabled).code,
+            ErrorCode::GatewayUnavailable
+        );
+        assert_eq!(
+            receive_error(ReceiveError::AmountTooSmall).code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn a_funding_shortfall_reported_as_text_is_an_insufficient_balance() {
+        use fedimint_client_module::TransactionSubmitError;
+        use fedimint_client_module::error::InsufficientBalanceError;
+
+        // Upstream renders the failure with `fmt_compact` before it reaches the SDK.
+        let shortfall = TransactionSubmitError::InsufficientFunds(InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(10),
+            total_amount: fedimint_core::Amount::from_msats(3),
+        });
+        let err = send_error(
+            SendPaymentError::FailedToFundPayment(shortfall.fmt_compact().to_string()),
+            &a_quote(),
+            Network::Regtest,
+        );
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+
+        let other = send_error(
+            SendPaymentError::FailedToFundPayment(
+                TransactionSubmitError::TransactionTooLarge { size: 9, max: 8 }
+                    .fmt_compact()
+                    .to_string(),
+            ),
+            &a_quote(),
+            Network::Regtest,
+        );
+        assert_eq!(other.code, ErrorCode::Internal);
+        assert!(
+            other.message.contains("The transaction is 9 bytes"),
+            "{}",
+            other.message
+        );
     }
 
     #[test]

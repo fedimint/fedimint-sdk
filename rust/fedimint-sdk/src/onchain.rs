@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::TransactionSubmitError;
 use fedimint_client_module::transaction::{
     FeeQuote, TRANSACTION_SUBMISSION_MODULE_INSTANCE, TxSubmissionStates, TxSubmissionStatesSM,
 };
@@ -13,6 +14,7 @@ use fedimint_core::bitcoin;
 use fedimint_core::config;
 use fedimint_core::core::{DynInput, DynOutput, ModuleInstanceId, OperationId};
 use fedimint_core::transaction::Transaction;
+use fedimint_core::util::FmtCompact;
 
 use crate::{
     Address, Amount, Error, ErrorCode, ErrorDetails, FederationStatus, Network, Operation,
@@ -237,10 +239,10 @@ impl Onchain {
         let available = balance_of(&client, federation.status()).await?;
         let plan = match module(&client)? {
             WalletModule::V1(module) => {
-                v1::plan(federation, &client, &module, address, amount, available).await?
+                v1::plan(&client, &module, address, amount, available).await?
             }
             WalletModule::V2(module) => {
-                v2::plan(federation, &client, &module, address, amount, available).await?
+                v2::plan(&client, &module, address, amount, available).await?
             }
         };
         if available < plan.total {
@@ -1205,7 +1207,7 @@ pub(super) fn plan_of(
 // `wallet_instance` (both callers' own `module.id`) to check that transaction funds itself from
 // exactly one wallet input. A funded wallet's claim is not always single-input: mint v1
 // consolidates notes above eight of one denomination in `create_final_inputs_and_outputs`
-// (`$FM/modules/fedimint-mint-client/src/lib.rs:1365`) and mintv2's `rebalance` can spend
+// (`$FM/modules/fedimint-mint-client/src/lib.rs:1083`) and mintv2's `rebalance` can spend
 // existing notes too, so mint inputs may sit beside the wallet input that funds the claim.
 pub(super) async fn claim_figures(
     client: &Client,
@@ -1343,7 +1345,7 @@ fn mint_output_amount(output: &DynOutput, instance_id: ModuleInstanceId) -> Resu
         return v1
             .ensure_v0_ref()
             .map(|v0| from_upstream(v0.amount))
-            .map_err(internal);
+            .map_err(|err| internal(err.fmt_compact()));
     }
     if let Some(v2) = output
         .as_any()
@@ -1352,7 +1354,7 @@ fn mint_output_amount(output: &DynOutput, instance_id: ModuleInstanceId) -> Resu
         return v2
             .ensure_v0_ref()
             .map(|v0| from_upstream(v0.denomination.amount()))
-            .map_err(internal);
+            .map_err(|err| internal(err.fmt_compact()));
     }
     Err(internal(format!(
         "a claim transaction's output belongs to module instance {instance_id}, not a mint module \
@@ -1371,7 +1373,7 @@ fn mint_input_amount(input: &DynInput, instance_id: ModuleInstanceId) -> Result<
         return v1
             .ensure_v0_ref()
             .map(|v0| from_upstream(v0.amount))
-            .map_err(internal);
+            .map_err(|err| internal(err.fmt_compact()));
     }
     if let Some(v2) = input
         .as_any()
@@ -1380,7 +1382,7 @@ fn mint_input_amount(input: &DynInput, instance_id: ModuleInstanceId) -> Result<
         return v2
             .ensure_v0_ref()
             .map(|v0| from_upstream(v0.note.denomination.amount()))
-            .map_err(internal);
+            .map_err(|err| internal(err.fmt_compact()));
     }
     Err(internal(format!(
         "a claim transaction's input belongs to module instance {instance_id}, not the wallet \
@@ -1392,8 +1394,8 @@ fn mint_input_amount(input: &DynInput, instance_id: ModuleInstanceId) -> Result<
 /// [`claim_mint_movement`] and applied to every note that instance's module moved, minted or
 /// melted alike: both generations' `input_fee` and `output_fee` apply the very same
 /// `fee_consensus.fee(amount)` regardless of direction
-/// (`$FM/modules/fedimint-mint-client/src/lib.rs:1005-1022`,
-/// `$FM/modules/fedimint-mintv2-client/src/lib.rs:449-461`).
+/// (`$FM/modules/fedimint-mint-client/src/lib.rs:1027-1044`,
+/// `$FM/modules/fedimint-mintv2-client/src/lib.rs:460-472`).
 enum MintFeeConsensus {
     V1(fedimint_mint_common::config::FeeConsensus),
     V2(fedimint_mintv2_common::config::FeeConsensus),
@@ -1412,13 +1414,17 @@ impl MintFeeConsensus {
 /// as `Ecash::quote` reads `MintClientConfig` for the v1 mint: both mint client crates keep the
 /// type private and it is only nameable through their `-common` counterparts.
 async fn mint_fee_consensus(client: &Client, id: ModuleInstanceId) -> Result<MintFeeConsensus> {
-    let module_cfg = client.config().await.get_module_cfg(id).map_err(internal)?;
+    let module_cfg = client
+        .config()
+        .await
+        .get_module_cfg(id)
+        .map_err(|err| internal(err.fmt_compact()))?;
     if let Ok(cfg) = module_cfg.cast::<fedimint_mint_common::config::MintClientConfig>() {
         return Ok(MintFeeConsensus::V1(cfg.fee_consensus.clone()));
     }
     let cfg = module_cfg
         .cast::<fedimint_mintv2_common::config::MintClientConfig>()
-        .map_err(internal)?;
+        .map_err(|err| internal(err.fmt_compact()))?;
     Ok(MintFeeConsensus::V2(cfg.fee_consensus.clone()))
 }
 
@@ -1591,79 +1597,23 @@ pub(super) async fn balance_of(client: &Client, status: FederationStatus) -> Res
     crate::federation::balance_of(client, status).await
 }
 
-/// What a fee-quote dry run's failure means, before either mint's answer is turned into an
-/// [`Error`]. Mirrors [`crate::lightning`]'s own `FeeQuoteFailure`; kept as a separate copy here
-/// because the two facades' `balance_of` differ (this one needs a [`FederationStatus`]) and
-/// neither may name the other's private types.
-///
-/// The dry run balances the funding transaction against the real notes and fails inside the
-/// primary module when they cannot cover it, on either wallet generation: v1's `send_fee_quote`
-/// and walletv2's both end in the same module-agnostic `Client::fee_quote`
-/// (`$FM/fedimint-client/src/client.rs:877`), so the failure is classified the same way
-/// regardless of which wallet generation asked for the quote. The v1 mint (`fedimint-mint-client`)
-/// reports it with the typed [`fedimint_mint_client::InsufficientBalanceError`], which already
-/// carries the amounts that were short; the v2 mint (`fedimint-mintv2-client`) reports the same
-/// condition as a plain-text `anyhow` context, `"Insufficient funds"`
-/// (`fedimint-mintv2-client/src/lib.rs:503`), with no amounts of its own.
-#[derive(Debug)]
-enum FeeQuoteFailure {
-    /// The v1 mint's typed error, carrying its own requested and total amounts.
-    Typed { requested: Amount, total: Amount },
-    /// The v2 mint's plain-text refusal, which names no amounts.
-    Text,
-}
-
-/// Recognizes either mint's insufficient-balance refusal from a fee-quote failure, or reports
-/// neither is a match. Pure so the mapping can be checked without a live `Client`.
-fn classify_fee_quote_failure(
-    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
-    text: &str,
-) -> Option<FeeQuoteFailure> {
-    if let Some(short) = short {
-        return Some(FeeQuoteFailure::Typed {
-            requested: from_upstream(short.requested_amount),
-            total: from_upstream(short.total_amount),
-        });
-    }
-    // The v1 mint's `InsufficientBalanceError` arrives wrapped in the client's submission error
-    // when the quote is the wallet's, so its own wording is matched too, as the lightning v2
-    // send does; the typed downcast above is for the unwrapped case.
-    if text.contains("Insufficient funds") || text.contains("Insufficient balance") {
-        return Some(FeeQuoteFailure::Text);
-    }
-    None
-}
-
 /// Turns a fee-quote dry run's failure into the [`Error`] it represents, for both wallet
 /// generations' `plan` and send-time recheck.
 ///
-/// `required` is the amount the failed quote was for: the withdrawal's amount plus the on-chain
-/// fee when that was already quoted, since the exact funding total the quote would have reported
-/// is not knowable once the quote itself failed, and `ErrorDetails::InsufficientBalance::required`
-/// only promises the shortfall's rough scale, not an exact total. `context` names the quote for
-/// the fallback message, when `short` is absent and `text` does not match either mint's wording
-/// for "the notes on hand are short".
-pub(super) async fn fee_quote_failure(
-    client: &Client,
-    status: FederationStatus,
-    short: Option<&fedimint_mint_client::InsufficientBalanceError>,
-    text: &str,
-    required: Amount,
-    context: &str,
-) -> Error {
-    match classify_fee_quote_failure(short, text) {
-        Some(FeeQuoteFailure::Typed { requested, total }) => insufficient(requested, total),
-        Some(FeeQuoteFailure::Text) => {
-            // The v2 mint's text names no amounts, so the balance is read again here. A
-            // failed read must not mask the real refusal that was already found, so it
-            // falls back to zero rather than turning this into an unrelated error.
-            let available = balance_of(client, status)
-                .await
-                .unwrap_or(Amount::from_msats(0));
-            insufficient(required, available)
-        }
-        None => internal(format!("{context}: {text}")),
-    }
+/// `context` names the quote for the message of any failure other than a short balance.
+// The dry run balances the funding transaction against the real notes and fails inside the
+// primary module when they cannot cover it. Both mint generations report that as
+// `TransactionSubmitError::InsufficientFunds`, which carries the amount the mint was asked to fund
+// and the balance it held, so the shortfall is reported from those. v1's `send_fee_quote` and
+// walletv2's both end in the same module-agnostic `Client::fee_quote`.
+pub(super) fn fee_quote_failure(err: &TransactionSubmitError, context: &str) -> Error {
+    let TransactionSubmitError::InsufficientFunds(short) = err else {
+        return internal(format!("{context}: {}", err.fmt_compact()));
+    };
+    insufficient(
+        from_upstream(short.requested_amount),
+        from_upstream(short.total_amount),
+    )
 }
 
 /// This device's clock, for a details record's `created_at`.
@@ -1684,6 +1634,7 @@ pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use fedimint_client_module::error::{ClientModuleError, InsufficientBalanceError};
     use fedimint_core::module::Amounts;
 
     use super::*;
@@ -2157,36 +2108,49 @@ mod tests {
     }
 
     #[test]
-    fn fee_quote_failure_is_classified_before_either_mint_is_asked() {
-        // The v1 mint's typed error wins even when the accompanying text also happens to
-        // mention the v2 mint's wording; the typed case is unambiguous and checked first.
-        let typed = fedimint_mint_client::InsufficientBalanceError {
+    fn a_fee_quote_shortfall_is_reported_with_the_mints_own_figures() {
+        let short = TransactionSubmitError::InsufficientFunds(InsufficientBalanceError {
             requested_amount: fedimint_core::Amount::from_msats(10),
             total_amount: fedimint_core::Amount::from_msats(3),
-        };
-        match classify_fee_quote_failure(Some(&typed), "Insufficient funds") {
-            Some(FeeQuoteFailure::Typed { requested, total }) => {
-                assert_eq!(requested, Amount::from_msats(10));
-                assert_eq!(total, Amount::from_msats(3));
+        });
+        let err = fee_quote_failure(&short, "could not quote");
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        match err.detail() {
+            Some(ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, Amount::from_msats(10));
+                assert_eq!(*available, Amount::from_msats(3));
             }
-            other => panic!("expected the typed case, got {other:?}"),
+            other => panic!("expected InsufficientBalance, got {other:?}"),
         }
-        // The v2 mint's plain-text refusal, with no typed error at all.
-        assert!(matches!(
-            classify_fee_quote_failure(None, "Insufficient funds"),
-            Some(FeeQuoteFailure::Text)
+    }
+
+    #[test]
+    fn any_other_fee_quote_failure_keeps_its_whole_cause_chain() {
+        // `TransactionSubmitError::PrimaryModule` prints only "The primary module failed" and
+        // keeps the reason behind `source()`, so the message has to carry the chain.
+        let unrelated = TransactionSubmitError::PrimaryModule(ClientModuleError::other(
+            "the federation timed out",
         ));
-        // The v1 mint's wording, wrapped by the client's submission error so no typed error
-        // survives the downcast.
-        assert!(matches!(
-            classify_fee_quote_failure(
-                None,
-                "primary module: Insufficient balance: requested 1 sat but only 0 sat available"
-            ),
-            Some(FeeQuoteFailure::Text)
-        ));
-        // Neither mint's wording: not this crate's problem to interpret.
-        assert!(classify_fee_quote_failure(None, "the federation timed out").is_none());
+        let err = fee_quote_failure(&unrelated, "could not quote the funding fee");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message.starts_with("could not quote the funding fee: "),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("The primary module failed"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("the federation timed out"),
+            "{}",
+            err.message
+        );
     }
 
     /// The hand-built claim the defect fix's own worked example uses: a 100 000 000 msat input,

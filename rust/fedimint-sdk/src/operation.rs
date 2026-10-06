@@ -128,7 +128,7 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 // Fedimint does not let an embedder join the transaction the module commits its own operation
 // log entry in: no module's creation method takes a `dbtx`, and the `_dbtx` variants that would
 // allow it hang off `ClientContext`, which only a module implementation holds
-// (fedimint-client-module/src/module/mod.rs:400, :662, :865). So the record is written
+// (fedimint-client-module/src/module/mod.rs:403, :666, :866). So the record is written
 // immediately after the module call returns and before the creating call hands back a handle,
 // which is what the crate's durability contract actually promises (see the durability section on
 // `Sdk`), and a crash in the window between the two commits is repaired by
@@ -1281,7 +1281,7 @@ pub(crate) fn kind_of_tag(tag: &str) -> OperationKind {
 //
 // `MaybeSend`/`MaybeSync` and `BoxFuture`/`BoxStream` rather than `Send`/`Sync` and
 // `Box<dyn Future + Send>`: on `target_family = "wasm"` these expand to no bound at all
-// (`fedimint-core/src/task.rs:504-536`, `fedimint-core/src/util/mod.rs:31-35`),
+// (`fedimint-core/src/task.rs:504-536`, `fedimint-core/src/util/mod.rs:29-33`),
 // which is what lets one set of types compile for both a threaded host and a browser.
 //
 // Every method takes the federation rather than a `&Client`, so that a driver decides for itself
@@ -1311,8 +1311,8 @@ where
     // bounded read, and the stream it returns must register with the upstream notifier when it
     // is first polled, not before. That is the shape of upstream's `subscribe_*` methods, which
     // await only the operation-log read and hand back a lazily built stream through
-    // `ClientContext::outcome_or_updates` (fedimint-client-module/src/module/mod.rs:741; mint's
-    // `subscribe_spend_notes` at modules/fedimint-mint-client/src/lib.rs:2567 is typical). The
+    // `ClientContext::outcome_or_updates` (fedimint-client-module/src/module/mod.rs:742; mint's
+    // `subscribe_spend_notes` at modules/fedimint-mint-client/src/lib.rs:2705 is typical). The
     // engine keeps the returned stream across a dropped `next`, not the call that produced it,
     // and a driver that registered upstream and then parked in here, holding the client guard,
     // would in an idle subscriber hold the federation's close off for ever: `quiesce` takes the
@@ -2050,7 +2050,7 @@ impl OperationInner {
         let db = self.federation.db();
         let id = self.id;
         // Hoisted out of the closure, which may run more than once
-        // (`fedimint-core/src/db/mod.rs:534-536`).
+        // (`fedimint-core/src/db/mod.rs:542-544`).
         let requested_at = crate::db::now_millis();
         db.autocommit(
             |dbtx, _| {

@@ -11,7 +11,7 @@ use fedimint_client_module::transaction::FeeQuote;
 use fedimint_core::bitcoin;
 use fedimint_core::core::{ModuleInstanceId, OperationId};
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
-use fedimint_core::util::BoxStream;
+use fedimint_core::util::{BoxStream, FmtCompact};
 use fedimint_eventlog::{Event, EventLogId};
 use fedimint_walletv2_client::events::ReceivePaymentEvent;
 use fedimint_walletv2_client::{
@@ -24,10 +24,9 @@ use futures::StreamExt as _;
 
 use super::driver::{SendStep, through_settle};
 use super::{
-    OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
-    check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
-    now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout,
-    unreachable, wire,
+    OnchainQuoteInner, Plan, Terms, balance_of, bitcoin_to_sats, check_amount, check_covers_amount,
+    claim_figures, fee_quote_failure, from_upstream, insufficient, internal, now, plan_of,
+    quote_changed, sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
 };
 use crate::federation::{FederationInner, wait_holding_client};
 use crate::operation::{
@@ -45,11 +44,13 @@ use crate::{
 /// `dust_limit` or `fee_consensus` the way the v1 wallet module does.
 pub(super) async fn config(client: &Client, id: ModuleInstanceId) -> Result<WalletClientConfig> {
     let client_config = client.config().await;
-    let module_config = client_config.get_module_cfg(id).map_err(internal)?;
+    let module_config = client_config
+        .get_module_cfg(id)
+        .map_err(|err| internal(err.fmt_compact()))?;
     module_config
         .cast::<WalletClientConfig>()
         .cloned()
-        .map_err(internal)
+        .map_err(|err| internal(err.fmt_compact()))
 }
 
 /// The walletv2 module on a live client, or `NotSupported` when the federation dropped it.
@@ -66,7 +67,7 @@ pub(super) fn module_of(client: &Client) -> Result<ClientModuleInstance<'_, Wall
 
 /// A whole-satoshi `bitcoin::Amount` reinterpreted as a millisatoshi upstream `Amount`: the same
 /// conversion `send_fee_quote` uses internally to price its own fee consensus
-/// (`modules/fedimint-walletv2-client/src/lib.rs:284-294`).
+/// (`modules/fedimint-walletv2-client/src/lib.rs:291-304`).
 fn to_upstream_sats(amount: bitcoin::Amount) -> fedimint_core::Amount {
     fedimint_core::Amount::from_sats(amount.to_sat())
 }
@@ -82,8 +83,12 @@ fn to_upstream_sats(amount: bitcoin::Amount) -> fedimint_core::Amount {
 // | `DustValue`                     | `InvalidInput`           |
 // | `InsufficientFunds`             | `InsufficientBalance`    |
 // | `NoConsensusFeerateAvailable`   | `FederationUnreachable`  |
-// | `FederationError`               | `FederationUnreachable`  |
+// | `Federation`                    | `FederationUnreachable`  |
 // | `UnsupportedAddress`            | `InvalidInput`           |
+// | `Failed`                        | `Internal`               |
+// | any other                       | `Internal`               |
+//
+// `InsufficientFunds` names no amounts, so it carries none into the error either.
 fn map_send_error(err: SendError) -> Error {
     match err {
         SendError::WrongNetwork => Error::new(
@@ -98,20 +103,20 @@ fn map_send_error(err: SendError) -> Error {
             ErrorCode::InsufficientBalance,
             "the client does not have sufficient funds to send the payment",
         ),
-        SendError::NoConsensusFeerateAvailable | SendError::FederationError(_) => {
-            unreachable(err.to_string())
+        SendError::NoConsensusFeerateAvailable | SendError::Federation(_) => {
+            unreachable(err.fmt_compact())
         }
         SendError::UnsupportedAddress => Error::new(
             ErrorCode::InvalidInput,
             "this address type is not supported",
         ),
+        _ => internal(err.fmt_compact()),
     }
 }
 
 /// Plans a walletv2 withdrawal: prices the destination output, then the transaction that funds
 /// it.
 pub(super) async fn plan(
-    federation: &Arc<FederationInner>,
     client: &Client,
     module: &ClientModuleInstance<'_, WalletClientModule>,
     address: &Address,
@@ -129,25 +134,10 @@ pub(super) async fn plan(
         .checked_add(chain_fee_btc)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
     let chain_fee = from_upstream(fedimint_core::Amount::from(chain_fee_btc));
-    let quote = match module.send_fee_quote(output_value).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            let text = format!("{err:#}");
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
-            // `required` is the amount plus the on-chain fee already quoted above; the dry
-            // run that would have priced the funding side is exactly what failed.
-            let required = add(sats_to_amount(amount)?, chain_fee)?;
-            return Err(fee_quote_failure(
-                client,
-                federation.status(),
-                short,
-                &text,
-                required,
-                "could not quote the withdrawal's funding fee",
-            )
-            .await);
-        }
-    };
+    let quote = module
+        .send_fee_quote(output_value)
+        .await
+        .map_err(|err| fee_quote_failure(&err, "could not quote the withdrawal's funding fee"))?;
     let module_fee = from_upstream(cfg.fee_consensus.fee(to_upstream_sats(output_value)));
     plan_of(
         chain_fee,
@@ -181,25 +171,9 @@ pub(super) async fn send(
         .checked_add(fresh_chain_fee)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
     let fresh_chain_fee_amount = from_upstream(fedimint_core::Amount::from(fresh_chain_fee));
-    let fresh_quote = match module.send_fee_quote(output_value).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            let text = format!("{err:#}");
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
-            // `required` is the amount plus the on-chain fee already re-quoted above; the dry
-            // run that would have priced the funding side is exactly what failed.
-            let required = add(sats_to_amount(quote.amount)?, fresh_chain_fee_amount)?;
-            return Err(fee_quote_failure(
-                client,
-                federation.status(),
-                short,
-                &text,
-                required,
-                "could not re-quote the withdrawal's funding fee",
-            )
-            .await);
-        }
-    };
+    let fresh_quote = module.send_fee_quote(output_value).await.map_err(|err| {
+        fee_quote_failure(&err, "could not re-quote the withdrawal's funding fee")
+    })?;
     // Both `send_fee` and `send_fee_quote` must return exactly what they returned when this
     // quote was built, or the federation changing wallet generation between the two: either is
     // reported here, before anything is submitted, as `QuoteChanged`.
@@ -252,7 +226,7 @@ pub(super) async fn send(
 // step and no `Created` to map here: `subscribe_send` reports that state itself before this
 // ever runs. Upstream documents `Failure` itself as "a programming
 // error has occurred or the federation is malicious"
-// (`modules/fedimint-walletv2-client/src/lib.rs:104`), which is why it maps to `Failed` rather
+// (`modules/fedimint-walletv2-client/src/lib.rs:106`), which is why it maps to `Failed` rather
 // than the ordinary `Refunded` ending `Aborted` gets.
 //
 // `Aborted` is the funding rejection, so it is not an ending here: it is the step that sends the
@@ -301,7 +275,7 @@ pub(super) async fn subscribe_send(
             module
                 .await_final_send_operation_state(id)
                 .await
-                .map_err(subscribe_error)
+                .map_err(|err| subscribe_error(err.fmt_compact()))
         })
         .await?;
         Ok(map_final_send(&state))
@@ -320,7 +294,7 @@ pub(super) async fn subscribe_send(
 /// Allocates a fresh walletv2 deposit address and records it.
 ///
 /// walletv2's `receive` returns only the address, with no operation of its own
-/// (`modules/fedimint-walletv2-client/src/lib.rs:579`): the SDK mints its own operation id and
+/// (`modules/fedimint-walletv2-client/src/lib.rs:593`): the SDK mints its own operation id and
 /// records the event log's tail as the position a scan for the matching `ReceivePaymentEvent`
 /// should start from. That tail is read before the address is asked for, as upstream's own doc
 /// on `receive` requires: the module's scanner can claim a payment to the address in the gap
@@ -508,7 +482,7 @@ pub(super) async fn upstream_state(
     .await
     {
         Ok(Ok(state)) => Ok(Some(state)),
-        Ok(Err(err)) => Err(subscribe_error(err)),
+        Ok(Err(err)) => Err(subscribe_error(err.fmt_compact())),
         Err(_) => Ok(None),
     }
 }
@@ -604,9 +578,11 @@ async fn claim_from_upstream(
     let input_fee = cfg.fee_consensus.fee(input_amount);
 
     // The same wait upstream's own `await_receive` makes before it reports a claim
-    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:624-635): it returns once every note the
+    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:630-649): it returns once every note the
     // claim minted is spendable, and fails if the mint's own state machine for one of them
-    // ended in failure instead. Mint issuance cannot be delayed or failed from a test at this
+    // ended in failure instead. That failure arrives as `TransactionSubmitError::PrimaryModule`
+    // (`$FM/fedimint-client/src/client.rs:1303`), the only variant the wait itself produces besides
+    // a missing primary module. Mint issuance cannot be delayed or failed from a test at this
     // pin, so only the devimint suite exercises the wait, and only its success path.
     let issued = client
         .await_primary_bitcoin_module_outputs(
@@ -619,13 +595,15 @@ async fn claim_from_upstream(
         Err(TransactionSubmitError::PrimaryModule(cause)) => {
             return Ok(OnchainReceiveState::Failed {
                 reason: format!(
-                    "the claim was accepted but its notes could not be issued: {cause}"
+                    "the claim was accepted but its notes could not be issued: {}",
+                    cause.fmt_compact()
                 ),
             });
         }
         Err(err) => {
             return Err(internal(format!(
-                "could not wait for the claimed notes to be issued: {err}"
+                "could not wait for the claimed notes to be issued: {}",
+                err.fmt_compact()
             )));
         }
     }
@@ -1092,7 +1070,7 @@ async fn receive_step(
                     module
                         .await_final_receive_operation_state(upstream)
                         .await
-                        .map_err(subscribe_error)
+                        .map_err(|err| subscribe_error(err.fmt_compact()))
                 })
                 .await;
                 match outcome {
@@ -1233,11 +1211,72 @@ pub(super) fn backfill(
 
 #[cfg(test)]
 mod tests {
+    use fedimint_client_module::ClientModuleError;
     use fedimint_core::BitcoinHash;
     use fedimint_core::bitcoin::address::NetworkUnchecked;
 
     use super::*;
     use crate::{Amount, Timestamp};
+
+    #[test]
+    fn a_send_error_maps_to_the_code_that_names_its_cause() {
+        assert_eq!(
+            map_send_error(SendError::WrongNetwork).code,
+            ErrorCode::NetworkMismatch
+        );
+        assert_eq!(
+            map_send_error(SendError::DustValue).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_send_error(SendError::InsufficientFunds).code,
+            ErrorCode::InsufficientBalance
+        );
+        assert_eq!(
+            map_send_error(SendError::NoConsensusFeerateAvailable).code,
+            ErrorCode::FederationUnreachable
+        );
+        assert_eq!(
+            map_send_error(SendError::UnsupportedAddress).code,
+            ErrorCode::InvalidInput
+        );
+        // A fee request that no guardian answered.
+        let no_answer = fedimint_api_client::api::FederationError {
+            method: "send_fee".to_owned(),
+            params: serde_json::Value::Null,
+            general: None,
+            peer_errors: Default::default(),
+        };
+        assert_eq!(
+            map_send_error(SendError::Federation(Box::new(no_answer))).code,
+            ErrorCode::FederationUnreachable
+        );
+    }
+
+    #[test]
+    fn a_failed_send_keeps_its_whole_cause_chain() {
+        let failed = SendError::Failed(TransactionSubmitError::PrimaryModule(
+            ClientModuleError::other("the notes are locked"),
+        ));
+        let err = map_send_error(failed);
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message
+                .contains("The send transaction could not be submitted"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("The primary module failed"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("the notes are locked"),
+            "{}",
+            err.message
+        );
+    }
 
     fn a_bitcoin_txid() -> bitcoin::Txid {
         "0000000000000000000000000000000000000000000000000000000000000000"

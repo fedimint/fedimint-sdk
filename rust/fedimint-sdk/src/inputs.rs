@@ -53,7 +53,7 @@ use fedimint_client_module::transaction::{TxSubmissionStates, TxSubmissionStates
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
 use fedimint_core::task::MaybeSend;
-use fedimint_core::util::BoxStream;
+use fedimint_core::util::{BoxStream, FmtCompact as _};
 use fedimint_core::{OutPoint, TransactionId};
 use futures::StreamExt as _;
 
@@ -280,7 +280,7 @@ async fn restoration_of(client: &Client, id: OperationId) -> Restoration {
             .await
             {
                 Ok(Ok(())) => Ok(()),
-                Ok(Err(err)) => Err(err.to_string()),
+                Ok(Err(err)) => Err(err.fmt_compact().to_string()),
                 Err(_) => Err("it did not report an outcome".to_owned()),
             };
             answers.push((*txid, out_idx, answer));

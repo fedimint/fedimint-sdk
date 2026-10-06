@@ -4,8 +4,10 @@ use std::sync::{Arc, Weak};
 
 use std::collections::BTreeMap;
 
+use fedimint_api_client::api::FederationError;
 use fedimint_bip39::Bip39RootSecretStrategy;
 use fedimint_client::RootSecret;
+use fedimint_client::error::{ClientBuildError, ClientModuleError};
 use fedimint_client::module_init::ClientModuleInitRegistry;
 use fedimint_client::secret::RootSecretStrategy;
 use fedimint_client::{Client, ClientHandleArc};
@@ -15,6 +17,7 @@ use fedimint_core::db::Database;
 use fedimint_core::db::{DatabaseKeyPrefix, DatabaseValue};
 use fedimint_core::module::AmountUnit;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use fedimint_core::util::FmtCompact as _;
 
 use crate::db::{FederationRecord, StoredCapabilities, StoredNetwork, StoredStatus};
 use crate::federation::FederationInner;
@@ -1013,10 +1016,10 @@ impl Sdk {
         // reference and `Arc::into_inner` would return `None`.
         if !already_committed && !recovering {
             if let Some(client) = client.as_ref() {
-                // An `Err` here is treated as nothing to guard against. At this pin the only way
-                // `get_balance_for_unit` fails is "primary module not available", where a balance is
-                // meaningless and there is nothing spendable to protect; a future upstream change
-                // that grows a second failure mode would need this reconsidered.
+                // An `Err` here is treated as nothing to guard against. `get_balance_for_unit`
+                // fails only with `ModuleLookupError::NoPrimaryModule`, where a balance is
+                // meaningless and there is nothing spendable to protect; a second failure mode
+                // upstream would need this reconsidered.
                 if let Ok(balance) = client.get_balance_for_unit(AmountUnit::BITCOIN).await
                     && balance.msats != 0
                 {
@@ -1529,9 +1532,8 @@ pub enum FederationStatus {
         /// or [`Timeout`](crate::ErrorCode::Timeout) when no guardian
         /// answered in time, and [`Storage`](crate::ErrorCode::Storage)
         /// when the federation's local state could not be read. A reopen
-        /// that fails for any other reason currently surfaces as
-        /// [`Storage`](crate::ErrorCode::Storage) too, for lack of a more
-        /// specific signal from the reopened client.
+        /// that fails for any other reason surfaces as
+        /// [`Internal`](crate::ErrorCode::Internal).
         ///
         /// [`message`](crate::Diagnostic::message) is human-readable
         /// detail, for humans only: logs, diagnostics, an expandable
@@ -1853,7 +1855,7 @@ impl SdkInner {
         .map_err(|err| {
             crate::Error::new(
                 crate::ErrorCode::FederationUnreachable,
-                format!("no guardian answered: {err}"),
+                format!("no guardian answered: {}", err.fmt_compact()),
             )
         })?;
         Ok(preview.config().clone())
@@ -1870,13 +1872,11 @@ impl SdkInner {
             .open(self.connectors.clone(), db, self.root_secret.clone())
             .await
             .map_err(|err| {
-                // `ClientBuilder::open` still returns `anyhow::Result` at the pinned revision, so
-                // there is nothing to match on: every failure here maps to `Storage`, even one
-                // that is not really a storage fault (the federation refusing the reopened
-                // client, say). `FederationStatus::Quarantined`'s doc comment calls this out as
-                // the reason a reopen failure currently surfaces as `Storage` regardless of
-                // cause. Only the message crosses the boundary.
-                crate::Error::new(crate::ErrorCode::Storage, format!("could not open: {err}"))
+                // Only the code and the rendered chain cross the boundary.
+                crate::Error::new(
+                    build_error_code(&err),
+                    format!("could not open: {}", err.fmt_compact()),
+                )
             })?;
         Ok(Arc::new(handle))
     }
@@ -1905,7 +1905,7 @@ impl SdkInner {
         .map_err(|err| {
             crate::Error::new(
                 crate::ErrorCode::FederationUnreachable,
-                format!("no guardian answered: {err}"),
+                format!("no guardian answered: {}", err.fmt_compact()),
             )
         })?;
         let db = self
@@ -1916,8 +1916,8 @@ impl SdkInner {
             .await
             .map_err(|err| {
                 crate::Error::new(
-                    crate::ErrorCode::Storage,
-                    format!("the federation could not be joined: {err}"),
+                    build_error_code(&err),
+                    format!("the federation could not be joined: {}", err.fmt_compact()),
                 )
             })?;
         Ok(Arc::new(handle))
@@ -1950,22 +1950,25 @@ impl SdkInner {
         .map_err(|err| {
             crate::Error::new(
                 crate::ErrorCode::FederationUnreachable,
-                format!("no guardian answered: {err}"),
+                format!("no guardian answered: {}", err.fmt_compact()),
             )
         })?;
         let db = self
             .db
             .with_prefix(crate::db::federation_prefix(id).to_vec());
         // No backups: upstream deprecates every backup method for removal in v0.13 ("Recovery
-        // is now efficient enough that backups are no longer necessary"), and at this pin the
-        // mint modules recover from the federation's own recovery log without a snapshot.
+        // is now efficient enough that backups are no longer necessary"), and the mint modules
+        // recover from the federation's own recovery log without a snapshot.
         let handle = preview
             .recover(db, self.root_secret.clone(), None)
             .await
             .map_err(|err| {
                 crate::Error::new(
-                    crate::ErrorCode::Storage,
-                    format!("the federation could not be recovered: {err}"),
+                    build_error_code(&err),
+                    format!(
+                        "the federation could not be recovered: {}",
+                        err.fmt_compact()
+                    ),
                 )
             })?;
         Ok(Arc::new(handle))
@@ -2211,6 +2214,45 @@ impl SdkInner {
     }
 }
 
+/// The code for a client that could not be opened, joined or recovered.
+///
+/// A failure of the stored state, its migration or its decoding is a storage fault, as is a
+/// database that is missing, already in use for another join, or keyed to another secret. A
+/// federation request that failed while the client was being built is the federation being
+/// unreachable. Any other module failure, a client that was already stopped, and any cause this
+/// build does not recognise are `Internal`: none of them is something the storage backend did.
+// The federation request that fails in practice is a module's own: the mintv2 module asks the
+// federation how far its recovery has to scan before the client exists (`prepare_recovery`,
+// `fedimint-mintv2-client/src/lib.rs:198-202`), so a recovery started without a reachable
+// guardian ends here as `ModuleRecoveryPrepare`. `ConfigDownload` is mapped for what it names,
+// though none of `open`, `join` and `recover` raises it: the config is downloaded by the preview
+// that precedes them, which reports its own error.
+fn build_error_code(err: &ClientBuildError) -> crate::ErrorCode {
+    match err {
+        ClientBuildError::DatabaseNotInitialized
+        | ClientBuildError::DatabaseAlreadyInitialized
+        | ClientBuildError::SecretMismatch
+        | ClientBuildError::ConfigDecode(_)
+        | ClientBuildError::Migration(_)
+        | ClientBuildError::Database(_) => crate::ErrorCode::Storage,
+        ClientBuildError::ConfigDownload(_) => crate::ErrorCode::FederationUnreachable,
+        ClientBuildError::ModuleInit { source, .. }
+        | ClientBuildError::ModuleRecoveryPrepare { source, .. }
+            if is_federation_failure(source) =>
+        {
+            crate::ErrorCode::FederationUnreachable
+        }
+        _ => crate::ErrorCode::Internal,
+    }
+}
+
+/// Whether a module's failure is a federation request that failed.
+// A module hands the client its own failures as `ClientModuleError::Other`, a box around
+// whatever it reported, so the federation's error has to be recognised by its type.
+fn is_federation_failure(err: &ClientModuleError) -> bool {
+    matches!(err, ClientModuleError::Other(cause) if cause.is::<FederationError>())
+}
+
 /// How long a call waits for a federation's guardians before it reports a timeout.
 ///
 /// `pub(crate)` so that `onchain.rs` can reuse the same bound for its own federation round
@@ -2355,6 +2397,76 @@ mod tests {
             rendered,
             "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }"
         );
+    }
+
+    #[test]
+    fn a_client_that_cannot_open_is_a_storage_fault_only_when_its_state_is_at_fault() {
+        use fedimint_core::encoding::DecodeError;
+
+        for storage_fault in [
+            ClientBuildError::DatabaseNotInitialized,
+            ClientBuildError::DatabaseAlreadyInitialized,
+            ClientBuildError::SecretMismatch,
+            ClientBuildError::ConfigDecode(DecodeError::from_str("garbled")),
+        ] {
+            assert_eq!(
+                build_error_code(&storage_fault),
+                ErrorCode::Storage,
+                "{storage_fault}"
+            );
+        }
+
+        let module_init = ClientBuildError::ModuleInit {
+            kind: fedimint_core::core::ModuleKind::from_static_str("mint"),
+            instance_id: 1,
+            source: ClientModuleError::other("the module refused"),
+        };
+        assert_eq!(build_error_code(&module_init), ErrorCode::Internal);
+        assert_eq!(
+            build_error_code(&ClientBuildError::AlreadyStopped),
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
+    fn a_module_that_could_not_reach_the_federation_is_the_federation_being_unreachable() {
+        // What a module reports when the request it makes of the federation fails.
+        let no_answer = || {
+            ClientModuleError::other(FederationError {
+                method: "recovery_count".to_owned(),
+                params: serde_json::Value::Null,
+                general: None,
+                peer_errors: BTreeMap::new(),
+            })
+        };
+        let kind = || fedimint_core::core::ModuleKind::from_static_str("mintv2");
+
+        let preparing = ClientBuildError::ModuleRecoveryPrepare {
+            kind: kind(),
+            instance_id: 1,
+            source: no_answer(),
+        };
+        assert_eq!(
+            build_error_code(&preparing),
+            ErrorCode::FederationUnreachable
+        );
+        let initialising = ClientBuildError::ModuleInit {
+            kind: kind(),
+            instance_id: 1,
+            source: no_answer(),
+        };
+        assert_eq!(
+            build_error_code(&initialising),
+            ErrorCode::FederationUnreachable
+        );
+
+        // Any other failure of the same step is the module's own.
+        let refused = ClientBuildError::ModuleRecoveryPrepare {
+            kind: kind(),
+            instance_id: 1,
+            source: ClientModuleError::other("the module refused"),
+        };
+        assert_eq!(build_error_code(&refused), ErrorCode::Internal);
     }
 
     #[test]

@@ -3,17 +3,18 @@
 use std::sync::{Arc, Weak};
 
 use fedimint_client::Client;
-use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::{ClientModuleInstance, TransactionSubmitError};
 use fedimint_core::bitcoin::hashes::{Hash, sha256};
 use fedimint_core::core::OperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
-use fedimint_core::util::BoxStream;
+use fedimint_core::util::{BoxStream, FmtCompact};
 use fedimint_ln_client::LnReceiveState as UpstreamReceiveState;
 use fedimint_ln_client::db::PaymentResultKey;
 use fedimint_ln_client::receive::LightningReceiveError;
 use fedimint_ln_client::{
-    InternalPayState, LightningClientModule, LightningOperationMeta, LightningOperationMetaVariant,
-    LnPayState, OutgoingLightningPayment, PayBolt11InvoiceError, PayType,
+    CreateBolt11InvoiceError, GatewaySelectionError, InternalPayState, LightningClientModule,
+    LightningOperationMeta, LightningOperationMetaVariant, LnPayState, OutgoingLightningPayment,
+    PayBolt11InvoiceError, PayType, ReclaimLnReceiveError,
 };
 use fedimint_ln_common::LightningGateway;
 use fedimint_ln_common::config::FeeToAmount;
@@ -334,7 +335,7 @@ impl ReclaimContext {
         let reclaim_id = match module.reclaim_ln_receive(self.id).await {
             Ok(id) => id,
             Err(err) => {
-                return classify_reclaim_refusal(&err.to_string()).map(ReclaimStart::Impossible);
+                return classify_reclaim_refusal(&err).map(ReclaimStart::Impossible);
             }
         };
         // Persisted before it is followed: after a restart the record is the only thing that
@@ -420,20 +421,23 @@ async fn follow_reclaim(
         .into_stream())
 }
 
-// Upstream refuses `reclaim_ln_receive` two ways. "Cannot reclaim an active lightning receive"
-// (fedimint-ln-client/src/lib.rs, in `reclaim_ln_receive`) is the race between its notifier
+// Upstream refuses `reclaim_ln_receive` two ways. `ReclaimLnReceiveError::StillActive`
+// (fedimint-ln-client/src/lib.rs:2182, in `reclaim_ln_receive`) is the race between its notifier
 // reporting `Canceled { ClaimRejected }` and the state machine itself going inactive: retrying
 // later succeeds, so this is an observation failure, not a definitive answer. Any other refusal
 // (not a reclaimable receive, the receiving key unrecoverable from history) is definitive: no
 // further claim is possible.
-fn classify_reclaim_refusal(text: &str) -> Result<String> {
-    if text.contains("active") {
-        return Err(Error::new(
+fn classify_reclaim_refusal(err: &ReclaimLnReceiveError) -> Result<String> {
+    match err {
+        ReclaimLnReceiveError::StillActive => Err(Error::new(
             ErrorCode::Internal,
-            format!("the rejected claim cannot be retried yet: {text}"),
-        ));
+            format!(
+                "the rejected claim cannot be retried yet: {}",
+                err.fmt_compact()
+            ),
+        )),
+        _ => Ok(err.fmt_compact().to_string()),
     }
-    Ok(text.to_owned())
 }
 
 /// Which upstream operation a receive subscription is following.
@@ -573,10 +577,12 @@ pub(super) async fn plan(
     invoice: &Bolt11Invoice,
     amount: Amount,
 ) -> Result<Plan> {
-    module
-        .update_gateway_cache()
-        .await
-        .map_err(|err| unreachable(format!("could not refresh the gateway list: {err}")))?;
+    module.update_gateway_cache().await.map_err(|err| {
+        unreachable(format!(
+            "could not refresh the gateway list: {}",
+            err.fmt_compact()
+        ))
+    })?;
     let gateway = if is_internal(client, module, invoice).await? {
         None
     } else {
@@ -584,14 +590,26 @@ pub(super) async fn plan(
             module
                 .select_available_gateway(None, Some(invoice.inner().clone()))
                 .await
-                .map_err(gateway_unavailable)?,
+                .map_err(selection_error)?,
         ))
     };
     terms_for(client, module, invoice, amount, gateway).await
 }
 
+/// A gateway that could not be selected. The federation failing to list its gateways is a
+/// reachability problem; every other refusal is a gateway one.
+fn selection_error(err: GatewaySelectionError) -> Error {
+    match &err {
+        GatewaySelectionError::Offline { .. }
+        | GatewaySelectionError::NoGatewaysRegistered
+        | GatewaySelectionError::NoneReachable => gateway_unavailable(err.fmt_compact()),
+        GatewaySelectionError::Federation(_) => unreachable(err.fmt_compact()),
+        _ => internal(err.fmt_compact()),
+    }
+}
+
 /// Whether the module will settle this invoice inside the federation: the same two tests
-/// `pay_bolt11_invoice` runs (`fedimint-ln-client/src/lib.rs:1409-1418`), so the quote's route is
+/// `pay_bolt11_invoice` runs (`fedimint-ln-client/src/lib.rs:1444-1453`), so the quote's route is
 /// the route the payment takes. Both look at the last hop of the invoice's first route hint.
 async fn is_internal(
     client: &Client,
@@ -606,9 +624,12 @@ async fn is_internal(
     let Some(last_hop) = last_hop else {
         return Ok(false);
     };
-    let markers = client
-        .get_internal_payment_markers()
-        .map_err(|err| internal(format!("no internal payment markers: {err}")))?;
+    let markers = client.get_internal_payment_markers().map_err(|err| {
+        internal(format!(
+            "no internal payment markers: {}",
+            err.fmt_compact()
+        ))
+    })?;
     if last_hop == markers {
         return Ok(true);
     }
@@ -632,7 +653,7 @@ async fn terms_for(
     gateway: Option<Box<LightningGateway>>,
 ) -> Result<Plan> {
     // The contract is funded for the invoice amount plus the gateway's fee
-    // (`fedimint-ln-client/src/lib.rs:866-867`); an internal payment funds exactly the amount.
+    // (`fedimint-ln-client/src/lib.rs:893-894`); an internal payment funds exactly the amount.
     let gateway_fee = gateway.as_ref().map_or(Amount::from_msats(0), |gateway| {
         from_upstream(gateway.fees.to_amount(&to_upstream(amount)))
     });
@@ -640,19 +661,12 @@ async fn terms_for(
     // A dry run of the primary module's balancing fails when the notes on hand cannot cover
     // the contract; that is reported as the balance problem it is, rather than as an opaque
     // internal failure, on either mint generation this module can run against.
-    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            return Err(fee_quote_failure(
-                client,
-                err.as_ref(),
-                Shortfall::Balance,
-                contract_amount,
-                "could not quote the funding fee",
-            )
-            .await);
-        }
-    };
+    let quote = module
+        .send_fee_quote(to_upstream(contract_amount))
+        .await
+        .map_err(|err| {
+            fee_quote_failure(&err, Shortfall::Balance, "could not quote the funding fee")
+        })?;
     let lightning_module = from_upstream(module.cfg.fee_consensus.contract_output);
     let route = match &gateway {
         None => LightningRoute::Internal,
@@ -684,7 +698,7 @@ pub(super) async fn send(
     // funded, and the terms re-check below would otherwise report that as a moved quote instead
     // of the truth: the invoice is already paid. `pay_bolt11_invoice` itself runs these same two
     // idempotency checks first, ahead of anything else it does
-    // (`fedimint-ln-client/src/lib.rs:1356-1368`).
+    // (`fedimint-ln-client/src/lib.rs:1389-1404`).
     let payment_hash = *quote.invoice.inner().payment_hash();
     let record = module
         .db
@@ -713,7 +727,7 @@ pub(super) async fn send(
         return Err(insufficient(quote.plan.total, available));
     }
     // `pay_bolt11_invoice` decides internal-vs-gateway for itself, from the invoice and the
-    // gateway cache as they stand when it is called (`fedimint-ln-client/src/lib.rs:1405-1418`).
+    // gateway cache as they stand when it is called (`fedimint-ln-client/src/lib.rs:1437-1453`).
     // That cache is shared and can move between the quote and this call, so the same decision is
     // read again here, before anything is funded: a route that moved is `QuoteChanged`, not a
     // fee mismatch discovered only after the payment went out.
@@ -749,8 +763,7 @@ pub(super) async fn send(
     if fresh.total != quote.plan.total {
         return Err(quote_changed(quote.plan.total, fresh.total));
     }
-    // Read once, ahead of the call below, for the `Invalid invoice currency` branch of its
-    // error mapping.
+    // Read once, ahead of the call below, for the `WrongCurrency` branch of its error mapping.
     let expected: Network = federation.record().network.into();
     // Carried inside upstream's own metadata so a record rebuilt from the log after a crash
     // between upstream's commit and the SDK's write (`federation.create_operation` below) has
@@ -776,51 +789,7 @@ pub(super) async fn send(
             custom_meta(&quoted_wire)?,
         )
         .await
-        .map_err(|err| {
-            if let Some(known) = err.downcast_ref::<PayBolt11InvoiceError>() {
-                return match known {
-                    PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress { .. }
-                    | PayBolt11InvoiceError::FundedContractAlreadyExists { .. } => {
-                        quote_expired(quote.expires_at, true)
-                    }
-                    // A `None` gateway is only ever passed for a quote whose route was checked
-                    // internal just above; this fires only when the shared cache moved again
-                    // between that check and this call, so the module's own re-derivation no
-                    // longer agrees the payment is internal. The same drift the check above
-                    // guards against, caught one call later instead of missed.
-                    PayBolt11InvoiceError::NoLnGatewayAvailable => Error::new(
-                        ErrorCode::QuoteChanged,
-                        "the payment's route changed since the quote was issued; quote again",
-                    ),
-                };
-            }
-            if let Some(short) =
-                err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>()
-            {
-                return insufficient(
-                    from_upstream(short.requested_amount),
-                    from_upstream(short.total_amount),
-                );
-            }
-            let text = err.to_string();
-            if text.contains("Invoice has expired") {
-                return quote_expired(quote.expires_at, false);
-            }
-            // v1 converts the configured network through lightning-invoice's
-            // `From<bitcoin::Network> for Currency`
-            // (lightning-invoice-0.33.3/src/lib.rs:451-463) and compares against it
-            // (`ensure!(federation_currency == invoice_currency, "Invalid invoice
-            // currency: ...")`, fedimint-ln-client/src/lib.rs:834-839). That conversion has no
-            // `Testnet4` arm and falls to a `_` arm yielding `Currency::Regtest`, so a testnet4
-            // federation refuses every `tb` invoice here, the same upstream limitation lnv2's
-            // `WrongCurrency` reports (tracked as fedimint/fedimint#9100). Reported as the
-            // network mismatch it is rather than left to fall through to the internal-failure
-            // branch below.
-            if text.contains("Invalid invoice currency") {
-                return network_refusal(quote, expected);
-            }
-            internal(format!("the payment could not be started: {text}"))
-        })?;
+        .map_err(|err| pay_error(&err, quote, expected))?;
     // The module's answer after funding is authoritative for the route; a payment quoted
     // through a gateway that settled internally paid no gateway fee. The gateway component is
     // the only part of the fee this code knows for certain was not charged, so it is what is
@@ -877,8 +846,79 @@ pub(super) async fn send(
         .await
 }
 
+// A refused `pay_bolt11_invoice`, reported the way lnv2's `send_error` reports the same
+// condition, so both generations answer alike.
+fn pay_error(err: &PayBolt11InvoiceError, quote: &LnQuoteInner, expected: Network) -> Error {
+    match err {
+        PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress { .. }
+        | PayBolt11InvoiceError::FundedContractAlreadyExists { .. } => {
+            quote_expired(quote.expires_at, true)
+        }
+        // A `None` gateway is only ever passed for a quote whose route was checked internal
+        // just before the call; this fires only when the shared cache moved again between that
+        // check and the call, so the module's own re-derivation no longer agrees the payment is
+        // internal. The same drift the check guards against, caught one call later instead of
+        // missed.
+        PayBolt11InvoiceError::NoLnGatewayAvailable => Error::new(
+            ErrorCode::QuoteChanged,
+            "the payment's route changed since the quote was issued; quote again",
+        ),
+        PayBolt11InvoiceError::InvoiceExpired => quote_expired(quote.expires_at, false),
+        // v1 converts the configured network through lightning-invoice's
+        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.33.3/src/lib.rs:451-463) and
+        // compares the result with the invoice's currency
+        // (fedimint-ln-client/src/lib.rs:850-858). That conversion has no `Testnet4` arm and
+        // falls to a `_` arm yielding `Currency::Regtest`, so a testnet4 federation refuses
+        // every `tb` invoice here, the same upstream limitation lnv2's `WrongCurrency` reports
+        // (tracked as fedimint/fedimint#9100). Reported as the network mismatch it is.
+        PayBolt11InvoiceError::WrongCurrency { .. } => network_refusal(quote, expected),
+        PayBolt11InvoiceError::MissingInvoiceAmount => Error::new(
+            ErrorCode::AmountlessInvoice,
+            "this invoice names no amount and cannot be paid through fedimint",
+        ),
+        // The delta is the invoice's own `min_final_cltv_expiry_delta` plus a constant of the
+        // module's, so no other gateway and no retry makes this invoice payable.
+        PayBolt11InvoiceError::TimelockDeltaTooLarge { .. } => Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "this invoice asks for a longer final timelock than can be paid: {}",
+                err.fmt_compact()
+            ),
+        ),
+        PayBolt11InvoiceError::GatewayUnavailable(_) => gateway_unavailable(err.fmt_compact()),
+        PayBolt11InvoiceError::NoConsensusBlockCount | PayBolt11InvoiceError::Federation(_) => {
+            unreachable(err.fmt_compact())
+        }
+        PayBolt11InvoiceError::Database(_) => Error::new(
+            ErrorCode::Storage,
+            format!(
+                "the payment attempt could not be recorded: {}",
+                err.fmt_compact()
+            ),
+        ),
+        PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(short)) => {
+            insufficient(
+                from_upstream(short.requested_amount),
+                from_upstream(short.total_amount),
+            )
+        }
+        // An attempt's operation id is derived from the invoice's payment hash and the attempt's
+        // index, so one that already exists is this same payment, started by a concurrent call
+        // after the module's own in-progress check let both through.
+        PayBolt11InvoiceError::Transaction(TransactionSubmitError::OperationAlreadyExists(_)) => {
+            quote_expired(quote.expires_at, true)
+        }
+        // Failures of this client's own state (the internal contract, the payment markers, the
+        // metadata, any other transaction failure), and any variant added upstream later.
+        _ => internal(format!(
+            "the payment could not be started: {}",
+            err.fmt_compact()
+        )),
+    }
+}
+
 // Reproduces `LightningClientModule::get_payment_operation_id`, upstream's private helper
-// (`fedimint-ln-client/src/lib.rs:798-806`) that derives the operation id of one payment
+// (`fedimint-ln-client/src/lib.rs:811-819`) that derives the operation id of one payment
 // attempt from the invoice's payment hash and the attempt's index: a sha256 hash over the 32
 // payment-hash bytes followed by the 2-byte little-endian index. This id is a storage format
 // upstream, not an implementation detail: it is the operation id under which every v1 payment
@@ -904,33 +944,28 @@ pub(super) async fn receive(
             format!("the description cannot be carried by an invoice: {err}"),
         )
     })?;
-    module
-        .update_gateway_cache()
-        .await
-        .map_err(|err| unreachable(format!("could not refresh the gateway list: {err}")))?;
+    module.update_gateway_cache().await.map_err(|err| {
+        unreachable(format!(
+            "could not refresh the gateway list: {}",
+            err.fmt_compact()
+        ))
+    })?;
     let gateway = module
         .select_available_gateway(None, None)
         .await
-        .map_err(gateway_unavailable)?;
+        .map_err(selection_error)?;
     // v1 takes no gateway fee on the way in: the gateway funds the contract for the invoice's
     // amount and the only deduction is the federation's fee for claiming it.
-    // receive_fee_quote (`fedimint-ln-client/src/lib.rs:1846`) quotes the contract as the
+    // receive_fee_quote (`fedimint-ln-client/src/lib.rs:1879`) quotes the contract as the
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount
     // problem, not a balance one.
-    let quote = match module.receive_fee_quote(to_upstream(amount)).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            return Err(fee_quote_failure(
-                client,
-                err.as_ref(),
-                Shortfall::Amount,
-                amount,
-                "could not quote the claim fee",
-            )
-            .await);
-        }
-    };
+    let quote = module
+        .receive_fee_quote(to_upstream(amount))
+        .await
+        .map_err(|err| {
+            fee_quote_failure(&err, Shortfall::Amount, "could not quote the claim fee")
+        })?;
     let fee = from_upstream(quote.total().get_bitcoin());
     // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
     // (the wallet was funded), so the net credit going negative here is the same amount problem
@@ -963,7 +998,7 @@ pub(super) async fn receive(
             Some(gateway.clone()),
         )
         .await
-        .map_err(|err| unreachable(format!("the invoice could not be registered: {err}")))?;
+        .map_err(|err| invoice_error(&err))?;
     let invoice = Bolt11Invoice::from_upstream(invoice);
     let details = LnReceiveDetails {
         invoice: invoice.clone(),
@@ -986,6 +1021,20 @@ pub(super) async fn receive(
         )
         .await?;
     Ok(LnReceive { invoice, operation })
+}
+
+// A refused `create_bolt11_invoice`. None of its failures is a guardian that could not be
+// reached: the offer's transaction is built and submitted locally, and `OfferRejected` is the
+// federation answering that it refused that transaction
+// (`fedimint-ln-client/src/lib.rs:2121-2126`). The offer carries no amount and no fee, so no
+// shortfall is reachable from it either, and the invoice is assembled from parameters this
+// facade validated. Every case is a failure of this client's own state or a refusal the caller
+// cannot act on.
+fn invoice_error(err: &CreateBolt11InvoiceError) -> Error {
+    internal(format!(
+        "the invoice could not be registered: {}",
+        err.fmt_compact()
+    ))
 }
 
 /// Rebuilds a record from a v1 log entry: exact for an operation this SDK created, whose
@@ -1112,6 +1161,9 @@ pub(super) fn backfill(meta: &serde_json::Value, created_at: u64) -> Option<Back
 
 #[cfg(test)]
 mod tests {
+    use fedimint_api_client::api::FederationError;
+    use fedimint_client_module::error::OperationAlreadyExistsError;
+    use fedimint_core::db::DatabaseError;
     use fedimint_ln_client::pay::GatewayPayError;
 
     use super::*;
@@ -1416,16 +1468,210 @@ mod tests {
 
     #[test]
     fn the_notifiers_active_receive_race_is_retryable() {
-        let err = classify_reclaim_refusal("Cannot reclaim an active lightning receive")
+        let err = classify_reclaim_refusal(&ReclaimLnReceiveError::StillActive)
             .expect_err("the race is retryable, not definitive");
         assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("still active"), "{}", err.message);
     }
 
     #[test]
     fn any_other_refusal_is_definitive() {
-        let text = classify_reclaim_refusal("Operation is not a reclaimable lightning receive")
-            .expect("a refusal that is not the race is definitive");
-        assert_eq!(text, "Operation is not a reclaimable lightning receive");
+        for refusal in [
+            ReclaimLnReceiveError::NotReclaimable,
+            ReclaimLnReceiveError::ReceiveKeyUnavailable,
+        ] {
+            let text = classify_reclaim_refusal(&refusal)
+                .expect("a refusal that is not the race is definitive");
+            assert_eq!(text, refusal.fmt_compact().to_string());
+        }
+    }
+
+    /// A federation request that no guardian answered.
+    fn no_answer() -> FederationError {
+        FederationError {
+            method: "block_count".to_owned(),
+            params: serde_json::Value::Null,
+            general: None,
+            peer_errors: Default::default(),
+        }
+    }
+
+    fn a_quote() -> LnQuoteInner {
+        LnQuoteInner {
+            federation_id: fedimint_core::config::FederationId::dummy(),
+            invoice: REGTEST_INVOICE.parse().expect("a valid regtest invoice"),
+            invoice_amount: Amount::from_msats(100_000),
+            plan: Plan {
+                breakdown: crate::LnFeeBreakdown {
+                    gateway: Amount::from_msats(0),
+                    lightning_module: Amount::from_msats(0),
+                    primary_module: Amount::from_msats(0),
+                    dust: Amount::from_msats(0),
+                },
+                fee: Amount::from_msats(0),
+                total: Amount::from_msats(100_000),
+                route: gateway_route(),
+                terms: Terms::V1 { gateway: None },
+            },
+            expires_at: Timestamp::from_epoch_millis(7),
+        }
+    }
+
+    #[test]
+    fn a_refused_payment_reports_the_condition_lnv2_reports_for_it() {
+        use fedimint_ln_common::lightning_invoice::Currency;
+
+        let quote = a_quote();
+        let map = |err: PayBolt11InvoiceError| pay_error(&err, &quote, Network::Regtest);
+
+        for already_running in [
+            PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress {
+                operation_id: OperationId([1; 32]),
+            },
+            PayBolt11InvoiceError::FundedContractAlreadyExists {
+                contract_id: fedimint_ln_common::contracts::ContractId::from_byte_array([2; 32]),
+            },
+            // A concurrent call that started the same attempt first.
+            PayBolt11InvoiceError::Transaction(TransactionSubmitError::OperationAlreadyExists(
+                OperationAlreadyExistsError {
+                    operation_id: OperationId([3; 32]),
+                },
+            )),
+        ] {
+            let err = map(already_running);
+            assert_eq!(err.code, ErrorCode::QuoteExpired);
+            match err.detail() {
+                Some(crate::ErrorDetails::QuoteExpired {
+                    already_executed, ..
+                }) => assert!(already_executed),
+                other => panic!("expected QuoteExpired details, got {other:?}"),
+            }
+        }
+
+        let expired = map(PayBolt11InvoiceError::InvoiceExpired);
+        assert_eq!(expired.code, ErrorCode::QuoteExpired);
+        match expired.detail() {
+            Some(crate::ErrorDetails::QuoteExpired {
+                already_executed, ..
+            }) => assert!(!already_executed),
+            other => panic!("expected QuoteExpired details, got {other:?}"),
+        }
+
+        assert_eq!(
+            map(PayBolt11InvoiceError::NoLnGatewayAvailable).code,
+            ErrorCode::QuoteChanged
+        );
+        assert_eq!(
+            map(PayBolt11InvoiceError::MissingInvoiceAmount).code,
+            ErrorCode::AmountlessInvoice
+        );
+        let wrong = map(PayBolt11InvoiceError::WrongCurrency {
+            expected: Currency::Regtest,
+            found: Currency::BitcoinTestnet,
+        });
+        assert_eq!(wrong.code, ErrorCode::NetworkMismatch);
+        assert!(matches!(
+            wrong.detail(),
+            Some(crate::ErrorDetails::NetworkMismatch { .. })
+        ));
+        assert_eq!(
+            map(PayBolt11InvoiceError::TimelockDeltaTooLarge { found: 9, max: 8 }).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map(PayBolt11InvoiceError::NoConsensusBlockCount).code,
+            ErrorCode::FederationUnreachable
+        );
+        assert_eq!(
+            map(PayBolt11InvoiceError::from(no_answer())).code,
+            ErrorCode::FederationUnreachable
+        );
+        assert_eq!(
+            map(PayBolt11InvoiceError::Database(
+                DatabaseError::WriteConflict
+            ))
+            .code,
+            ErrorCode::Storage
+        );
+    }
+
+    #[test]
+    fn a_payment_the_mint_cannot_fund_reports_the_mints_own_figures() {
+        use fedimint_client_module::error::InsufficientBalanceError;
+
+        let err = pay_error(
+            &PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(
+                InsufficientBalanceError {
+                    requested_amount: fedimint_core::Amount::from_msats(10),
+                    total_amount: fedimint_core::Amount::from_msats(3),
+                },
+            )),
+            &a_quote(),
+            Network::Regtest,
+        );
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        match err.detail() {
+            Some(crate::ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, Amount::from_msats(10));
+                assert_eq!(*available, Amount::from_msats(3));
+            }
+            other => panic!("expected InsufficientBalance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn any_other_payment_failure_keeps_its_whole_cause_chain() {
+        let err = pay_error(
+            &PayBolt11InvoiceError::Transaction(TransactionSubmitError::TransactionTooLarge {
+                size: 9,
+                max: 8,
+            }),
+            &a_quote(),
+            Network::Regtest,
+        );
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message
+                .contains("The payment transaction could not be submitted")
+                && err.message.contains("The transaction is 9 bytes"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn gateway_selection_failures_are_gateway_problems() {
+        for refusal in [
+            GatewaySelectionError::NoGatewaysRegistered,
+            GatewaySelectionError::NoneReachable,
+            GatewaySelectionError::Offline {
+                gateway_id: GATEWAY_ID.parse().expect("a key"),
+            },
+        ] {
+            assert_eq!(selection_error(refusal).code, ErrorCode::GatewayUnavailable);
+        }
+        // The federation not answering with its gateway list is not a gateway's doing.
+        assert_eq!(
+            selection_error(GatewaySelectionError::from(no_answer())).code,
+            ErrorCode::FederationUnreachable
+        );
+    }
+
+    #[test]
+    fn a_rejected_offer_is_reported_with_its_reason() {
+        let err = invoice_error(&CreateBolt11InvoiceError::OfferRejected {
+            reason: "the offer was rejected".to_owned(),
+        });
+        // The federation answered, so this is not it being unreachable.
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message.contains("the offer was rejected"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

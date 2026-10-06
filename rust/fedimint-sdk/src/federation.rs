@@ -9,6 +9,7 @@ use fedimint_core::db::Database;
 use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 use fedimint_core::module::AmountUnit;
 use fedimint_core::task::MaybeSend;
+use fedimint_core::util::FmtCompact as _;
 use futures::StreamExt;
 
 use crate::db::{FederationRecord, StoredStatus};
@@ -432,7 +433,10 @@ impl BalanceUpdates {
                     Err(err) => {
                         return Err(crate::Error::new(
                             crate::ErrorCode::Internal,
-                            format!("this federation cannot report a balance: {err}"),
+                            format!(
+                                "this federation cannot report a balance: {}",
+                                err.fmt_compact()
+                            ),
                         ));
                     }
                 }
@@ -1050,7 +1054,7 @@ impl FederationInner {
     {
         self.ensure_open()?;
         // Both of these are hoisted out of the transaction below on purpose: an autocommit
-        // closure may run more than once (`fedimint-core/src/db/mod.rs:534-536`), and a
+        // closure may run more than once (`fedimint-core/src/db/mod.rs:542-544`), and a
         // creation time that changed between attempts would put the record and its index entry
         // out of step.
         let created_at = crate::db::now_millis();
@@ -1297,7 +1301,7 @@ impl FederationInner {
     /// When the client says this operation was created, from its own chronological index.
     ///
     /// Newest first, so a just-created operation is found on the first step. The client keeps no
-    /// creation time on the entry itself (`fedimint-client-module/src/oplog.rs:138-145`),
+    /// creation time on the entry itself (`fedimint-client-module/src/oplog.rs:128-134`),
     /// which is why the SDK's record carries its own copy.
     async fn creation_time_of(&self, id: fedimint_core::core::OperationId) -> Option<u64> {
         use futures::StreamExt;
@@ -1650,14 +1654,13 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     }
 }
 
-// `FederationInner` gets no `Drop`. An earlier draft of this plan gave it one, to stop
-// `ClientHandle::drop` panicking when the last `Sdk` clone was dropped outside a tokio runtime:
-// against 0.12.0 that `Drop` called `RuntimeHandle::current()`, which panics when no runtime is
-// entered, and the workaround was to `mem::forget` the handle. At the pinned revision upstream
-// checks `RuntimeHandle::try_current()` and falls back to a non-blocking partial shutdown with an
-// `error!` line instead (`fedimint-client/src/client/handle.rs:161-200`), so dropping a handle
-// anywhere is degraded rather than fatal, and forgetting one would leak the client and the store's
-// file lock for no reason. `Sdk::shutdown` is still the way to get a clean stop.
+// `FederationInner` gets no `Drop`. Dropping the last `Sdk` clone outside a tokio runtime must not
+// panic, and it does not need a `Drop` here to be safe: `ClientHandle::drop` checks
+// `RuntimeHandle::try_current()` and, without a runtime or on a current-thread one, falls back to a
+// non-blocking partial shutdown with an `error!` line instead of blocking
+// (`fedimint-client/src/client/handle.rs:155-200`). Dropping a handle anywhere is degraded rather
+// than fatal, and forgetting one would leak the client and the store's file lock for no reason.
+// `Sdk::shutdown` is still the way to get a clean stop.
 
 /// The spendable balance, read through a client the caller already has.
 ///
@@ -1676,7 +1679,7 @@ pub(crate) async fn balance_of(client: &Client, status: FederationStatus) -> Res
         Ok(balance) => balance,
         // A v1 mint recovers as `RecoveryMode::Unusable` and is left out of the client's
         // module registry until the client is opened again after the rescan
-        // (`fedimint-client/src/client/builder.rs:951`), so a recovering federation of that
+        // (`fedimint-client/src/client/builder.rs:955`), so a recovering federation of that
         // generation has no balance source at all yet. What has been recovered *so far* into
         // something spendable is then exactly nothing, which is the provisional figure the
         // docs promise; the swap that ends the recovery brings the real one.
@@ -1686,7 +1689,10 @@ pub(crate) async fn balance_of(client: &Client, status: FederationStatus) -> Res
         Err(err) => {
             return Err(crate::Error::new(
                 crate::ErrorCode::Internal,
-                format!("this federation cannot report a balance: {err}"),
+                format!(
+                    "this federation cannot report a balance: {}",
+                    err.fmt_compact()
+                ),
             ));
         }
     };

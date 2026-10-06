@@ -11,6 +11,7 @@ use fedimint_client::error::RecoveryError;
 use fedimint_client_module::module::recovery::RecoveryProgress as UpstreamRecoveryProgress;
 use fedimint_core::core::{ModuleInstanceId, OperationId as UpstreamOperationId};
 use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+use fedimint_core::util::FmtCompact as _;
 use futures::{FutureExt as _, StreamExt as _};
 
 use super::wire;
@@ -240,12 +241,12 @@ pub(crate) fn watch(
             },
             Err(RecoveryError::Failed {
                 module_instance_id,
-                error,
+                source,
             }) => {
                 record_attempt_failed(
                     &federation,
                     attempt,
-                    format!("module {module_instance_id}: {error}"),
+                    format!("module {module_instance_id}: {}", source.fmt_compact()),
                 )
                 .await;
             }
@@ -255,9 +256,11 @@ pub(crate) fn watch(
                 }
             }
             // `RecoveryError` is `#[non_exhaustive]`: a variant this build does not recognise
-            // yet is still recorded as a failure, using its own `Display` for the reason,
+            // yet is still recorded as a failure, using its whole error chain for the reason,
             // rather than leaving the attempt `Running` forever.
-            Err(err) => record_attempt_failed(&federation, attempt, err.to_string()).await,
+            Err(err) => {
+                record_attempt_failed(&federation, attempt, err.fmt_compact().to_string()).await;
+            }
         }
     });
 }
@@ -341,7 +344,7 @@ pub(crate) async fn finish(
     let id = federation.id;
     // The swap is what makes the recovered wallet usable: a v1 mint recovers as
     // `RecoveryMode::Unusable` and only enters the module registry on the client's next build
-    // (`fedimint-mint-client/src/lib.rs:839-841`, `fedimint-client/src/client/builder.rs:951`),
+    // (`fedimint-mint-client/src/lib.rs:857-859`, `fedimint-client/src/client/builder.rs:955`),
     // so every generation is swapped even though only some of them need it.
     match federation
         .replace_client(|| async { sdk.open_client(&id).await })

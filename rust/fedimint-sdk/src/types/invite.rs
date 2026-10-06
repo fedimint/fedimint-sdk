@@ -76,7 +76,7 @@ impl InviteCode {
     pub fn federation_id(&self) -> FederationId {
         // Infallible for any code this type can hold: the decoder behind
         // `FromStr` refuses a code without a federation id part
-        // (fedimint-core/src/invite_code.rs:22-25, :178), and
+        // (fedimint-core/src/invite_code.rs:22-25, :172), and
         // `from_upstream` is only ever handed a code that came through it.
         FederationId::from_upstream(self.code.federation_id())
     }
@@ -124,7 +124,7 @@ impl core::fmt::Display for InviteCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Always bech32m with the `fed1` human-readable part, whichever of the
         // two accepted encodings the value was parsed from
-        // (fedimint-core/src/invite_code.rs:268-274).
+        // (fedimint-core/src/invite_code.rs:274-280).
         core::fmt::Display::fmt(&self.code, f)
     }
 }
@@ -137,8 +137,8 @@ impl core::str::FromStr for InviteCode {
     /// malformed value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Upstream accepts bech32m and a `fedimint`-prefixed base32 form
-        // (invite_code.rs:220-243) and reports `InviteCodeParseError`
-        // (invite_code.rs:245-265). That error is dropped rather than
+        // (invite_code.rs:214-237) and reports `InviteCodeParseError`
+        // (invite_code.rs:239-259). That error is dropped rather than
         // reported: a code can embed an api_secret, so anything derived from
         // the rejected string could carry a credential into a log, and every
         // variant of it is the same `InvalidInput` to a caller anyway.

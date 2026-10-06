@@ -27,6 +27,7 @@ use fedimint_core::db::{
 use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use fedimint_core::util::FmtCompact as _;
 use fedimint_core::{impl_db_lookup, impl_db_record};
 use futures::StreamExt;
 
@@ -99,10 +100,11 @@ pub(crate) struct FederationKeyPrefix;
 /// This is deliberately narrower than the public `FederationStatus`: quarantine and recovery are
 /// facts about a running instance, not about the storage, and must not survive a restart as
 /// anything other than "reopen this one and see".
-// The `Encodable`/`Decodable` pair below is hand-written because the enum `Decodable` derive
-// expands to unqualified `anyhow::` paths and this crate has no `anyhow`; see the note above
-// this step. One `u8` tag per variant, so a stored row is one byte and an unknown tag is
-// rejected rather than guessed at.
+// The `Encodable`/`Decodable` pair below is hand-written to keep the stored format: one `u8` tag
+// per variant, so a stored row is one byte and an unknown tag is rejected rather than guessed at.
+// The enum derives write a `u64` variant index followed by the variant's fields as a
+// length-prefixed byte string, two bytes for a variant without fields, which rows already on disk
+// do not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoredStatus {
     /// A join was committed but the client state was not finished being written.
@@ -179,7 +181,7 @@ impl From<StoredCapabilities> for Capabilities {
 /// The Bitcoin network of the last configuration that validated.
 ///
 /// A storable mirror of the public `Network`, for the same reason as [`StoredCapabilities`].
-// Hand-written codecs, for the same reason as `StoredStatus`'.
+// Hand-written codecs, for the same reason as `StoredStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoredNetwork {
     Bitcoin,
@@ -360,7 +362,12 @@ where
     };
     K::Value::from_bytes(&value_bytes, &ModuleDecoderRegistry::default())
         .map(Some)
-        .map_err(|err| Error::new(ErrorCode::Storage, format!("unreadable record: {err}")))
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Storage,
+                format!("unreadable record: {}", err.fmt_compact()),
+            )
+        })
 }
 
 /// Reads raw bytes, so a caller that has to tell "absent" from "unusable" can.
@@ -551,12 +558,18 @@ pub(crate) async fn list_federations(
     let decoders = ModuleDecoderRegistry::default();
     raw.into_iter()
         .map(|(key_bytes, value_bytes)| {
-            let key = <FederationKey as DatabaseKey>::from_bytes(&key_bytes, &decoders)
-                .map_err(|err| Error::new(ErrorCode::Storage, format!("unreadable key: {err}")))?;
+            let key = <FederationKey as DatabaseKey>::from_bytes(&key_bytes, &decoders).map_err(
+                |err| {
+                    Error::new(
+                        ErrorCode::Storage,
+                        format!("unreadable key: {}", err.fmt_compact()),
+                    )
+                },
+            )?;
             let record = FederationRecord::from_bytes(&value_bytes, &decoders).map_err(|err| {
                 Error::new(
                     ErrorCode::Storage,
-                    format!("unreadable federation record: {err}"),
+                    format!("unreadable federation record: {}", err.fmt_compact()),
                 )
             })?;
             Ok((key.0, record))
@@ -583,7 +596,7 @@ pub(crate) async fn wipe_federation(db: &Database, id: &FederationId) -> Result<
 fn backend_error(err: fedimint_core::db::DatabaseError) -> Error {
     Error::new(
         ErrorCode::Storage,
-        format!("storage backend failure: {err}"),
+        format!("storage backend failure: {}", err.fmt_compact()),
     )
 }
 
@@ -1239,7 +1252,7 @@ mod operation_record_tests {
             .collect()
             .await;
         // A `u64` encodes as a `BigSize` varint whose byte order matches its numeric order
-        // (`fedimint-core/src/encoding/mod.rs:444`), so the byte order the database sorts
+        // (`fedimint-core/src/encoding/mod.rs:541`), so the byte order the database sorts
         // on is the numeric order T11's pagination needs.
         assert_eq!(seen, vec![newer, older]);
     }
