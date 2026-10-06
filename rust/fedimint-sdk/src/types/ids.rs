@@ -54,7 +54,7 @@ impl FederationId {
 impl core::fmt::Display for FederationId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // 64 forward-order lowercase hex characters
-        // (fedimint-core/src/config.rs:427-431).
+        // (fedimint-core/src/config.rs:360-364).
         core::fmt::Display::fmt(&self.id, f)
     }
 }
@@ -66,7 +66,7 @@ impl core::str::FromStr for FederationId {
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Upstream's error is `hex::HexToArrayError` (config.rs:480-486);
+        // Upstream's error is `hex::HexToArrayError` (config.rs:413-419);
         // its text is "failed to parse hex" and names nothing else. A
         // federation id is public, so the text may be passed on.
         let id = s.trim().parse::<config::FederationId>().map_err(|err| {
@@ -119,8 +119,8 @@ impl core::fmt::Display for OperationId {
         // Upstream has no `Display` at all, and its `Debug` prints
         // `OperationId(aabbccdd_11223344)`, an abbreviated form its own
         // `FromStr` rejects.
-        // `fmt_full` (fedimint-core/src/core.rs:85) is the 64-character
-        // form that parses back; its `Display` impl is at core.rs:99.
+        // `fmt_full` (fedimint-core/src/core.rs:77) is the 64-character
+        // form that parses back; its `Display` impl is at core.rs:91.
         write!(f, "{}", self.id.fmt_full())
     }
 }
@@ -132,7 +132,7 @@ impl core::str::FromStr for OperationId {
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a
     /// malformed value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // fedimint-core/src/core.rs:111-118: 64 hex characters, either
+        // fedimint-core/src/core.rs:103-110: 64 hex characters, either
         // case. The error is `hex::FromHexError`, whose text names a bad
         // length or a bad character and nothing else.
         let id = s

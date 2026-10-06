@@ -41,7 +41,7 @@ impl Preimage {
 impl core::fmt::Display for Preimage {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // The same forward-order lowercase hex formatter fedimint uses for its
-        // own ids (fedimint-core/src/lib.rs:671-684), so a preimage
+        // own ids (fedimint-core/src/lib.rs:644-657), so a preimage
         // reads the same here as it does in a fedimint log line.
         fedimint_core::format_hex(&self.preimage, f)
     }

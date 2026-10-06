@@ -8,6 +8,7 @@ use fedimint_client::module_init::{ClientModuleInitRegistry, IClientModuleInit};
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, ModuleInitRegistry};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use fedimint_core::util::FmtCompact as _;
 
 use crate::{
     Capabilities, Error, ErrorCode, ErrorDetails, FederationPreview, ModuleGeneration, Network,
@@ -17,7 +18,7 @@ use crate::{
 /// Every module kind this build can operate, as one registry to clone per federation.
 ///
 /// A kind absent from this registry is skipped when a client is built (upstream logs a `debug!`
-/// and carries on, `fedimint-client/src/client/builder.rs:788-810`), which is why the
+/// and carries on, `fedimint-client/src/client/builder.rs:787-809`), which is why the
 /// SDK derives capabilities from the configuration itself rather than from what the client came
 /// up with.
 pub(crate) fn module_inits() -> ClientModuleInitRegistry {
@@ -156,7 +157,7 @@ pub(crate) fn network_of(
         .map_err(|err| {
             Error::new(
                 ErrorCode::UnsupportedFederation,
-                format!("unreadable module configuration: {err}"),
+                format!("unreadable module configuration: {}", err.fmt_compact()),
             )
         })?;
 

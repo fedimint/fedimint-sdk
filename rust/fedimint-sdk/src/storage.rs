@@ -3,6 +3,7 @@
 use fedimint_core::db::Database;
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use fedimint_core::util::FmtCompact as _;
 #[cfg(not(target_family = "wasm"))]
 use fedimint_core::{apply, async_trait_maybe_send, db::IRawDatabase};
 
@@ -412,7 +413,10 @@ async fn open_directory(location: String) -> Result<Database> {
             .map_err(|err| {
                 Error::new(
                     ErrorCode::Storage,
-                    format!("could not open the storage at {location}: {err}"),
+                    format!(
+                        "could not open the storage at {location}: {}",
+                        err.fmt_compact()
+                    ),
                 )
             })?;
         Ok(ClaimedStore { store, claim })
@@ -598,7 +602,10 @@ async fn open_browser(location: String) -> Result<Database> {
     let raw = fedimint_cursed_redb::MemAndRedb::new(handle).map_err(|err| {
         Error::new(
             ErrorCode::Storage,
-            format!("could not open the storage named {location}: {err}"),
+            format!(
+                "could not open the storage named {location}: {}",
+                err.fmt_compact()
+            ),
         )
     })?;
     Ok(Database::new(raw, ModuleDecoderRegistry::default()))

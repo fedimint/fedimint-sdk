@@ -4,8 +4,11 @@ use std::any::Any;
 use std::sync::Arc;
 
 use fedimint_client::{Client, ClientHandleArc};
-use fedimint_client_module::ClientModuleInstance;
-use fedimint_core::util::{BoxFuture, BoxStream};
+use fedimint_client_module::error::AddStateMachinesError;
+use fedimint_client_module::{ClientModuleInstance, TransactionSubmitError};
+use fedimint_core::util::{BoxFuture, BoxStream, FmtCompact};
+use fedimint_mint_client::ReissueExternalNotesError;
+use fedimint_mint_client::error::{SelectNotesError, SpendOOBError, ValidateNotesError};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -133,15 +136,17 @@ impl Ecash {
                     .config()
                     .await
                     .get_module_cfg(mint.id)
-                    .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                    .map_err(|err| {
+                        Error::new(ErrorCode::Internal, err.fmt_compact().to_string())
+                    })?;
                 // `MintClientConfig` is kept private by `fedimint-mint-client` itself and
                 // re-exported nowhere nameable there, so the cast target has to name it at
                 // its own defining crate, `fedimint-mint-common` (see the dependency comment
                 // in Cargo.toml).
                 let mint_cfg: &fedimint_mint_common::config::MintClientConfig =
-                    module_cfg
-                        .cast()
-                        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                    module_cfg.cast().map_err(|err| {
+                        Error::new(ErrorCode::Internal, err.fmt_compact().to_string())
+                    })?;
                 let fee_consensus = mint_cfg.fee_consensus.clone();
                 let upstream_amount = fedimint_core::Amount::from_msats(amount.msats());
                 let multiple = fee_consensus.min_economical_denomination().msats;
@@ -502,7 +507,7 @@ impl Ecash {
                 // a reissue that yields a trackable operation) from `fedimint-mintv2-client`,
                 // which is also what `Ecash::quote`'s `NotSupported` refusal is waiting on.
                 // The same shape of remainder is documented on the lightning facade's v2 send
-                // (fedimint/fedimint#9124).
+                // (fedimint/fedimint#9098).
                 let (operation_id, ecash) = mint
                     .send(upstream_notes_val, extra_meta, false)
                     .await
@@ -598,70 +603,71 @@ impl Ecash {
 
         let created_at = Timestamp::from_epoch_millis(crate::db::now_millis());
 
-        let (operation_id, fee, net_credit, module_name) =
-            match mint {
-                MintModule::V1(mint) => {
-                    let v1_notes = notes.as_upstream().ok_or_else(|| {
-                        Error::new(
-                            ErrorCode::NotSupported,
-                            "mintv2 notes cannot be redeemed through v1 mint",
-                        )
-                    })?;
-                    let fee_quote = mint
-                        .reissue_fee_quote(v1_notes)
-                        .await
-                        .map_err(map_reissue_error)?;
-                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
-                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
-                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
-                    })?;
+        let (operation_id, fee, net_credit, module_name) = match mint {
+            MintModule::V1(mint) => {
+                let v1_notes = notes.as_upstream().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::NotSupported,
+                        "mintv2 notes cannot be redeemed through v1 mint",
+                    )
+                })?;
+                let fee_quote = mint
+                    .reissue_fee_quote(v1_notes)
+                    .await
+                    .map_err(map_receive_fee_quote_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                let net_credit = notes
+                    .value()
+                    .checked_sub(fee)
+                    .ok_or_else(fee_exceeds_note_value)?;
 
-                    let extra_meta = serde_json::json!({
-                        "facade": FACADE_ECASH_RECEIVE,
-                        "notes_value_msats": notes.value().msats(),
-                        "fee_msats": fee.msats(),
-                        "net_credit_msats": net_credit.msats(),
-                        "created_at_epoch_ms": created_at.epoch_millis(),
-                    });
+                let extra_meta = serde_json::json!({
+                    "facade": FACADE_ECASH_RECEIVE,
+                    "notes_value_msats": notes.value().msats(),
+                    "fee_msats": fee.msats(),
+                    "net_credit_msats": net_credit.msats(),
+                    "created_at_epoch_ms": created_at.epoch_millis(),
+                });
 
-                    let to_reissue = notes.to_upstream().expect("already checked");
-                    let op_id = mint
-                        .reissue_external_notes(to_reissue, extra_meta)
-                        .await
-                        .map_err(map_reissue_error)?;
-                    (op_id, fee, net_credit, "mint")
-                }
-                MintModule::V2(mint) => {
-                    let v2_notes = notes.as_mintv2().ok_or_else(|| {
-                        Error::new(
-                            ErrorCode::NotSupported,
-                            "v1 mint notes cannot be redeemed through mintv2",
-                        )
-                    })?;
-                    let fee_quote = mint
-                        .receive_fee_quote(v2_notes)
-                        .await
-                        .map_err(map_reissue_error)?;
-                    let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
-                    let net_credit = notes.value().checked_sub(fee).ok_or_else(|| {
-                        Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
-                    })?;
+                let to_reissue = notes.to_upstream().expect("already checked");
+                let op_id = mint
+                    .reissue_external_notes(to_reissue, extra_meta)
+                    .await
+                    .map_err(map_reissue_error)?;
+                (op_id, fee, net_credit, "mint")
+            }
+            MintModule::V2(mint) => {
+                let v2_notes = notes.as_mintv2().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::NotSupported,
+                        "v1 mint notes cannot be redeemed through mintv2",
+                    )
+                })?;
+                let fee_quote = mint
+                    .receive_fee_quote(v2_notes)
+                    .await
+                    .map_err(map_receive_fee_quote_error)?;
+                let fee = Amount::from_msats(fee_quote.total().get_bitcoin().msats);
+                let net_credit = notes
+                    .value()
+                    .checked_sub(fee)
+                    .ok_or_else(fee_exceeds_note_value)?;
 
-                    let extra_meta = serde_json::json!({
-                        "facade": FACADE_ECASH_RECEIVE,
-                        "notes_value_msats": notes.value().msats(),
-                        "fee_msats": fee.msats(),
-                        "net_credit_msats": net_credit.msats(),
-                        "created_at_epoch_ms": created_at.epoch_millis(),
-                    });
+                let extra_meta = serde_json::json!({
+                    "facade": FACADE_ECASH_RECEIVE,
+                    "notes_value_msats": notes.value().msats(),
+                    "fee_msats": fee.msats(),
+                    "net_credit_msats": net_credit.msats(),
+                    "created_at_epoch_ms": created_at.epoch_millis(),
+                });
 
-                    let op_id = mint
-                        .receive(v2_notes.clone(), extra_meta)
-                        .await
-                        .map_err(map_mintv2_receive_error)?;
-                    (op_id, fee, net_credit, "mintv2")
-                }
-            };
+                let op_id = mint
+                    .receive(v2_notes.clone(), extra_meta)
+                    .await
+                    .map_err(map_mintv2_receive_error)?;
+                (op_id, fee, net_credit, "mintv2")
+            }
+        };
 
         let details = EcashReceiveDetails {
             notes: Some(notes.clone()),
@@ -878,7 +884,7 @@ impl Operation<EcashSendState> {
     // Recording the intent is what this call promises; forwarding it to the v1 mint happens
     // here too, on a best-effort basis, and cannot change the outcome above.
     // `try_cancel_spend_notes` returns `()` and only writes a marker into the module's own
-    // isolated database (modules/fedimint-mint-client/src/lib.rs:2558-2565) — no network, no
+    // isolated database (modules/fedimint-mint-client/src/lib.rs:2696-2703) — no network, no
     // result to report — so doing it here costs nothing the error contract above forbids, and
     // it is what makes a cancellation asked for *while a subscription is already live* take
     // effect: a running subscription is not woken by the record write and would otherwise
@@ -1387,7 +1393,7 @@ impl Driver<EcashSendState> for EcashSendDriver {
             let stream_or_outcome = mint
                 .subscribe_spend_notes(id)
                 .await
-                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                .map_err(|err| Error::new(ErrorCode::Internal, err.fmt_compact().to_string()))?;
 
             let cancel_requested = record.cancel_requested_at.is_some();
             let stream = stream_or_outcome.into_stream();
@@ -1544,7 +1550,8 @@ async fn mintv2_reclaim(
                 ErrorCode::Internal,
                 format!(
                     "could not submit the reclaim of these notes, so whether they were \
-                     redeemed is still unknown; this is retryable: {err}"
+                     redeemed is still unknown; this is retryable: {}",
+                    err.fmt_compact()
                 ),
             ));
         }
@@ -1637,7 +1644,7 @@ async fn mintv2_receive_result(
     let final_state = mintv2
         .await_final_receive_operation_state(id)
         .await
-        .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+        .map_err(|err| Error::new(ErrorCode::Internal, err.fmt_compact().to_string()))?;
 
     if final_state == fedimint_mintv2_client::FinalReceiveOperationState::Rejected {
         return Ok(Mintv2ReceiveOutcome::Rejected);
@@ -1678,14 +1685,15 @@ async fn mintv2_receive_result(
         .await
     {
         Ok(()) => Ok(Mintv2ReceiveOutcome::Done),
-        Err(fedimint_client_module::TransactionSubmitError::PrimaryModule(cause)) => {
-            Ok(Mintv2ReceiveOutcome::NotIssued {
-                cause: cause.to_string(),
-            })
-        }
+        Err(TransactionSubmitError::PrimaryModule(cause)) => Ok(Mintv2ReceiveOutcome::NotIssued {
+            cause: cause.fmt_compact().to_string(),
+        }),
         Err(err) => Err(Error::new(
             ErrorCode::Internal,
-            format!("could not wait for the received notes to be issued: {err}"),
+            format!(
+                "could not wait for the received notes to be issued: {}",
+                err.fmt_compact()
+            ),
         )),
     }
 }
@@ -1986,7 +1994,7 @@ impl Driver<EcashReceiveState> for EcashReceiveDriver {
             let stream_or_outcome = mint
                 .subscribe_reissue_external_notes(id)
                 .await
-                .map_err(|err| Error::new(ErrorCode::Internal, err.to_string()))?;
+                .map_err(|err| Error::new(ErrorCode::Internal, err.fmt_compact().to_string()))?;
 
             let stream = stream_or_outcome.into_stream();
             let mapped = stream.map(|upstream| Ok(map_receive_state(upstream)));
@@ -2079,16 +2087,23 @@ fn mintv2_receive_state(outcome: Mintv2ReceiveOutcome) -> EcashReceiveState {
 /// generations' quote arms, and the mintv2 send-time re-check).
 ///
 /// The dry run balances a would-be transaction against the wallet's real notes, so the
-/// failure that matters is the notes not covering it; upstream reports that as plain
-/// `anyhow` text rather than a typed error, which is why this matches on wording.
-fn map_send_fee_quote_error(err: impl std::fmt::Display) -> Error {
-    let msg = err.to_string();
-    let lower = msg.to_lowercase();
-    if lower.contains("insufficient") || lower.contains("balance") {
-        Error::new(ErrorCode::InsufficientBalance, msg)
-    } else {
-        Error::new(ErrorCode::Internal, msg)
+/// failure that matters is the notes not covering it.
+// Both mint generations report that shortfall as `TransactionSubmitError::InsufficientFunds`.
+// It is reported without figures. The amounts the error carries are not the send's: the v1 mint
+// first sets aside the notes it consolidates (`fedimint-mint-client/src/lib.rs:1097-1118`), so
+// its `requested_amount` is only what was left to fund after those, and its `total_amount` is
+// how much of that the remaining notes covered (`fedimint-mint-client/src/lib.rs:3033-3038`),
+// not the balance. The figures this facade holds do not show the shortfall either: both quote
+// arms have already checked that the balance covers the notes' value, so what is short there is
+// the fee the failed dry run was meant to price.
+fn map_send_fee_quote_error(err: TransactionSubmitError) -> Error {
+    if !err.is_insufficient_funds() {
+        return Error::new(ErrorCode::Internal, err.fmt_compact().to_string());
     }
+    Error::new(
+        ErrorCode::InsufficientBalance,
+        "the balance cannot cover these notes and the fee of making them",
+    )
 }
 
 /// Whether a mintv2 wallet holding `denominations` can hand out exactly `target` without
@@ -2143,68 +2158,111 @@ fn mintv2_can_select_exact(
     remaining == fedimint_core::Amount::ZERO
 }
 
-pub(crate) fn map_spend_error(err: impl std::fmt::Display) -> Error {
-    let msg = err.to_string();
-    let lower = msg.to_lowercase();
-    if lower.contains("could not select notes with exact amount")
-        || lower.contains("insufficient balance")
-        || lower.contains("insufficientbalance")
-    {
-        Error::new(
+/// Classifies a failing `spend_notes_with_selector`.
+///
+/// The spend asks for notes summing to exactly the quoted value, so the selection failing means
+/// the wallet's inventory moved since the quote was made.
+pub(crate) fn map_spend_error(err: SpendOOBError) -> Error {
+    match &err {
+        SpendOOBError::NoteSelection(
+            SelectNotesError::InsufficientBalance(_) | SelectNotesError::NoExactAmount { .. },
+        ) => Error::new(
             ErrorCode::QuoteChanged,
             "note inventory changed since quote was created",
-        )
-    } else if lower.contains("timeout") || lower.contains("timed out") {
-        Error::new(ErrorCode::Timeout, msg)
-    } else if lower.contains("unreachable") || lower.contains("connection refused") {
-        Error::new(ErrorCode::FederationUnreachable, msg)
-    } else if lower.contains("storage") || lower.contains("database") {
-        Error::new(ErrorCode::Storage, msg)
-    } else {
-        Error::new(ErrorCode::Internal, msg)
+        ),
+        SpendOOBError::Database(_)
+        | SpendOOBError::StateMachines(AddStateMachinesError::Database(_)) => {
+            Error::new(ErrorCode::Storage, err.fmt_compact().to_string())
+        }
+        _ => Error::new(ErrorCode::Internal, err.fmt_compact().to_string()),
     }
 }
 
-pub(crate) fn map_reissue_error(err: impl std::fmt::Display) -> Error {
-    let msg = err.to_string();
-    let lower = msg.to_lowercase();
-    if lower.contains("federation id does not match") || lower.contains("already reissued") {
-        Error::new(ErrorCode::InvalidInput, msg)
-    } else if lower.contains("timeout") || lower.contains("timed out") {
-        Error::new(ErrorCode::Timeout, msg)
-    } else if lower.contains("unreachable") || lower.contains("connection refused") {
-        Error::new(ErrorCode::FederationUnreachable, msg)
-    } else if lower.contains("storage") || lower.contains("database") {
-        Error::new(ErrorCode::Storage, msg)
-    } else {
-        Error::new(ErrorCode::Internal, msg)
+/// Classifies a failing `reissue_external_notes`.
+pub(crate) fn map_reissue_error(err: ReissueExternalNotesError) -> Error {
+    match &err {
+        ReissueExternalNotesError::ZeroAmount
+        | ReissueExternalNotesError::WrongFederationId { .. }
+        | ReissueExternalNotesError::AlreadyReissued
+        | ReissueExternalNotesError::Notes(
+            ValidateNotesError::WrongFederationId { .. }
+            | ValidateNotesError::InvalidAmountTier { .. }
+            | ValidateNotesError::InvalidSignature { .. }
+            | ValidateNotesError::WrongSpendKey { .. },
+        ) => Error::new(ErrorCode::InvalidInput, err.fmt_compact().to_string()),
+        ReissueExternalNotesError::Transaction(cause) if cause.is_insufficient_funds() => {
+            fee_exceeds_note_value()
+        }
+        ReissueExternalNotesError::Transaction(cause) => {
+            Error::new(submit_code(cause), err.fmt_compact().to_string())
+        }
+        _ => Error::new(ErrorCode::Internal, err.fmt_compact().to_string()),
+    }
+}
+
+/// Classifies a failing `reissue_fee_quote` or `receive_fee_quote` dry run.
+pub(crate) fn map_receive_fee_quote_error(err: TransactionSubmitError) -> Error {
+    if err.is_insufficient_funds() {
+        return fee_exceeds_note_value();
+    }
+    Error::new(submit_code(&err), err.fmt_compact().to_string())
+}
+
+/// Notes that cost more to redeem than they are worth.
+// A redemption has the notes as its only inputs and no outputs of its own, so the mint is asked
+// to fund a shortfall only when the fee exceeds what the notes are worth. `Ecash::receive`
+// refuses that outright rather than let the wallet's own balance front the difference, so it is
+// an unredeemable amount wherever it is found out (the explicit check, the dry run, or the
+// submission itself), not a balance the caller could top up.
+fn fee_exceeds_note_value() -> Error {
+    Error::new(ErrorCode::InvalidInput, "fee exceeds note value")
+}
+
+/// The code for a failure to build or submit a transaction: a failed database write is a
+/// storage failure, anything else is not something the caller can act on.
+fn submit_code(err: &TransactionSubmitError) -> ErrorCode {
+    match err {
+        TransactionSubmitError::Database(_)
+        | TransactionSubmitError::StateMachines(AddStateMachinesError::Database(_)) => {
+            ErrorCode::Storage
+        }
+        _ => ErrorCode::Internal,
     }
 }
 
 pub(crate) fn map_mintv2_send_error(err: fedimint_mintv2_client::SendECashError) -> Error {
-    match err {
-        fedimint_mintv2_client::SendECashError::Offline => {
-            Error::new(ErrorCode::FederationUnreachable, err.to_string())
+    use fedimint_mintv2_client::SendECashError;
+
+    match &err {
+        SendECashError::Offline => Error::new(
+            ErrorCode::FederationUnreachable,
+            err.fmt_compact().to_string(),
+        ),
+        SendECashError::InsufficientBalance => Error::new(
+            ErrorCode::InsufficientBalance,
+            err.fmt_compact().to_string(),
+        ),
+        SendECashError::Failed(cause) => {
+            Error::new(submit_code(cause), err.fmt_compact().to_string())
         }
-        fedimint_mintv2_client::SendECashError::InsufficientBalance => {
-            Error::new(ErrorCode::InsufficientBalance, err.to_string())
-        }
-        fedimint_mintv2_client::SendECashError::Failure => {
-            Error::new(ErrorCode::Internal, err.to_string())
-        }
+        _ => Error::new(ErrorCode::Internal, err.fmt_compact().to_string()),
     }
 }
 
 pub(crate) fn map_mintv2_receive_error(err: fedimint_mintv2_client::ReceiveECashError) -> Error {
-    match err {
-        fedimint_mintv2_client::ReceiveECashError::WrongFederation
-        | fedimint_mintv2_client::ReceiveECashError::UneconomicalDenomination
-        | fedimint_mintv2_client::ReceiveECashError::AlreadyReceived => {
-            Error::new(ErrorCode::InvalidInput, err.to_string())
+    use fedimint_mintv2_client::ReceiveECashError;
+
+    match &err {
+        ReceiveECashError::WrongFederation
+        | ReceiveECashError::UneconomicalDenomination
+        | ReceiveECashError::AlreadyReceived => {
+            Error::new(ErrorCode::InvalidInput, err.fmt_compact().to_string())
         }
-        fedimint_mintv2_client::ReceiveECashError::InsufficientFunds => {
-            Error::new(ErrorCode::InsufficientBalance, err.to_string())
+        ReceiveECashError::InsufficientFunds => fee_exceeds_note_value(),
+        ReceiveECashError::Failed(cause) => {
+            Error::new(submit_code(cause), err.fmt_compact().to_string())
         }
+        _ => Error::new(ErrorCode::Internal, err.fmt_compact().to_string()),
     }
 }
 
@@ -2953,7 +3011,198 @@ mod tests {
         assert_eq!(
             map_mintv2_receive_error(fedimint_mintv2_client::ReceiveECashError::InsufficientFunds)
                 .code,
-            ErrorCode::InsufficientBalance
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn mintv2_failed_submission_mapping() {
+        use fedimint_client_module::error::ClientModuleError;
+        use fedimint_core::db::DatabaseError;
+        use fedimint_mintv2_client::{ReceiveECashError, SendECashError};
+
+        let unrelated =
+            || TransactionSubmitError::PrimaryModule(ClientModuleError::other("the module broke"));
+
+        let error = map_mintv2_send_error(SendECashError::Failed(unrelated()));
+        assert_eq!(error.code, ErrorCode::Internal);
+        // The cause behind the outer message is part of what the caller reads.
+        assert!(
+            error.message.contains("the module broke"),
+            "{}",
+            error.message
+        );
+
+        let error = map_mintv2_receive_error(ReceiveECashError::Failed(unrelated()));
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(
+            error.message.contains("the module broke"),
+            "{}",
+            error.message
+        );
+
+        let storage = || TransactionSubmitError::Database(DatabaseError::WriteConflict);
+        assert_eq!(
+            map_mintv2_send_error(SendECashError::Failed(storage())).code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            map_mintv2_receive_error(ReceiveECashError::Failed(storage())).code,
+            ErrorCode::Storage
+        );
+    }
+
+    #[test]
+    fn send_fee_quote_shortfall_carries_none_of_the_mints_amounts() {
+        use fedimint_client_module::error::{ClientModuleError, InsufficientBalanceError};
+
+        // What a v1 mint reports after setting notes aside to consolidate: what was left to
+        // fund and what the remaining notes covered, neither of them the send or the balance.
+        let error = map_send_fee_quote_error(TransactionSubmitError::InsufficientFunds(
+            InsufficientBalanceError {
+                requested_amount: fedimint_core::Amount::from_msats(524_640),
+                total_amount: fedimint_core::Amount::from_msats(524_288),
+            },
+        ));
+        assert_eq!(error.code, ErrorCode::InsufficientBalance);
+        assert_eq!(error.detail(), None);
+        assert!(
+            !error.message.contains("524"),
+            "the mint's remainder is not the send's cost: {}",
+            error.message
+        );
+
+        // A primary module failure that merely mentions a balance is not a shortfall.
+        let error = map_send_fee_quote_error(TransactionSubmitError::PrimaryModule(
+            ClientModuleError::other("could not read the balance"),
+        ));
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(
+            error.message.contains("could not read the balance"),
+            "{}",
+            error.message
+        );
+        assert_eq!(error.detail(), None);
+    }
+
+    #[test]
+    fn spend_error_mapping() {
+        use fedimint_client_module::error::InsufficientBalanceError;
+        use fedimint_core::db::DatabaseError;
+
+        let moved =
+            |source: SelectNotesError| map_spend_error(SpendOOBError::NoteSelection(source)).code;
+        assert_eq!(
+            moved(SelectNotesError::NoExactAmount {
+                requested: fedimint_core::Amount::from_msats(2_000),
+                selected: fedimint_core::Amount::from_msats(1_000),
+            }),
+            ErrorCode::QuoteChanged
+        );
+        assert_eq!(
+            moved(SelectNotesError::InsufficientBalance(
+                InsufficientBalanceError {
+                    requested_amount: fedimint_core::Amount::from_msats(2_000),
+                    total_amount: fedimint_core::Amount::from_msats(1_000),
+                }
+            )),
+            ErrorCode::QuoteChanged
+        );
+        assert_eq!(
+            moved(SelectNotesError::Custom("a selector failed".into())),
+            ErrorCode::Internal
+        );
+        assert_eq!(
+            map_spend_error(SpendOOBError::Database(DatabaseError::WriteConflict)).code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            map_spend_error(SpendOOBError::StateMachines(
+                AddStateMachinesError::Database(DatabaseError::WriteConflict)
+            ))
+            .code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            map_spend_error(SpendOOBError::StateMachines(
+                AddStateMachinesError::StateAlreadyExists
+            ))
+            .code,
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
+    fn reissue_error_mapping() {
+        use fedimint_core::config::FederationIdPrefix;
+        use fedimint_core::db::DatabaseError;
+
+        let prefix = |text: &str| text.parse::<FederationIdPrefix>().ok();
+        let (Some(expected), Some(found)) = (prefix("01010101"), prefix("02020202")) else {
+            panic!("eight hex digits are a federation id prefix");
+        };
+
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::AlreadyReissued).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::WrongFederationId { expected, found })
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::Notes(
+                ValidateNotesError::WrongFederationId { expected, found }
+            ))
+            .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::Notes(
+                ValidateNotesError::InvalidSignature { index: 0 }
+            ))
+            .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::Transaction(
+                TransactionSubmitError::Database(DatabaseError::WriteConflict)
+            ))
+            .code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            map_receive_fee_quote_error(TransactionSubmitError::Database(
+                DatabaseError::WriteConflict
+            ))
+            .code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            map_receive_fee_quote_error(TransactionSubmitError::NoPrimaryModule {
+                unit: fedimint_core::module::AmountUnit::BITCOIN,
+            })
+            .code,
+            ErrorCode::Internal
+        );
+        // Notes worth less than the fee to redeem them, in a wallet that cannot front it: the
+        // same refusal whether the dry run or the submission itself finds it out.
+        let short = || {
+            TransactionSubmitError::InsufficientFunds(
+                fedimint_client_module::error::InsufficientBalanceError {
+                    requested_amount: fedimint_core::Amount::from_msats(10),
+                    total_amount: fedimint_core::Amount::ZERO,
+                },
+            )
+        };
+        assert_eq!(
+            map_receive_fee_quote_error(short()).code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            map_reissue_error(ReissueExternalNotesError::Transaction(short())).code,
+            ErrorCode::InvalidInput
         );
     }
 

@@ -5,13 +5,14 @@ use std::sync::{Arc, Weak};
 
 use fedimint_client::Client;
 use fedimint_client_module::ClientModuleInstance;
+use fedimint_client_module::TransactionSubmitError;
 use fedimint_client_module::transaction::FeeQuote;
 use fedimint_core::core::OperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
-use fedimint_core::util::BoxStream;
+use fedimint_core::util::{BoxStream, FmtCompact};
 use fedimint_wallet_client::{
-    DepositStateV2, WalletClientModule, WalletOperationMeta, WalletOperationMetaVariant,
-    WithdrawState,
+    DepositAddressError, DepositStateV2, WalletClientModule, WalletOperationMeta,
+    WalletOperationMetaVariant, WithdrawState,
 };
 use fedimint_wallet_common::PegOutFees;
 use futures::StreamExt;
@@ -19,9 +20,9 @@ use futures::StreamExt;
 use super::driver::{SendStep, through_settle};
 use super::{
     OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
-    check_covers_amount, claim_figures, fee_quote_failure, from_upstream, insufficient, internal,
-    now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, subscribe_error, timeout,
-    unreachable, wire,
+    check_covers_amount, claim_figures, fee_quote_failure, fee_quote_refusal, from_upstream,
+    insufficient, internal, now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, short_of,
+    subscribe_error, timeout, unreachable, wire,
 };
 use crate::federation::FederationInner;
 use crate::operation::{
@@ -48,7 +49,6 @@ pub(super) fn module_of(client: &Client) -> Result<ClientModuleInstance<'_, Wall
 
 /// Plans a v1 withdrawal: prices the destination output, then the transaction that funds it.
 pub(super) async fn plan(
-    federation: &Arc<FederationInner>,
     client: &Client,
     module: &WalletClientModule,
     address: &Address,
@@ -72,7 +72,8 @@ pub(super) async fn plan(
     .map_err(|_| timeout())?
     .map_err(|err| {
         unreachable(format!(
-            "could not quote the withdrawal's on-chain fee: {err}"
+            "could not quote the withdrawal's on-chain fee: {}",
+            err.fmt_compact()
         ))
     })?;
     let output_value = sats_to_bitcoin(amount)
@@ -85,20 +86,15 @@ pub(super) async fn plan(
     let quote = match module.send_fee_quote(output_value).await {
         Ok(quote) => quote,
         Err(err) => {
-            let text = format!("{err:#}");
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
-            // `required` is the amount plus the on-chain fee already quoted above; the
-            // dry run that would have priced the funding side is exactly what failed.
+            // `required` is the amount plus the on-chain fee already quoted above; the dry run
+            // that would have priced the funding side is exactly what failed.
             let required = add(sats_to_amount(amount)?, chain_fee)?;
-            return Err(fee_quote_failure(
-                client,
-                federation.status(),
-                short,
-                &text,
+            return Err(fee_quote_refusal(
+                &err,
                 required,
+                Some(available),
                 "could not quote the withdrawal's funding fee",
-            )
-            .await);
+            ));
         }
     };
     let module_fee = from_upstream(module.get_fee_consensus().peg_out_abs);
@@ -142,7 +138,8 @@ pub(super) async fn send(
     .map_err(|_| timeout())?
     .map_err(|err| {
         unreachable(format!(
-            "could not re-quote the withdrawal's on-chain fee: {err}"
+            "could not re-quote the withdrawal's on-chain fee: {}",
+            err.fmt_compact()
         ))
     })?;
     let output_value = sats_to_bitcoin(quote.amount)
@@ -152,16 +149,13 @@ pub(super) async fn send(
     let fresh_quote = match module.send_fee_quote(output_value).await {
         Ok(fee_quote) => fee_quote,
         Err(err) => {
-            let text = format!("{err:#}");
-            let short = err.downcast_ref::<fedimint_mint_client::InsufficientBalanceError>();
-            // `required` is the amount plus the on-chain fee already re-quoted above; the
-            // dry run that would have priced the funding side is exactly what failed.
+            // `required` is the amount plus the on-chain fee already re-quoted above; the dry
+            // run that would have priced the funding side is exactly what failed.
             let required = add(sats_to_amount(quote.amount)?, fresh_chain_fee)?;
             return Err(fee_quote_failure(
                 client,
                 federation.status(),
-                short,
-                &text,
+                &err,
                 required,
                 "could not re-quote the withdrawal's funding fee",
             )
@@ -203,33 +197,66 @@ pub(super) async fn send(
         created_at,
     };
     let wire = wire::OnchainSendDetailsWire::from(&details);
-    let id = module
+    let submitted = module
         .withdraw(
             &checked,
             sats_to_bitcoin(quote.amount),
             fees,
             custom_meta(&wire)?,
         )
-        .await
-        .map_err(|err| {
-            // `withdraw` fails inside `finalize_and_submit_transaction`, which has no dedicated
-            // insufficient-balance variant of its own (unlike walletv2's typed
-            // `SendError::InsufficientFunds`): the mint's own `InsufficientBalanceError`, if
-            // that is the cause, sits behind a generic `TransactionSubmitError::PrimaryModule`
-            // wrapper, so its text is read off the whole cause chain rather than matched by a
-            // concrete downcast.
-            let text = format!("{err:#}");
-            if text.to_lowercase().contains("insufficient") {
-                return Error::new(
-                    ErrorCode::InsufficientBalance,
-                    format!("the withdrawal could not be funded: {text}"),
-                );
-            }
-            internal(format!("the withdrawal could not be submitted: {text}"))
-        })?;
+        .await;
+    let id = match submitted {
+        Ok(id) => id,
+        Err(err) => {
+            // The balance covered the quoted total when it was checked above, so a funding
+            // shortfall here means it moved since: it is read again for that one refusal, and
+            // a read that fails leaves the refusal without figures rather than hiding it.
+            let available = if err.is_insufficient_funds() {
+                balance_of(client, federation.status()).await.ok()
+            } else {
+                None
+            };
+            return Err(map_withdraw_error(&err, quote.plan.total, available));
+        }
+    };
     federation
         .create_operation(id, kinds::ONCHAIN_SEND, "wallet", &wire, driver)
         .await
+}
+
+// `withdraw` fails inside `finalize_and_submit_transaction`, which reports a balance too low to
+// fund the transaction as `TransactionSubmitError::InsufficientFunds`. The amounts that error
+// carries are the mint's remainder, not the withdrawal's (see `fee_quote_refusal`), so the
+// figures are the quoted `total` and the balance read after the refusal, when it could be read.
+// Any other failure is reported with its whole chain.
+fn map_withdraw_error(
+    err: &TransactionSubmitError,
+    total: Amount,
+    available: Option<Amount>,
+) -> Error {
+    if !err.is_insufficient_funds() {
+        return internal(format!(
+            "the withdrawal could not be submitted: {}",
+            err.fmt_compact()
+        ));
+    }
+    short_of(total, available)
+}
+
+// `safe_allocate_deposit_address` refuses with `SafeDepositUnverified` when the client has never
+// been online to confirm that the federation's wallet module handles every deposit safely; the
+// federation is then not usable for deposits yet, which is what `NotSupported` says. Every other
+// variant is a failure of the client's own database, bitcoin backend or operation log.
+fn map_deposit_address_error(err: &DepositAddressError) -> Error {
+    match err {
+        DepositAddressError::SafeDepositUnverified => {
+            Error::new(ErrorCode::NotSupported, err.fmt_compact().to_string())
+        }
+        _ => internal(format!(
+            "could not allocate a deposit address: {}",
+            err.fmt_compact()
+        )),
+    }
 }
 
 // Upstream v1 `WithdrawState` onto this SDK's own send lifecycle. `Failed` is only ever the
@@ -267,7 +294,7 @@ pub(super) async fn subscribe_withdraw(
     let upstream = module
         .subscribe_withdraw_updates(id)
         .await
-        .map_err(subscribe_error)?
+        .map_err(|err| subscribe_error(err.fmt_compact()))?
         .into_stream();
     // The stream is `'static` and outlives this call, so it carries the way back to the
     // federation rather than the federation itself; see `through_settle`.
@@ -297,14 +324,7 @@ pub(super) async fn receive(
     let info = module
         .safe_allocate_deposit_address(serde_json::Value::Null)
         .await
-        .map_err(|err| {
-            let text = err.to_string();
-            if text.contains("consensus version") {
-                Error::new(ErrorCode::NotSupported, text)
-            } else {
-                internal(format!("could not allocate a deposit address: {text}"))
-            }
-        })?;
+        .map_err(|err| map_deposit_address_error(&err))?;
     let address = Address::from_upstream(info.address.clone().into_unchecked());
     let wire = wire::OnchainReceiveDetailsWire {
         address: info.address.to_string(),
@@ -341,7 +361,7 @@ pub(super) enum DepositStep {
 // for payload, plus the below-fee rule: the peg-in monitor refuses to claim a deposit at or
 // below the federation's deposit fee but still writes the sentinel that makes
 // `subscribe_deposit` report `Claimed`
-// (`modules/fedimint-wallet-client/src/pegin_monitor.rs:494-497,552-561`), so a `Claimed` this
+// (`modules/fedimint-wallet-client/src/pegin_monitor.rs:491-494,553-572`), so a `Claimed` this
 // small is handed back as `Failed` instead, with no ecash ever having been minted for it.
 //
 // Only the transaction half of upstream's `btc_out_point` is carried; the vout is nothing this
@@ -415,7 +435,7 @@ pub(super) async fn subscribe_deposit(
     let upstream = module
         .subscribe_deposit(id)
         .await
-        .map_err(subscribe_error)?
+        .map_err(|err| subscribe_error(err.fmt_compact()))?
         .into_stream();
     drop(client);
 
@@ -623,10 +643,74 @@ pub(super) fn backfill(
 
 #[cfg(test)]
 mod tests {
+    use fedimint_client_module::error::{
+        ClientModuleError, InsufficientBalanceError, OperationAlreadyExistsError,
+    };
     use fedimint_core::bitcoin;
 
     use super::*;
     use crate::Timestamp;
+
+    #[test]
+    fn a_withdrawal_shortfall_reports_the_quoted_total_and_the_balance() {
+        // What the mint reports after setting notes aside to consolidate: what was left to
+        // fund and what the remaining notes covered, neither of them the withdrawal or the
+        // balance.
+        let short = TransactionSubmitError::InsufficientFunds(InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(524_640),
+            total_amount: fedimint_core::Amount::from_msats(524_288),
+        });
+        let total = Amount::from_msats(1_180_000);
+        let balance = Amount::from_msats(1_179_648);
+
+        let err = map_withdraw_error(&short, total, Some(balance));
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        match err.detail() {
+            Some(crate::ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, total);
+                assert_eq!(*available, balance);
+            }
+            other => panic!("expected InsufficientBalance, got {other:?}"),
+        }
+
+        // A balance that could not be read leaves the refusal without figures.
+        let err = map_withdraw_error(&short, total, None);
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        assert!(err.detail().is_none(), "{:?}", err.detail());
+    }
+
+    #[test]
+    fn any_other_withdrawal_failure_keeps_its_whole_cause_chain() {
+        let unrelated =
+            TransactionSubmitError::PrimaryModule(ClientModuleError::other("the notes are locked"));
+        let err = map_withdraw_error(&unrelated, Amount::from_msats(10), None);
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message.contains("The primary module failed"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("the notes are locked"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn an_unverified_federation_cannot_hand_out_a_deposit_address() {
+        let err = map_deposit_address_error(&DepositAddressError::SafeDepositUnverified);
+        assert_eq!(err.code, ErrorCode::NotSupported);
+        let other = map_deposit_address_error(&DepositAddressError::OperationAlreadyExists(
+            OperationAlreadyExistsError {
+                operation_id: OperationId::new_random(),
+            },
+        ));
+        assert_eq!(other.code, ErrorCode::Internal);
+    }
 
     fn a_bitcoin_txid() -> bitcoin::Txid {
         "0000000000000000000000000000000000000000000000000000000000000000"

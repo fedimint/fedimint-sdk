@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use fedimint_core::util::FmtCompact as _;
+
 use crate::{Error, ErrorCode, Result};
 
 /// How long `get`/`all`/`consensus_metadata` wait for the consensus data
@@ -192,7 +194,7 @@ impl Meta {
         let maybe_mcv = result.map_err(|err| {
             Error::new(
                 ErrorCode::FederationUnreachable,
-                format!("failed to fetch consensus metadata: {err}"),
+                format!("failed to fetch consensus metadata: {}", err.fmt_compact()),
             )
         })?;
 
