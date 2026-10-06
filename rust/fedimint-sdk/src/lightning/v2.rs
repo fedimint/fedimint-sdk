@@ -434,7 +434,8 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         // `TransactionSubmitError` (`fedimint-lnv2-client/src/lib.rs:772`), so the typed
         // `InsufficientFunds` and its figures are out of reach and the text is all there is to
         // match on. A shortfall renders as that variant's own message, "Insufficient funds",
-        // first in the chain, for both mint generations.
+        // first in the chain, for both mint generations. Tracked upstream as
+        // fedimint/fedimint#9300.
         SendPaymentError::FailedToFundPayment(cause) if cause.starts_with("Insufficient funds") => {
             Error::new(ErrorCode::InsufficientBalance, cause)
         }
@@ -589,7 +590,8 @@ async fn receive_terms(
 // accepts receives, and `receive_with_terms` then refuses one that does not, even when another
 // registered gateway would have issued the invoice. The module's own receive-aware selection
 // (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1049-1077`) is private, so this
-// makes the same pass and reports the same refusals.
+// makes the same pass and reports the same refusals. Tracked upstream as
+// fedimint/fedimint#9299.
 async fn receive_gateway<F, Fut>(
     gateways: Vec<SafeUrl>,
     routing_info: F,
