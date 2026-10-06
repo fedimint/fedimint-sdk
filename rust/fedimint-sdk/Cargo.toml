@@ -99,8 +99,10 @@ tracing = "0.1.44"
 # version bakes into the built library, so a mismatch fails codegen. `tokio` is what makes
 # `#[uniffi::export(async_runtime = "tokio")]` available.
 uniffi = { version = "0.32.0", optional = true, features = ["tokio"] }
-# Never named in the source: it is here only to turn on its `multi-thread` feature, which cargo
-# unifies onto the copy `uniffi_core` depends on.
+# Never named in the source outside tests: it is here only to turn on its `multi-thread` feature,
+# which cargo unifies onto the copy `uniffi_core` depends on. The `async_compat_runtime` tests in
+# src/lib.rs assert both halves of that — the fallback runtime is multi-threaded, and the lock
+# resolves a single copy — run with `cargo test --lib --features uniffi async_compat`.
 #
 # UniFFI polls an exported async fn on whichever foreign thread drives the call,
 # inside an `async_compat::Compat` that enters a process-wide fallback runtime.

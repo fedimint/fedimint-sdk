@@ -86,10 +86,18 @@ import FedimintSdk
 // 1. Open the SDK over an app-private directory. `nil` loads the seed already
 //    there, or generates one when the directory is empty; pass a Mnemonic
 //    (Mnemonic.fromWords(words:)) to restore.
-let dataDir = FileManager.default
+//    Protect it before the first open; see "Protecting the wallet directory".
+var dataDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("fedimint")
-try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+let protection: [FileAttributeKey: Any] =
+    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+try FileManager.default.createDirectory(
+    at: dataDir, withIntermediateDirectories: true, attributes: protection)
+try FileManager.default.setAttributes(protection, ofItemAtPath: dataDir.path)
+var values = URLResourceValues()
+values.isExcludedFromBackup = true
+try dataDir.setResourceValues(values)
 
 let sdk = try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
 
@@ -111,6 +119,40 @@ let balanceMsats: UInt64 = try await federation.balance()
 Every call that touches disk or the network is `async throws`, so it needs an
 `await` and a `Task` — there is no synchronous variant and no completion-handler
 variant.
+
+### Protecting the wallet directory
+
+The SDK stores the seed phrase unencrypted inside its directory, and it does not
+protect that directory itself. That is the app's job, and the snippet above
+does both parts:
+
+- **Data Protection class `completeUntilFirstUserAuthentication`**, and _not_
+  `complete`. `complete` locks the files whenever the device is locked, so an
+  SDK still working in the background, or woken for a notification, fails its
+  next read with `.storage`. Until-first-unlock keeps the store encrypted from
+  boot until the first unlock. `createDirectory`'s `attributes` only apply when
+  it creates the directory, hence the separate `setAttributes` for an existing
+  one.
+- **`isExcludedFromBackup`**, or the store goes into iCloud and into computer
+  backups, which may not be encrypted. The written-down seed phrase is the
+  backup. A restored device recovers from it rather than from a copied store.
+
+Keep the directory in Application Support, not Documents, so it never shows up
+in the Files app. `DemoModel.dataDirectory()` in [`Demo/`](Demo) is the worked
+example, and `Storage` in the Rust crate documents the reasoning.
+
+### App Store export compliance
+
+App Store Connect asks every upload whether the app uses non-exempt
+encryption, and holds a TestFlight build until it is answered.
+`ITSAppUsesNonExemptEncryption` in `Info.plist` answers it up front. The demo
+declares `false`.
+
+What the SDK brings into an app is standard encryption, not a proprietary
+scheme: TLS and QUIC to guardians and gateways, BLS threshold signatures for
+e-cash, and Bitcoin's secp256k1 signatures and hashes. Whether that is exempt for your app, and whether your app adds anything
+of its own, is a determination each wallet has to make for itself under Apple's
+export compliance guidance. The demo's `false` is not that determination.
 
 ### Error handling
 
@@ -213,6 +255,11 @@ the shell for `swift test`. The filter in force is logged once at startup as
 `logging to os_log filter=…`. Lines below `info` are logged as private, so
 they show as `<private>` unless the device has a logging profile that reveals
 them.
+
+The filter is read from the environment once, at launch, and nothing on the
+device can change it afterwards. This is deliberate. On Android,
+`debug.fedimint_sdk.log` can be raised by anyone with `adb` access to the
+device. Here, raising verbosity takes a build or a launch you control.
 
 A Rust panic is logged there too, with its thread, file and line, as a fault.
 **It still terminates the app**: the release build aborts on panic, by design.

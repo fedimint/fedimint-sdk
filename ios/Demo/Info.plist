@@ -20,11 +20,15 @@
 	<string>0.1.0-alpha.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Confirm it is you before the wallet's recovery phrase is shown.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 </dict>

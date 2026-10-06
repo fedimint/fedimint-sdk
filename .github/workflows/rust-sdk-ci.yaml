@@ -180,6 +180,13 @@ jobs:
       - name: 'Test'
         run: cargo test --locked
 
+      - name: 'Test the async-compat runtime invariant'
+        # Only meaningful under `--features uniffi`, which the step above does
+        # not enable. Losing async-compat's `multi-thread` feature does not
+        # fail a build; it aborts the process on the first rocksdb
+        # transaction. See `async_compat_runtime` in src/lib.rs.
+        run: cargo test --locked --lib --features uniffi async_compat
+
   check:
     name: 'Run clippy, fmt, docs and wasm'
     runs-on: ubuntu-24.04
