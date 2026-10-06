@@ -234,12 +234,19 @@ async fn terms_for(
     // The dry run balances the transaction against the real notes, so it fails when they
     // cannot cover the contract; that is reported as the balance problem it is, on either mint
     // generation this module can run against.
-    let quote = module
-        .send_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            fee_quote_failure(&err, Shortfall::Balance, "could not quote the funding fee")
-        })?;
+    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            return Err(fee_quote_failure(
+                client,
+                &err,
+                Shortfall::Balance,
+                contract_amount,
+                "could not quote the funding fee",
+            )
+            .await);
+        }
+    };
     let lightning_module = from_upstream(
         fee_consensus(client)
             .await?
@@ -567,12 +574,19 @@ async fn receive_terms(
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount problem,
     // not a balance one.
-    let quote = module
-        .receive_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            fee_quote_failure(&err, Shortfall::Amount, "could not quote the claim fee")
-        })?;
+    let quote = match module.receive_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            return Err(fee_quote_failure(
+                client,
+                &err,
+                Shortfall::Amount,
+                contract_amount,
+                "could not quote the claim fee",
+            )
+            .await);
+        }
+    };
     let fee = add(gateway_fee, from_upstream(quote.total().get_bitcoin()))?;
     // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
     // (the wallet was funded), so the net credit going negative here is the same amount problem

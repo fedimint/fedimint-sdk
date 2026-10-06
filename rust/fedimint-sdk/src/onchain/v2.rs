@@ -24,9 +24,10 @@ use futures::StreamExt as _;
 
 use super::driver::{SendStep, through_settle};
 use super::{
-    OnchainQuoteInner, Plan, Terms, balance_of, bitcoin_to_sats, check_amount, check_covers_amount,
-    claim_figures, fee_quote_failure, from_upstream, insufficient, internal, now, plan_of,
-    quote_changed, sats_to_bitcoin, subscribe_error, timeout, unreachable, wire,
+    OnchainQuoteInner, Plan, Terms, add, balance_of, bitcoin_to_sats, check_amount,
+    check_covers_amount, claim_figures, fee_quote_failure, fee_quote_refusal, from_upstream,
+    insufficient, internal, now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin,
+    subscribe_error, timeout, unreachable, wire,
 };
 use crate::federation::{FederationInner, wait_holding_client};
 use crate::operation::{
@@ -134,10 +135,20 @@ pub(super) async fn plan(
         .checked_add(chain_fee_btc)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
     let chain_fee = from_upstream(fedimint_core::Amount::from(chain_fee_btc));
-    let quote = module
-        .send_fee_quote(output_value)
-        .await
-        .map_err(|err| fee_quote_failure(&err, "could not quote the withdrawal's funding fee"))?;
+    let quote = match module.send_fee_quote(output_value).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            // `required` is the amount plus the on-chain fee already quoted above; the dry run
+            // that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(amount)?, chain_fee)?;
+            return Err(fee_quote_refusal(
+                &err,
+                required,
+                Some(available),
+                "could not quote the withdrawal's funding fee",
+            ));
+        }
+    };
     let module_fee = from_upstream(cfg.fee_consensus.fee(to_upstream_sats(output_value)));
     plan_of(
         chain_fee,
@@ -171,9 +182,22 @@ pub(super) async fn send(
         .checked_add(fresh_chain_fee)
         .ok_or_else(|| internal("the withdrawal amount plus its on-chain fee overflowed"))?;
     let fresh_chain_fee_amount = from_upstream(fedimint_core::Amount::from(fresh_chain_fee));
-    let fresh_quote = module.send_fee_quote(output_value).await.map_err(|err| {
-        fee_quote_failure(&err, "could not re-quote the withdrawal's funding fee")
-    })?;
+    let fresh_quote = match module.send_fee_quote(output_value).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            // `required` is the amount plus the on-chain fee already re-quoted above; the dry
+            // run that would have priced the funding side is exactly what failed.
+            let required = add(sats_to_amount(quote.amount)?, fresh_chain_fee_amount)?;
+            return Err(fee_quote_failure(
+                client,
+                federation.status(),
+                &err,
+                required,
+                "could not re-quote the withdrawal's funding fee",
+            )
+            .await);
+        }
+    };
     // Both `send_fee` and `send_fee_quote` must return exactly what they returned when this
     // quote was built, or the federation changing wallet generation between the two: either is
     // reported here, before anything is submitted, as `QuoteChanged`.

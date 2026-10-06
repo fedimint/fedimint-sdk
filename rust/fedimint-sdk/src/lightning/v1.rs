@@ -26,7 +26,8 @@ use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Shortfall, Terms, add, amount_too_small, balance_of,
     fee_quote_failure, from_upstream, gateway_unavailable, insufficient, internal, network_refusal,
-    now, plan_of, quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
+    now, plan_of, quote_changed, quote_expired, short_of, subscribe_error, to_upstream,
+    unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{
@@ -661,12 +662,19 @@ async fn terms_for(
     // A dry run of the primary module's balancing fails when the notes on hand cannot cover
     // the contract; that is reported as the balance problem it is, rather than as an opaque
     // internal failure, on either mint generation this module can run against.
-    let quote = module
-        .send_fee_quote(to_upstream(contract_amount))
-        .await
-        .map_err(|err| {
-            fee_quote_failure(&err, Shortfall::Balance, "could not quote the funding fee")
-        })?;
+    let quote = match module.send_fee_quote(to_upstream(contract_amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            return Err(fee_quote_failure(
+                client,
+                &err,
+                Shortfall::Balance,
+                contract_amount,
+                "could not quote the funding fee",
+            )
+            .await);
+        }
+    };
     let lightning_module = from_upstream(module.cfg.fee_consensus.contract_output);
     let route = match &gateway {
         None => LightningRoute::Internal,
@@ -782,14 +790,28 @@ pub(super) async fn send(
     // and the SDK's write below can back this out, the same way the internal-settlement branch
     // just below does, if the module ends up settling the payment internally after all.
     quoted_wire.gateway_fee_msats = Some(quote.plan.breakdown.gateway.msats());
-    let payment: OutgoingLightningPayment = module
+    let paid = module
         .pay_bolt11_invoice(
             gateway.map(|gateway| *gateway),
             quote.invoice.inner().clone(),
             custom_meta(&quoted_wire)?,
         )
-        .await
-        .map_err(|err| pay_error(&err, quote, expected))?;
+        .await;
+    let payment: OutgoingLightningPayment = match paid {
+        Ok(payment) => payment,
+        Err(err) => {
+            // The balance covered the quoted total when it was checked above, so a funding
+            // shortfall here means it moved since: it is read again for that one refusal, and
+            // a read that fails leaves the refusal without figures rather than hiding it.
+            let available = match &err {
+                PayBolt11InvoiceError::Transaction(cause) if cause.is_insufficient_funds() => {
+                    balance_of(client).await.ok()
+                }
+                _ => None,
+            };
+            return Err(pay_error(&err, quote, expected, available));
+        }
+    };
     // The module's answer after funding is authoritative for the route; a payment quoted
     // through a gateway that settled internally paid no gateway fee. The gateway component is
     // the only part of the fee this code knows for certain was not charged, so it is what is
@@ -847,8 +869,14 @@ pub(super) async fn send(
 }
 
 // A refused `pay_bolt11_invoice`, reported the way lnv2's `send_error` reports the same
-// condition, so both generations answer alike.
-fn pay_error(err: &PayBolt11InvoiceError, quote: &LnQuoteInner, expected: Network) -> Error {
+// condition, so both generations answer alike. `available` is the balance read after a funding
+// shortfall, when it could be read.
+fn pay_error(
+    err: &PayBolt11InvoiceError,
+    quote: &LnQuoteInner,
+    expected: Network,
+    available: Option<Amount>,
+) -> Error {
     match err {
         PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress { .. }
         | PayBolt11InvoiceError::FundedContractAlreadyExists { .. } => {
@@ -896,11 +924,11 @@ fn pay_error(err: &PayBolt11InvoiceError, quote: &LnQuoteInner, expected: Networ
                 err.fmt_compact()
             ),
         ),
-        PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(short)) => {
-            insufficient(
-                from_upstream(short.requested_amount),
-                from_upstream(short.total_amount),
-            )
+        // The amounts the mint reports with this are what was left to fund after the notes it
+        // set aside to consolidate, not the payment or the balance (see `fee_quote_refusal`),
+        // so the figures are the quoted total and the balance read after the refusal.
+        PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(_)) => {
+            short_of(quote.plan.total, available)
         }
         // An attempt's operation id is derived from the invoice's payment hash and the attempt's
         // index, so one that already exists is this same payment, started by a concurrent call
@@ -960,12 +988,19 @@ pub(super) async fn receive(
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount
     // problem, not a balance one.
-    let quote = module
-        .receive_fee_quote(to_upstream(amount))
-        .await
-        .map_err(|err| {
-            fee_quote_failure(&err, Shortfall::Amount, "could not quote the claim fee")
-        })?;
+    let quote = match module.receive_fee_quote(to_upstream(amount)).await {
+        Ok(quote) => quote,
+        Err(err) => {
+            return Err(fee_quote_failure(
+                client,
+                &err,
+                Shortfall::Amount,
+                amount,
+                "could not quote the claim fee",
+            )
+            .await);
+        }
+    };
     let fee = from_upstream(quote.total().get_bitcoin());
     // Reached when the quote itself succeeded because the mint fronted the claim-fee shortfall
     // (the wallet was funded), so the net credit going negative here is the same amount problem
@@ -1522,7 +1557,7 @@ mod tests {
         use fedimint_ln_common::lightning_invoice::Currency;
 
         let quote = a_quote();
-        let map = |err: PayBolt11InvoiceError| pay_error(&err, &quote, Network::Regtest);
+        let map = |err: PayBolt11InvoiceError| pay_error(&err, &quote, Network::Regtest, None);
 
         for already_running in [
             PayBolt11InvoiceError::PreviousPaymentAttemptStillInProgress {
@@ -1596,30 +1631,37 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_the_mint_cannot_fund_reports_the_mints_own_figures() {
+    fn a_payment_the_mint_cannot_fund_reports_the_quoted_total_and_the_balance() {
         use fedimint_client_module::error::InsufficientBalanceError;
 
-        let err = pay_error(
-            &PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(
-                InsufficientBalanceError {
-                    requested_amount: fedimint_core::Amount::from_msats(10),
-                    total_amount: fedimint_core::Amount::from_msats(3),
-                },
-            )),
-            &a_quote(),
-            Network::Regtest,
-        );
+        // What the mint reports after setting notes aside to consolidate: what was left to
+        // fund and what the remaining notes covered, neither of them the payment or the balance.
+        let short = PayBolt11InvoiceError::Transaction(TransactionSubmitError::InsufficientFunds(
+            InsufficientBalanceError {
+                requested_amount: fedimint_core::Amount::from_msats(34_464),
+                total_amount: fedimint_core::Amount::from_msats(34_112),
+            },
+        ));
+        let quote = a_quote();
+        let balance = Amount::from_msats(99_648);
+
+        let err = pay_error(&short, &quote, Network::Regtest, Some(balance));
         assert_eq!(err.code, ErrorCode::InsufficientBalance);
         match err.detail() {
             Some(crate::ErrorDetails::InsufficientBalance {
                 required,
                 available,
             }) => {
-                assert_eq!(*required, Amount::from_msats(10));
-                assert_eq!(*available, Amount::from_msats(3));
+                assert_eq!(*required, quote.plan.total);
+                assert_eq!(*available, balance);
             }
             other => panic!("expected InsufficientBalance, got {other:?}"),
         }
+
+        // A balance that could not be read leaves the refusal without figures.
+        let err = pay_error(&short, &quote, Network::Regtest, None);
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        assert!(err.detail().is_none(), "{:?}", err.detail());
     }
 
     #[test]
@@ -1631,6 +1673,7 @@ mod tests {
             }),
             &a_quote(),
             Network::Regtest,
+            None,
         );
         assert_eq!(err.code, ErrorCode::Internal);
         assert!(

@@ -13,9 +13,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::operation::{Driver, first_state, settled, until_final};
-use crate::{
-    Amount, Error, ErrorCode, ErrorDetails, Notes, Operation, OperationState, Result, Timestamp,
-};
+use crate::{Amount, Error, ErrorCode, Notes, Operation, OperationState, Result, Timestamp};
 
 /// The `"facade"` marker [`Ecash::receive`] writes into the mint module's own operation
 /// metadata, on both generations.
@@ -2090,21 +2088,21 @@ fn mintv2_receive_state(outcome: Mintv2ReceiveOutcome) -> EcashReceiveState {
 ///
 /// The dry run balances a would-be transaction against the wallet's real notes, so the
 /// failure that matters is the notes not covering it.
-// Both mint generations report that shortfall as `TransactionSubmitError::InsufficientFunds`,
-// which carries the amount the mint was asked to fund and the balance it held
-// (`fedimint-client-module/src/error.rs`).
+// Both mint generations report that shortfall as `TransactionSubmitError::InsufficientFunds`.
+// It is reported without figures. The amounts the error carries are not the send's: the v1 mint
+// first sets aside the notes it consolidates (`fedimint-mint-client/src/lib.rs:1097-1118`), so
+// its `requested_amount` is only what was left to fund after those, and its `total_amount` is
+// how much of that the remaining notes covered (`fedimint-mint-client/src/lib.rs:3033-3038`),
+// not the balance. The figures this facade holds do not show the shortfall either: both quote
+// arms have already checked that the balance covers the notes' value, so what is short there is
+// the fee the failed dry run was meant to price.
 fn map_send_fee_quote_error(err: TransactionSubmitError) -> Error {
-    let message = err.fmt_compact().to_string();
-    let TransactionSubmitError::InsufficientFunds(short) = &err else {
-        return Error::new(ErrorCode::Internal, message);
-    };
-    Error::with_details(
+    if !err.is_insufficient_funds() {
+        return Error::new(ErrorCode::Internal, err.fmt_compact().to_string());
+    }
+    Error::new(
         ErrorCode::InsufficientBalance,
-        message,
-        ErrorDetails::InsufficientBalance {
-            required: Amount::from_msats(short.requested_amount.msats),
-            available: Amount::from_msats(short.total_amount.msats),
-        },
+        "the balance cannot cover these notes and the fee of making them",
     )
 }
 
@@ -3055,22 +3053,23 @@ mod tests {
     }
 
     #[test]
-    fn send_fee_quote_shortfall_carries_both_amounts() {
+    fn send_fee_quote_shortfall_carries_none_of_the_mints_amounts() {
         use fedimint_client_module::error::{ClientModuleError, InsufficientBalanceError};
 
+        // What a v1 mint reports after setting notes aside to consolidate: what was left to
+        // fund and what the remaining notes covered, neither of them the send or the balance.
         let error = map_send_fee_quote_error(TransactionSubmitError::InsufficientFunds(
             InsufficientBalanceError {
-                requested_amount: fedimint_core::Amount::from_msats(3_000),
-                total_amount: fedimint_core::Amount::from_msats(2_000),
+                requested_amount: fedimint_core::Amount::from_msats(524_640),
+                total_amount: fedimint_core::Amount::from_msats(524_288),
             },
         ));
         assert_eq!(error.code, ErrorCode::InsufficientBalance);
-        assert_eq!(
-            error.detail(),
-            Some(&ErrorDetails::InsufficientBalance {
-                required: Amount::from_msats(3_000),
-                available: Amount::from_msats(2_000),
-            })
+        assert_eq!(error.detail(), None);
+        assert!(
+            !error.message.contains("524"),
+            "the mint's remainder is not the send's cost: {}",
+            error.message
         );
 
         // A primary module failure that merely mentions a balance is not a shortfall.

@@ -976,26 +976,66 @@ pub(super) enum Shortfall {
 /// (v1's and v2's `terms_for` and `receive`) that run one.
 ///
 /// `shortfall` says what an insufficient-balance refusal means at the caller's call site.
-/// `context` names the quote for the message of any other failure.
-// The dry run balances the funding transaction against the real notes and fails inside the
-// primary module when they cannot cover it. Both mint generations report that as
-// `TransactionSubmitError::InsufficientFunds`, which carries the amount the mint was asked to fund
-// and the balance it held, so the shortfall is reported from those rather than from a second
-// balance read.
-pub(super) fn fee_quote_failure(
+/// `required` is the amount the failed quote was for, reported beside the balance when
+/// `shortfall` is [`Shortfall::Balance`]. `context` names the quote for the message of any other
+/// failure.
+pub(super) async fn fee_quote_failure(
+    client: &Client,
     err: &TransactionSubmitError,
     shortfall: Shortfall,
+    required: Amount,
     context: &str,
 ) -> Error {
-    let TransactionSubmitError::InsufficientFunds(short) = err else {
-        return internal(format!("{context}: {}", err.fmt_compact()));
+    // The balance is read only for the one refusal that reports it. A read that fails must not
+    // hide the refusal already found, which then goes out without figures.
+    let available = match shortfall {
+        Shortfall::Balance if err.is_insufficient_funds() => balance_of(client).await.ok(),
+        _ => None,
     };
+    fee_quote_refusal(err, shortfall, required, available, context)
+}
+
+/// What [`fee_quote_failure`] reports, given the balance it read. Pure so the mapping can be
+/// checked without a live `Client`.
+// The dry run balances the funding transaction against the real notes and fails inside the
+// primary module when they cannot cover it, which both mint generations report as
+// `TransactionSubmitError::InsufficientFunds`. The amounts that error carries are not the
+// operation's. The v1 mint first sets aside the notes it consolidates
+// (`fedimint-mint-client/src/lib.rs:1097-1118`), so its `requested_amount` is only what was left
+// to fund after those, and its `total_amount` is how much of that the remaining notes covered
+// (`fedimint-mint-client/src/lib.rs:3033-3038`), not the wallet's balance. The error therefore
+// only identifies the refusal, and the figures reported are this facade's own.
+fn fee_quote_refusal(
+    err: &TransactionSubmitError,
+    shortfall: Shortfall,
+    required: Amount,
+    available: Option<Amount>,
+    context: &str,
+) -> Error {
+    if !err.is_insufficient_funds() {
+        return internal(format!("{context}: {}", err.fmt_compact()));
+    }
     match shortfall {
-        Shortfall::Balance => insufficient(
-            from_upstream(short.requested_amount),
-            from_upstream(short.total_amount),
-        ),
+        Shortfall::Balance => short_of(required, available),
         Shortfall::Amount => amount_too_small(),
+    }
+}
+
+/// A wallet that cannot fund a payment costing `required`.
+///
+/// `available` is the balance, when it could be read. The two are reported as
+/// [`ErrorDetails::InsufficientBalance`] only when they show the shortfall.
+// `required` is what the caller could price. When the mint's own funding fee is what tips the
+// balance over, that figure is at or under the balance, and the pair would contradict the
+// refusal it accompanies. The refusal then carries no figures, as it does when the balance is
+// not known.
+pub(super) fn short_of(required: Amount, available: Option<Amount>) -> Error {
+    match available {
+        Some(available) if available < required => insufficient(required, available),
+        _ => Error::new(
+            ErrorCode::InsufficientBalance,
+            "the balance cannot cover this payment and the fees of funding it",
+        ),
     }
 }
 
@@ -1730,33 +1770,70 @@ mod tests {
         );
     }
 
-    /// The refusal either mint generation gives a dry run its notes cannot cover.
-    fn short_of_funds() -> TransactionSubmitError {
+    /// The refusal a v1 mint gives a dry run for 1,180,000 msat against nine 131,072 msat notes.
+    /// It sets five of the notes aside to consolidate first, so the amounts it reports are what
+    /// was left to fund and what the other four notes covered, not the payment or the balance.
+    fn short_after_consolidating() -> TransactionSubmitError {
         TransactionSubmitError::InsufficientFunds(InsufficientBalanceError {
-            requested_amount: fedimint_core::Amount::from_msats(10),
-            total_amount: fedimint_core::Amount::from_msats(3),
+            requested_amount: fedimint_core::Amount::from_msats(524_640),
+            total_amount: fedimint_core::Amount::from_msats(524_288),
         })
     }
 
     #[test]
-    fn a_fee_quote_shortfall_means_what_its_call_site_says() {
-        // Funding a send: the wallet is short, reported with the mint's own figures.
-        let send = fee_quote_failure(&short_of_funds(), Shortfall::Balance, "could not quote");
-        assert_eq!(send.code, crate::ErrorCode::InsufficientBalance);
-        match send.detail() {
+    fn a_fee_quote_shortfall_reports_the_payment_and_the_balance_not_the_mints_remainder() {
+        let required = Amount::from_msats(1_180_000);
+        let balance = Amount::from_msats(1_179_648);
+        let err = fee_quote_refusal(
+            &short_after_consolidating(),
+            Shortfall::Balance,
+            required,
+            Some(balance),
+            "could not quote",
+        );
+        assert_eq!(err.code, crate::ErrorCode::InsufficientBalance);
+        match err.detail() {
             Some(crate::ErrorDetails::InsufficientBalance {
-                required,
+                required: reported,
                 available,
             }) => {
-                assert_eq!(*required, Amount::from_msats(10));
-                assert_eq!(*available, Amount::from_msats(3));
+                assert_eq!(*reported, required);
+                assert_eq!(*available, balance);
             }
             other => panic!("expected InsufficientBalance, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_fee_quote_shortfall_carries_no_figures_that_would_not_show_it() {
+        let required = Amount::from_msats(1_180_000);
+        // The balance could not be read, or it covers the amount and only the mint's own fee
+        // tips it over: either way the pair would not show a shortfall.
+        for available in [None, Some(required), Some(Amount::from_msats(1_180_100))] {
+            let err = fee_quote_refusal(
+                &short_after_consolidating(),
+                Shortfall::Balance,
+                required,
+                available,
+                "could not quote",
+            );
+            assert_eq!(err.code, crate::ErrorCode::InsufficientBalance);
+            assert!(err.detail().is_none(), "{:?}", err.detail());
+        }
+    }
+
+    #[test]
+    fn a_claim_fee_quote_shortfall_is_an_amount_problem() {
         // Funding a receive's claim fee: the amount is the problem, not the balance.
-        let receive = fee_quote_failure(&short_of_funds(), Shortfall::Amount, "could not quote");
-        assert_eq!(receive.code, crate::ErrorCode::InvalidInput);
-        assert!(receive.detail().is_none());
+        let err = fee_quote_refusal(
+            &short_after_consolidating(),
+            Shortfall::Amount,
+            Amount::from_msats(10),
+            None,
+            "could not quote",
+        );
+        assert_eq!(err.code, crate::ErrorCode::InvalidInput);
+        assert!(err.detail().is_none());
     }
 
     #[test]
@@ -1767,7 +1844,13 @@ mod tests {
             "the federation timed out",
         ));
         for shortfall in [Shortfall::Balance, Shortfall::Amount] {
-            let err = fee_quote_failure(&unrelated, shortfall, "could not quote the funding fee");
+            let err = fee_quote_refusal(
+                &unrelated,
+                shortfall,
+                Amount::from_msats(10),
+                None,
+                "could not quote the funding fee",
+            );
             assert_eq!(err.code, crate::ErrorCode::Internal);
             assert!(
                 err.message.starts_with("could not quote the funding fee: "),
