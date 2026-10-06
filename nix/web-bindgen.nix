@@ -24,7 +24,7 @@ in
       cargoLock = {
         lockFile = ../rust/ubrn/Cargo.lock;
         # The tool is a git dependency. This fetches it at the commit Cargo.lock records, so
-        # moving the pin is a Cargo.toml edit and `cargo update`, with no hash to update here.
+        # moving the pin is a `cargo update` in rust/ubrn, with no hash to update here.
         allowBuiltinFetchGit = true;
       };
       doCheck = false;

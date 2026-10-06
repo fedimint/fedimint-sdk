@@ -376,11 +376,11 @@ importers:
   react-native/react-native-bindings:
     dependencies:
       '@ubjs/core':
-        specifier: 0.31.0-5
-        version: 0.31.0-5
+        specifier: 0.31.0-6
+        version: 0.31.0-6
       uniffi-bindgen-react-native:
-        specifier: 0.31.0-5
-        version: 0.31.0-5
+        specifier: 0.31.0-6
+        version: 0.31.0-6
     devDependencies:
       '@babel/preset-env':
         specifier: ^7.29.0
@@ -541,11 +541,11 @@ importers:
   web/sdk-web:
     dependencies:
       '@ubjs/core':
-        specifier: 0.31.0-5
-        version: 0.31.0-5
+        specifier: 0.31.0-6
+        version: 0.31.0-6
       '@ubjs/wasm':
-        specifier: 0.31.0-5
-        version: 0.31.0-5(@ubjs/core@0.31.0-5)
+        specifier: 0.31.0-6
+        version: 0.31.0-6(@ubjs/core@0.31.0-6)
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -4511,13 +4511,13 @@ packages:
     peerDependencies:
       typescript: '*'
 
-  '@ubjs/core@0.31.0-5':
-    resolution: {integrity: sha512-oRBRtyYOhaodiOY3rLMZFgAHGFMmD44XefMpsAx4Ja0/rO+45kVdQB1VZsblQMLYxP965i3IHm56eymgo3I5eQ==}
+  '@ubjs/core@0.31.0-6':
+    resolution: {integrity: sha512-pscv6Zj8mVmd5+ikb1Zr6XZ0yqYwKGeIV8HU8rf9sTvs7GW34OARAp03xFJ7rE9XE4R6LgwQhzYW9knAuz5yxA==}
 
-  '@ubjs/wasm@0.31.0-5':
-    resolution: {integrity: sha512-dO7i67DQ1UKBSegznLVjVrYowmxY7gaXXluBdtJXPYgcR5vzwYf2ZbxAUqj4qL1JkqxRmeTKgXtuesFI+D5dPg==}
+  '@ubjs/wasm@0.31.0-6':
+    resolution: {integrity: sha512-ja7pEcA4bCfEyFR8/zxivypUhhudr9n45lwcMR2r9U5hyTGkPnNnp1Ef5NbpTQieJd8wDkumV8Z0Yn0T0JEPAg==}
     peerDependencies:
-      '@ubjs/core': ^0.31.0-5
+      '@ubjs/core': ^0.31.0-6
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
@@ -10771,8 +10771,8 @@ packages:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
 
-  uniffi-bindgen-react-native@0.31.0-5:
-    resolution: {integrity: sha512-YtL3gTe+RVXAQx/2P2Iuypic/CunRZC65Cs47v//YRfwWNYU4Ufd1jT3rqxSrH5b5QFCYblP89Nf/9ssZRvNgg==}
+  uniffi-bindgen-react-native@0.31.0-6:
+    resolution: {integrity: sha512-4SfjPl8b9oQQcLJRH7INa+DdWV2FKu9HAVOjHL0+rT8EniTG4qoxOdmDBw8Novq7vSqEFmiXbHaoArLFqWWEhg==}
     hasBin: true
 
   union@0.5.0:
@@ -15959,11 +15959,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@ubjs/core@0.31.0-5': {}
+  '@ubjs/core@0.31.0-6': {}
 
-  '@ubjs/wasm@0.31.0-5(@ubjs/core@0.31.0-5)':
+  '@ubjs/wasm@0.31.0-6(@ubjs/core@0.31.0-6)':
     dependencies:
-      '@ubjs/core': 0.31.0-5
+      '@ubjs/core': 0.31.0-6
 
   '@ungap/structured-clone@1.3.0': {}
 
@@ -23731,7 +23731,7 @@ snapshots:
 
   unicorn-magic@0.3.0: {}
 
-  uniffi-bindgen-react-native@0.31.0-5: {}
+  uniffi-bindgen-react-native@0.31.0-6: {}
 
   union@0.5.0:
     dependencies:
