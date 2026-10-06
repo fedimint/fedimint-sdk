@@ -146,7 +146,7 @@ jobs:
               js/web/core-web/*|js/web/wasm-bundler/*|js/web/wasm-web/*|js/web/integration-tests/*|js/web/sdk-web/*|packages/core-web/*|packages/wasm-bundler/*|packages/wasm-web/*|packages/integration-tests/*|scripts/*)
                 web=true
                 ;;
-              nix/web-bindgen.nix|nix/ubrn-Cargo.lock|nix/ffi.nix)
+              nix/web-bindgen.nix|nix/ffi.nix|rust/ubrn/*)
                 web=true
                 react_native=true
                 ;;

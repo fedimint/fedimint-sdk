@@ -1,0 +1,29 @@
+[package]
+name = "fedimint-ubrn"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "MIT"
+authors = ["The Fedimint Developers"]
+description = "Host-side uniffi-bindgen-react-native runner for fedimint-sdk"
+repository = "https://github.com/fedimint/fedimint-sdk"
+publish = false
+
+# The command line of uniffi-bindgen-react-native (`ubrn`), which generates the React Native
+# bindings in js/react-native/react-native-bindings and the browser binding in js/web/sdk-web.
+# The tool's version is the one this crate's Cargo.lock pins: nix/web-bindgen.nix builds this
+# crate into the dev shells the generation scripts run in.
+
+[[bin]]
+name = "ubrn"
+path = "src/main.rs"
+
+[dependencies]
+clap = "4.6.0"
+
+[dependencies.uniffi-bindgen-react-native]
+# The fork branch that reads UniFFI 0.32 metadata (jhugman/uniffi-bindgen-react-native#468), plus
+# jhugman/uniffi-bindgen-react-native#491, without which the generated TypeScript types the SDK's
+# `Cursor` as the runtime's own `Cursor` class rather than a string. rust/fedimint-sdk links
+# uniffi 0.32, and the released tool stops at 0.31.
+git = "https://github.com/zeenix/uniffi-bindgen-react-native"
+rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440"
