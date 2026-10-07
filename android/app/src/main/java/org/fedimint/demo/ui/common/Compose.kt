@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.view.WindowManager
-import java.util.WeakHashMap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
@@ -50,12 +49,19 @@ fun SecureScreen() {
             }
         }
         counter.acquire()
-        onDispose { counter.release() }
+        onDispose {
+            counter.release()
+            // The counter's callback holds the window, and the window its activity, so a
+            // lingering entry would keep the activity alive (the weak key never clears).
+            // Drop it with the last secure screen; a destroyed activity disposes its
+            // screens, so this always runs.
+            if (counter.idle) secureCounters.remove(activity)
+        }
     }
 }
 
-/** One counter per activity (window). Compose effects run on the main thread, so no locking. */
-private val secureCounters = WeakHashMap<Activity, SecureFlagCounter>()
+/** One counter per activity (window), only while it shows a secure screen. Main thread only. */
+private val secureCounters = HashMap<Activity, SecureFlagCounter>()
 
 /**
  * Counts the secure screens currently shown in one window and turns the flag
@@ -63,6 +69,9 @@ private val secureCounters = WeakHashMap<Activity, SecureFlagCounter>()
  */
 class SecureFlagCounter(private val setSecure: (Boolean) -> Unit) {
     private var shown = 0
+
+    /** No secure screen is shown: the counter can be discarded. */
+    val idle: Boolean get() = shown == 0
 
     fun acquire() {
         if (shown++ == 0) setSecure(true)
