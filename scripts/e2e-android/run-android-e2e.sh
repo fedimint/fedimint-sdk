@@ -130,9 +130,9 @@ fi
 LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
 mkdir -p "$LOG_DIR"
 
-# Appium is started with nohup, so it outlives this script unless stopped. In
-# CI the runner goes away with the job anyway; on a developer machine it would
-# otherwise keep a shell-enabled server running after the tests are done.
+# Appium is started with nohup, so it outlives this script unless stopped, and
+# neither a developer machine nor CI's self-hosted runner goes away with the
+# run: it would keep a shell-enabled server running after the tests are done.
 # Stops whichever server the PID file names, including one a previous run
 # left behind and this run reused, so the next run starts with current flags.
 stop_appium() {

@@ -7,8 +7,8 @@ name: Android APK Build
 #
 # It is its own workflow, on its own machine, because of what it is not
 # allowed to share a machine with. A cold Gradle build is several minutes of
-# every core, and the E2E job runs an emulator and a whole devimint federation
-# on the same four-core hosted runner. Built in that job, the two overlapped:
+# every core, and the E2E job's machine is already running an emulator and a
+# whole devimint federation. Built in that job, the two overlapped:
 # Gradle's build starved the already-booted emulator until Android's own
 # System UI stopped responding, and every test failed against the "System UI
 # isn't responding" dialog rather than against the app. Built here instead,
