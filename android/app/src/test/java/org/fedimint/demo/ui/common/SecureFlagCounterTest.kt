@@ -27,6 +27,15 @@ class SecureFlagCounterTest {
         assertEquals(listOf(true, false), changes)
     }
 
+    @Test fun `the counter is idle, so discardable, only after the last screen leaves`() {
+        counter.acquire()
+        counter.acquire()
+        counter.release()
+        assertEquals(false, counter.idle)
+        counter.release()
+        assertEquals(true, counter.idle)
+    }
+
     @Test(expected = IllegalStateException::class)
     fun `releasing more than was shown is a bug`() {
         counter.release()
