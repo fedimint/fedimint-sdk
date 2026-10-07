@@ -2,7 +2,9 @@
 //! the phase a phase-keyed mapping reads after a restart.
 //!
 //! These are storage format. A field added later must be `Option` with `#[serde(default)]`, and
-//! a field is never renamed or removed: every record already written reads through this file.
+//! a field is never renamed: every record already written reads through this file. A field that
+//! is retired is dropped from its struct, and its name is not reused for anything else: serde
+//! skips a key no field names, so a record that still carries it reads as before.
 
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +89,7 @@ impl From<ReceiveFeeBreakdownWire> for OnchainReceiveFeeBreakdown {
     }
 }
 
-/// [`OnchainReceiveDetails`] as stored, plus the two private fill-in-later fields.
+/// [`OnchainReceiveDetails`] as stored, plus the private fill-in-later field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OnchainReceiveDetailsWire {
     pub(super) address: String,
@@ -101,10 +103,6 @@ pub(super) struct OnchainReceiveDetailsWire {
     /// part of the public record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) upstream_operation_id: Option<String>,
-    /// walletv2 only: the event-log position the next scan starts from. Not part of the
-    /// public record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) event_cursor: Option<u64>,
 }
 
 impl From<&OnchainReceiveDetails> for OnchainReceiveDetailsWire {
@@ -121,7 +119,6 @@ impl From<&OnchainReceiveDetails> for OnchainReceiveDetailsWire {
             net_credit_msats: details.net_credit.map(Amount::msats),
             created_at: details.created_at.epoch_millis(),
             upstream_operation_id: None,
-            event_cursor: None,
         }
     }
 }
@@ -418,24 +415,48 @@ mod tests {
     }
 
     #[test]
-    fn the_private_walletv2_fields_stay_off_the_public_record() {
+    fn the_private_walletv2_field_stays_off_the_public_record() {
         let details = waiting_receive_details();
         let mut wire = OnchainReceiveDetailsWire::from(&details);
         let json = encode_receive_wire(&wire).expect("encode");
         assert!(!json.contains("upstream_operation_id"), "{json}");
-        assert!(!json.contains("event_cursor"), "{json}");
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
 
         wire.upstream_operation_id = Some("ab".repeat(32));
-        wire.event_cursor = Some(42);
         let json = encode_receive_wire(&wire).expect("encode");
         assert!(json.contains("upstream_operation_id"), "{json}");
-        assert!(json.contains("event_cursor"), "{json}");
         let decoded = decode_receive_wire(&json).expect("decode");
         assert_eq!(decoded.upstream_operation_id, wire.upstream_operation_id);
-        assert_eq!(decoded.event_cursor, wire.event_cursor);
-        // The public record still does not expose them.
+        // The public record still does not expose it.
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
+    }
+
+    #[test]
+    fn a_record_that_still_carries_a_retired_key_reads_and_drops_it() {
+        // A stored record can carry a key that no field of the struct names, such as the retired
+        // `event_cursor`: reading it must not fail, and writing the record back drops it.
+        let json = serde_json::json!({
+            "address": an_address().to_string(),
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_700_000_000_000u64,
+            "upstream_operation_id": "ab".repeat(32),
+            "event_cursor": 42,
+        })
+        .to_string();
+        let wire = decode_receive_wire(&json).expect("a record with a retired key decodes");
+        assert_eq!(wire.upstream_operation_id, Some("ab".repeat(32)));
+        assert_eq!(
+            decode_receive_details(&json).expect("decodes as a public record"),
+            waiting_receive_details()
+        );
+        // Written back, the key is gone.
+        let rewritten = encode_receive_wire(&wire).expect("encode");
+        assert!(!rewritten.contains("event_cursor"), "{rewritten}");
+        assert_eq!(decode_receive_wire(&rewritten).expect("decode"), wire);
     }
 
     #[test]

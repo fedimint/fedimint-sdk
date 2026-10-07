@@ -335,7 +335,6 @@ pub(super) async fn receive(
         net_credit_msats: None,
         created_at: created_at.epoch_millis(),
         upstream_operation_id: None,
-        event_cursor: None,
     };
     let operation = federation
         .create_operation(
@@ -595,7 +594,6 @@ pub(super) fn backfill(
                 net_credit_msats: None,
                 created_at,
                 upstream_operation_id: None,
-                event_cursor: None,
             };
             Some(Backfilled {
                 kind: kinds::ONCHAIN_RECEIVE,
@@ -881,7 +879,6 @@ mod tests {
             net_credit_msats: None,
             created_at: 1_700_000_000_000,
             upstream_operation_id: None,
-            event_cursor: None,
         };
         let meta = serde_json::json!({
             "variant": {

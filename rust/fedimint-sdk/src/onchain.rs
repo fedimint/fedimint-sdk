@@ -27,9 +27,10 @@ mod v2;
 mod wire;
 
 pub(crate) use driver::{OnchainBackfiller, OnchainReceiveDriver, OnchainSendDriver};
-/// The deposit address a walletv2 `Receive` upstream meta names, for `federation.rs`'s
-/// reconciler; re-exported so it does not have to name the upstream wallet types itself.
-pub(crate) use v2::deposit_address_of;
+/// The reservation a walletv2 `Receive` upstream meta claims a payment for, and whether a meta is
+/// a reservation, for `federation.rs`'s reconciler; re-exported so it does not have to name the
+/// upstream wallet types itself.
+pub(crate) use v2::{claimed_reservation, is_reservation};
 /// The only phase an on-chain record ever carries, re-exported for `federation.rs`'s erase
 /// guard; see [`wire`]'s own doc for what it means.
 pub(crate) use wire::PHASE_SEEN;
@@ -97,7 +98,9 @@ impl Onchain {
     /// means that.
     ///
     /// Two calls yield two addresses and two operations, so a per-payer
-    /// address can be minted on demand. The address is watched persistently,
+    /// address can be minted on demand, up to any limit the federation's
+    /// wallet sets on how many addresses wait for their first payment at
+    /// once (see the errors below). The address is watched persistently,
     /// so a deposit that arrives while the application is closed is picked
     /// up when the SDK is next built over the same storage, and the address
     /// survives a restart because it is on the operation's details record.
@@ -152,19 +155,18 @@ impl Onchain {
     /// recovery is incomplete,
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
     /// [`Storage`](crate::ErrorCode::Storage),
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), and
-    /// [`Internal`](crate::ErrorCode::Internal) if the federation's wallet
-    /// handed back an address an unfinished operation of this SDK is still
-    /// following rather than a fresh one. A wallet that offers one unused
-    /// address at a time does that when a second call is made before the
-    /// first address has been paid; the address is not handed out again, and
-    /// the operation already following it is unaffected. Right after such
-    /// an address's deposit is claimed, the same wallet may still be
-    /// deriving its next address: the call waits for it using a dedicated
-    /// 120-second scanner wait timeout, and is [`Timeout`](crate::ErrorCode::Timeout) past
-    /// it, never a repeat of the funded address.
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed),
+    /// [`Timeout`](crate::ErrorCode::Timeout) when the federation's wallet
+    /// has not produced a fresh address within 120 seconds: deriving one is
+    /// a search that takes seconds, and longer on a slow device, so trying
+    /// again can succeed, and
+    /// [`Internal`](crate::ErrorCode::Internal) when the federation's wallet
+    /// limits how many addresses may wait for their first payment at once
+    /// and that many are waiting. An address nobody pays keeps counting
+    /// against the limit, since nothing retires it, so the call is refused
+    /// until one of the waiting addresses has been paid; the operations
+    /// already following them are unaffected.
     pub async fn receive(&self) -> Result<OnchainReceive> {
         let federation = &self.inner.federation;
         // The recovery lock applies to a deposit exactly as it does to a send; see this type's
@@ -1664,17 +1666,6 @@ pub(super) fn short_of(required: Amount, available: Option<Amount>) -> Error {
 /// This device's clock, for a details record's `created_at`.
 pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
-}
-
-/// The deposit address a stored `ONCHAIN_RECEIVE` details record names, or `None` if it does
-/// not decode as one.
-///
-/// Lets `FederationInner::owner_of_deposit_address` walk the operation index and compare
-/// addresses without naming this facade's wire types itself.
-pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
-    wire::decode_receive_wire(details)
-        .ok()
-        .map(|wire| wire.address)
 }
 
 #[cfg(test)]

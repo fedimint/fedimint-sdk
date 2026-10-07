@@ -524,11 +524,6 @@ pub(crate) struct FederationInner {
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
     reclaim_starts: tokio::sync::Mutex<()>,
-    /// Serialises the allocation of a deposit address per federation: asking the wallet module
-    /// for an address, checking that no unfinished record already names it and committing the
-    /// record for it happen under this lock, so two concurrent `Onchain::receive` calls that
-    /// are handed the same walletv2 address can never both record it.
-    deposit_allocations: tokio::sync::Mutex<()>,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -559,14 +554,6 @@ fn is_unclaimed_placeholder(record: &crate::db::OperationRecord) -> bool {
     record.kind == record.module
 }
 
-/// What [`FederationInner::owner_of_deposit_address`] found: the `ONCHAIN_RECEIVE` operation
-/// that names an address, and whether it has already reached a final state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DepositAddressOwner {
-    pub(crate) id: fedimint_core::core::OperationId,
-    pub(crate) finished: bool,
-}
-
 impl FederationInner {
     /// Assembles the shared state for one federation.
     ///
@@ -594,7 +581,6 @@ impl FederationInner {
             recovery_progress: tokio::sync::watch::Sender::new(None),
             settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
-            deposit_allocations: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -696,42 +682,6 @@ impl FederationInner {
             }
         }
         Ok(false)
-    }
-
-    /// The operation, if any, whose `ONCHAIN_RECEIVE` record already names `address`, and
-    /// whether that operation has reached a final state.
-    ///
-    /// Walks the operation index exactly as
-    /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send) does. Used by
-    /// [`backfill_at`](Self::backfill_at)'s adoption check to recognise a walletv2 deposit's
-    /// upstream `Receive` entry as one this SDK already tracks under the record
-    /// `Onchain::receive` created for the address, before a backfiller gets the chance to write a
-    /// second, orphaned record for the same deposit; and by walletv2's `receive` to refuse an
-    /// address an unfinished operation is still following.
-    pub(crate) async fn owner_of_deposit_address(
-        &self,
-        address: &str,
-    ) -> Result<Option<DepositAddressOwner>> {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-        use futures::StreamExt;
-
-        let db = self.db();
-        let mut dbtx = db.begin_transaction_nc().await;
-        let mut records = dbtx
-            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
-            .await;
-        while let Some((key, record)) = records.next().await {
-            if record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
-                && crate::onchain::deposit_address_of_record(&record.details).as_deref()
-                    == Some(address)
-            {
-                return Ok(Some(DepositAddressOwner {
-                    id: key.0,
-                    finished: record.final_state.is_some(),
-                }));
-            }
-        }
-        Ok(None)
     }
 
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
@@ -993,11 +943,6 @@ impl FederationInner {
         self.reclaim_starts.lock().await
     }
 
-    /// Takes the per-federation deposit-allocation lock; see the field's own documentation.
-    pub(crate) async fn lock_deposit_allocations(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.deposit_allocations.lock().await
-    }
-
     /// `Ok` while this federation is still usable, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is not.
     ///
@@ -1251,14 +1196,16 @@ impl FederationInner {
         // and every entry here was written by a module rather than by this crate.
         let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
 
-        // A walletv2 deposit's own upstream `Receive` entry never gets a backfilled record of
-        // its own: `Onchain::receive` already minted one for the address before this entry ever
-        // existed (walletv2's `receive` call returns only the address, with no operation id of
-        // its own), and adopting it here by address is what stops the backfiller below from
-        // giving the same deposit a second, orphaned record under the upstream entry's id.
+        // A walletv2 claim of a reserved address never gets a backfilled record of its own: it is
+        // the claim of the record of its reservation, which `Onchain::receive` created under the
+        // reservation's id and which is rebuilt from the reservation's own entry if a crash
+        // lost it. Giving the claim one as well would show the same deposit twice. A claim whose
+        // reservation this SDK has no way to place (the address was not reserved, or the wallet
+        // was restored and the reservation with it) is a deposit of its own, and is backfilled
+        // below like any other.
         if module == "walletv2"
-            && let Some(address) = crate::onchain::deposit_address_of(&meta)
-            && self.owner_of_deposit_address(&address).await?.is_some()
+            && let Some(reservation) = crate::onchain::claimed_reservation(&meta)
+            && self.holds_reservation(reservation).await
         {
             return Ok(None);
         }
@@ -1296,6 +1243,29 @@ impl FederationInner {
         // — and nothing else, if a race wrote something better in the meantime — is correct.
         let record = self.write_record(id, record, true).await?;
         Ok(Some(record))
+    }
+
+    /// Whether the record of the walletv2 reservation `id` is there, or can be rebuilt from the
+    /// client's log: the record that a claim of the reservation belongs to.
+    async fn holds_reservation(&self, id: fedimint_core::core::OperationId) -> bool {
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let recorded = dbtx
+            .get_value(&crate::db::OperationRecordKey(id))
+            .await
+            .is_some();
+        drop(dbtx);
+        if recorded {
+            return true;
+        }
+        let Some(entry) = fedimint_client::oplog::OperationLog::new(db)
+            .get_operation(id)
+            .await
+        else {
+            return false;
+        };
+        let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
+        entry.operation_module_kind() == "walletv2" && crate::onchain::is_reservation(&meta)
     }
 
     /// When the client says this operation was created, from its own chronological index.
@@ -2433,60 +2403,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn owner_of_deposit_address_finds_a_planted_record_by_address_and_not_by_another() {
-        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
-        let federation = FederationInner::detached(db.clone(), true);
-        let id = UpstreamOperationId([7u8; 32]);
-        federation
-            .create_operation(
-                id,
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                &onchain_receive_details("owned-address"),
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
-
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("owned-address")
-                .await
-                .expect("lookup"),
-            Some(DepositAddressOwner {
-                id,
-                finished: false
-            })
-        );
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("some-other-address")
-                .await
-                .expect("lookup"),
-            None
-        );
-
-        // A record that reached a final state is still the address's owner, reported as
-        // finished.
-        let mut dbtx = db.begin_transaction().await;
-        let mut record = dbtx
-            .get_value(&OperationRecordKey(id))
-            .await
-            .expect("the record just created");
-        record.final_state = Some("\"claimed\"".to_owned());
-        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
-        dbtx.commit_tx().await;
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("owned-address")
-                .await
-                .expect("lookup"),
-            Some(DepositAddressOwner { id, finished: true })
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn has_seen_unclaimed_deposit_tracks_the_phase_and_the_final_state() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);
         let federation = FederationInner::detached(db.clone(), true);
@@ -2537,6 +2453,189 @@ mod tests {
                 .has_seen_unclaimed_deposit()
                 .await
                 .expect("lookup")
+        );
+    }
+
+    /// The address every walletv2 log entry below is for.
+    const A_WALLETV2_ADDRESS: &str = "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl";
+
+    /// The metadata of the log entry the walletv2 module writes when it reserves an address.
+    fn a_reservation_entry() -> serde_json::Value {
+        serde_json::to_value(fedimint_walletv2_client::WalletOperationMeta::Reservation(
+            fedimint_walletv2_client::ReservationMeta {
+                address: A_WALLETV2_ADDRESS.parse().expect("a valid regtest address"),
+                address_index: 3,
+            },
+        ))
+        .expect("serialises")
+    }
+
+    /// The metadata of the log entry the walletv2 module writes when it claims a payment to the
+    /// address, naming the reservation the address was reserved under, if it was.
+    fn a_claim_entry(reservation: Option<UpstreamOperationId>) -> serde_json::Value {
+        use fedimint_core::BitcoinHash;
+
+        serde_json::to_value(fedimint_walletv2_client::WalletOperationMeta::Receive(
+            fedimint_walletv2_client::ReceiveMeta {
+                change_outpoint_range: fedimint_core::OutPointRange::new_single(
+                    fedimint_core::TransactionId::all_zeros(),
+                    0,
+                )
+                .expect("a range"),
+                value: fedimint_core::bitcoin::Amount::from_sat(100_000),
+                fee: fedimint_core::bitcoin::Amount::from_sat(500),
+                address: Some(A_WALLETV2_ADDRESS.parse().expect("a valid regtest address")),
+                outpoint: Some(fedimint_core::bitcoin::OutPoint {
+                    txid: "0000000000000000000000000000000000000000000000000000000000000000"
+                        .parse()
+                        .expect("a well-formed transaction id"),
+                    vout: 0,
+                }),
+                reservation,
+            },
+        ))
+        .expect("serialises")
+    }
+
+    async fn record_of(db: &Database, id: UpstreamOperationId) -> Option<OperationRecord> {
+        db.begin_transaction_nc()
+            .await
+            .get_value(&OperationRecordKey(id))
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reservation_with_no_record_is_backfilled_as_a_deposit_waiting_for_a_payment() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let reservation = UpstreamOperationId([9u8; 32]);
+        // The crash window: the module committed the reservation, the SDK never wrote its record.
+        write_log_entry(&db, reservation, "walletv2", a_reservation_entry()).await;
+
+        let any = federation
+            .operation(reservation)
+            .await
+            .expect("lookup")
+            .expect("a reservation is a real operation");
+        assert_eq!(any.kind(), crate::OperationKind::OnchainReceive);
+
+        let record = record_of(&db, reservation)
+            .await
+            .expect("the backfill was committed under the reservation's own id");
+        assert_eq!(record.kind, kinds::ONCHAIN_RECEIVE);
+        assert_eq!(record.module, "walletv2");
+        // Nothing has been seen and nothing has ended.
+        assert_eq!(record.phase, None);
+        assert_eq!(record.final_state, None);
+        let details: serde_json::Value = serde_json::from_str(&record.details).expect("json");
+        assert_eq!(details["address"], A_WALLETV2_ADDRESS);
+        assert!(details["txid"].is_null(), "{details}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claim_of_a_reservation_is_the_reservations_and_gets_no_record_of_its_own() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let reservation = UpstreamOperationId([9u8; 32]);
+        let claim = UpstreamOperationId([8u8; 32]);
+        write_log_entry(&db, reservation, "walletv2", a_reservation_entry()).await;
+        write_log_entry(&db, claim, "walletv2", a_claim_entry(Some(reservation))).await;
+
+        federation.reconcile_operations().await.expect("reconcile");
+
+        // The reservation has its record, even though it was only ever in the log, and the
+        // claim is not a second deposit beside it.
+        let record = record_of(&db, reservation)
+            .await
+            .expect("the reservation was backfilled");
+        assert_eq!(record.kind, kinds::ONCHAIN_RECEIVE);
+        assert!(record_of(&db, claim).await.is_none());
+        assert!(
+            federation.operation(claim).await.expect("lookup").is_none(),
+            "the claim is not an operation of its own"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claim_of_a_reservation_the_sdk_has_a_record_for_gets_none_of_its_own() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let reservation = UpstreamOperationId([9u8; 32]);
+        let claim = UpstreamOperationId([8u8; 32]);
+        // The reservation's record is there, whatever the log holds for it.
+        federation
+            .create_operation(
+                reservation,
+                kinds::ONCHAIN_RECEIVE,
+                "walletv2",
+                &onchain_receive_details(A_WALLETV2_ADDRESS),
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+        write_log_entry(&db, claim, "walletv2", a_claim_entry(Some(reservation))).await;
+
+        federation.reconcile_operations().await.expect("reconcile");
+
+        assert!(record_of(&db, claim).await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claim_of_a_reservation_nothing_can_place_is_a_deposit_of_its_own() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        // The reservation is neither recorded nor in the log: nothing else will ever follow
+        // this payment, so it is recorded as the deposit it is.
+        let claim = UpstreamOperationId([8u8; 32]);
+        write_log_entry(
+            &db,
+            claim,
+            "walletv2",
+            a_claim_entry(Some(UpstreamOperationId([9u8; 32]))),
+        )
+        .await;
+
+        federation.reconcile_operations().await.expect("reconcile");
+
+        let record = record_of(&db, claim)
+            .await
+            .expect("the claim was backfilled");
+        assert_eq!(record.kind, kinds::ONCHAIN_RECEIVE);
+        assert_eq!(record.phase, Some(crate::onchain::PHASE_SEEN));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claim_of_an_address_nobody_reserved_is_a_deposit_of_its_own() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        // A record that names the same address does not make the claim its own: it is the
+        // reservation a claim names, not the address, that says whose payment it is.
+        federation
+            .create_operation(
+                UpstreamOperationId([7u8; 32]),
+                kinds::ONCHAIN_RECEIVE,
+                "walletv2",
+                &onchain_receive_details(A_WALLETV2_ADDRESS),
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+        let claim = UpstreamOperationId([8u8; 32]);
+        write_log_entry(&db, claim, "walletv2", a_claim_entry(None)).await;
+
+        federation.reconcile_operations().await.expect("reconcile");
+
+        let record = record_of(&db, claim)
+            .await
+            .expect("the claim was backfilled");
+        assert_eq!(record.kind, kinds::ONCHAIN_RECEIVE);
+        assert_eq!(record.phase, Some(crate::onchain::PHASE_SEEN));
+        let details: serde_json::Value = serde_json::from_str(&record.details).expect("json");
+        assert_eq!(
+            details["upstream_operation_id"],
+            claim.fmt_full().to_string()
         );
     }
 

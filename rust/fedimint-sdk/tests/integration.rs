@@ -1832,13 +1832,7 @@ async fn onchain_parked_deposit_subscriber_does_not_block_a_close() {
 }
 
 /// Two calls hand out two addresses, as `Onchain::receive` promises.
-///
-/// walletv2 returns the same address until its background scanner has advanced its index
-/// (fedimint/fedimint#9101), so on that shape the second of two calls made in quick succession
-/// is refused instead (`onchain_receive_never_hands_out_a_watched_address` covers that). Ignored
-/// until a fresh address per call is available upstream.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "fedimint/fedimint#9101: walletv2 hands out the same address until its scanner advances"]
 async fn onchain_receive_hands_out_a_fresh_address_each_time() {
     let devimint = devimint!();
     if devimint.shape == "mixed" {
@@ -1856,14 +1850,12 @@ async fn onchain_receive_hands_out_a_fresh_address_each_time() {
     sdk.shutdown().await.expect("shuts down");
 }
 
-/// An address is never handed out twice while an operation is still following it: a second
-/// call either yields a different address or, where the federation's wallet offers only one
-/// unused address at a time (walletv2, fedimint/fedimint#9101), refuses rather than recording a
-/// second operation on the first address. Either way the first operation keeps its address
-/// alone.
+/// An address is never handed out twice while an operation is still following it: a second call
+/// yields another address under another operation, and each of the two keeps its own address and
+/// keeps waiting for it to be paid.
 #[tokio::test(flavor = "multi_thread")]
 async fn onchain_receive_never_hands_out_a_watched_address() {
-    use fedimint_sdk::{ErrorCode, OnchainReceiveState};
+    use fedimint_sdk::OnchainReceiveState;
 
     let devimint = devimint!();
     if devimint.shape == "mixed" {
@@ -1874,33 +1866,76 @@ async fn onchain_receive_never_hands_out_a_watched_address() {
     let onchain = federation.onchain().expect("devimint runs a wallet module");
 
     let first = onchain.receive().await.expect("a deposit address");
-    match onchain.receive().await {
-        Ok(second) => {
-            assert_ne!(first.address, second.address);
-            assert_ne!(first.operation.id(), second.operation.id());
-        }
-        Err(err) => {
-            eprintln!("the second call was refused: {err}");
-            assert_eq!(devimint.shape, "v2", "only walletv2 refuses: {err}");
-            assert_eq!(err.code, ErrorCode::Internal, "{err}");
-        }
+    let second = onchain.receive().await.expect("another deposit address");
+    assert_ne!(first.address, second.address);
+    assert_ne!(first.operation.id(), second.operation.id());
+    for receive in [&first, &second] {
+        let details = receive.operation.details().await.expect("details");
+        assert_eq!(details.address, receive.address);
+        assert_eq!(
+            receive
+                .operation
+                .state()
+                .await
+                .expect("the operation reads"),
+            OnchainReceiveState::WaitingForTransaction
+        );
     }
-    assert_eq!(
-        first
-            .operation
-            .state()
-            .await
-            .expect("the first still reads"),
-        OnchainReceiveState::WaitingForTransaction
-    );
 
     sdk.shutdown().await.expect("shuts down");
 }
 
-/// Two calls racing each other never record one address twice: the check for an address an
-/// operation already follows and the commit of the new operation's record are one step. Without
-/// that, two concurrent calls handed the same walletv2 address would both pass the check before
-/// either record existed, and one payment would be adopted twice.
+/// A walletv2 wallet holds at most three addresses that are still waiting for their first
+/// payment: a fourth call is refused, and the three operations already following addresses are
+/// not disturbed by the refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn onchain_receive_is_refused_while_three_addresses_wait_for_a_payment() {
+    use fedimint_sdk::OnchainReceiveState;
+
+    let devimint = devimint!();
+    if devimint.shape != "v2" {
+        eprintln!("skipping: only a walletv2 wallet limits the addresses waiting for a payment");
+        return;
+    }
+    let (_storage, _path, sdk, federation) = joined(&devimint).await;
+    let onchain = federation.onchain().expect("devimint runs a wallet module");
+
+    let mut waiting = Vec::new();
+    for _ in 0..3 {
+        waiting.push(
+            onchain
+                .receive()
+                .await
+                .expect("an address within the limit"),
+        );
+    }
+    let err = onchain
+        .receive()
+        .await
+        .expect_err("a fourth unpaid address is refused");
+    assert_eq!(err.code, ErrorCode::Internal, "{err}");
+
+    for (i, receive) in waiting.iter().enumerate() {
+        assert_eq!(
+            receive
+                .operation
+                .state()
+                .await
+                .expect("the operation reads"),
+            OnchainReceiveState::WaitingForTransaction,
+            "the operation for address {i} is undisturbed by the refusal"
+        );
+        for other in &waiting[i + 1..] {
+            assert_ne!(receive.address, other.address);
+        }
+    }
+
+    sdk.shutdown().await.expect("shuts down");
+}
+
+/// Calls racing each other never share an address: every call is handed an address no other call
+/// gets. A walletv2 wallet limits how many addresses may wait for a payment, so there the calls
+/// past that limit are refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn onchain_concurrent_receives_never_share_an_address() {
     use fedimint_sdk::ErrorCode;
@@ -1935,9 +1970,16 @@ async fn onchain_concurrent_receives_never_share_an_address() {
         !handed_out.is_empty(),
         "at least one call hands out an address"
     );
+    if devimint.shape == "v2" {
+        assert_eq!(
+            handed_out.len(),
+            3,
+            "the wallet holds three unpaid addresses, however the calls race"
+        );
+    }
     for (i, a) in handed_out.iter().enumerate() {
         for b in &handed_out[i + 1..] {
-            assert_ne!(a.address, b.address, "one address was recorded twice");
+            assert_ne!(a.address, b.address, "one address was handed out twice");
             assert_ne!(a.operation.id(), b.operation.id());
         }
     }

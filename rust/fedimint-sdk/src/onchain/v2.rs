@@ -1,6 +1,6 @@
 //! The walletv2 wallet module (`walletv2`): the withdrawal plan and send, the deposit address
-//! and its event-log-backed discovery and subscription, and the backfill of this module's own
-//! operation log.
+//! reservation and the subscription that follows the claim of its first payment, and the backfill
+//! of this module's own operation log.
 
 use std::sync::{Arc, Weak};
 
@@ -12,13 +12,11 @@ use fedimint_core::bitcoin;
 use fedimint_core::core::{ModuleInstanceId, OperationId};
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxStream, FmtCompact};
-use fedimint_eventlog::{Event, EventLogId};
-use fedimint_walletv2_client::events::ReceivePaymentEvent;
 use fedimint_walletv2_client::{
-    FinalReceiveOperationState, FinalSendOperationState, ReceiveMeta, SendError, SendMeta,
+    FinalReceiveOperationState, FinalSendOperationState, MAX_UNPAID_RESERVATIONS, ReceiveMeta,
+    ReservationError, ReservationMeta, ReserveAddressError, SendError, SendMeta,
     WalletClientModule, WalletOperationMeta,
 };
-use fedimint_walletv2_common::KIND;
 use fedimint_walletv2_common::config::WalletClientConfig;
 use futures::StreamExt as _;
 
@@ -68,7 +66,7 @@ pub(super) fn module_of(client: &Client) -> Result<ClientModuleInstance<'_, Wall
 
 /// A whole-satoshi `bitcoin::Amount` reinterpreted as a millisatoshi upstream `Amount`: the same
 /// conversion `send_fee_quote` uses internally to price its own fee consensus
-/// (`modules/fedimint-walletv2-client/src/lib.rs:291-304`).
+/// (`modules/fedimint-walletv2-client/src/lib.rs:453-466`).
 fn to_upstream_sats(amount: bitcoin::Amount) -> fedimint_core::Amount {
     fedimint_core::Amount::from_sats(amount.to_sat())
 }
@@ -250,7 +248,7 @@ pub(super) async fn send(
 // step and no `Created` to map here: `subscribe_send` reports that state itself before this
 // ever runs. Upstream documents `Failure` itself as "a programming
 // error has occurred or the federation is malicious"
-// (`modules/fedimint-walletv2-client/src/lib.rs:106`), which is why it maps to `Failed` rather
+// (`modules/fedimint-walletv2-client/src/lib.rs:172`), which is why it maps to `Failed` rather
 // than the ordinary `Refunded` ending `Aborted` gets.
 //
 // `Aborted` is the funding rejection, so it is not an ending here: it is the step that sends the
@@ -315,164 +313,175 @@ pub(super) async fn subscribe_send(
     Ok(until_final(stream))
 }
 
-/// Allocates a fresh walletv2 deposit address and records it.
+/// Reserves a fresh walletv2 deposit address and records it.
 ///
-/// walletv2's `receive` returns only the address, with no operation of its own
-/// (`modules/fedimint-walletv2-client/src/lib.rs:593`): the SDK mints its own operation id and
-/// records the event log's tail as the position a scan for the matching `ReceivePaymentEvent`
-/// should start from. That tail is read before the address is asked for, as upstream's own doc
-/// on `receive` requires: the module's scanner can claim a payment to the address in the gap
-/// after handing it out, and a position taken afterwards would put that event behind the scan.
+/// The reservation is an operation of the wallet module's own, in its operation log from the
+/// moment `reserve_address` returns, and the SDK's operation takes its id: the one id names the
+/// address, the deposit that follows it and the record. A crash before the record is written
+/// leaves a log entry that [`backfill`] rebuilds the record from, under the same id.
 ///
-/// The whole allocation runs under the federation's deposit-allocation lock, so the check that
-/// no record already names the address and the commit of the record for it cannot interleave
-/// with another call's: two concurrent calls handed the same address record it once.
+/// The module hands each call an address no other call gets, and refuses once
+/// [`MAX_UNPAID_RESERVATIONS`] addresses are waiting for their first payment (see
+/// [`map_reserve_error`]). When it has no unused address ready, `reserve_address` waits for the
+/// module's output scanner to derive one: a CPU-bound search that takes seconds, more on a slow
+/// device. That is the one call [`SCANNER_WAIT_TIMEOUT`] bounds.
 pub(super) async fn receive(
     federation: &Arc<FederationInner>,
     client: &Client,
     module: &ClientModuleInstance<'_, WalletClientModule>,
     driver: Arc<dyn Driver<OnchainReceiveState>>,
 ) -> Result<OnchainReceive> {
-    let _allocation = federation.lock_deposit_allocations().await;
-    let created_at = now();
-    // walletv2 offers one unused address at a time: `receive` hands the highest address its
-    // scanner has derived back until the scanner sees it paid, and only then grinds the next one
-    // (fedimint/fedimint#9101). `Onchain::receive` promises an address never handed out before,
-    // so an address an SDK record already names is never recorded again. While that record is
-    // unfinished nothing will change until its address is paid, and the call is refused at
-    // once. Once it has finished, the scanner is at work on the next address, which it can take
-    // a while to find (it is a hash-prefix search), so the call waits for it up to
-    // `SCANNER_WAIT_TIMEOUT`, intentionally longer than the `CONTACT_TIMEOUT` used for
-    // guardian round trips because the scanner performs a CPU-intensive derivation that
-    // can exceed 30 seconds on loaded machines (see fedimint/fedimint-sdk#418).
-    let mut waited = core::time::Duration::ZERO;
-    let (cursor, checked) = loop {
-        let cursor = event_log_tail(client).await;
-        let checked = module.receive().await;
-        let Some(owner) = federation
-            .owner_of_deposit_address(&checked.to_string())
-            .await?
-        else {
-            break (cursor, checked);
-        };
-        if !owner.finished {
-            return Err(internal(format!(
-                "the federation's wallet handed out an address already watched by operation {}; \
-                 it offers one unused deposit address at a time, so a fresh one is available \
-                 only once that address has been paid",
-                owner.id.fmt_full()
-            )));
-        }
-        if waited >= SCANNER_WAIT_TIMEOUT {
-            return Err(Error::new(
-                ErrorCode::Timeout,
-                "the wallet's address scanner did not produce a fresh address in time; \
-                 the previous deposit's address may still be scanning",
-            ));
-        }
-        fedimint_core::runtime::sleep(RETIRED_ADDRESS_POLL).await;
-        waited += RETIRED_ADDRESS_POLL;
-    };
-    let address = Address::from_upstream(checked.clone().into_unchecked());
-    let id = OperationId::new_random();
+    let reservation =
+        fedimint_core::runtime::timeout(SCANNER_WAIT_TIMEOUT, module.reserve_address())
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Timeout,
+                    "the wallet did not derive a fresh deposit address in time; its address \
+                     search is still running",
+                )
+            })?
+            .map_err(map_reserve_error)?;
+    let address = Address::from_upstream(reservation.address.clone().into_unchecked());
     let wire = wire::OnchainReceiveDetailsWire {
-        address: checked.to_string(),
+        address: reservation.address.to_string(),
         txid: None,
         gross_deposited_sats: None,
         fee_msats: None,
         fee_breakdown: None,
         net_credit_msats: None,
-        created_at: created_at.epoch_millis(),
+        created_at: now().epoch_millis(),
         upstream_operation_id: None,
-        event_cursor: Some(cursor),
     };
     let operation = federation
-        .create_operation(id, kinds::ONCHAIN_RECEIVE, "walletv2", &wire, driver)
+        .create_operation(
+            reservation.operation_id,
+            kinds::ONCHAIN_RECEIVE,
+            "walletv2",
+            &wire,
+            driver,
+        )
         .await?;
     Ok(OnchainReceive { address, operation })
 }
 
-/// How long [`receive`] waits for the walletv2 scanner to derive a fresh address after the
-/// previous one's deposit has finished. Intentionally longer than [`CONTACT_TIMEOUT`] because
-/// the scanner performs a CPU-intensive hash-prefix search that can take well over 30 seconds
-/// on loaded CI runners or constrained hardware (fedimint/fedimint-sdk#418).
+/// How long [`receive`] waits for the wallet module to reserve an address. The module's own
+/// output scanner derives the addresses it hands out, and when none is ready the call waits for
+/// the next one. Intentionally longer than [`CONTACT_TIMEOUT`] because that is a CPU-intensive
+/// hash-prefix search that can take well over 30 seconds on loaded CI runners or constrained
+/// hardware (fedimint/fedimint-sdk#418).
 const SCANNER_WAIT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(120);
 
-/// How often [`receive`] asks the wallet module again for an address, while the module is still
-/// handing back one whose deposit this SDK has already seen through to its end.
-const RETIRED_ADDRESS_POLL: core::time::Duration = core::time::Duration::from_millis(250);
-
-/// The event log's current tail: the position a scan for a deposit's `ReceivePaymentEvent`
-/// should start from, so that an event already in the log before this address was handed out is
-/// never mistaken for a payment to it.
-pub(super) async fn event_log_tail(client: &Client) -> u64 {
-    u64::from(client.get_next_event_log_id().await)
+// walletv2 `ReserveAddressError` onto the facade's errors. `TooManyUnpaid` is the module's own
+// limit on how many reserved addresses may wait for their first payment at once; it lifts only
+// when one of them is paid, which nothing here can bring about, so it is reported as the
+// application's to resolve rather than as a transient failure.
+//
+// | upstream        | here       |
+// | --------------- | ---------- |
+// | `TooManyUnpaid` | `Internal` |
+// | `Database`      | `Storage`  |
+// | any other       | `Internal` |
+fn map_reserve_error(err: ReserveAddressError) -> Error {
+    match err {
+        ReserveAddressError::TooManyUnpaid => internal(format!(
+            "{MAX_UNPAID_RESERVATIONS} deposit addresses are already waiting for a payment; one \
+             of them has to be paid before another can be handed out"
+        )),
+        ReserveAddressError::Database(_) => Error::new(
+            ErrorCode::Storage,
+            format!("could not reserve a deposit address: {}", err.fmt_compact()),
+        ),
+        _ => internal(err.fmt_compact()),
+    }
 }
 
-/// A walletv2 deposit's own upstream operation, discovered by scanning the event log for the
-/// `ReceivePaymentEvent` that names the watched address.
+/// A walletv2 deposit's own upstream operation: the receive operation that claims the first
+/// payment to the reserved address.
 ///
-/// `chain_fee` is only ever read back by the scan that just populated it: a `Link` rebuilt from
-/// the wire after a restart carries a placeholder instead, since the claim's own inputs are
-/// re-read from the linked operation's own metadata at claim time regardless (see
-/// [`claim_from_upstream`]), which is what lets a restart mid-claim resume from nothing but the
-/// upstream operation id.
+/// `chain_fee` is the on-chain fee the claim's own terms record. A `Link` rebuilt from the wire
+/// after a restart carries a placeholder instead, since the claim's own inputs are re-read from
+/// the linked operation's own metadata at claim time regardless (see [`claim_from_upstream`]),
+/// which is what lets a restart mid-claim resume from nothing but the upstream operation id.
 #[derive(Debug, Clone)]
 pub(super) struct Link {
     pub(super) upstream: OperationId,
     pub(super) txid: Txid,
     pub(super) gross: Sats,
     pub(super) chain_fee: bitcoin::Amount,
-    pub(super) cursor: u64,
 }
 
-/// Scans the event log from `from` for the first `ReceivePaymentEvent` naming `address`, one pass
-/// over the log as it stands now: this does not wait for new entries, so a caller that wants to
-/// keep watching re-derives a live client and calls this again after the next
-/// [`Client::log_event_added_rx`] tick.
-pub(super) async fn find_link(client: &Client, address: &Address, from: u64) -> Option<Link> {
-    const PAGE: u64 = 64;
-    let mut pos = EventLogId::LOG_START.saturating_add(from);
-    loop {
-        let page = client.get_event_log(Some(pos), PAGE).await;
-        if page.is_empty() {
-            return None;
-        }
-        for entry in &page {
-            let cursor = u64::from(entry.id().saturating_add(1));
-            if entry.module_kind() == Some(&KIND)
-                && entry.kind == ReceivePaymentEvent::KIND
-                && let Some(event) = entry.to_event::<ReceivePaymentEvent>()
-            {
-                // The module only ever writes `None` for an output it could not resolve; a
-                // deposit with no transaction id cannot be reported, so it is skipped rather
-                // than linked.
-                let Some(outpoint) = event.outpoint else {
-                    continue;
-                };
-                if event.address != *address.inner() {
-                    continue;
-                }
-                return Some(Link {
-                    upstream: event.operation_id,
-                    txid: Txid::from_upstream(outpoint.txid),
-                    gross: bitcoin_to_sats(event.value),
-                    chain_fee: event.fee,
-                    cursor,
-                });
-            }
-        }
-        pos = page
-            .last()
-            .expect("checked non-empty above")
-            .id()
-            .saturating_add(1);
+/// The claim the wallet module has recorded for the reservation `id`, as it stands now: one
+/// read, which does not wait for a claim to be recorded, so a caller that wants to keep watching
+/// re-derives a live client and looks again after the next [`Client::log_event_added_rx`] tick.
+///
+/// `aborted` is the claim the federation rejected, when this look is for its replacement: the
+/// module keeps naming it until it has claimed the payment anew, or given the payment up as not
+/// worth claiming, so it is not an answer. `None` is no claim to report yet: none is recorded,
+/// the one recorded is `aborted`, or its terms name no funding outpoint (see [`link_of`]).
+pub(super) async fn find_link(
+    client: &Client,
+    id: OperationId,
+    aborted: Option<OperationId>,
+) -> Result<Option<Link>> {
+    let module = module_of(client)?;
+    let Some(claim) = claim_of(module.reservation_claim(id).await)? else {
+        return Ok(None);
+    };
+    if aborted == Some(claim) {
+        return Ok(None);
+    }
+    Ok(link_of(claim, &claim_meta(client, claim).await?))
+}
+
+/// The claim operation a reservation lookup answered, or why it did not.
+fn claim_of(
+    looked_up: Result<Option<OperationId>, ReservationError>,
+) -> Result<Option<OperationId>> {
+    match looked_up {
+        Ok(claim) => Ok(claim),
+        // A record backfilled from a claim is that claim itself, so no reservation stands behind
+        // it and nothing is ever recorded as replacing it should the federation reject it.
+        Err(ReservationError::NotAReservation { .. }) => Ok(None),
+        Err(err) => Err(subscribe_error(err.fmt_compact())),
     }
 }
 
-/// Records a freshly discovered link on the wire: `txid` and `gross_deposited` are set only the
-/// first time, but `upstream_operation_id` and `event_cursor` are overwritten every time, since a
-/// retry after an `Aborted` claim relinks the same address to a new upstream operation.
+/// The link to `claim` that its own terms give: the transaction that paid, the gross amount and
+/// the on-chain claim fee.
+///
+/// `None` when the terms name no funding outpoint. The module only ever writes `None` for an
+/// output it could not resolve, and a deposit with no transaction id cannot be reported.
+fn link_of(claim: OperationId, terms: &ReceiveMeta) -> Option<Link> {
+    let outpoint = terms.outpoint?;
+    Some(Link {
+        upstream: claim,
+        txid: Txid::from_upstream(outpoint.txid),
+        gross: bitcoin_to_sats(terms.value),
+        chain_fee: terms.fee,
+    })
+}
+
+/// The terms the wallet module recorded for the receive operation `claim`.
+async fn claim_meta(client: &Client, claim: OperationId) -> Result<ReceiveMeta> {
+    let entry = client
+        .operation_log()
+        .get_operation(claim)
+        .await
+        .ok_or_else(|| internal("the linked deposit is no longer in the operation log"))?;
+    let meta: WalletOperationMeta = entry
+        .try_meta()
+        .map_err(|err| internal(format!("could not read the linked deposit's terms: {err}")))?;
+    let WalletOperationMeta::Receive(terms) = meta else {
+        return Err(internal("the linked upstream operation is not a receive"));
+    };
+    Ok(terms)
+}
+
+/// Records a freshly discovered link on the wire, overwriting the one before it: a rejected claim
+/// is replaced by another claim of the same payment, which relinks the record to a new upstream
+/// operation, and a payment the module gives up claiming is followed by the next payment to the
+/// address, which relinks it to another transaction and amount as well.
 pub(super) async fn link(
     federation: &FederationInner,
     id: OperationId,
@@ -482,12 +491,9 @@ pub(super) async fn link(
     let Some(mut details) = read_wire(&db, id).await? else {
         return Ok(());
     };
-    if details.txid.is_none() {
-        details.txid = Some(found.txid.to_string());
-        details.gross_deposited_sats = Some(found.gross.sats());
-    }
+    details.txid = Some(found.txid.to_string());
+    details.gross_deposited_sats = Some(found.gross.sats());
     details.upstream_operation_id = Some(found.upstream.fmt_full().to_string());
-    details.event_cursor = Some(found.cursor);
     write_details_in(&db, id, wire::encode_receive_wire(&details)?).await?;
     record_phase_in(&db, id, wire::PHASE_SEEN).await
 }
@@ -511,20 +517,19 @@ pub(super) async fn upstream_state(
     }
 }
 
-// walletv2 has no per-address state machine to follow the way v1's `DepositStateV2` is one: the
-// phases `OnchainReceiveState` reports here are this SDK's own observation of the address, and
-// the module's own claim machine lands on them as `Funding` -> `Confirmed`, `Success` (once the
-// mint has issued the claimed notes) -> `Claimed`, or `Failed` if the mint could not issue one of
-// them, `Aborted` (the claim stays claimable, retried under the same operation id) -> stays
-// `Confirmed`.
+// The phases `OnchainReceiveState` reports here are this SDK's own observation of the claim of the
+// reservation's first payment, not a mapping of the module's reservation states: the module's
+// claim machine lands on them as `Funding` -> `Confirmed`, `Success` (once the mint has issued
+// the claimed notes) -> `Claimed`, or `Failed` if the mint could not issue one of them, `Aborted`
+// (the module claims the payment anew, under another operation) -> stays `Confirmed`.
 /// What the bounded (or, once already `Confirmed`, unbounded) check of a linked upstream
 /// operation found.
 enum ClaimProgress {
     /// The claim has not settled, or has settled but the mint has not finished issuing the
     /// claimed notes yet; still `Confirmed` either way.
     StillFunding,
-    /// The federation rejected the claim; still `Confirmed`, and a later `ReceivePaymentEvent`
-    /// for the same address relinks it under a fresh upstream operation.
+    /// The federation rejected the claim; still `Confirmed`, and the module's replacement claim
+    /// of the same payment relinks it under a fresh upstream operation.
     Aborted,
     /// The claim settled and reached its end: either its notes are issued and the wire record
     /// carries the credit (`Claimed`), or the mint could not issue one of them (`Failed`).
@@ -576,23 +581,12 @@ async fn claim_from_upstream(
     id: OperationId,
     found: &Link,
 ) -> Result<OnchainReceiveState> {
-    let entry = client
-        .operation_log()
-        .get_operation(found.upstream)
-        .await
-        .ok_or_else(|| internal("the linked deposit is no longer in the operation log"))?;
-    let meta: WalletOperationMeta = entry
-        .try_meta()
-        .map_err(|err| internal(format!("could not read the linked deposit's terms: {err}")))?;
-    let WalletOperationMeta::Receive(ReceiveMeta {
+    let ReceiveMeta {
         value,
         fee,
         change_outpoint_range,
         ..
-    }) = meta
-    else {
-        return Err(internal("the linked upstream operation is not a receive"));
-    };
+    } = claim_meta(client, found.upstream).await?;
     let net_of_chain_fee = value
         .checked_sub(fee)
         .ok_or_else(|| internal("the deposit's on-chain claim fee exceeds its value"))?;
@@ -602,7 +596,7 @@ async fn claim_from_upstream(
     let input_fee = cfg.fee_consensus.fee(input_amount);
 
     // The same wait upstream's own `await_receive` makes before it reports a claim
-    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:630-649): it returns once every note the
+    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:1019-1039): it returns once every note the
     // claim minted is spendable, and fails if the mint's own state machine for one of them
     // ended in failure instead. That failure arrives as `TransactionSubmitError::PrimaryModule`
     // (`$FM/fedimint-client/src/client.rs:1320`), the only variant the wait itself produces besides
@@ -676,16 +670,6 @@ async fn read_wire(
     Ok(Some(wire::decode_receive_wire(&record.details)?))
 }
 
-async fn read_address(db: &Database, id: OperationId) -> Result<Address> {
-    let Some(details) = read_wire(db, id).await? else {
-        return Err(internal(format!(
-            "no record for operation {}",
-            id.fmt_full()
-        )));
-    };
-    Ok(OnchainReceiveDetails::try_from(details)?.address)
-}
-
 fn claimed_from(details: wire::OnchainReceiveDetailsWire) -> Result<OnchainReceiveState> {
     let public = OnchainReceiveDetails::try_from(details)?;
     Ok(OnchainReceiveState::Claimed {
@@ -726,7 +710,6 @@ fn wire_link(details: &wire::OnchainReceiveDetailsWire) -> Result<Option<Link>> 
             .map_err(|_| internal("a stored transaction id does not parse"))?,
         gross: Sats::from_sats(gross),
         chain_fee: bitcoin::Amount::ZERO,
-        cursor: details.event_cursor.unwrap_or(0),
     }))
 }
 
@@ -739,8 +722,8 @@ fn federation_closed() -> Error {
 
 /// The current state of a walletv2 deposit, following the same three-step algorithm
 /// `subscribe_receive` runs continuously: a claimed record answers from storage, an unlinked
-/// address gets one scan of the event log, and a linked one gets one bounded check of the claim,
-/// relinking past an aborted claim to its retry the way the subscription does.
+/// reservation gets one look for its claim, and a linked one gets one bounded check of the claim,
+/// relinking past a rejected claim to its replacement the way the subscription does.
 pub(super) async fn current_receive(
     federation: &FederationInner,
     id: OperationId,
@@ -758,29 +741,24 @@ pub(super) async fn current_receive(
     let client = federation.client(false).await?;
     let found = match wire_link(&details)? {
         Some(found) => found,
-        None => {
-            let address = OnchainReceiveDetails::try_from(details.clone())?.address;
-            let cursor = details.event_cursor.unwrap_or(0);
-            match find_link(&client, &address, cursor).await {
-                Some(found) => {
-                    link(federation, id, &found).await?;
-                    found
-                }
-                None => return Ok(OnchainReceiveState::WaitingForTransaction),
+        None => match find_link(&client, id, None).await? {
+            Some(found) => {
+                link(federation, id, &found).await?;
+                found
             }
-        }
+            None => return Ok(OnchainReceiveState::WaitingForTransaction),
+        },
     };
     let mut found = found;
     let mut progress = observe_link(&client, &db, id, &found).await?;
-    // An aborted claim is retried by the module under a fresh upstream operation, announced by
-    // another `ReceivePaymentEvent` for the same address. `subscribe_receive` relinks to it from
-    // the aborted link's cursor; this bounded read has to do the same, or a caller that only
-    // ever polls `state()` would stay pinned to the aborted operation and read `Confirmed` long
-    // after the retry claimed the deposit. Each aborted operation answers its final state at
-    // once, so the loop only ever spends the bound on the live claim at its end.
+    // A rejected claim is replaced by the module with another claim of the same payment, under a
+    // fresh upstream operation, which the reservation names from then on. `subscribe_receive`
+    // relinks to it; this bounded read has to do the same, or a caller that only ever polls
+    // `state()` would stay pinned to the rejected operation and read `Confirmed` long after the
+    // replacement claimed the deposit. Each rejected operation answers its final state at once,
+    // so the loop only ever spends the bound on the live claim at its end.
     while let ClaimProgress::Aborted = progress {
-        let address = read_address(&db, id).await?;
-        let Some(next) = find_link(&client, &address, found.cursor).await else {
+        let Some(next) = find_link(&client, id, Some(found.upstream)).await? else {
             break;
         };
         link(federation, id, &next).await?;
@@ -826,10 +804,10 @@ enum ReceiveCursor {
     /// Nothing decided yet; read the wire and take it from there.
     Start,
     /// No upstream operation is linked yet. `announced` says whether `WaitingForTransaction` has
-    /// already been handed out, so it is not repeated on every retry.
+    /// already been handed out, so it is not repeated on every retry. `aborted` is the claim the
+    /// federation rejected, when the look is for its replacement; see [`find_link`].
     Linking {
-        address: Address,
-        cursor: u64,
+        aborted: Option<OperationId>,
         announced: bool,
     },
     /// Linked. `announced` says whether the `Confirmed` a fresh link always earns has already
@@ -851,9 +829,9 @@ enum ReceiveCursor {
 
 /// A fresh stream over a walletv2 deposit, running the three-step algorithm
 /// [`current_receive`] runs once, this time continuing past every step that only stops a
-/// point-in-time read: an unlinked address is watched via [`Client::log_event_added_rx`] rather
-/// than answered once, an `Aborted` claim goes back to looking for a fresh link instead of
-/// stopping, and a linked operation's final state is awaited without a bound.
+/// point-in-time read: an unlinked reservation is watched via [`Client::log_event_added_rx`]
+/// rather than answered once, an `Aborted` claim goes back to looking for its replacement instead
+/// of stopping, and a linked operation's final state is awaited without a bound.
 pub(super) async fn subscribe_receive(
     federation: &FederationInner,
     id: OperationId,
@@ -863,10 +841,10 @@ pub(super) async fn subscribe_receive(
     // arm below. `Client::log_event_added_rx` only ever clones the receiver it stores internally,
     // and nothing in `Client` ever marks that stored receiver as seen, so a fresh clone reports a
     // change the instant any event at all has ever been logged, past or future: waited on
-    // straight away, that busy-scans the log instead of waiting for a new one. Keeping this one
-    // receiver for the stream's whole life, and calling `mark_unchanged` on it immediately before
-    // each scan (see `receive_step`'s `Linking` arm), is what turns `changed().await` into an
-    // actual wait for something logged after the scan started.
+    // straight away, that busy-looks for a claim instead of waiting for a new event. Keeping this
+    // one receiver for the stream's whole life, and calling `mark_unchanged` on it immediately
+    // before each look (see `receive_step`'s `Linking` arm), is what turns `changed().await` into
+    // an actual wait for something logged after the look started.
     let added = client.log_event_added_rx();
     drop(client);
     let ctx = ReceiveCtx {
@@ -910,25 +888,14 @@ async fn receive_step(
                         link: found,
                         announced: false,
                     },
-                    Ok(None) => {
-                        let address = match OnchainReceiveDetails::try_from(details.clone()) {
-                            Ok(public) => public.address,
-                            Err(err) => return Some((Err(err), ReceiveCursor::Done)),
-                        };
-                        ReceiveCursor::Linking {
-                            address,
-                            cursor: details.event_cursor.unwrap_or(0),
-                            announced: false,
-                        }
-                    }
+                    Ok(None) => ReceiveCursor::Linking {
+                        aborted: None,
+                        announced: false,
+                    },
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 }
             }
-            ReceiveCursor::Linking {
-                address,
-                cursor: from,
-                announced,
-            } => {
+            ReceiveCursor::Linking { aborted, announced } => {
                 let Some(federation) = live_federation(&ctx) else {
                     return Some((Err(federation_closed()), ReceiveCursor::Done));
                 };
@@ -939,12 +906,13 @@ async fn receive_step(
                 let handle = client.handle();
                 drop(client);
                 let stop = handle.task_group().make_handle().make_shutdown_rx();
-                // Marked unchanged right before the scan, not after: an event logged while
-                // `find_link` is still paging through the log must still register once this call
-                // reaches the `None` arm below, or it would sit unnoticed until some later,
-                // unrelated event happened to wake the wait. `ctx.added` is the one receiver
-                // `subscribe_receive` obtained for the stream's whole life; see there for why it
-                // must not be re-fetched from the client here instead.
+                // Marked unchanged right before the look, not after: the module records a claim
+                // and logs its `ReceivePaymentEvent` in one transaction, so an event logged while
+                // `find_link` is still reading must still register once this call reaches the
+                // `None` arm below, or it would sit unnoticed until some later, unrelated event
+                // happened to wake the wait. `ctx.added` is the one receiver `subscribe_receive`
+                // obtained for the stream's whole life; see there for why it must not be
+                // re-fetched from the client here instead.
                 ctx.added.mark_unchanged();
                 // Run through `wait_holding_client`, like every other client-owning read in this
                 // stream: the engine keeps this step's own future parked, handle and all, across
@@ -952,9 +920,9 @@ async fn receive_step(
                 // an `.await` (see `wait_holding_client`'s own documentation). That is what keeps
                 // the handle out of the `tokio::select!` below too: it is on the spawned task by
                 // the time that runs, not in this future's own state.
-                let scan_address = address.clone();
+                let id = ctx.id;
                 let found = wait_holding_client(handle, stop, move |client| async move {
-                    Ok(find_link(&client, &scan_address, from).await)
+                    find_link(&client, id, aborted).await
                 })
                 .await;
                 match found {
@@ -971,8 +939,7 @@ async fn receive_step(
                         return Some((
                             Ok(OnchainReceiveState::WaitingForTransaction),
                             ReceiveCursor::Linking {
-                                address,
-                                cursor: from,
+                                aborted,
                                 announced: true,
                             },
                         ));
@@ -988,8 +955,7 @@ async fn receive_step(
                             }
                         }
                         ReceiveCursor::Linking {
-                            address,
-                            cursor: from,
+                            aborted,
                             announced: true,
                         }
                     }
@@ -1029,9 +995,8 @@ async fn receive_step(
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 };
                 // Every other arm drops its guard before awaiting anything else: a close must
-                // always be able to take the client write lock. `observe_link` and, on the
-                // `Aborted` branch, `read_address` run on a cloned handle instead, so the guard
-                // is gone before either one is awaited; `observe_link` itself runs through
+                // always be able to take the client write lock. `observe_link` runs on a cloned
+                // handle instead, so the guard is gone before it is awaited; it runs through
                 // `wait_holding_client`, so that handle is never in this future's own frame
                 // either, the same as every other client-owning read in this stream.
                 let handle = client.handle();
@@ -1055,18 +1020,13 @@ async fn receive_step(
                         ));
                     }
                     Ok(ClaimProgress::Aborted) => {
-                        let address = match read_address(&ctx.db, ctx.id).await {
-                            Ok(address) => address,
-                            Err(err) => return Some((Err(err), ReceiveCursor::Done)),
-                        };
                         return Some((
                             Ok(OnchainReceiveState::Confirmed {
                                 txid: found.txid.clone(),
                                 gross_deposited: found.gross,
                             }),
                             ReceiveCursor::Linking {
-                                address,
-                                cursor: found.cursor,
+                                aborted: Some(found.upstream),
                                 announced: true,
                             },
                         ));
@@ -1099,18 +1059,13 @@ async fn receive_step(
                 .await;
                 match outcome {
                     Ok(FinalReceiveOperationState::Aborted) => {
-                        let address = match read_address(&ctx.db, ctx.id).await {
-                            Ok(address) => address,
-                            Err(err) => return Some((Err(err), ReceiveCursor::Done)),
-                        };
                         return Some((
                             Ok(OnchainReceiveState::Confirmed {
                                 txid: found.txid.clone(),
                                 gross_deposited: found.gross,
                             }),
                             ReceiveCursor::Linking {
-                                address,
-                                cursor: found.cursor,
+                                aborted: Some(found.upstream),
                                 announced: true,
                             },
                         ));
@@ -1146,26 +1101,35 @@ async fn receive_step(
     }
 }
 
-/// Decodes a walletv2 `WalletOperationMeta` and returns the address a `Receive` variant is
-/// waiting on, for `federation.rs`'s deposit-adoption reconciler to match against an
-/// `ONCHAIN_RECEIVE` record it already owns.
-pub(crate) fn deposit_address_of(meta: &serde_json::Value) -> Option<String> {
+/// Decodes a walletv2 `WalletOperationMeta` and returns the reservation a `Receive` variant
+/// claims a payment for, if the paid address was reserved, for `federation.rs`'s reconciler to
+/// find the record the claim belongs to; re-exported so it does not have to name the upstream
+/// wallet types itself.
+pub(crate) fn claimed_reservation(meta: &serde_json::Value) -> Option<OperationId> {
     let meta: WalletOperationMeta = serde_json::from_value(meta.clone()).ok()?;
     match meta {
-        WalletOperationMeta::Receive(ReceiveMeta {
-            address: Some(address),
-            ..
-        }) => Some(address.assume_checked_ref().to_string()),
-        WalletOperationMeta::Receive(_) | WalletOperationMeta::Send(_) => None,
+        WalletOperationMeta::Receive(ReceiveMeta { reservation, .. }) => reservation,
+        WalletOperationMeta::Send(_) | WalletOperationMeta::Reservation(_) => None,
     }
+}
+
+/// Whether a walletv2 `WalletOperationMeta` is a reservation, for `federation.rs`'s reconciler to
+/// tell whether the record of a claim's reservation can be rebuilt from the log.
+pub(crate) fn is_reservation(meta: &serde_json::Value) -> bool {
+    matches!(
+        serde_json::from_value::<WalletOperationMeta>(meta.clone()),
+        Ok(WalletOperationMeta::Reservation(_))
+    )
 }
 
 /// Rebuilds a record from a walletv2 log entry: exact for a `Send` this SDK created, whose
 /// custom metadata carries the quoted terms verbatim; an estimate for one it did not create.
-/// A `Receive` entry backfills only once it names both an address and the outpoint that funded
-/// it; walletv2 mints no operation of its own at `receive` time, so this SDK's own record is
-/// what an entry missing either is waiting to be adopted by instead (see `deposit_address_of`),
-/// never something to estimate from the log alone.
+/// A `Reservation` entry is an address handed out whose record a crash between the module's
+/// commit and this SDK's write left unwritten: it backfills to the record `receive` would have
+/// written, under the same id, still waiting for a payment. A `Receive` entry backfills only once
+/// it names both an address and the outpoint that funded it. Whether a claim needs a record of
+/// its own at all is not decided here: a claim of a reserved address belongs to the record of its
+/// reservation (see [`claimed_reservation`]), and one that does not is a deposit of its own.
 pub(super) fn backfill(
     id: OperationId,
     meta: &serde_json::Value,
@@ -1217,7 +1181,6 @@ pub(super) fn backfill(
                 net_credit_msats: None,
                 created_at,
                 upstream_operation_id: Some(id.fmt_full().to_string()),
-                event_cursor: None,
             };
             Some(Backfilled {
                 kind: kinds::ONCHAIN_RECEIVE,
@@ -1226,18 +1189,39 @@ pub(super) fn backfill(
                 final_state: None,
             })
         }
-        // Neither an address nor an outpoint is knowable yet, so there is nothing to backfill:
-        // this SDK's own record (adopted by address, see `deposit_address_of`) is what carries
-        // the deposit until the scanner resolves both.
+        // The module only ever writes `None` for an address or an outpoint of an output it could
+        // not resolve, and a deposit with no transaction id cannot be reported, so there is
+        // nothing to backfill.
         WalletOperationMeta::Receive(_) => None,
+        // All the entry knows is the address: the deposit is still waiting for a payment, and
+        // finds the claim of its first one through the reservation when it is first read.
+        WalletOperationMeta::Reservation(ReservationMeta { address, .. }) => {
+            let wire = wire::OnchainReceiveDetailsWire {
+                address: address.assume_checked_ref().to_string(),
+                txid: None,
+                gross_deposited_sats: None,
+                fee_msats: None,
+                fee_breakdown: None,
+                net_credit_msats: None,
+                created_at,
+                upstream_operation_id: None,
+            };
+            Some(Backfilled {
+                kind: kinds::ONCHAIN_RECEIVE,
+                details: wire::encode_receive_wire(&wire).ok()?,
+                phase: None,
+                final_state: None,
+            })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use fedimint_client_module::ClientModuleError;
+    use fedimint_client_module::{ClientModuleError, OperationLookupError, OperationNotFoundError};
     use fedimint_core::BitcoinHash;
     use fedimint_core::bitcoin::address::NetworkUnchecked;
+    use fedimint_core::db::DatabaseError;
 
     use super::*;
     use crate::{Amount, Timestamp};
@@ -1344,20 +1328,53 @@ mod tests {
         .expect("serialises")
     }
 
-    fn receive_meta(
+    fn receive_terms(
         address: Option<bitcoin::Address<NetworkUnchecked>>,
         value_sats: u64,
         fee_sats: u64,
         outpoint: Option<bitcoin::OutPoint>,
-    ) -> serde_json::Value {
-        serde_json::to_value(WalletOperationMeta::Receive(ReceiveMeta {
+        reservation: Option<OperationId>,
+    ) -> ReceiveMeta {
+        ReceiveMeta {
             change_outpoint_range: a_change_range(),
             value: bitcoin::Amount::from_sat(value_sats),
             fee: bitcoin::Amount::from_sat(fee_sats),
             address,
             outpoint,
+            reservation,
+        }
+    }
+
+    fn receive_meta(
+        address: Option<bitcoin::Address<NetworkUnchecked>>,
+        value_sats: u64,
+        fee_sats: u64,
+        outpoint: Option<bitcoin::OutPoint>,
+        reservation: Option<OperationId>,
+    ) -> serde_json::Value {
+        serde_json::to_value(WalletOperationMeta::Receive(receive_terms(
+            address,
+            value_sats,
+            fee_sats,
+            outpoint,
+            reservation,
+        )))
+        .expect("serialises")
+    }
+
+    fn reservation_meta() -> serde_json::Value {
+        serde_json::to_value(WalletOperationMeta::Reservation(ReservationMeta {
+            address: upstream_address(),
+            address_index: 7,
         }))
         .expect("serialises")
+    }
+
+    fn an_outpoint() -> bitcoin::OutPoint {
+        bitcoin::OutPoint {
+            txid: a_bitcoin_txid(),
+            vout: 0,
+        }
     }
 
     #[test]
@@ -1429,7 +1446,7 @@ mod tests {
         let txid = a_bitcoin_txid();
         let outpoint = bitcoin::OutPoint { txid, vout: 0 };
         let id = an_operation_id();
-        let meta = receive_meta(Some(upstream_address()), 100_000, 500, Some(outpoint));
+        let meta = receive_meta(Some(upstream_address()), 100_000, 500, Some(outpoint), None);
         let backfilled = backfill(id, &meta, 1_700_000_000_000).expect("recognised");
         assert_eq!(backfilled.kind, kinds::ONCHAIN_RECEIVE);
         assert_eq!(backfilled.phase, Some(wire::PHASE_SEEN));
@@ -1447,17 +1464,189 @@ mod tests {
 
     #[test]
     fn a_receive_log_entry_with_no_address_backfills_nothing() {
-        let outpoint = bitcoin::OutPoint {
-            txid: a_bitcoin_txid(),
-            vout: 0,
-        };
-        let meta = receive_meta(None, 100_000, 500, Some(outpoint));
+        let meta = receive_meta(None, 100_000, 500, Some(an_outpoint()), None);
         assert!(backfill(an_operation_id(), &meta, 0).is_none());
     }
 
     #[test]
     fn a_receive_log_entry_with_no_outpoint_backfills_nothing() {
-        let meta = receive_meta(Some(upstream_address()), 100_000, 500, None);
+        let meta = receive_meta(Some(upstream_address()), 100_000, 500, None, None);
         assert!(backfill(an_operation_id(), &meta, 0).is_none());
+    }
+
+    #[test]
+    fn a_reservation_log_entry_backfills_a_deposit_still_waiting_for_a_payment() {
+        let backfilled = backfill(an_operation_id(), &reservation_meta(), 1_700_000_000_000)
+            .expect("recognised");
+        assert_eq!(backfilled.kind, kinds::ONCHAIN_RECEIVE);
+        // The initial phase: nothing has been seen yet, and nothing has ended.
+        assert_eq!(backfilled.phase, None);
+        assert_eq!(backfilled.final_state, None);
+        let raw = wire::decode_receive_wire(&backfilled.details).expect("decode");
+        assert_eq!(
+            raw.address,
+            upstream_address().assume_checked_ref().to_string()
+        );
+        assert_eq!(raw.txid, None);
+        assert_eq!(raw.gross_deposited_sats, None);
+        assert_eq!(raw.upstream_operation_id, None);
+        assert_eq!(raw.created_at, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn what_a_claim_backfills_to_does_not_depend_on_its_reservation() {
+        // Whether a claim of a reserved address gets a record at all is the reconciler's call, made
+        // with the records at hand; what this rebuilds from the entry alone does not depend on it.
+        let reservation = an_operation_id();
+        let id = an_operation_id();
+        let with = receive_meta(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            Some(reservation),
+        );
+        let without = receive_meta(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            None,
+        );
+        assert_eq!(
+            backfill(id, &with, 5).expect("recognised").details,
+            backfill(id, &without, 5).expect("recognised").details
+        );
+    }
+
+    #[test]
+    fn a_claim_names_the_reservation_it_belongs_to() {
+        let reservation = an_operation_id();
+        let claim = receive_meta(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            Some(reservation),
+        );
+        assert_eq!(claimed_reservation(&claim), Some(reservation));
+        // A payment to an address that was not reserved belongs to no reservation, and neither
+        // does anything that is not a claim, or not readable at all.
+        let unreserved = receive_meta(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            None,
+        );
+        assert_eq!(claimed_reservation(&unreserved), None);
+        assert_eq!(claimed_reservation(&reservation_meta()), None);
+        assert_eq!(
+            claimed_reservation(&send_meta(25_000, 500, serde_json::Value::Null)),
+            None
+        );
+        assert_eq!(claimed_reservation(&serde_json::Value::Null), None);
+    }
+
+    #[test]
+    fn only_a_reservation_log_entry_is_a_reservation() {
+        assert!(is_reservation(&reservation_meta()));
+        assert!(!is_reservation(&receive_meta(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            None
+        )));
+        assert!(!is_reservation(&send_meta(
+            25_000,
+            500,
+            serde_json::Value::Null
+        )));
+        assert!(!is_reservation(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn a_reservation_error_maps_to_the_code_that_names_its_cause() {
+        let full = map_reserve_error(ReserveAddressError::TooManyUnpaid);
+        assert_eq!(full.code, ErrorCode::Internal);
+        assert!(
+            full.message.contains(&format!(
+                "{MAX_UNPAID_RESERVATIONS} deposit addresses are already waiting for a payment"
+            )),
+            "{}",
+            full.message
+        );
+        assert!(full.message.contains("has to be paid"), "{}", full.message);
+
+        let unwritable =
+            map_reserve_error(ReserveAddressError::Database(DatabaseError::WriteConflict));
+        assert_eq!(unwritable.code, ErrorCode::Storage);
+        // The whole cause chain, not only the outermost link.
+        assert!(
+            unwritable
+                .message
+                .contains("The reservation could not be written to the database"),
+            "{}",
+            unwritable.message
+        );
+        assert!(
+            unwritable.message.contains("Write-write conflict"),
+            "{}",
+            unwritable.message
+        );
+    }
+
+    #[test]
+    fn a_claim_lookup_answers_with_the_claim_or_the_reason_there_is_none() {
+        let claim = an_operation_id();
+        assert_eq!(claim_of(Ok(Some(claim))).expect("a claim"), Some(claim));
+        assert_eq!(claim_of(Ok(None)).expect("no claim yet"), None);
+
+        // A record backfilled from a claim is the claim itself: no reservation stands behind it,
+        // and that is not a failure.
+        let not_a_reservation = ReservationError::NotAReservation {
+            operation_id: claim,
+        };
+        assert_eq!(
+            claim_of(Err(not_a_reservation)).expect("no replacement to follow"),
+            None
+        );
+
+        // An operation the log does not know cannot be followed, and says so.
+        let unknown =
+            ReservationError::Operation(OperationLookupError::NotFound(OperationNotFoundError {
+                operation_id: claim,
+            }));
+        let err = claim_of(Err(unknown)).expect_err("an unknown reservation is an error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message
+                .contains("The reservation could not be looked up"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_claim_links_through_its_own_terms() {
+        let claim = an_operation_id();
+        let terms = receive_terms(
+            Some(upstream_address()),
+            100_000,
+            500,
+            Some(an_outpoint()),
+            Some(an_operation_id()),
+        );
+        let found = link_of(claim, &terms).expect("a funded claim links");
+        assert_eq!(found.upstream, claim);
+        assert_eq!(found.txid, Txid::from_upstream(a_bitcoin_txid()));
+        assert_eq!(found.gross, Sats::from_sats(100_000));
+        assert_eq!(found.chain_fee, bitcoin::Amount::from_sat(500));
+
+        // The module writes no outpoint for an output it could not resolve, and a deposit with
+        // no transaction id cannot be reported.
+        let unresolved = receive_terms(Some(upstream_address()), 100_000, 500, None, None);
+        assert!(link_of(claim, &unresolved).is_none());
     }
 }
