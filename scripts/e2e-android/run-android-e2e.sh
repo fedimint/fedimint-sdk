@@ -402,10 +402,17 @@ adb -s "$DEVICE_ID" shell pm clear "$APP_ID" || true
 # whole run (a ring-buffer dump at the end could have rotated early lines
 # out), and check_dns_config fails the run if the fallback warning appears.
 # When the Lightning test runs it also requires the trace line: that test
-# dials devimint's iroh gateway, which is what builds a DNS resolver and has
-# it look a name up, the point at which it reads the servers, so a run
-# without the line has not exercised the path at all and a missing warning
-# would prove nothing.
+# dials devimint's iroh gateway, which is what builds the SDK's two iroh
+# endpoints, and the resolver under the newer one reads the servers the first
+# time it looks a name up, so a run without the line has not exercised the
+# path at all and a missing warning would prove nothing.
+# The check covers that read and nothing else. With the servers read, the
+# resolver still sends a lookup to the same public servers (Cloudflare, Google
+# and Quad9) when every one of the device's own fails it with a server error,
+# which it reports in a debug line this filter leaves out. The resolver under
+# the older endpoint, the one the gateway dial itself goes through, cannot
+# read the device's servers and always asks Google's, logging nothing. Nothing
+# here looks for either.
 # The property is read once per app process when logging starts, so it is set
 # before the first launch. The rest of the filter is the SDK's default, and the
 # property is cleared again on exit (empty means "use the default"), since on

@@ -122,8 +122,22 @@ your app's manifest; both are normal permissions, so there is no runtime prompt:
 
 Don't strip `ACCESS_NETWORK_STATE` (for example with `tools:node="remove"`).
 Android has no readable `resolv.conf`, so the SDK asks `ConnectivityManager` for
-the DNS servers. Without the permission that call fails, and iroh falls back to
-public DNS servers with only a logcat warning.
+the DNS servers. Without the permission that call fails, and iroh resolves
+through the public DNS servers of Cloudflare, Google and Quad9 instead, with
+only a logcat warning.
+
+Lookups can reach those three with the permission too. When every one of the
+device's own DNS servers answers a lookup with a server error such as
+`SERVFAIL` or `REFUSED`, or no query can be sent to them, iroh asks the public
+servers for it, over plain DNS and DNS over HTTPS. A server that never replies
+does not count, since iroh gives up on the lookup first, and a reply that the
+name does not exist or has no such record is final. This fallback is iroh's
+default. The SDK keeps it and has no setting to turn it off.
+
+The SDK carries two versions of iroh, and the above describes the newer one.
+The older one, which makes the iroh connections to Lightning gateways, reads
+only `resolv.conf`. On Android its resolver therefore always asks Google's
+public DNS servers, with or without the permission, and logs no warning.
 
 There is no initialization call. The SDK finds your `Application` itself when
 `createFedimintSdk` runs, so it is fine to touch other bindings, such as

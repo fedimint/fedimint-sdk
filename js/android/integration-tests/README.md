@@ -156,7 +156,11 @@ The tests assert what each generation documents rather than identical behaviour:
   its fees to zero). Either way the faucet's LDK node is the counterparty.
 - **DNS check.** The fallback-to-public-DNS warning fails every run. The "Got DNS servers" trace
   is required only on v1, where the lightning tests dial devimint's iroh gateway; on v2 they use
-  the HTTP LND gateway and build no resolver.
+  the HTTP LND gateway and build no resolver. Both lines are about reading the device's DNS
+  servers, and both come from the newer of the two iroh versions the SDK carries. With the
+  servers read, a lookup that every one of them fails with a server error still goes to
+  Cloudflare, Google or Quad9, and the older iroh's resolver always asks Google. The check looks
+  for neither.
 
 ### What the tests use from devimint
 
