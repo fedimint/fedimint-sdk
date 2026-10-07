@@ -143,7 +143,7 @@ fun BackupScreen(onContinue: () -> Unit, onBack: (() -> Unit)? = null) {
                                 onConfirm = {
                                     confirmCopy = false
                                     copySecret(context, "Recovery phrase", s.words.joinToString(" "))
-                                    Toast.makeText(context, "Copied. Clears from the clipboard in 60 seconds.", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "Copied. Cleared from the clipboard after a minute, once you're back in the wallet.", Toast.LENGTH_LONG).show()
                                 },
                                 onDismiss = { confirmCopy = false },
                             )
@@ -190,7 +190,8 @@ private fun CopyPhraseDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
             Text(
                 "While it's on the clipboard, other apps and your keyboard may be able to read " +
                     "it. Paste it only somewhere safe and offline, such as a password manager. " +
-                    "It's cleared from the clipboard after 60 seconds.",
+                    "The wallet clears it from the clipboard after a minute, or when you come back " +
+                    "to the wallet after that.",
             )
         },
         confirmButton = { TextButton(onClick = onConfirm) { Text("Copy") } },

@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import org.fedimint.demo.ui.common.SecretClipboard
 import org.fedimint.demo.ui.nav.WalletApp
 import org.fedimint.demo.ui.theme.FedimintTheme
 
@@ -22,5 +23,11 @@ class MainActivity : ComponentActivity() {
                 WalletApp()
             }
         }
+    }
+
+    /** A copied recovery phrase may be past its expiry: only now can the clipboard be read. */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) SecretClipboard.onFocus(this)
     }
 }
