@@ -2,10 +2,11 @@
 # calls the SDK's `JNI_OnLoad`.
 #
 # On Android the SDK hands the platform's `JavaVM` and `Context` to the `ndk-context` crate, which
-# is where its DNS resolver (hickory, under iroh) looks them up to read the network's resolvers.
-# The `JavaVM` only reaches the SDK through its `JNI_OnLoad`; without it the slot stays empty and
-# the first iroh connection, such as joining a federation whose guardians use `iroh://` URLs,
-# aborts the app with "android context was not initialized" (rust/fedimint-sdk/src/android.rs).
+# is where its DNS resolver (n0-dns-resolver, under iroh) looks them up to read the network's
+# resolvers. The `JavaVM` only reaches the SDK through its `JNI_OnLoad`; without it the slot stays
+# empty and the first iroh connection, such as joining a federation whose guardians use `iroh://`
+# URLs, aborts the app with "android context was not initialized"
+# (rust/fedimint-sdk/src/android.rs).
 #
 # ubrn's template loads only libfedimint-react-native-bindings.so, which links the SDK library as
 # a plain dependency. ART then looks `JNI_OnLoad` up breadth-first through that library's

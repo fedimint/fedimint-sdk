@@ -394,24 +394,25 @@ adb -s "$DEVICE_ID" shell pm clear "$APP_ID" || true
 # fail a test. The one this exists for: iroh's DNS resolver reads the device's
 # DNS servers through ConnectivityManager, which needs the Android context
 # published and ACCESS_NETWORK_STATE granted. When either is missing it logs a
-# warning and falls back to Google's DNS servers, and the tests still pass
+# warning and falls back to public DNS servers, and the tests still pass
 # because the Lightning test can use the plain HTTP gateway.
 #
-# So the property below turns on hickory's trace line that lists the servers
+# So the property below turns on the resolver's trace line listing the servers
 # it read ("Got DNS servers: …"), the SDK's tag is recorded to a file for the
 # whole run (a ring-buffer dump at the end could have rotated early lines
 # out), and check_dns_config fails the run if the fallback warning appears.
 # When the Lightning test runs it also requires the trace line: that test
-# dials devimint's iroh gateway, which is what builds a DNS resolver, so a
-# run without the line has not exercised the path at all and a missing
-# warning would prove nothing.
+# dials devimint's iroh gateway, which is what builds a DNS resolver and has
+# it look a name up, the point at which it reads the servers, so a run
+# without the line has not exercised the path at all and a missing warning
+# would prove nothing.
 # The property is read once per app process when logging starts, so it is set
 # before the first launch. The rest of the filter is the SDK's default, and the
 # property is cleared again on exit (empty means "use the default"), since on
 # a developer's own phone it would otherwise outlive the run until a reboot.
 SDK_LOGCAT="$LOG_DIR/fedimint-sdk-logcat.log"
 adb -s "$DEVICE_ID" shell setprop debug.fedimint_sdk.log \
-  "'warn,fm=info,fedimint=info,hickory_resolver::system_conf=trace'"
+  "'warn,fm=info,fedimint=info,n0_dns_resolver::system_config=trace'"
 adb -s "$DEVICE_ID" logcat -c
 adb -s "$DEVICE_ID" logcat -v time -s fedimint-sdk >"$SDK_LOGCAT" 2>&1 &
 LOGCAT_PID=$!
@@ -425,9 +426,9 @@ trap cleanup EXIT
 
 check_dns_config() {
   kill "$LOGCAT_PID" 2>/dev/null || true
-  if grep -q "Failed to read the system's DNS config" "$SDK_LOGCAT"; then
-    echo "The SDK could not read the device's DNS configuration and fell back to Google DNS:" >&2
-    grep -B2 -A2 "Failed to read the system's DNS config" "$SDK_LOGCAT" >&2
+  if grep -q "failed to read system DNS configuration" "$SDK_LOGCAT"; then
+    echo "The SDK could not read the device's DNS configuration and fell back to public DNS:" >&2
+    grep -B2 -A2 "failed to read system DNS configuration" "$SDK_LOGCAT" >&2
     return 1
   fi
 

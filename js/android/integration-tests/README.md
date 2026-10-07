@@ -154,7 +154,7 @@ The tests assert what each generation documents rather than identical behaviour:
   funded, so on v2 `run-android-e2e.sh` removes the other gateways from every guardian's lnv2
   list before the tests run. On v1 the SDK picks the cheapest gateway, which is LND (devimint sets
   its fees to zero). Either way the faucet's LDK node is the counterparty.
-- **DNS check.** The fallback-to-Google-DNS warning fails every run. The "Got DNS servers" trace
+- **DNS check.** The fallback-to-public-DNS warning fails every run. The "Got DNS servers" trace
   is required only on v1, where the lightning tests dial devimint's iroh gateway; on v2 they use
   the HTTP LND gateway and build no resolver.
 

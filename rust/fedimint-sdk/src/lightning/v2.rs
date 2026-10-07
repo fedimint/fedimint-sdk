@@ -458,9 +458,10 @@ fn send_error(
         | SendPaymentError::GatewayFeeExceedsLimit
         | SendPaymentError::GatewayExpirationExceedsLimit => gateway_unavailable(err.fmt_compact()),
         SendPaymentError::FailedToRequestBlockCount(cause) => unreachable(cause),
-        // The amounts the mint reports with this are what was left to fund after the notes it
-        // set aside to consolidate, not the payment or the balance (see `fee_quote_refusal`),
-        // so the figures are the quoted total and the balance read after the refusal.
+        // mintv2 reports what the funding transaction still needed and the balance it held
+        // (`fedimint-mintv2-client/src/lib.rs:518-527`), not what the payment was quoted at.
+        // The figures are the quoted total and the balance read after the refusal instead,
+        // the pair a refused v1 send reports (see `fee_quote_refusal`).
         SendPaymentError::InsufficientFunds(_) => short_of(quote.plan.total, available),
         SendPaymentError::FailedToFundPayment(cause) => {
             internal(format!("the payment could not be funded: {cause}"))
@@ -1191,11 +1192,11 @@ mod tests {
     fn a_payment_the_mint_cannot_fund_reports_the_quoted_total_and_the_balance() {
         use fedimint_client_module::error::InsufficientBalanceError;
 
-        // What the mint reports after setting notes aside to consolidate: what was left to
-        // fund and what the remaining notes covered, neither of them the payment or the balance.
+        // What mintv2 reports: what the funding transaction still needed and the balance it
+        // held then. Neither is a figure the refusal carries.
         let short = SendPaymentError::InsufficientFunds(InsufficientBalanceError {
-            requested_amount: fedimint_core::Amount::from_msats(34_464),
-            total_amount: fedimint_core::Amount::from_msats(34_112),
+            requested_amount: fedimint_core::Amount::from_msats(99_900),
+            total_amount: fedimint_core::Amount::from_msats(99_700),
         });
         let quote = a_quote();
         let balance = Amount::from_msats(99_648);

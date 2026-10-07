@@ -123,8 +123,7 @@ your app's manifest; both are normal permissions, so there is no runtime prompt:
 Don't strip `ACCESS_NETWORK_STATE` (for example with `tools:node="remove"`).
 Android has no readable `resolv.conf`, so the SDK asks `ConnectivityManager` for
 the DNS servers. Without the permission that call fails, and iroh falls back to
-Google's public DNS servers with only a logcat warning, which breaks on networks
-that block outside DNS.
+public DNS servers with only a logcat warning.
 
 There is no initialization call. The SDK finds your `Application` itself when
 `createFedimintSdk` runs, so it is fine to touch other bindings, such as

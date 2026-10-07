@@ -128,7 +128,7 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 // Fedimint does not let an embedder join the transaction the module commits its own operation
 // log entry in: no module's creation method takes a `dbtx`, and the `_dbtx` variants that would
 // allow it hang off `ClientContext`, which only a module implementation holds
-// (fedimint-client-module/src/module/mod.rs:403, :666, :866). So the record is written
+// (fedimint-client-module/src/module/mod.rs:407, :682, :882). So the record is written
 // immediately after the module call returns and before the creating call hands back a handle,
 // which is what the crate's durability contract actually promises (see the durability section on
 // `Sdk`), and a crash in the window between the two commits is repaired by
@@ -1311,7 +1311,7 @@ where
     // bounded read, and the stream it returns must register with the upstream notifier when it
     // is first polled, not before. That is the shape of upstream's `subscribe_*` methods, which
     // await only the operation-log read and hand back a lazily built stream through
-    // `ClientContext::outcome_or_updates` (fedimint-client-module/src/module/mod.rs:742; mint's
+    // `ClientContext::outcome_or_updates` (fedimint-client-module/src/module/mod.rs:758; mint's
     // `subscribe_spend_notes` at modules/fedimint-mint-client/src/lib.rs:2705 is typical). The
     // engine keeps the returned stream across a dropped `next`, not the call that produced it,
     // and a driver that registered upstream and then parked in here, holding the client guard,
