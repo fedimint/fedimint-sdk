@@ -30,8 +30,12 @@ Invite codes are shareable by design and not treated as secrets.
    `reason()` (`PaymentViewModel`), which carry no secrets. Don't log inputs,
    `Notes.display()` or `Mnemonic.words()`.
 4. **Copying a phrase goes through `copySecret()`** (`ui/common/Clipboard.kt`):
-   after a warning, flagged `EXTRA_IS_SENSITIVE`, and cleared after 60 seconds
-   if it is still the clipboard's content.
+   after a warning, flagged `EXTRA_IS_SENSITIVE`, and cleared a minute later if it
+   is still the clipboard's content. Android lets only the focused app read the
+   clipboard, so if the wallet is in the background at that point the check runs
+   again when it regains focus (`MainActivity.onWindowFocusChanged`). The UI says
+   so rather than promising a hard 60 seconds. If Android ends the process first,
+   nothing clears it.
 5. **The seed's origin is written before the seed exists,** synchronously
    (`commit()`), and an unknown origin counts as "may hold funds"
    (`SeedOrigin.recoverByDefault`). Otherwise a crash between restoring a seed
