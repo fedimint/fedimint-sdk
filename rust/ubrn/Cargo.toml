@@ -21,9 +21,12 @@ path = "src/main.rs"
 clap = "4.6.0"
 
 [dependencies.uniffi-bindgen-react-native]
-# The fork branch that reads UniFFI 0.32 metadata (jhugman/uniffi-bindgen-react-native#468), plus
-# jhugman/uniffi-bindgen-react-native#491, without which the generated TypeScript types the SDK's
-# `Cursor` as the runtime's own `Cursor` class rather than a string. rust/fedimint-sdk links
-# uniffi 0.32, and the released tool stops at 0.31.
-git = "https://github.com/zeenix/uniffi-bindgen-react-native"
-rev = "7ac362027d63471ba6c3bafa06046fa0cbb5c440"
+# The `fedimint` branch of Fedimint's fork: the tool's `main` plus the changes Fedimint ships
+# that upstream has not merged. Two of them are why the SDK needs the fork. One reads UniFFI 0.32
+# metadata (jhugman/uniffi-bindgen-react-native#468): rust/fedimint-sdk links uniffi 0.32, and
+# the released tool stops at 0.31. The other is jhugman/uniffi-bindgen-react-native#491, without
+# which the generated TypeScript types the SDK's `Cursor` as the runtime's own `Cursor` class
+# rather than a string. Cargo.lock records the commit, and
+# `cargo update -p uniffi-bindgen-react-native` moves it to the branch's head.
+git = "https://github.com/fedimint/uniffi-bindgen-react-native"
+branch = "fedimint"

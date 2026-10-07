@@ -81,7 +81,7 @@ move the surface implemented so far.
 `js/react-native/react-native-bindings` are generated from this same `#[uniffi::export]` surface
 by `uniffi-bindgen-react-native` (`ubrn`), built from `rust/ubrn`, which pins the fork branch
 that reads UniFFI 0.32 metadata; the browser binding under `js/web/sdk-web` uses that same CLI.
-The npm `uniffi-bindgen-react-native` package at `0.31.0-5` supplies only the C++/JSI runtime the
+The npm `uniffi-bindgen-react-native` package at `0.31.0-6` supplies only the C++/JSI runtime the
 turbo-module compiles against (the CMake `cpp/includes` and the CocoaPod); its own CLI resolves
 under `node_modules` and targets UniFFI 0.31, one minor version behind what this crate exports, so
 it must never be run, and the generation scripts refuse a `ubrn` that resolves there.
