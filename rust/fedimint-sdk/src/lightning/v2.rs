@@ -586,7 +586,7 @@ async fn receive_terms(
     receive_fee: PaymentFee,
 ) -> Result<(Amount, Amount)> {
     let (contract_amount, gateway_fee) = receive_contract_and_gateway_fee(amount, receive_fee)?;
-    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1194`) quotes the contract as the
+    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1199`) quotes the contract as the
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount problem,
     // not a balance one.
@@ -619,7 +619,7 @@ async fn receive_terms(
 // `LightningClientModule::select_gateway` returns the first gateway that answers whether or not it
 // accepts receives, and `receive_with_terms` then refuses one that does not, even when another
 // registered gateway would have issued the invoice. The module's own receive-aware selection
-// (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1049-1077`) is private, so this
+// (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1054-1082`) is private, so this
 // makes the same pass and reports the same refusals. Tracked upstream as
 // fedimint/fedimint#9299.
 async fn receive_gateway<F, Fut>(
@@ -652,7 +652,7 @@ where
 
 /// The contract amount and gateway fee an lnv2 receive of `amount` would use at `receive_fee`.
 /// The contract the gateway funds is the invoice amount less its fee
-/// (`fedimint-lnv2-client/src/lib.rs:1110`); the federation's own claim fee comes off that
+/// (`fedimint-lnv2-client/src/lib.rs:1115`); the federation's own claim fee comes off that
 /// contract separately, once the module quotes it for the returned `contract_amount`. Pure in
 /// `receive_fee` so a retry after the gateway's fee changed shares this step with the first
 /// attempt instead of duplicating it.
