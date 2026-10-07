@@ -44,8 +44,9 @@ fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpe
     val sats = amount.toULongOrNull()
 
     PaymentScreen("Receive with Lightning", onBack) {
-        SatsField(amount, { amount = it }, enabled = !state.started)
-        TextInput(description, { description = it }, "Description (optional)", enabled = !state.started)
+        // Locked while the invoice is being created too, so the fields can't drift from the request.
+        SatsField(amount, { amount = it }, enabled = !state.started && !state.working)
+        TextInput(description, { description = it }, "Description (optional)", enabled = !state.started && !state.working)
         if (!state.started) {
             PrimaryButton(
                 "Create invoice",
