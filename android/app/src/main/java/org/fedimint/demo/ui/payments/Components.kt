@@ -274,10 +274,13 @@ fun SubmittedNotice(state: PaymentViewModel.UiState, onOpenOperation: (Operation
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                if (state.followFailed) {
-                    "This was submitted, but its live status couldn't be loaded here. It carries on regardless."
-                } else {
-                    "Submitted. Waiting for its first status update…"
+                when {
+                    state.restored ->
+                        "This was submitted before the app was closed. It carries on regardless; " +
+                            "follow it in Activity."
+                    state.followFailed ->
+                        "This was submitted, but its live status couldn't be loaded here. It carries on regardless."
+                    else -> "Submitted. Waiting for its first status update…"
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )
