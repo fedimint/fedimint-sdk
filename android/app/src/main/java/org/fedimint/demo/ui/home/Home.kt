@@ -47,6 +47,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -56,6 +57,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import org.fedimint.demo.ui.activity.ActivityRow
 import org.fedimint.demo.ui.common.StatusBadge
@@ -80,8 +82,33 @@ import org.fedimint.sdk.FederationStatus
 import org.fedimint.sdk.Network
 import org.fedimint.sdk.OperationId
 
+/**
+ * Home's data for the federation on screen: balance, capabilities and recent
+ * activity, each loaded on its own.
+ *
+ * Switching federation changes the one on screen at once, while the new
+ * federation's reads are still running. So every result is tagged with the
+ * federation it was read for, and only results for the federation on screen
+ * are shown; anything else reads as loading or empty. Each stream also starts
+ * over from loading when the federation changes. Home can never show one
+ * federation's funds or payments under another's name.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
-class HomeViewModel(private val session: WalletSession, private val history: History) : ViewModel() {
+class HomeViewModel(private val source: Source) : ViewModel() {
+    /** What Home reads, behind an interface so the switching rules are testable. */
+    interface Source {
+        val federations: Flow<List<FederationInfo>?>
+        val selected: Flow<FederationId?>
+
+        fun balance(id: FederationId): Flow<Amount>
+
+        suspend fun capabilities(id: FederationId): Capabilities?
+
+        suspend fun recent(id: FederationId): List<ActivityItem>
+
+        fun select(id: FederationId)
+    }
+
     sealed interface Balance {
         data object Loading : Balance
         data class Value(val msats: Amount) : Balance
@@ -98,7 +125,10 @@ class HomeViewModel(private val session: WalletSession, private val history: His
         val recent: List<ActivityItem> = emptyList(),
     )
 
-    private val federations = combine(session.federations, session.selectedFederationId) { list, selected ->
+    /** A value and the federation it was read for (null: none open). */
+    private data class For<T>(val id: FederationId?, val value: T)
+
+    private val federations = combine(source.federations, source.selected) { list, selected ->
         list?.sortedBy { it.name ?: it.id } to list?.let { WalletSession.pickActive(it, selected) }
     }
 
@@ -108,21 +138,24 @@ class HomeViewModel(private val session: WalletSession, private val history: His
      * or the federation closes or reopens, and not on any other status change.
      */
     private val openActiveId = federations
-        .map { (_, active) -> active?.takeIf { it.status.isOpen }?.id }
+        .map { (_, active) -> active?.openId() }
         .distinctUntilChanged()
 
     private val balance = openActiveId.flatMapLatest { id ->
         if (id == null) {
-            flowOf(Balance.Unavailable(null))
+            flowOf(For(null, Balance.Unavailable(null)))
         } else {
-            session.balance(id)
-                .map<Amount, Balance> { Balance.Value(it) }
-                .catch { emit(Balance.Unavailable(userMessage(it))) }
+            source.balance(id)
+                .map<Amount, For<Balance>> { For(id, Balance.Value(it)) }
+                .onStart { emit(For(id, Balance.Loading)) }
+                .catch { emit(For(id, Balance.Unavailable(userMessage(it)))) }
         }
     }
 
     private val capabilities = openActiveId.flatMapLatest { id ->
-        flow { emit(id?.let { session.capabilities(it) }) }.catch { emit(null) }
+        flow { emit(For(id, id?.let { source.capabilities(it) })) }
+            .onStart { emit(For(id, null)) }
+            .catch { emit(For(id, null)) }
     }
 
     /**
@@ -132,23 +165,49 @@ class HomeViewModel(private val session: WalletSession, private val history: His
      */
     private val recent = openActiveId.flatMapLatest { id ->
         if (id == null) {
-            flowOf(emptyList())
+            flowOf(For(null, emptyList()))
         } else {
-            session.balance(id)
-                .mapLatest { history.page(id, limit = RECENT_ROWS).items }
-                .catch { emit(emptyList()) }
+            source.balance(id)
+                .mapLatest { For(id, source.recent(id)) }
+                .onStart { emit(For(id, emptyList())) }
+                .catch { emit(For(id, emptyList())) }
         }
     }
 
     /** Live while the screen is visible, and for 5 s after, so rotation doesn't restart the subscriptions. */
     val state = combine(federations, balance, capabilities, recent) { (list, active), balance, caps, recent ->
-        UiState(federations = list, active = active, balance = balance, capabilities = caps, recent = recent)
+        val shown = active?.openId()
+        UiState(
+            federations = list,
+            active = active,
+            // A result read for another federation is never shown under this one.
+            balance = if (balance.id == shown) balance.value else Balance.Loading,
+            capabilities = caps.value.takeIf { caps.id == shown },
+            recent = if (recent.id == shown) recent.value else emptyList(),
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState())
 
-    fun select(federation: FederationInfo) = session.select(federation.id)
+    fun select(federation: FederationInfo) = source.select(federation.id)
 
-    private companion object {
-        const val RECENT_ROWS = 5
+    private fun FederationInfo.openId(): FederationId? = id.takeIf { status.isOpen }
+
+    companion object {
+        private const val RECENT_ROWS = 5
+
+        fun from(session: WalletSession, history: History) = HomeViewModel(
+            object : Source {
+                override val federations = session.federations
+                override val selected = session.selectedFederationId
+
+                override fun balance(id: FederationId) = session.balance(id)
+
+                override suspend fun capabilities(id: FederationId) = session.capabilities(id)
+
+                override suspend fun recent(id: FederationId) = history.page(id, limit = RECENT_ROWS).items
+
+                override fun select(id: FederationId) = session.select(id)
+            },
+        )
     }
 }
 
@@ -163,7 +222,7 @@ fun HomeScreen(
     onOpenRecovery: (FederationId) -> Unit,
     onOpenRecoveryPhrase: () -> Unit,
 ) {
-    val vm = appViewModel { HomeViewModel(it.session, it.history) }
+    val vm = appViewModel { HomeViewModel.from(it.session, it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var sheet by remember { mutableStateOf<PaymentDirection?>(null) }
 
