@@ -166,9 +166,12 @@ pinned Kotlin version.
 - The phrase can be copied (for a password manager), with the precautions wallets
   use (`ui/common/Clipboard.kt`). A dialog first says the clipboard can be read by
   other apps and keyboards. The clip is flagged `EXTRA_IS_SENSITIVE`, so Android 13+
-  hides it from clipboard previews. It is cleared after 60 seconds, but only if the
-  clipboard still holds the phrase. The timer runs on the main looper, not the
-  screen, so leaving the screen doesn't leave the phrase behind.
+  hides it from clipboard previews. It is cleared a minute later, but only if the
+  clipboard still holds the phrase. Android lets only the focused app read the
+  clipboard, and the expected flow is to switch to a password manager, so a check
+  that can't read it waits and runs again when the wallet regains focus
+  (`ClipboardExpiry`, unit tested). The wording promises that, not a hard 60
+  seconds.
 
 ### 9. Which screen the app starts on
 
@@ -208,6 +211,13 @@ lists or badges federations reads this single flow.
   federation or the federation closes or reopens, and not on unrelated status
   changes. `SharingStarted.WhileSubscribed(5_000)` stops it 5 s after the screen
   leaves (for example the app goes to the background), but not during a rotation.
+- **Never one federation's data under another's name.** Balance, capabilities and
+  recent activity load separately, and a switch changes the federation on screen
+  before the new reads finish. Each result is tagged with the federation it was
+  read for; only matching results are shown (others read as loading or empty), and
+  each stream restarts from loading on a switch. Home reads through a small
+  `HomeViewModel.Source` interface, so this is tested with delayed reads
+  (`HomeViewModelTest`).
 - **Capabilities gate the UI before the user taps:** Send and Receive are enabled
   only on a `Running` federation with at least one capability, and the method
   sheet lists only what `capabilities()` reports. A `Recovering` federation shows
@@ -265,7 +275,10 @@ so a new payment method only adds the SDK calls.
   When the send (or receive) returns, its operation id is stored and the inputs
   lock, before any state update arrives. If the first update is slow or the
   updates fail, the screen points to the operation in Activity and never offers a
-  new send for it.
+  new send for it. The id (not secret) is also kept in the ViewModel's
+  `SavedStateHandle`: if Android kills the process in the background and later
+  restores the screen with its inputs, the new ViewModel starts locked on that
+  operation and points to it, instead of offering the payment again.
 - **A failed send drops its review.** The SDK spends a quote even on a failed send
   (expired, changed, insufficient balance), so the review disappears with the
   error, and Review fetches a fresh quote for the same inputs.
