@@ -5,23 +5,29 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
-import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.OnchainQuote
+import org.fedimint.sdk.OperationId
 
 // ── Receive ──────────────────────────────────────────────────────────────
 
 /** A deposit address is created as the screen opens: each one is its own operation to follow. */
-class OnchainReceiveViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class OnchainReceiveViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     init {
-        newAddress()
+        // A screen restored after process death already has its operation; don't open another.
+        if (state.value.operationId == null) newAddress()
     }
 
     fun newAddress() = execute {
@@ -37,7 +43,7 @@ class OnchainReceiveViewModel(private val payments: Payments, private val federa
 
 @Composable
 fun OnchainReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { OnchainReceiveViewModel(it.payments, federationId) }
+    val vm = appViewModel { OnchainReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
 
     PaymentScreen("Deposit bitcoin", onBack) {
@@ -45,15 +51,18 @@ fun OnchainReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenO
         state.progress?.let { ProgressCard(it) }
         SubmittedNotice(state, onOpenOperation)
         ErrorText(state.error)
-        if (state.output == null && !state.working) PrimaryButton("Try again", vm::newAddress, enabled = true, working = false)
+        if (!state.started && !state.working) PrimaryButton("Try again", vm::newAddress, enabled = true, working = false)
         DoneButton(state, onBack)
     }
 }
 
 // ── Send ─────────────────────────────────────────────────────────────────
 
-class OnchainSendViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class OnchainSendViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     private var quote: OnchainQuote? = null
 
@@ -87,7 +96,7 @@ class OnchainSendViewModel(private val payments: Payments, private val federatio
 
 @Composable
 fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { OnchainSendViewModel(it.payments, federationId) }
+    val vm = appViewModel { OnchainSendViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
     var address by rememberSaveable { mutableStateOf("") }
     var amount by rememberSaveable { mutableStateOf("") }

@@ -5,20 +5,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.ui.common.shortId
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
-import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.LnQuote
+import org.fedimint.sdk.OperationId
 
 // ── Receive ──────────────────────────────────────────────────────────────
 
-class LightningReceiveViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class LightningReceiveViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     fun create(sats: ULong, description: String) = execute {
         val handle = payments.lightningReceive(federationId, sats * 1_000uL, description)
@@ -32,7 +37,7 @@ class LightningReceiveViewModel(private val payments: Payments, private val fede
 
 @Composable
 fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { LightningReceiveViewModel(it.payments, federationId) }
+    val vm = appViewModel { LightningReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
@@ -59,8 +64,11 @@ fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpe
 
 // ── Send ─────────────────────────────────────────────────────────────────
 
-class LightningSendViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class LightningSendViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     private var quote: LnQuote? = null
 
@@ -99,7 +107,7 @@ class LightningSendViewModel(private val payments: Payments, private val federat
 
 @Composable
 fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { LightningSendViewModel(it.payments, federationId) }
+    val vm = appViewModel { LightningSendViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
     var invoice by rememberSaveable { mutableStateOf("") }
 

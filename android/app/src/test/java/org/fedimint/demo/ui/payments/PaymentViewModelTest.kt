@@ -1,5 +1,6 @@
 package org.fedimint.demo.ui.payments
 
+import androidx.lifecycle.SavedStateHandle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -36,7 +37,7 @@ class PaymentViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     /** Exposes the base class's protected steps with fake SDK calls. */
-    private class Vm : PaymentViewModel() {
+    private class Vm(savedState: SavedStateHandle = SavedStateHandle()) : PaymentViewModel(savedState) {
         var sends = 0
 
         fun quoted() = mutableState.update { it.copy(review = Review(emptyList(), "100 sats", null)) }
@@ -51,6 +52,10 @@ class PaymentViewModelTest {
         fun failSend(message: String) = execute {
             sends++
             throw IllegalStateException(message)
+        }
+
+        companion object {
+            const val KEY = KEY_OPERATION
         }
     }
 
@@ -121,5 +126,41 @@ class PaymentViewModelTest {
         assertEquals(1, vm.sends)
         assertEquals("op-1", vm.state.value.operationId)
         assertNotNull(vm.state.value.progress)
+    }
+
+    @Test fun `a submitted operation survives process recreation, locked`() = test { _ ->
+        val saved = SavedStateHandle()
+        val before = Vm(saved)
+        before.quoted()
+        before.send(flow { awaitCancellation() }, id = "op-1")
+        advanceUntilIdle()
+
+        // Android kills the process and later restores the screen: a new ViewModel,
+        // built only from what was saved. The route and the inputs come back too.
+        val after = Vm(SavedStateHandle(mapOf(Vm.KEY to saved.get<String>(Vm.KEY))))
+
+        val s = after.state.value
+        assertEquals("op-1", s.operationId)
+        assertTrue("inputs stay locked", s.started)
+        assertTrue(s.restored)
+        assertNull("no review, so no Send for the same payment", s.review)
+        assertTrue("points to the existing operation", s.needsActivityLink)
+        assertEquals(0, after.sends)
+    }
+
+    @Test fun `a screen that submitted nothing restores as an editable draft`() = test { _ ->
+        val s = Vm(SavedStateHandle()).state.value
+        assertNull(s.operationId)
+        assertFalse(s.started)
+        assertFalse(s.restored)
+    }
+
+    @Test fun `a failed send saves nothing to restore`() = test { _ ->
+        val saved = SavedStateHandle()
+        val vm = Vm(saved)
+        vm.quoted()
+        vm.failSend("Not enough balance for that.")
+        advanceUntilIdle()
+        assertNull(saved.get<String>(Vm.KEY))
     }
 }

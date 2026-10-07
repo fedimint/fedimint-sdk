@@ -7,7 +7,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -15,13 +17,16 @@ import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.EcashQuote
 import org.fedimint.sdk.FederationId
-import org.fedimint.sdk.OperationId
 import org.fedimint.sdk.Notes
+import org.fedimint.sdk.OperationId
 
 // ── Send ─────────────────────────────────────────────────────────────────
 
-class EcashSendViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class EcashSendViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     private var quote: EcashQuote? = null
 
@@ -58,7 +63,7 @@ class EcashSendViewModel(private val payments: Payments, private val federationI
 
 @Composable
 fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { EcashSendViewModel(it.payments, federationId) }
+    val vm = appViewModel { EcashSendViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
     val sats = amount.toULongOrNull()
@@ -98,8 +103,11 @@ fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperat
  * redeem. The pasted text is held here, in memory only, never in saved state:
  * it is spendable by whoever holds it.
  */
-class EcashReceiveViewModel(private val payments: Payments, private val federationId: FederationId) :
-    PaymentViewModel() {
+class EcashReceiveViewModel(
+    private val payments: Payments,
+    private val federationId: FederationId,
+    savedState: SavedStateHandle,
+) : PaymentViewModel(savedState) {
 
     private val _notesText = MutableStateFlow("")
     val notesText = _notesText.asStateFlow()
@@ -130,7 +138,7 @@ class EcashReceiveViewModel(private val payments: Payments, private val federati
 
 @Composable
 fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { EcashReceiveViewModel(it.payments, federationId) }
+    val vm = appViewModel { EcashReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
     val state by vm.state.collectAsStateWithLifecycle()
     val notesText by vm.notesText.collectAsStateWithLifecycle()
 

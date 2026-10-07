@@ -8,16 +8,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.fedimint.demo.AppContainer
 import org.fedimint.demo.FedimintApp
 
 /**
  * A screen-scoped ViewModel built from the [AppContainer]: the manual-injection
- * counterpart of Hilt's `hiltViewModel()`.
+ * counterpart of Hilt's `hiltViewModel()`. [create] runs with the creation
+ * extras as receiver, so it can call `createSavedStateHandle()`.
  */
 @Composable
-inline fun <reified VM : ViewModel> appViewModel(crossinline create: (AppContainer) -> VM): VM {
+inline fun <reified VM : ViewModel> appViewModel(crossinline create: CreationExtras.(AppContainer) -> VM): VM {
     val container = (LocalContext.current.applicationContext as FedimintApp).container
     return viewModel { create(container) }
 }

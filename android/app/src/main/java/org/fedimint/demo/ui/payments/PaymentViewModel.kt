@@ -1,6 +1,7 @@
 package org.fedimint.demo.ui.payments
 
 import android.util.Log
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.Flow
@@ -32,8 +33,15 @@ import org.fedimint.sdk.Exception as SdkException
  * - A quote is single use and the SDK consumes it even on a failed send, so a
  *   failed [execute] drops the review: the next tap fetches a fresh quote for
  *   the same inputs instead of resubmitting a spent one.
+ *
+ * The operation id (not secret) is also kept in [savedState], because Android
+ * can kill the process in the background and later restore the screen, inputs
+ * and all, with a new ViewModel. That ViewModel starts locked on the restored
+ * operation ([UiState.restored]) and points to it in Activity; it can't turn a
+ * submitted payment back into a draft. Screens that create nothing (recovery,
+ * operation detail) pass no handle.
  */
-abstract class PaymentViewModel : ViewModel() {
+abstract class PaymentViewModel(private val savedState: SavedStateHandle? = null) : ViewModel() {
     /** A quote the user must approve before anything is sent. */
     data class Review(val rows: List<Pair<String, String>>, val total: String, val expiresAtMillis: Long?)
 
@@ -50,6 +58,8 @@ abstract class PaymentViewModel : ViewModel() {
         val operationId: OperationId? = null,
         /** Following the operation's updates failed. The operation itself is unaffected. */
         val followFailed: Boolean = false,
+        /** The operation came from saved state after the process was recreated; nothing follows it here. */
+        val restored: Boolean = false,
     ) {
         /** Once an operation exists, the inputs are locked: this screen is now following it. */
         val started: Boolean get() = operationId != null || progress != null || output != null
@@ -58,7 +68,11 @@ abstract class PaymentViewModel : ViewModel() {
         val needsActivityLink: Boolean get() = operationId != null && (progress == null || followFailed)
     }
 
-    protected val mutableState = MutableStateFlow(UiState())
+    protected val mutableState = MutableStateFlow(
+        savedState?.get<String>(KEY_OPERATION)
+            ?.let { UiState(operationId = it, restored = true) }
+            ?: UiState(),
+    )
     val state = mutableState.asStateFlow()
 
     private val handles = mutableListOf<AutoCloseable>()
@@ -96,6 +110,7 @@ abstract class PaymentViewModel : ViewModel() {
         onFailure = { mutableState.update { it.copy(review = null) } },
     ) {
         val id = create()
+        savedState?.set(KEY_OPERATION, id)
         mutableState.update { it.copy(review = null, operationId = id) }
     }
 
@@ -124,6 +139,9 @@ abstract class PaymentViewModel : ViewModel() {
 
     protected companion object {
         private const val TAG = "Payments"
+
+        /** Saved-state key for the created operation's id. */
+        const val KEY_OPERATION = "operation_id"
 
         fun expiry(ts: Timestamp): Long = ts.toLong()
 
