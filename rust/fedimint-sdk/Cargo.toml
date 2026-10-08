@@ -50,41 +50,41 @@ uniffi = ["dep:uniffi", "dep:async-compat", "dep:uniffi-runtime-wasm"]
 # boxed inside its own error, and telling that apart from the module's other failures means
 # naming the type. Already resolved at the identical revision as a dependency of
 # `fedimint-client`.
-fedimint-api-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-api-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-bip39 = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-client-module = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-connectors = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-core = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 # `EventLogId` and the client's `get_event_log`/`log_event_added_rx` read positions in it, needed
 # to scan for a walletv2 deposit's `ReceivePaymentEvent`; nothing already listed here re-exports
 # it (`fedimint-client` only re-exports `EventHandlerError` from this crate).
-fedimint-eventlog = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-meta-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-eventlog = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-ln-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-ln-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-lnv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-lnv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-meta-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-meta-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-mint-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 # `MintClientModule` keeps its `MintClientConfig` (and the `FeeConsensus`/denomination
 # rounding on it) private, and re-exports nothing that names the type from
 # `fedimint-mint-client` itself, so reading the fee schedule at all means naming
 # `MintClientConfig` at its own defining crate. Already resolved at the identical
 # revision as a transitive dependency of `fedimint-mint-client`; this only makes it
 # directly nameable, it does not change what's compiled.
-fedimint-mint-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-mint-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-mintv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 # Named directly for the same reason as `fedimint-mint-common` above: a claim transaction's
 # output amount is read off the concrete `mintv2_common::MintOutput` the client's own state
 # store holds, and `MintClientConfig::fee_consensus` is only nameable through this crate.
 # Already resolved at the identical revision as a transitive dependency of
 # `fedimint-mintv2-client`.
-fedimint-mintv2-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-wallet-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
-fedimint-walletv2-common = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-mintv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-wallet-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-wallet-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-walletv2-client = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
+fedimint-walletv2-common = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 
 # `bip39` is named directly only to switch its `zeroize` feature on, which
 # `fedimint-bip39` does not: features are unioned, so this is the same single
@@ -132,7 +132,7 @@ async-trait = "0.1.92"
 # lock: this one is the SDK's single-opener claim, and it has to give up after a
 # bounded retry on contention rather than block. See src/storage.rs.
 fd-lock = "4"
-fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-rocksdb = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 tokio = { version = "1.48.0", features = [
     "rt",
     "rt-multi-thread",
@@ -148,12 +148,12 @@ tokio = { version = "1.48.0", features = [
 socket2 = { version = "0.5", features = ["all"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-# Both of these are already in the graph underneath us — `hickory-resolver`
+# Both of these are already in the graph underneath us — `n0-dns-resolver`
 # pulls them in to read the platform's DNS configuration over JNI — and are
 # named here only so `src/android.rs` can fill the handles that code reads.
 # See that module for why nothing else fills them.
 #
-# `jni` is pinned to the same 0.22 line `hickory-resolver` uses rather than the
+# `jni` is pinned to the same 0.22 line `n0-dns-resolver` uses rather than the
 # newest available: two incompatible copies of it would compile, and then the
 # `Context` published through one would be read back through the other.
 jni = "0.22"
@@ -189,7 +189,7 @@ uniffi = { version = "0.32.0", optional = true, features = ["wasm-unstable-singl
 # Exports `__ubrn_alloc`/`__ubrn_free` and the panic hook the wasm player installs before any
 # SDK code runs. Nothing here calls it, so `src/lib.rs` force-links it with `extern crate`.
 uniffi-runtime-wasm = { version = "0.31.0-6", optional = true }
-fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "3c808b075c4b0d3bfdc40a5f9d4afa79f92f55e3" }
+fedimint-cursed-redb = { git = "https://github.com/fedimint/fedimint", rev = "1d3758c3fe3758207671a2d8af1fb564682e2392" }
 js-sys = "0.3.83"
 # `macros` is not about tests here: `tokio::select!` lives behind it, and both
 # subscription types select a stream against a shutdown watch on every target.

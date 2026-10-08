@@ -20,7 +20,8 @@ use super::wire::{self, PHASE_FUNDED};
 use super::{
     INVOICE_EXPIRY_SECS, LnQuoteInner, Plan, Shortfall, Terms, add, amount_too_small, balance_of,
     fee_quote_failure, from_upstream, gateway_unavailable, insufficient, internal, network_refusal,
-    now, plan_of, quote_changed, quote_expired, subscribe_error, to_upstream, unreachable,
+    now, plan_of, quote_changed, quote_expired, short_of, subscribe_error, to_upstream,
+    unreachable,
 };
 use crate::federation::FederationInner;
 use crate::operation::{Backfilled, Driver, custom_meta, from_custom_meta, kinds, record_phase_in};
@@ -368,7 +369,19 @@ pub(super) async fn send(
     {
         Ok(id) => id,
         Err(SendWithTermsError::Send(inner)) => {
-            return Err(send_error(inner, quote, federation.record().network.into()));
+            // The balance covered the quoted total when it was checked above, so a funding
+            // shortfall here means it moved since: it is read again for that one refusal, and
+            // a read that fails leaves the refusal without figures rather than hiding it.
+            let available = match &inner {
+                SendPaymentError::InsufficientFunds(_) => balance_of(client).await.ok(),
+                _ => None,
+            };
+            return Err(send_error(
+                inner,
+                quote,
+                federation.record().network.into(),
+                available,
+            ));
         }
         // Upstream re-checked the gateway's terms itself, right before funding, and found them
         // different from the ones just passed: the same drift the `routing_info` re-check above
@@ -423,7 +436,15 @@ fn connect_error(cause: &str) -> Error {
     gateway_unavailable(format!("could not connect to the gateway: {cause}"))
 }
 
-fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) -> Error {
+/// What a refused lnv2 send is reported as.
+///
+/// `available` is the balance read after the refusal, for the one refusal that reports it.
+fn send_error(
+    err: SendPaymentError,
+    quote: &LnQuoteInner,
+    expected: Network,
+    available: Option<Amount>,
+) -> Error {
     match err {
         SendPaymentError::InvoiceMissingAmount => Error::new(
             ErrorCode::AmountlessInvoice,
@@ -437,15 +458,11 @@ fn send_error(err: SendPaymentError, quote: &LnQuoteInner, expected: Network) ->
         | SendPaymentError::GatewayFeeExceedsLimit
         | SendPaymentError::GatewayExpirationExceedsLimit => gateway_unavailable(err.fmt_compact()),
         SendPaymentError::FailedToRequestBlockCount(cause) => unreachable(cause),
-        // Upstream hands the funding failure over as the rendered text of a
-        // `TransactionSubmitError` (`fedimint-lnv2-client/src/lib.rs:772`), so the typed
-        // `InsufficientFunds` and its figures are out of reach and the text is all there is to
-        // match on. A shortfall renders as that variant's own message, "Insufficient funds",
-        // first in the chain, for both mint generations. Tracked upstream as
-        // fedimint/fedimint#9300.
-        SendPaymentError::FailedToFundPayment(cause) if cause.starts_with("Insufficient funds") => {
-            Error::new(ErrorCode::InsufficientBalance, cause)
-        }
+        // mintv2 reports what the funding transaction still needed and the balance it held
+        // (`fedimint-mintv2-client/src/lib.rs:518-527`), not what the payment was quoted at.
+        // The figures are the quoted total and the balance read after the refusal instead,
+        // the pair a refused v1 send reports (see `fee_quote_refusal`).
+        SendPaymentError::InsufficientFunds(_) => short_of(quote.plan.total, available),
         SendPaymentError::FailedToFundPayment(cause) => {
             internal(format!("the payment could not be funded: {cause}"))
         }
@@ -570,7 +587,7 @@ async fn receive_terms(
     receive_fee: PaymentFee,
 ) -> Result<(Amount, Amount)> {
     let (contract_amount, gateway_fee) = receive_contract_and_gateway_fee(amount, receive_fee)?;
-    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1194`) quotes the contract as the
+    // `receive_fee_quote` (`fedimint-lnv2-client/src/lib.rs:1199`) quotes the contract as the
     // input, the module's own claim fee as the input fee, and no outputs, so the mint is only
     // ever asked to fund a shortfall when the claim fee exceeds the contract: an amount problem,
     // not a balance one.
@@ -603,7 +620,7 @@ async fn receive_terms(
 // `LightningClientModule::select_gateway` returns the first gateway that answers whether or not it
 // accepts receives, and `receive_with_terms` then refuses one that does not, even when another
 // registered gateway would have issued the invoice. The module's own receive-aware selection
-// (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1049-1077`) is private, so this
+// (`select_receive_gateway`, `fedimint-lnv2-client/src/lib.rs:1054-1082`) is private, so this
 // makes the same pass and reports the same refusals. Tracked upstream as
 // fedimint/fedimint#9299.
 async fn receive_gateway<F, Fut>(
@@ -636,7 +653,7 @@ where
 
 /// The contract amount and gateway fee an lnv2 receive of `amount` would use at `receive_fee`.
 /// The contract the gateway funds is the invoice amount less its fee
-/// (`fedimint-lnv2-client/src/lib.rs:1110`); the federation's own claim fee comes off that
+/// (`fedimint-lnv2-client/src/lib.rs:1115`); the federation's own claim fee comes off that
 /// contract separately, once the module quotes it for the returned `contract_amount`. Pure in
 /// `receive_fee` so a retry after the gateway's fee changed shares this step with the first
 /// attempt instead of duplicating it.
@@ -1029,6 +1046,7 @@ mod tests {
             },
             &quote,
             Network::Testnet4,
+            None,
         );
         assert_eq!(err.code, ErrorCode::NetworkMismatch);
         match err.detail() {
@@ -1143,6 +1161,7 @@ mod tests {
             SendPaymentError::FailedToConnectToGateway("connection refused".to_owned()),
             &a_quote(),
             Network::Regtest,
+            None,
         );
         let receiving = receive_error(ReceiveError::FailedToConnectToGateway(
             "connection refused".to_owned(),
@@ -1170,22 +1189,43 @@ mod tests {
     }
 
     #[test]
-    fn a_funding_shortfall_reported_as_text_is_an_insufficient_balance() {
-        use fedimint_client_module::TransactionSubmitError;
+    fn a_payment_the_mint_cannot_fund_reports_the_quoted_total_and_the_balance() {
         use fedimint_client_module::error::InsufficientBalanceError;
 
-        // Upstream renders the failure with `fmt_compact` before it reaches the SDK.
-        let shortfall = TransactionSubmitError::InsufficientFunds(InsufficientBalanceError {
-            requested_amount: fedimint_core::Amount::from_msats(10),
-            total_amount: fedimint_core::Amount::from_msats(3),
+        // What mintv2 reports: what the funding transaction still needed and the balance it
+        // held then. Neither is a figure the refusal carries.
+        let short = SendPaymentError::InsufficientFunds(InsufficientBalanceError {
+            requested_amount: fedimint_core::Amount::from_msats(99_900),
+            total_amount: fedimint_core::Amount::from_msats(99_700),
         });
-        let err = send_error(
-            SendPaymentError::FailedToFundPayment(shortfall.fmt_compact().to_string()),
-            &a_quote(),
-            Network::Regtest,
-        );
-        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        let quote = a_quote();
+        let balance = Amount::from_msats(99_648);
 
+        let err = send_error(short.clone(), &quote, Network::Regtest, Some(balance));
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        match err.detail() {
+            Some(ErrorDetails::InsufficientBalance {
+                required,
+                available,
+            }) => {
+                assert_eq!(*required, quote.plan.total);
+                assert_eq!(*available, balance);
+            }
+            other => panic!("expected InsufficientBalance, got {other:?}"),
+        }
+
+        // A balance that could not be read leaves the refusal without figures.
+        let err = send_error(short, &quote, Network::Regtest, None);
+        assert_eq!(err.code, ErrorCode::InsufficientBalance);
+        assert!(err.detail().is_none(), "{:?}", err.detail());
+    }
+
+    #[test]
+    fn any_other_funding_failure_keeps_its_cause() {
+        use fedimint_client_module::TransactionSubmitError;
+
+        // Upstream renders any other funding failure with `fmt_compact` before it reaches the
+        // SDK.
         let other = send_error(
             SendPaymentError::FailedToFundPayment(
                 TransactionSubmitError::TransactionTooLarge { size: 9, max: 8 }
@@ -1194,6 +1234,7 @@ mod tests {
             ),
             &a_quote(),
             Network::Regtest,
+            None,
         );
         assert_eq!(other.code, ErrorCode::Internal);
         assert!(

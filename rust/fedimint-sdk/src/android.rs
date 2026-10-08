@@ -12,7 +12,7 @@
 //! Android gives apps no readable `/etc/resolv.conf`, so a Rust DNS stack has
 //! to ask the framework for the active network's resolvers over JNI:
 //! `Context.getSystemService("connectivity")`, then `getActiveNetwork`,
-//! `getLinkProperties` and `getDnsServers`. `hickory-resolver` does exactly
+//! `getLinkProperties` and `getDnsServers`. `n0-dns-resolver` does exactly
 //! that, and it finds the `JavaVM` and `Context` it needs to make those calls
 //! in [`ndk_context`] — a process-global slot holding the two pointers, so a
 //! crate buried in a dependency tree can reach the JVM without every API

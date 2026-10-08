@@ -605,7 +605,7 @@ async fn claim_from_upstream(
     // ($FM/modules/fedimint-walletv2-client/src/lib.rs:630-649): it returns once every note the
     // claim minted is spendable, and fails if the mint's own state machine for one of them
     // ended in failure instead. That failure arrives as `TransactionSubmitError::PrimaryModule`
-    // (`$FM/fedimint-client/src/client.rs:1303`), the only variant the wait itself produces besides
+    // (`$FM/fedimint-client/src/client.rs:1320`), the only variant the wait itself produces besides
     // a missing primary module. Mint issuance cannot be delayed or failed from a test at this
     // pin, so only the devimint suite exercises the wait, and only its success path.
     let issued = client
