@@ -482,9 +482,7 @@ mod tests {
                 net_credit: Amount::from_msats(99_998_500),
             },
             OnchainReceiveState::Failed {
-                reason: "the deposit does not exceed the federation's deposit fee and was not \
-                          claimed"
-                    .to_owned(),
+                reason: "the claim was accepted but its notes could not be issued".to_owned(),
             },
         ] {
             let encoded = driver.encode_state(&state).expect("encode");

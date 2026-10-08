@@ -665,8 +665,9 @@ impl FederationInner {
     /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send): an `ONCHAIN_RECEIVE` record
     /// at [`PHASE_SEEN`](crate::onchain::PHASE_SEEN) with no final state is a claim in progress,
     /// which erasing the federation must not abandon. Every deposit record is at that phase. A
-    /// receive record with no phase at all is a deposit address that a version of this crate
-    /// recorded when it handed the address out, which nobody has paid and which never counts.
+    /// receive record with no phase at all never counts: it is a deposit address that a version
+    /// of this crate recorded when it handed the address out, and it gets its phase when the
+    /// wallet's announcement of a payment to it is read, which the caller sees to first.
     pub(crate) async fn has_seen_unclaimed_deposit(&self) -> Result<bool> {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
         use futures::StreamExt;

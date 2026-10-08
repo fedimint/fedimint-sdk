@@ -134,8 +134,8 @@ pub(crate) async fn page(
 }
 
 /// Whether a record is a deposit address rather than a deposit: an on-chain receive record that
-/// never reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN), the phase every deposit record
-/// carries from the write that creates it, and has no ending.
+/// never reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN), the phase that marks a record as a
+/// deposit's, and has no ending.
 fn is_unpaid_address(record: &OperationRecord) -> bool {
     record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
         && record.phase.is_none()
@@ -436,7 +436,37 @@ mod tests {
         assert!(second.next.is_none());
     }
 
-    /// A deposit is a row from the moment it is found, with what arrived as its amount.
+    /// Only a receive record that is neither marked as a deposit nor ended is an unpaid address.
+    /// A deposit the wallet has found and not finished claiming is a row like any other.
+    #[test]
+    fn only_a_receive_record_without_a_phase_or_an_ending_is_an_unpaid_address() {
+        let receive = |phase: Option<u32>, final_state: Option<&str>| {
+            let mut receive = record(
+                kinds::ONCHAIN_RECEIVE,
+                "wallet",
+                1,
+                "{}".to_owned(),
+                final_state.map(str::to_owned),
+            );
+            receive.phase = phase;
+            receive
+        };
+        assert!(is_unpaid_address(&receive(None, None)));
+        assert!(!is_unpaid_address(&receive(
+            Some(crate::onchain::PHASE_SEEN),
+            None
+        )));
+        assert!(!is_unpaid_address(&receive(None, Some("{}"))));
+        assert!(!is_unpaid_address(&record(
+            kinds::LN_RECEIVE,
+            "lnv2",
+            1,
+            "{}".to_owned(),
+            None,
+        )));
+    }
+
+    /// A claimed deposit is a row, with what arrived as its amount.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_claimed_deposit_is_a_row_with_what_arrived() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);

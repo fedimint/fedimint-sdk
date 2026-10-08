@@ -12,9 +12,11 @@ use crate::{
 };
 
 /// The record is of a deposit: a payment the wallet has found. The only phase an on-chain
-/// record ever carries, and every deposit record carries it from the write that creates it. A
-/// receive record without it is a deposit address that a version of this crate recorded when it
-/// handed the address out, which nobody has paid.
+/// record ever carries, and a record carries it from the very write that makes it a deposit's.
+/// A receive record without it was written by a version of this crate that recorded a deposit
+/// address when it handed the address out: nobody has paid the address, or that version was
+/// interrupted while recording the payment, and the record gets its phase when the wallet's
+/// announcement of the payment is read.
 ///
 /// `pub(crate)`, not `pub(super)`: `federation.rs`'s erase guard
 /// ([`has_seen_unclaimed_deposit`](crate::federation::FederationInner::has_seen_unclaimed_deposit))
@@ -473,9 +475,7 @@ mod tests {
                 net_credit: Amount::from_msats(99_998_500),
             },
             OnchainReceiveState::Failed {
-                reason: "the deposit does not exceed the federation's deposit fee and was not \
-                          claimed"
-                    .to_owned(),
+                reason: "the claim was accepted but its notes could not be issued".to_owned(),
             },
         ] {
             let encoded = encode_receive_state(&state).expect("encode");

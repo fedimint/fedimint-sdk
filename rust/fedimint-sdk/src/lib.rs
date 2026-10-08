@@ -128,9 +128,10 @@
 //!
 //! ## Operations are detached
 //!
-//! An operation begins running the moment the facade call that created it
-//! returns. It is persisted as it goes, it resumes by itself when the SDK is
-//! built again over the same storage, and it can be picked up later with
+//! An operation begins running the moment it is created: when the facade call
+//! that creates it returns or, for an on-chain deposit, when the wallet finds
+//! the payment. It is persisted as it goes, it resumes by itself when the SDK
+//! is built again over the same storage, and it can be picked up later with
 //! [`Federation::operation`] using nothing but its id. [`Operation`] and
 //! [`OperationUpdates`] are observation handles, not ownership: dropping a
 //! handle ends nothing at all, dropping a subscriber ends only that

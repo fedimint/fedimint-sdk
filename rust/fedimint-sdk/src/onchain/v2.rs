@@ -12,7 +12,7 @@ use fedimint_core::bitcoin;
 use fedimint_core::core::{ModuleInstanceId, OperationId};
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxStream, FmtCompact};
-use fedimint_eventlog::{Event as _, EventLogId, PersistedLogEntry};
+use fedimint_eventlog::{DBTransactionEventLogExt as _, Event as _, EventLogId, PersistedLogEntry};
 use fedimint_walletv2_client::events::ReceivePaymentEvent;
 use fedimint_walletv2_client::{
     FinalReceiveOperationState, FinalSendOperationState, ReceiveMeta, SendError, SendMeta,
@@ -32,7 +32,6 @@ use super::{
 use crate::federation::{FederationInner, wait_holding_client};
 use crate::operation::{
     Backfilled, CURRENT_STATE_SETTLE, Driver, custom_meta, from_custom_meta, kinds, until_final,
-    write_details_in,
 };
 use crate::sdk::{CONTACT_TIMEOUT, SdkInner};
 use crate::{
@@ -375,7 +374,7 @@ pub(super) async fn adopt(
     if record.kind != kinds::ONCHAIN_RECEIVE || record.module != "walletv2" {
         return Ok(None);
     }
-    let mut details = match wire::decode_receive_wire(&record.details) {
+    let details = match wire::decode_receive_wire(&record.details) {
         Ok(details) => details,
         Err(err) => {
             tracing::warn!(
@@ -389,8 +388,14 @@ pub(super) async fn adopt(
         }
     };
     if details.event_cursor.is_none() {
-        details.event_cursor = Some(announced);
-        write_details_in(&federation.db(), id, wire::encode_receive_wire(&details)?).await?;
+        // Asked again inside the write: the record may have moved on to a later claim, and
+        // learnt its own position, since it was read above.
+        update_wire(&federation.db(), id, move |details| {
+            if details.event_cursor.is_none() {
+                details.event_cursor = Some(announced);
+            }
+        })
+        .await?;
     }
     Ok(Some(id))
 }
@@ -483,8 +488,9 @@ async fn claimed_vout(
     claimed.vout
 }
 
-/// One claim of a deposit: the upstream operation it runs under, and the event-log position
-/// just past its announcement, which is where a search for a later claim starts.
+/// One claim of a deposit: the upstream operation it runs under, and the event-log position a
+/// search for a later claim starts from. That is just past the claim's announcement, or further
+/// on once a search has come back with nothing.
 #[derive(Debug, Clone)]
 pub(super) struct Link {
     pub(super) upstream: OperationId,
@@ -493,15 +499,15 @@ pub(super) struct Link {
     pub(super) cursor: u64,
 }
 
-/// Scans the event log from `from` for the next claim of `paid` other than `rejected`, one pass
-/// over the log as it stands now: this does not wait for new entries, so a caller that wants to
-/// keep watching re-derives a live client and calls this again after the next
+/// Scans the event log in `db`, the client's own database, from `from` for the next claim of
+/// `paid` other than `rejected`. It is one pass over the log as it stands now and does not wait
+/// for new entries, so a caller that wants to keep watching calls this again after the next
 /// [`Client::log_event_added_rx`] tick.
 ///
 /// Returns the claim, if there is one, and otherwise the position the pass reached, which is
 /// where the next one starts.
 pub(super) async fn find_claim(
-    client: &Client,
+    db: &Database,
     paid: &Paid,
     rejected: OperationId,
     from: u64,
@@ -509,7 +515,11 @@ pub(super) async fn find_claim(
     const PAGE: u64 = 64;
     let mut pos = EventLogId::LOG_START.saturating_add(from);
     loop {
-        let page = client.get_event_log(Some(pos), PAGE).await;
+        let page = db
+            .begin_transaction_nc()
+            .await
+            .get_event_log(Some(pos), PAGE)
+            .await;
         if page.is_empty() {
             return Err(u64::from(pos));
         }
@@ -558,13 +568,14 @@ pub(super) async fn link(
     id: OperationId,
     found: &Link,
 ) -> Result<()> {
-    let db = federation.db();
-    let Some(mut details) = read_wire(&db, id).await? else {
-        return Ok(());
-    };
-    details.upstream_operation_id = Some(found.upstream.fmt_full().to_string());
-    details.event_cursor = Some(found.cursor);
-    write_details_in(&db, id, wire::encode_receive_wire(&details)?).await
+    let upstream = found.upstream.fmt_full().to_string();
+    let cursor = found.cursor;
+    update_wire(&federation.db(), id, move |details| {
+        details.upstream_operation_id = Some(upstream.clone());
+        details.event_cursor = Some(cursor);
+    })
+    .await?;
+    Ok(())
 }
 
 /// The linked upstream operation's final state, bounded to 500 ms: `None` means the claim has
@@ -719,16 +730,21 @@ async fn claim_from_upstream(
     )
     .await?;
 
-    let Some(mut details) = read_wire(db, id).await? else {
+    let fee_msats = fee_total.msats();
+    let fee_breakdown = wire::ReceiveFeeBreakdownWire::from(&breakdown);
+    let net_credit_msats = net_credit.msats();
+    let stored = update_wire(db, id, move |details| {
+        details.fee_msats = Some(fee_msats);
+        details.fee_breakdown = Some(fee_breakdown.clone());
+        details.net_credit_msats = Some(net_credit_msats);
+    })
+    .await?;
+    if stored.is_none() {
         return Err(internal(format!(
             "no record for operation {}",
             id.fmt_full()
         )));
-    };
-    details.fee_msats = Some(fee_total.msats());
-    details.fee_breakdown = Some(wire::ReceiveFeeBreakdownWire::from(&breakdown));
-    details.net_credit_msats = Some(net_credit.msats());
-    write_details_in(db, id, wire::encode_receive_wire(&details)?).await?;
+    }
 
     Ok(OnchainReceiveState::Claimed {
         txid: found.txid.clone(),
@@ -750,6 +766,52 @@ async fn read_wire(
         return Ok(None);
     };
     Ok(Some(wire::decode_receive_wire(&record.details)?))
+}
+
+/// Changes the stored details of the deposit record `id` in one transaction, so a change worked
+/// out from a copy read earlier cannot undo one committed in between. Returns the details as
+/// they are stored afterwards, or `None` when there is no record.
+///
+/// # Errors
+///
+/// [`Storage`](ErrorCode::Storage), and [`Internal`](ErrorCode::Internal) for a record that does
+/// not read as a deposit's.
+async fn update_wire<F>(
+    db: &Database,
+    id: OperationId,
+    change: F,
+) -> Result<Option<wire::OnchainReceiveDetailsWire>>
+where
+    F: Fn(&mut wire::OnchainReceiveDetailsWire) + Clone + Send + Sync + 'static,
+{
+    db.autocommit(
+        |dbtx, _| {
+            let change = change.clone();
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(Ok(None));
+                };
+                let mut details = match wire::decode_receive_wire(&record.details) {
+                    Ok(details) => details,
+                    Err(err) => return Ok(Err(err)),
+                };
+                change(&mut details);
+                let encoded = match wire::encode_receive_wire(&details) {
+                    Ok(encoded) => encoded,
+                    Err(err) => return Ok(Err(err)),
+                };
+                if record.details != encoded {
+                    record.details = encoded;
+                    dbtx.insert_entry(&key, &record).await;
+                }
+                Ok::<_, core::convert::Infallible>(Ok(Some(details)))
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)?
 }
 
 /// The output the deposit recorded as `id` was paid by.
@@ -848,7 +910,7 @@ pub(super) async fn current_receive(
     // loop only ever spends the bound on the live claim at its end.
     while let ClaimProgress::Aborted = progress {
         let paid = read_paid(&db, id).await?;
-        let next = match find_claim(&client, &paid, found.upstream, found.cursor).await {
+        let next = match find_claim(client.db(), &paid, found.upstream, found.cursor).await {
             Ok(next) => next,
             Err(reached) => {
                 // Still the rejected claim, searched up to here: the next read picks the search
@@ -1122,7 +1184,7 @@ async fn receive_step(
                 let from = rejected.clone();
                 let found = wait_holding_client(handle, stop, move |client| async move {
                     let paid = read_paid(&db, id).await?;
-                    Ok(find_claim(&client, &paid, from.upstream, from.cursor).await)
+                    Ok(find_claim(client.db(), &paid, from.upstream, from.cursor).await)
                 })
                 .await;
                 match found {
@@ -1563,6 +1625,7 @@ mod tests {
         use super::*;
         use crate::db::{OperationRecordKey, federation_namespace, in_memory_root};
         use crate::onchain::deposit_fixtures::{ADDRESS, a_walletv2_claim, txid};
+        use crate::operation::write_details_in;
 
         fn operation(byte: u8) -> OperationId {
             OperationId([byte; 32])
@@ -1677,6 +1740,84 @@ mod tests {
                 .await
                 .expect_err("the claim cannot be checked without a client");
             assert_eq!(err.code, ErrorCode::FederationClosed);
+        }
+
+        /// The search for a later claim of a deposit passes over the rejected claim itself and
+        /// over claims of other outputs, and says how far it got when it finds none.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_search_finds_the_next_claim_of_the_output_or_says_how_far_it_got() {
+            let (db, _federation, rejected) = a_recorded_deposit().await;
+            let paid = read_paid(&db, rejected).await.expect("the output");
+
+            // Nothing but the rejected claim's own announcement, read or not.
+            assert!(matches!(find_claim(&db, &paid, rejected, 0).await, Err(1)));
+            assert!(matches!(find_claim(&db, &paid, rejected, 1).await, Err(1)));
+
+            // A claim of another output of the same transaction is another deposit.
+            let sibling = bitcoin::OutPoint {
+                txid: txid(3),
+                vout: 0,
+            };
+            a_walletv2_claim(&db, operation(2), sibling, 1).await;
+            assert!(matches!(find_claim(&db, &paid, rejected, 1).await, Err(2)));
+
+            // The module's next claim of the same output.
+            let retried = operation(3);
+            let same = bitcoin::OutPoint {
+                txid: txid(3),
+                vout: 1,
+            };
+            a_walletv2_claim(&db, retried, same, 2).await;
+            for from in [0, 2] {
+                let found = find_claim(&db, &paid, rejected, from)
+                    .await
+                    .expect("the later claim");
+                assert_eq!(found.upstream, retried);
+                assert_eq!(found.txid.to_string(), txid(3).to_string());
+                assert_eq!(found.gross, Sats::from_sats(100_000));
+                // Just past the later claim's announcement.
+                assert_eq!(found.cursor, 3);
+            }
+            // And nothing after it.
+            assert!(matches!(find_claim(&db, &paid, rejected, 3).await, Err(3)));
+        }
+
+        /// What a claim credited is written onto the record as it is stored at that moment, so
+        /// it keeps what the record learnt in the meantime.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_change_to_a_record_keeps_what_was_stored_in_the_meantime() {
+            let (db, federation, id) = a_recorded_deposit().await;
+            let before = stored(&db, id).await;
+            let later = Link {
+                upstream: operation(2),
+                txid: txid(3).to_string().parse().expect("a txid"),
+                gross: Sats::from_sats(100_000),
+                cursor: 5,
+            };
+            link(&federation, id, &later).await.expect("link");
+
+            let after = update_wire(&db, id, |details| {
+                details.net_credit_msats = Some(99_998_500);
+            })
+            .await
+            .expect("update")
+            .expect("the deposit has its record");
+
+            assert_eq!(after, stored(&db, id).await);
+            assert_eq!(after.net_credit_msats, Some(99_998_500));
+            assert_eq!(
+                after.upstream_operation_id,
+                Some(operation(2).fmt_full().to_string())
+            );
+            assert_eq!(after.event_cursor, Some(5));
+            assert_eq!(after.txid, before.txid);
+            // A record that is not there is not written.
+            let missing = update_wire(&db, operation(9), |details| {
+                details.event_cursor = Some(1);
+            })
+            .await
+            .expect("update");
+            assert_eq!(missing, None);
         }
 
         fn a_claim_of(outpoint: bitcoin::OutPoint) -> Paid {

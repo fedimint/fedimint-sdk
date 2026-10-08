@@ -154,13 +154,15 @@ pub trait DetailedOperationState: OperationState {
 
 /// A handle for observing one background operation.
 ///
-/// An operation starts running the moment the facade call that created it
-/// returns, and it keeps running whether or not anyone is watching. This
-/// handle observes; it does not own. Dropping it, or an [`OperationUpdates`]
-/// obtained from it, does not cancel, pause, or abort anything: the only
-/// thing that ends an operation is reaching a final state. This holds across
-/// restarts too: an operation is persisted as it progresses, resumes when the
-/// SDK is built again over the same storage, and can be picked up again with
+/// An operation starts running the moment it is created, which is when the
+/// facade call that creates it returns or, for an on-chain deposit, when the
+/// wallet finds the payment. It keeps running whether or not anyone is
+/// watching. This handle observes; it does not own. Dropping it, or an
+/// [`OperationUpdates`] obtained from it, does not cancel, pause, or abort
+/// anything: the only thing that ends an operation is reaching a final state.
+/// This holds across restarts too: an operation is persisted as it
+/// progresses, resumes when the SDK is built again over the same storage, and
+/// can be picked up again with
 /// [`Federation::operation`](crate::Federation::operation). Most operations
 /// have nothing to cancel, because the money has already moved into a
 /// protocol that will resolve one way or the other; where a cancellation

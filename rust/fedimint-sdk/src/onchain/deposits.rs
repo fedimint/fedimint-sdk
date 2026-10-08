@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use fedimint_client::Client;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_eventlog::{DBTransactionEventLogExt as _, EventLogId};
 use futures::StreamExt as _;
 
@@ -28,7 +28,7 @@ use crate::{Error, ErrorCode, OnchainReceiveState, Operation, Result};
 /// Reads the event log from where the previous pass stopped and writes a record for every
 /// deposit announced since. It runs when a federation comes up and before activity is listed, so
 /// a deposit found while nothing was subscribed has its record by the time anything looks for
-/// it. A pass that finds nothing new costs one read.
+/// it. A pass over a log that has not grown since the last one writes nothing.
 ///
 /// # Errors
 ///
@@ -45,22 +45,7 @@ pub(crate) async fn pick_up_deposits(federation: &Arc<FederationInner>) -> Resul
     if reached == from {
         return Ok(());
     }
-    db.autocommit(
-        |dbtx, _| {
-            Box::pin(async move {
-                // Never backwards: a pass that started earlier and finished later must not undo
-                // the progress of one that overtook it.
-                let stored = dbtx.get_value(&DepositCursorKey).await.unwrap_or(0);
-                if stored < reached {
-                    dbtx.insert_entry(&DepositCursorKey, &reached).await;
-                }
-                Ok::<_, core::convert::Infallible>(())
-            })
-        },
-        Some(100),
-    )
-    .await
-    .map_err(crate::db::storage_error)
+    remember(&db, reached).await
 }
 
 /// Whether a wallet module's log entry is one that must be left without a record of its own.
@@ -248,6 +233,26 @@ async fn scan(
 /// How many event log entries one read takes.
 const PAGE: u64 = 64;
 
+/// Stores `reached` as the position the next pass starts from, unless a later one is stored
+/// already: a pass that started earlier and finished later must not undo the progress of one
+/// that overtook it.
+async fn remember(db: &Database, reached: u64) -> Result<()> {
+    db.autocommit(
+        |dbtx, _| {
+            Box::pin(async move {
+                let stored = dbtx.get_value(&DepositCursorKey).await.unwrap_or(0);
+                if stored < reached {
+                    dbtx.insert_entry(&DepositCursorKey, &reached).await;
+                }
+                Ok::<_, core::convert::Infallible>(())
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)
+}
+
 /// The typed handle for a deposit whose record was just written or found.
 async fn operation_of(
     federation: &Arc<FederationInner>,
@@ -365,13 +370,15 @@ pub(crate) mod fixtures {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use fedimint_core::bitcoin;
-    use fedimint_core::db::Database;
 
     use super::fixtures::{
         ADDRESS, LOGGED_AT, a_paid_v1_address, a_walletv2_claim, log, txid, write_log_entry,
     };
     use super::*;
-    use crate::db::{OperationRecord, OperationRecordKey, federation_namespace, in_memory_root};
+    use crate::db::{
+        OperationIndexKey, OperationIndexKeyPrefix, OperationRecord, OperationRecordKey,
+        federation_namespace, in_memory_root,
+    };
     use crate::onchain::wire;
     use crate::{FederationStatus, OperationKind};
 
@@ -565,6 +572,37 @@ mod tests {
         );
     }
 
+    /// A pass starts at the stored position, not at the start of the log: what lies before it
+    /// is not read again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pass_reads_nothing_before_the_stored_position() {
+        let (db, federation) = a_federation();
+        let before = operation(1);
+        a_paid_v1_address(&db, before, txid(1), 0).await;
+        remember(&db, 1).await.expect("store");
+
+        pick_up_deposits(&federation).await.expect("pick up");
+        assert_eq!(record(&db, before).await, None);
+        assert_eq!(position(&db).await, Some(1));
+
+        let after = operation(2);
+        a_paid_v1_address(&db, after, txid(2), 1).await;
+        pick_up_deposits(&federation).await.expect("pick up");
+        assert_eq!(record(&db, before).await, None);
+        assert!(record(&db, after).await.is_some());
+        assert_eq!(position(&db).await, Some(2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_stored_position_never_moves_backwards() {
+        let (db, _federation) = a_federation();
+        remember(&db, 5).await.expect("store");
+        remember(&db, 3).await.expect("store");
+        assert_eq!(position(&db).await, Some(5));
+        remember(&db, 6).await.expect("store");
+        assert_eq!(position(&db).await, Some(6));
+    }
+
     /// A record that names no payment was written by a version of this crate that recorded an
     /// address when it handed the address out. The announcement fills the payment in.
     #[tokio::test(flavor = "multi_thread")]
@@ -610,16 +648,36 @@ mod tests {
         let details = wire::decode_receive_details(&stored.details).expect("a deposit's details");
         assert_eq!(details.txid.to_string(), txid(1).to_string());
         assert_eq!(details.gross_deposited, crate::Sats::from_sats(70_000));
-        // The deposit is dated from when it was found, not from when the address was handed out.
+        // The deposit is dated from when it was found, not from when the address was handed
+        // out: in its details, on the record, and in the index activity is listed from.
         assert_eq!(
             details.created_at,
             crate::Timestamp::from_epoch_millis(LOGGED_AT / 1000)
         );
+        assert_eq!(stored.created_at, LOGGED_AT / 1000);
+        let index: Vec<OperationIndexKey> = db
+            .begin_transaction_nc()
+            .await
+            .find_by_prefix(&OperationIndexKeyPrefix)
+            .await
+            .map(|(key, ())| key)
+            .collect()
+            .await;
+        assert_eq!(index.len(), 1, "{index:?}");
+        assert_eq!((index[0].created_at, index[0].id), (LOGGED_AT / 1000, id));
+
+        // Reading the announcement again changes nothing.
+        assert_eq!(
+            scan(&federation, 0, |_| true).await.expect("scan"),
+            (Some(id), 1)
+        );
+        assert_eq!(record(&db, id).await, Some(stored));
     }
 
-    /// The fill-in above is two writes, the payment and then the phase. One interrupted between
-    /// them leaves a record that names its payment and is still marked as an unpaid address,
-    /// and reading the announcement again finishes it.
+    /// A version of this crate that recorded an address when it was handed out filled the
+    /// payment in with two writes, the payment and then the phase. One interrupted between
+    /// them left a record that names its payment and is still marked as an unpaid address, and
+    /// reading the announcement finishes it.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_interrupted_fill_in_is_finished_when_the_announcement_is_read_again() {
         let (db, federation) = a_federation();
@@ -688,6 +746,33 @@ mod tests {
         .await;
         let later = operation(2);
         a_paid_v1_address(&db, later, txid(2), 1).await;
+
+        pick_up_deposits(&federation).await.expect("pick up");
+
+        assert_eq!(record(&db, unreadable).await, written);
+        assert!(record(&db, later).await.is_some());
+        assert_eq!(position(&db).await, Some(2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unreadable_walletv2_record_does_not_hold_up_the_deposits_after_it() {
+        let (db, federation) = a_federation();
+        let unreadable = operation(1);
+        federation
+            .create_operation(
+                unreadable,
+                kinds::ONCHAIN_RECEIVE,
+                "walletv2",
+                &serde_json::json!({ "not": "a deposit record" }),
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+        let written = record(&db, unreadable).await;
+        a_walletv2_claim(&db, unreadable, outpoint(3, 0), 0).await;
+        let later = operation(2);
+        a_walletv2_claim(&db, later, outpoint(3, 1), 1).await;
 
         pick_up_deposits(&federation).await.expect("pick up");
 
@@ -955,7 +1040,7 @@ mod tests {
     }
 
     /// A call already waiting is woken by the announcement, not only answered by the next call.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_waiting_subscription_is_woken_by_the_announcement() {
         let (db, federation) = a_federation();
         let (logged, added) = tokio::sync::watch::channel(());
@@ -966,7 +1051,8 @@ mod tests {
             async move { subscription.next().await }
         });
         until_waiting(&subscription).await;
-        // Long enough for the call to have walked the empty log and parked.
+        // The clock is paused and only moves once every task is idle, so this sleep ends when
+        // the call has walked the empty log and parked, however long that takes.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(!waiting.is_finished());
 
