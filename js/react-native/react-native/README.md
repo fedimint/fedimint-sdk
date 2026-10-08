@@ -14,11 +14,23 @@ below that fits your environment.
 #### Installation
 
 ```bash
-npm install @fedimint/react-native
+npm install @fedimint/react-native@beta @fedimint/react-native-bindings@beta
 # or
-yarn add @fedimint/react-native
+yarn add @fedimint/react-native@beta @fedimint/react-native-bindings@beta
 # or
-pnpm add @fedimint/react-native
+pnpm add @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+```
+
+Install both. `@fedimint/react-native-bindings` is the native module, and React Native only links
+native modules that the app's own `package.json` lists. The two packages are released together
+and only work at the same version. The SDK is in beta and its releases are published under the
+`beta` tag, which is why the commands name it.
+
+The native library is built for the `arm64-v8a` and `x86_64` Android ABIs. Build the app for
+those two only, in `android/gradle.properties`:
+
+```properties
+reactNativeArchitectures=arm64-v8a,x86_64
 ```
 
 You'll also need `react-native-fs` for a documents directory to store data in:
@@ -54,7 +66,8 @@ try {
 #### Installation
 
 ```bash
-npx expo install @fedimint/react-native expo-file-system
+npm install @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+npx expo install expo-file-system
 ```
 
 For Expo managed workflow (SDK 52+), add the plugin to your `app.json`:
@@ -92,41 +105,6 @@ const { sdk, InviteCode, close } = await openSdk({ dataDir })
 const federation = await sdk.join(InviteCode.parse(inviteCode))
 ```
 
-#### Plugin Options
-
-This is required for Expo managed workflow.
-
-```json
-{
-  "expo": {
-    "plugins": [
-      [
-        "@fedimint/react-native",
-        {
-          "skipBinaryDownload": false
-        }
-      ]
-    ]
-  }
-}
-```
-
-### Building from Source
-
-You can choose to build the SDK from scratch (recompile from source) and skip the automatic
-binary download during installation by:
-
-1. **Using an environment variable:**
-
-   ```bash
-   FEDIMINT_SKIP_BINARY_DOWNLOAD=true npm install @fedimint/react-native
-   ```
-
-2. **Using the Expo plugin option** (for Expo projects):
-   Set `"skipBinaryDownload": true` in the plugin options above.
-
-This is useful when you want to handle binary downloads manually or are building from source.
-
 ## Requirements
 
 | React Native    | Support        |
@@ -134,10 +112,10 @@ This is useful when you want to handle binary downloads manually or are building
 | 0.78.x - 0.82.x | ✅ Supported   |
 | 0.83.x          | ✅ Recommended |
 
-| Platform | Minimum Version      |
-| -------- | -------------------- |
-| Android  | API 24 (Android 7.0) |
-| iOS      | 15.0                 |
+| Platform | Minimum Version      | Architectures                          |
+| -------- | -------------------- | -------------------------------------- |
+| Android  | API 24 (Android 7.0) | `arm64-v8a`, `x86_64`                  |
+| iOS      | 15.0                 | devices, simulators (arm64 and x86_64) |
 
 | Expo SDK | Support          |
 | -------- | ---------------- |

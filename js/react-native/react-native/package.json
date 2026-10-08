@@ -1,12 +1,16 @@
 {
   "name": "@fedimint/react-native",
   "description": "The Fedimint SDK for React Native: rust/fedimint-sdk through its generated bindings",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/fedimint/fedimint-sdk.git",
+    "url": "git+https://github.com/fedimint/fedimint-sdk.git",
     "directory": "js/react-native/react-native"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
@@ -25,7 +29,8 @@
   "files": [
     "src",
     "lib",
-    "app.plugin.js"
+    "app.plugin.js",
+    "!**/__tests__"
   ],
   "scripts": {
     "build": "bob build",
@@ -34,15 +39,14 @@
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
-  "dependencies": {
-    "@fedimint/react-native-bindings": "workspace:*"
-  },
   "peerDependencies": {
+    "@fedimint/react-native-bindings": "workspace:*",
     "react": ">=18.0.0",
     "react-native": ">=0.78.0"
   },
   "devDependencies": {
     "@expo/config-plugins": "^54.0.4",
+    "@fedimint/react-native-bindings": "workspace:*",
     "@types/node": "^22.19.11",
     "expo-module-scripts": "^5.0.8",
     "react-native-builder-bob": "^0.40.18",

@@ -127,8 +127,6 @@ jobs:
 
       - name: Install workspace deps
         shell: bash
-        env:
-          FEDIMINT_SKIP_BINARY_DOWNLOAD: 'true'
         run: |
           nix develop --accept-flake-config -c bash << 'EOF'
             set -euo pipefail

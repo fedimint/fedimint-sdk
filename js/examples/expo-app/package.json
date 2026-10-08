@@ -12,6 +12,7 @@
     "@expo/metro-runtime": "~55.0.0",
     "@expo/vector-icons": "^15.0.0",
     "@fedimint/react-native": "workspace:*",
+    "@fedimint/react-native-bindings": "workspace:*",
     "expo": "~55.0.0",
     "expo-clipboard": "~55.0.0",
     "expo-constants": "~55.0.0",
