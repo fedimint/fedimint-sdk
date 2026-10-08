@@ -129,7 +129,7 @@ Listed in the order `all` runs them; each also runs on its own, with the fixture
 | `errors`           | `INVALID_INPUT` for bad notes, a bad invoice and a zero amount; `INSUFFICIENT_BALANCE` quoting an invoice over the balance, with Pay left disabled and no balance or history change                                                                                                                          |
 | `persistence`      | restart without clearing data: the same seed, the same federation (reattached on open), the same balance                                                                                                                                                                                                     |
 | `operationRestart` | an unpaid receive survives a restart: found again by id through `federation.operation`, still waiting, then followed to `Claimed` once paid                                                                                                                                                                  |
-| `onchain`          | deposit: bitcoind pays a fresh address, blocks are mined, the claim reports the txid, gross and net credit, and the balance rises by exactly the net credit; withdrawal: quote → send, `Succeeded(txid)`, the coins arrive and confirm at the destination, and the balance drops by exactly the quoted total |
+| `onchain`          | deposit: bitcoind pays the app address, blocks are mined, the claim reports the txid, gross and net credit, and the balance rises by exactly the net credit; withdrawal: quote → send, `Succeeded(txid)`, the coins arrive and confirm at the destination, and the balance drops by exactly the quoted total |
 
 ### Where the generations differ
 
@@ -148,8 +148,6 @@ The tests assert what each generation documents rather than identical behaviour:
   (fedimint/fedimint#8969), so `awaitFinal` ends in `INTERNAL` mentioning the preimage. `lightningSend`
   accepts exactly that, and only on v1, and still requires the payee to report the invoice
   paid and the exact debit.
-- **Deposit states.** v1 reports `WaitingForConfirmation`; walletv2 goes from waiting for a
-  transaction to `Claimed`. `onchain` requires the former only on v1.
 - **lnv2 gateway.** The lnv2 client picks a gateway at random, and only devimint's LND gateway is
   funded, so on v2 `run-android-e2e.sh` removes the other gateways from every guardian's lnv2
   list before the tests run. On v1 the SDK picks the cheapest gateway, which is LND (devimint sets

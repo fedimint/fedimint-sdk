@@ -1,5 +1,6 @@
-//! The v1 wallet module (`wallet`): the withdrawal plan and send, the deposit address
-//! allocation and its subscription, and the backfill of this module's own operation log.
+//! The v1 wallet module (`wallet`): the withdrawal plan and send, the deposit address, the
+//! record a deposit gets when the module announces it and its subscription, and the backfill of
+//! this module's own operation log.
 
 use std::sync::{Arc, Weak};
 
@@ -10,6 +11,8 @@ use fedimint_client_module::transaction::FeeQuote;
 use fedimint_core::core::OperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxStream, FmtCompact};
+use fedimint_eventlog::{Event as _, PersistedLogEntry};
+use fedimint_wallet_client::events::ReceivePaymentEvent;
 use fedimint_wallet_client::{
     DepositAddressError, DepositStateV2, WalletClientModule, WalletOperationMeta,
     WalletOperationMetaVariant, WithdrawState,
@@ -24,15 +27,15 @@ use super::{
     insufficient, internal, now, plan_of, quote_changed, sats_to_amount, sats_to_bitcoin, short_of,
     subscribe_error, timeout, unreachable, wire,
 };
-use crate::federation::FederationInner;
+use crate::federation::{FederationInner, write_record_in};
 use crate::operation::{
-    Backfilled, Driver, custom_meta, from_custom_meta, kinds, record_phase_in, until_final,
-    write_details_in,
+    Backfilled, Driver, READABLE_STATE_SCHEMA, custom_meta, from_custom_meta, kinds,
+    record_phase_in, until_final, write_details_in,
 };
 use crate::sdk::{CONTACT_TIMEOUT, SdkInner};
 use crate::{
-    Address, Amount, Error, ErrorCode, OnchainReceive, OnchainReceiveState, OnchainSendDetails,
-    OnchainSendState, Operation, Result, Sats, Txid,
+    Address, Amount, Error, ErrorCode, OnchainReceiveState, OnchainSendDetails, OnchainSendState,
+    Operation, Result, Sats, Txid,
 };
 
 /// The v1 module on a live client, or `NotSupported` when the federation dropped it.
@@ -307,117 +310,227 @@ pub(super) async fn subscribe_withdraw(
     Ok(until_final(stream))
 }
 
-/// Allocates a fresh v1 deposit address and records it.
-pub(super) async fn receive(
-    federation: &Arc<FederationInner>,
-    client: &Client,
-    module: &WalletClientModule,
-    driver: Arc<dyn Driver<OnchainReceiveState>>,
-) -> Result<OnchainReceive> {
-    let created_at = now();
-    // The address is not known until the call below returns it, so there is nothing this SDK
-    // could put in `extra_meta` yet that upstream's own meta does not already carry once the
-    // call commits: `WalletOperationMetaVariant::Deposit`'s own `address` field. Passing `Null`
-    // rather than a placeholder wire means `backfill`, reconstructing a record from a crash
-    // between upstream's commit and the write below, always reads the real address from that
-    // field rather than risking a placeholder this SDK wrote earlier.
+/// A newly allocated v1 deposit address.
+///
+/// The module logs the allocation as an operation of its own
+/// (`modules/fedimint-wallet-client/src/lib.rs:1190-1249`). That operation is an address, not a
+/// deposit, and gets no record here: [`adopt`] writes one when the module announces a payment
+/// to the address.
+pub(super) async fn receive(module: &WalletClientModule) -> Result<Address> {
     let info = module
         .safe_allocate_deposit_address(serde_json::Value::Null)
         .await
         .map_err(|err| map_deposit_address_error(&err))?;
-    let address = Address::from_upstream(info.address.clone().into_unchecked());
-    let wire = wire::OnchainReceiveDetailsWire {
-        address: info.address.to_string(),
-        txid: None,
-        gross_deposited_sats: None,
-        fee_msats: None,
-        fee_breakdown: None,
-        net_credit_msats: None,
-        created_at: created_at.epoch_millis(),
-        upstream_operation_id: None,
-        event_cursor: None,
-    };
-    let operation = federation
-        .create_operation(
-            info.operation_id,
-            kinds::ONCHAIN_RECEIVE,
-            "wallet",
-            &wire,
-            driver,
-        )
-        .await?;
-    Ok(OnchainReceive { address, operation })
+    Ok(Address::from_upstream(info.address.into_unchecked()))
 }
 
-/// What the original deposit's next upstream state means: a state to hand out, or the claim
-/// sentinel the below-fee rule turns into `Failed` instead.
+/// The v1 module's announcement that it found a payment to one of its addresses and started
+/// claiming it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum DepositStep {
-    State(OnchainReceiveState),
-    Claimed { txid: Txid, gross: Sats },
+pub(super) struct Found {
+    /// The operation the paid address was allocated under, which is also the one the module
+    /// claims every payment to that address under.
+    pub(super) operation: OperationId,
+    pub(super) txid: Txid,
+    pub(super) gross: Sats,
+    /// When the module logged it, in milliseconds since the Unix epoch.
+    pub(super) found_at: u64,
 }
 
-// Upstream v1 `DepositStateV2` onto `OnchainReceiveState`, variant for variant but not payload
-// for payload, plus the below-fee rule: the peg-in monitor refuses to claim a deposit at or
-// below the federation's deposit fee but still writes the sentinel that makes
-// `subscribe_deposit` report `Claimed`
-// (`modules/fedimint-wallet-client/src/pegin_monitor.rs:491-494,553-572`), so a `Claimed` this
-// small is handed back as `Failed` instead, with no ecash ever having been minted for it.
-//
-// Only the transaction half of upstream's `btc_out_point` is carried; the vout is nothing this
-// API needs. `Claimed` additionally reports a net credit this SDK computes itself; upstream's
-// own `Claimed` reports only the gross figure it deposited.
-pub(super) fn map_deposit(state: &DepositStateV2, peg_in_abs: Amount) -> DepositStep {
-    match state {
-        DepositStateV2::WaitingForTransaction => {
-            DepositStep::State(OnchainReceiveState::WaitingForTransaction)
+/// The payment a deposit record stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Payment {
+    pub(super) txid: Txid,
+    pub(super) gross: Sats,
+}
+
+/// Reads the v1 module's announcement out of an event log entry, or `None` for any other entry.
+pub(super) fn deposit_found(entry: &PersistedLogEntry) -> Option<Found> {
+    if entry.module_kind() != Some(&fedimint_wallet_common::KIND)
+        || entry.kind != ReceivePaymentEvent::KIND
+    {
+        return None;
+    }
+    let event = entry.to_event::<ReceivePaymentEvent>()?;
+    Some(Found {
+        operation: event.operation_id,
+        txid: Txid::from_upstream(event.txid),
+        // The module logs the funding output's value converted to millisatoshis
+        // (`modules/fedimint-wallet-client/src/pegin_monitor.rs:478`), so the division is exact.
+        gross: Sats::from_sats(event.amount.msats / 1000),
+        found_at: entry.ts_usecs / 1000,
+    })
+}
+
+/// Whether a v1 log entry is a deposit address the module handed out.
+pub(super) fn is_address_allocation(meta: &serde_json::Value) -> bool {
+    serde_json::from_value::<WalletOperationMeta>(meta.clone())
+        .is_ok_and(|meta| matches!(meta.variant, WalletOperationMetaVariant::Deposit { .. }))
+}
+
+/// Gives the deposit `found` announces its record, and returns the operation that stands for
+/// it: `Some` exactly when that operation's record is of this very payment.
+///
+/// The module claims every payment to an address under the operation the address was allocated
+/// with, so a second payment to one address is announced under an operation that already has a
+/// record. That record goes on describing the first payment and the second is answered with
+/// `None`: the module has one operation per address, not per payment (fedimint/fedimint#8123).
+///
+/// A record under the operation that does not read as a deposit's is left as it is and answered
+/// with `None` too, so one unreadable record cannot hold up every deposit announced after it.
+///
+/// # Errors
+///
+/// [`Storage`](ErrorCode::Storage).
+pub(super) async fn adopt(
+    federation: &FederationInner,
+    found: &Found,
+) -> Result<Option<OperationId>> {
+    let db = federation.db();
+    let id = found.operation;
+    let stored = db
+        .begin_transaction_nc()
+        .await
+        .get_value(&crate::db::OperationRecordKey(id))
+        .await;
+    let record = match stored {
+        Some(record) if record.kind == kinds::ONCHAIN_RECEIVE => record,
+        // No record yet, or one that only says reconciliation could not place the entry.
+        _ => {
+            // An address the module derived again while recovering a wallet has no log entry
+            // (`modules/fedimint-wallet-client/src/lib.rs:246-266`), and the module has no call
+            // that names the address of an operation, so a payment to one is claimed into the
+            // balance without a record to show for it.
+            let Some(address) = allocated_address(&db, id).await else {
+                return Ok(None);
+            };
+            let details = wire::OnchainReceiveDetailsWire {
+                address,
+                txid: Some(found.txid.to_string()),
+                gross_deposited_sats: Some(found.gross.sats()),
+                fee_msats: None,
+                fee_breakdown: None,
+                net_credit_msats: None,
+                created_at: found.found_at,
+                upstream_operation_id: None,
+                event_cursor: None,
+                vout: None,
+            };
+            let record = crate::db::OperationRecord {
+                schema_version: READABLE_STATE_SCHEMA,
+                kind: kinds::ONCHAIN_RECEIVE.to_owned(),
+                module: "wallet".to_owned(),
+                created_at: found.found_at,
+                details: wire::encode_receive_wire(&details)?,
+                phase: Some(wire::PHASE_SEEN),
+                cancel_requested_at: None,
+                final_state: None,
+            };
+            write_record_in(&db, id, record, true).await?
         }
-        DepositStateV2::WaitingForConfirmation {
-            btc_deposited,
-            btc_out_point,
-        } => DepositStep::State(OnchainReceiveState::WaitingForConfirmation {
-            txid: Txid::from_upstream(btc_out_point.txid),
-            gross_deposited: bitcoin_to_sats(*btc_deposited),
-        }),
-        DepositStateV2::Confirmed {
-            btc_deposited,
-            btc_out_point,
-        } => DepositStep::State(OnchainReceiveState::Confirmed {
-            txid: Txid::from_upstream(btc_out_point.txid),
-            gross_deposited: bitcoin_to_sats(*btc_deposited),
-        }),
-        DepositStateV2::Claimed {
-            btc_deposited,
-            btc_out_point,
-        } => {
-            // A Bitcoin amount is consensus-bounded to 21 million BTC, well inside a
-            // millisatoshi `u64`, so this never overflows: the same conversion upstream's own
-            // `From<bitcoin::Amount> for fedimint_core::Amount` uses. `map_deposit` cannot
-            // return a `Result`, since a mapping is not itself a fallible operation, so this is
-            // the one place in this file that leans on that bound rather than threading one
-            // through.
-            let gross_msats = from_upstream(fedimint_core::Amount::from(*btc_deposited));
-            if gross_msats <= peg_in_abs {
-                return DepositStep::State(OnchainReceiveState::Failed {
-                    reason: "the deposit does not exceed the federation's deposit fee and was \
-                              not claimed"
-                        .to_owned(),
-                });
-            }
-            DepositStep::Claimed {
-                txid: Txid::from_upstream(btc_out_point.txid),
-                gross: bitcoin_to_sats(*btc_deposited),
-            }
+    };
+    if record.kind != kinds::ONCHAIN_RECEIVE {
+        return Ok(None);
+    }
+    let details = match wire::decode_receive_wire(&record.details) {
+        Ok(details) => details,
+        Err(err) => {
+            tracing::warn!(
+                target: "fedimint_sdk",
+                federation = %federation.id,
+                operation = %id.fmt_full(),
+                error = %err,
+                "a deposit was announced for an operation whose record cannot be read",
+            );
+            return Ok(None);
         }
-        DepositStateV2::Failed(reason) => DepositStep::State(OnchainReceiveState::Failed {
-            reason: reason.clone(),
-        }),
+    };
+    match details.txid {
+        Some(txid) if txid != found.txid.to_string() => Ok(None),
+        // The record of this very payment. One without its phase is a fill-in that was
+        // interrupted between its two writes, which left the payment on the record and the phase
+        // off it.
+        Some(_) => {
+            if record.phase.is_none() {
+                record_phase_in(&db, id, wire::PHASE_SEEN).await?;
+            }
+            Ok(Some(id))
+        }
+        // A record written by a version of this crate that recorded an address when it was
+        // handed out: it names no payment until this one is filled in.
+        None => {
+            fill_seen(&db, id, found).await?;
+            Ok(Some(id))
+        }
     }
 }
 
-/// A fresh stream over a v1 deposit: maps every upstream state, fills the wire record's
-/// address-side fields the first time a transaction is seen, and on the claim reads back what the
-/// claim transaction itself minted (or reads back a figure a previous subscription already
+/// The address the v1 operation `id` was allocated for, or `None` if `id` is not an address
+/// allocation.
+async fn allocated_address(db: &Database, id: OperationId) -> Option<String> {
+    let entry = fedimint_client::oplog::OperationLog::new(db.clone())
+        .get_operation(id)
+        .await?;
+    if entry.operation_module_kind() != "wallet" {
+        return None;
+    }
+    let meta: WalletOperationMeta = entry.try_meta().ok()?;
+    match meta.variant {
+        WalletOperationMetaVariant::Deposit { address, .. } => {
+            Some(address.assume_checked_ref().to_string())
+        }
+        WalletOperationMetaVariant::Withdraw { .. }
+        | WalletOperationMetaVariant::RbfWithdraw { .. } => None,
+    }
+}
+
+/// How far the claim of a deposit has got, as the module reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Progress {
+    /// The claim was made and what it mints is not spendable yet.
+    Claiming,
+    /// What the claim minted is spendable.
+    Claimed,
+    /// What the claim minted could not be issued.
+    Failed(String),
+}
+
+// Upstream v1 `DepositStateV2` onto the progress of the record's own payment:
+//
+// | upstream                 | here             | reported as                      |
+// | ------------------------ | ---------------- | -------------------------------- |
+// | `WaitingForTransaction`  | `Claiming`       | `Confirmed`                      |
+// | `WaitingForConfirmation` | `Claiming`       | `Confirmed`                      |
+// | `Confirmed`              | `Claiming`       | `Confirmed`                      |
+// | `Claimed`                | `Claimed`        | `Claimed`, with the net credit   |
+// | `Failed(reason)`         | `Failed(reason)` | `Failed { reason }`              |
+//
+// A record exists only for a payment the module has already started claiming (see `adopt`), and
+// `subscribe_deposit` replays its states from the first one on every call
+// (`modules/fedimint-wallet-client/src/lib.rs:1567-1620`). The two it yields before `Confirmed`
+// are therefore that replay catching up, the second of them behind a round trip to the bitcoin
+// backend, and not where the deposit is: the first state is there at once, and none is reported
+// that is behind the claim the record stands for.
+//
+// Only the progress is taken from upstream. The transaction and the amount every state reports
+// are the record's own, the ones the module announced, because upstream's stream follows the
+// first payment in the address's history
+// (`modules/fedimint-wallet-client/src/lib.rs:1575-1596`), and for an address paid more than once
+// that need not be the payment the record stands for. Its progress is then another payment's
+// too: the module has one operation per address and no way to follow one payment to it
+// (fedimint/fedimint#8123), which is why an address is for one payment.
+pub(super) fn progress_of(state: &DepositStateV2) -> Progress {
+    match state {
+        DepositStateV2::WaitingForTransaction
+        | DepositStateV2::WaitingForConfirmation { .. }
+        | DepositStateV2::Confirmed { .. } => Progress::Claiming,
+        DepositStateV2::Claimed { .. } => Progress::Claimed,
+        DepositStateV2::Failed(reason) => Progress::Failed(reason.clone()),
+    }
+}
+
+/// A fresh stream over a v1 deposit: follows the module's progress and, on the claim, reads back
+/// what the claim transaction itself minted (or a figure a previous subscription already
 /// computed) before yielding `Claimed`.
 ///
 /// The stream cannot hold the client guard the way `subscribe_withdraw` does, because the claim
@@ -429,6 +542,8 @@ pub(super) async fn subscribe_deposit(
     federation: &FederationInner,
     id: OperationId,
 ) -> Result<BoxStream<'static, Result<OnchainReceiveState>>> {
+    let db = federation.db();
+    let payment = payment_of(&db, id).await?;
     let client = federation.client(false).await?;
     let module = module_of(&client)?;
     let peg_in_abs = from_upstream(module.get_fee_consensus().peg_in_abs);
@@ -441,28 +556,17 @@ pub(super) async fn subscribe_deposit(
 
     let sdk = federation.sdk.clone();
     let federation_id = federation.id;
-    let db = federation.db();
     let stream = upstream.then(move |state| {
         let sdk = sdk.clone();
         let db = db.clone();
+        let Payment { txid, gross } = payment.clone();
         async move {
-            match map_deposit(&state, peg_in_abs) {
-                DepositStep::State(mapped) => {
-                    if let OnchainReceiveState::WaitingForConfirmation {
-                        txid,
-                        gross_deposited,
-                    }
-                    | OnchainReceiveState::Confirmed {
-                        txid,
-                        gross_deposited,
-                    } = &mapped
-                    {
-                        fill_seen(&db, id, txid.clone(), *gross_deposited).await?;
-                    }
-                    Ok(mapped)
-                }
-                DepositStep::Claimed { txid, gross } => {
-                    fill_seen(&db, id, txid.clone(), gross).await?;
+            match progress_of(&state) {
+                Progress::Claiming => Ok(OnchainReceiveState::Confirmed {
+                    txid,
+                    gross_deposited: gross,
+                }),
+                Progress::Claimed => {
                     let net_credit =
                         claim_net_credit(&db, id, sdk, federation_id, peg_in_abs, gross).await?;
                     Ok(OnchainReceiveState::Claimed {
@@ -471,19 +575,54 @@ pub(super) async fn subscribe_deposit(
                         net_credit,
                     })
                 }
+                Progress::Failed(reason) => Ok(OnchainReceiveState::Failed { reason }),
             }
         }
     });
     Ok(until_final(stream))
 }
 
-/// Fills the funding transaction the first time it is seen and marks the operation as past a
-/// pure address watch.
+/// The payment the record of `id` stands for.
 ///
-/// Idempotent both by construction (`write_details_in`/`record_phase_in` are themselves no-ops
-/// once the stored value already matches) and because a re-subscription replays every earlier
-/// state on every call, so this runs again for a transaction it already recorded.
-async fn fill_seen(db: &Database, id: OperationId, txid: Txid, gross: Sats) -> Result<()> {
+/// # Errors
+///
+/// [`Internal`](ErrorCode::Internal) for a record that names no payment. Only a version of this
+/// crate that recorded an address when it was handed out wrote one, and it is a deposit address
+/// nobody has paid, which has no state to report.
+async fn payment_of(db: &Database, id: OperationId) -> Result<Payment> {
+    let Some(record) = db
+        .begin_transaction_nc()
+        .await
+        .get_value(&crate::db::OperationRecordKey(id))
+        .await
+    else {
+        return Err(internal(format!(
+            "no record for operation {}",
+            id.fmt_full()
+        )));
+    };
+    let details = wire::decode_receive_wire(&record.details)?;
+    let (Some(txid), Some(gross)) = (details.txid, details.gross_deposited_sats) else {
+        return Err(internal(format!(
+            "operation {} is a deposit address that has not been paid",
+            id.fmt_full()
+        )));
+    };
+    Ok(Payment {
+        txid: txid
+            .parse()
+            .map_err(|_| internal("a stored transaction id does not parse"))?,
+        gross: Sats::from_sats(gross),
+    })
+}
+
+/// Fills in the payment on a record that names none and marks it as a deposit, found when the
+/// payment was.
+///
+/// Only a record written by a version of this crate that recorded an address when it was handed
+/// out needs it. The payment and the phase are two writes, and [`adopt`] finishes one that was
+/// interrupted between them.
+async fn fill_seen(db: &Database, id: OperationId, found: &Found) -> Result<()> {
     let Some(record) = db
         .begin_transaction_nc()
         .await
@@ -494,8 +633,9 @@ async fn fill_seen(db: &Database, id: OperationId, txid: Txid, gross: Sats) -> R
     };
     let mut details = wire::decode_receive_wire(&record.details)?;
     if details.txid.is_none() {
-        details.txid = Some(txid.to_string());
-        details.gross_deposited_sats = Some(gross.sats());
+        details.txid = Some(found.txid.to_string());
+        details.gross_deposited_sats = Some(found.gross.sats());
+        details.created_at = found.found_at;
         write_details_in(db, id, wire::encode_receive_wire(&details)?).await?;
     }
     record_phase_in(db, id, wire::PHASE_SEEN).await
@@ -570,11 +710,11 @@ async fn claim_net_credit(
     Ok(net_credit)
 }
 
-/// Rebuilds a record from a v1 log entry. A deposit is always rebuilt from upstream's own meta
-/// alone, address and nothing else, because `receive` never puts a wire of its own on a deposit's
-/// entry; a withdrawal is exact when this SDK made it, whose metadata carries the quoted terms
-/// verbatim, and an estimate otherwise, with no mint-side funding cost, since that is unknowable
-/// from the operation log alone.
+/// Rebuilds a record from a v1 log entry. A withdrawal is exact when this SDK made it, whose
+/// metadata carries the quoted terms verbatim, and an estimate otherwise, with no mint-side
+/// funding cost, since that is unknowable from the operation log alone. A deposit entry rebuilds
+/// nothing: it is the address the module handed out, and a payment to it gets its record from
+/// the module's own announcement (see [`adopt`]).
 pub(super) fn backfill(
     id: OperationId,
     meta: &serde_json::Value,
@@ -582,28 +722,10 @@ pub(super) fn backfill(
 ) -> Option<Backfilled> {
     let meta: WalletOperationMeta = serde_json::from_value(meta.clone()).ok()?;
     match meta.variant {
-        WalletOperationMetaVariant::Deposit { address, .. } => {
-            // `receive` never puts a wire of its own in a deposit's `extra_meta` (the address is
-            // not known until after the call that would carry it), so this is always rebuilt
-            // from upstream's own meta: the address it names, and this entry's `created_at`.
-            let wire = wire::OnchainReceiveDetailsWire {
-                address: address.assume_checked_ref().to_string(),
-                txid: None,
-                gross_deposited_sats: None,
-                fee_msats: None,
-                fee_breakdown: None,
-                net_credit_msats: None,
-                created_at,
-                upstream_operation_id: None,
-                event_cursor: None,
-            };
-            Some(Backfilled {
-                kind: kinds::ONCHAIN_RECEIVE,
-                details: wire::encode_receive_wire(&wire).ok()?,
-                phase: None,
-                final_state: None,
-            })
-        }
+        // Reconciliation never offers one of these (see
+        // `crate::onchain::log_entry_is_not_an_operation`); answering `None` keeps this function
+        // honest about it all the same.
+        WalletOperationMetaVariant::Deposit { .. } => None,
         WalletOperationMetaVariant::Withdraw {
             address,
             amount,
@@ -638,6 +760,52 @@ pub(super) fn backfill(
         }
         // Neither an operation this SDK creates: RBF is not offered by this facade at all.
         WalletOperationMetaVariant::RbfWithdraw { .. } => None,
+    }
+}
+
+// At file scope rather than inside `mod tests`, because a `mod tests` is private to its own
+// file and the tests of the pass that reads these (`src/onchain/deposits.rs`) need them too.
+#[cfg(test)]
+pub(super) mod fixtures {
+    use fedimint_core::bitcoin;
+    use fedimint_core::core::OperationId;
+    use fedimint_eventlog::{Event as _, EventLogEntry, EventLogModule};
+    use fedimint_wallet_client::events::ReceivePaymentEvent;
+
+    /// The log entry meta the module writes for the operation it allocates `address` under.
+    pub(crate) fn allocation(address: &str) -> serde_json::Value {
+        serde_json::json!({
+            "variant": {
+                "deposit": {
+                    "address": address,
+                },
+            },
+            "extra_meta": {},
+        })
+    }
+
+    /// The event the module logs when it starts claiming a payment of `sats`, made by `txid`,
+    /// to the address allocated under `operation`.
+    pub(crate) fn announcement(
+        operation: OperationId,
+        txid: bitcoin::Txid,
+        sats: u64,
+        ts_usecs: u64,
+    ) -> EventLogEntry {
+        let event = ReceivePaymentEvent {
+            operation_id: operation,
+            amount: fedimint_core::Amount::from_sats(sats),
+            txid,
+        };
+        EventLogEntry {
+            kind: ReceivePaymentEvent::KIND,
+            module: Some(EventLogModule {
+                kind: fedimint_wallet_common::KIND,
+                id: 2,
+            }),
+            ts_usecs,
+            payload: serde_json::to_vec(&event).expect("serialises"),
+        }
     }
 }
 
@@ -755,95 +923,45 @@ mod tests {
     }
 
     #[test]
-    fn deposit_states_fold_onto_the_receive_lifecycle() {
-        let peg_in_abs = Amount::from_msats(1_000_000);
+    fn deposit_states_fold_onto_the_progress_of_the_claim() {
         let out_point = bitcoin::OutPoint {
             txid: a_bitcoin_txid(),
             vout: 0,
         };
-        let above_fee = bitcoin::Amount::from_sat(50_000);
+        let paid = bitcoin::Amount::from_sat(50_000);
 
-        assert_eq!(
-            map_deposit(&DepositStateV2::WaitingForTransaction, peg_in_abs),
-            DepositStep::State(OnchainReceiveState::WaitingForTransaction)
-        );
-        assert_eq!(
-            map_deposit(
-                &DepositStateV2::WaitingForConfirmation {
-                    btc_deposited: above_fee,
-                    btc_out_point: out_point,
-                },
-                peg_in_abs
-            ),
-            DepositStep::State(OnchainReceiveState::WaitingForConfirmation {
-                txid: Txid::from_upstream(out_point.txid),
-                gross_deposited: Sats::from_sats(50_000),
-            })
-        );
-        assert_eq!(
-            map_deposit(
-                &DepositStateV2::Confirmed {
-                    btc_deposited: above_fee,
-                    btc_out_point: out_point,
-                },
-                peg_in_abs
-            ),
-            DepositStep::State(OnchainReceiveState::Confirmed {
-                txid: Txid::from_upstream(out_point.txid),
-                gross_deposited: Sats::from_sats(50_000),
-            })
-        );
-        assert_eq!(
-            map_deposit(
-                &DepositStateV2::Claimed {
-                    btc_deposited: above_fee,
-                    btc_out_point: out_point,
-                },
-                peg_in_abs
-            ),
-            DepositStep::Claimed {
-                txid: Txid::from_upstream(out_point.txid),
-                gross: Sats::from_sats(50_000),
-            }
-        );
-        assert_eq!(
-            map_deposit(&DepositStateV2::Failed("boom".to_owned()), peg_in_abs),
-            DepositStep::State(OnchainReceiveState::Failed {
-                reason: "boom".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn a_claim_at_or_below_the_deposit_fee_is_failed() {
-        let peg_in_abs = Amount::from_msats(1_000_000);
-        let out_point = bitcoin::OutPoint {
-            txid: a_bitcoin_txid(),
-            vout: 0,
-        };
-        for at_or_below in [
-            bitcoin::Amount::from_sat(1_000),
-            bitcoin::Amount::from_sat(500),
+        // Everything up to and including upstream's own `Confirmed` is a claim in progress: a
+        // record exists only for a payment that is already being claimed.
+        for claiming in [
+            DepositStateV2::WaitingForTransaction,
+            DepositStateV2::WaitingForConfirmation {
+                btc_deposited: paid,
+                btc_out_point: out_point,
+            },
+            DepositStateV2::Confirmed {
+                btc_deposited: paid,
+                btc_out_point: out_point,
+            },
         ] {
-            assert_eq!(
-                map_deposit(
-                    &DepositStateV2::Claimed {
-                        btc_deposited: at_or_below,
-                        btc_out_point: out_point,
-                    },
-                    peg_in_abs
-                ),
-                DepositStep::State(OnchainReceiveState::Failed {
-                    reason: "the deposit does not exceed the federation's deposit fee and was \
-                              not claimed"
-                        .to_owned(),
-                })
-            );
+            assert_eq!(progress_of(&claiming), Progress::Claiming, "{claiming:?}");
         }
+        assert_eq!(
+            progress_of(&DepositStateV2::Claimed {
+                btc_deposited: paid,
+                btc_out_point: out_point,
+            }),
+            Progress::Claimed
+        );
+        assert_eq!(
+            progress_of(&DepositStateV2::Failed("boom".to_owned())),
+            Progress::Failed("boom".to_owned())
+        );
     }
 
+    /// The entry the module writes when it hands an address out is not a deposit: it backfills
+    /// nothing, and it is recognised as the allocation reconciliation leaves alone.
     #[test]
-    fn a_deposit_log_entry_backfills_a_receive_record() {
+    fn a_deposit_address_log_entry_backfills_nothing() {
         let meta = serde_json::json!({
             "variant": {
                 "deposit": {
@@ -852,48 +970,25 @@ mod tests {
             },
             "extra_meta": {},
         });
-        let backfilled = backfill(an_operation_id(), &meta, 1_700_000_000_000).expect("recognised");
-        assert_eq!(backfilled.kind, kinds::ONCHAIN_RECEIVE);
-        assert_eq!(backfilled.phase, None);
-        assert_eq!(backfilled.final_state, None);
-        let details = wire::decode_receive_details(&backfilled.details).expect("decode");
-        assert_eq!(details.address.to_string(), an_address());
-        assert_eq!(details.txid, None);
-        assert_eq!(
-            details.created_at,
-            Timestamp::from_epoch_millis(1_700_000_000_000)
-        );
+        assert!(backfill(an_operation_id(), &meta, 1_700_000_000_000).is_none());
+        assert!(is_address_allocation(&meta));
     }
 
-    /// The exact payload a crash between `safe_allocate_deposit_address`'s commit and
-    /// `create_operation`'s own write would have left behind, if `receive` still put a wire of
-    /// its own in a deposit's `extra_meta`: the placeholder's empty address, because the real one
-    /// was not known until after the call it rode inside of. `backfill` never reads a deposit's
-    /// `extra_meta` at all, so upstream's own address wins regardless of what is there.
     #[test]
-    fn a_deposit_log_entry_with_a_stale_placeholder_backfills_upstream_s_address() {
-        let placeholder = wire::OnchainReceiveDetailsWire {
-            address: String::new(),
-            txid: None,
-            gross_deposited_sats: None,
-            fee_msats: None,
-            fee_breakdown: None,
-            net_credit_msats: None,
-            created_at: 1_700_000_000_000,
-            upstream_operation_id: None,
-            event_cursor: None,
-        };
+    fn a_withdraw_log_entry_is_not_an_address_allocation() {
         let meta = serde_json::json!({
             "variant": {
-                "deposit": {
+                "withdraw": {
                     "address": an_address(),
+                    "amount": 25_000,
+                    "fee": { "fee_rate": { "sats_per_kvb": 10_000 }, "total_weight": 4_000 },
+                    "change": [],
                 },
             },
-            "extra_meta": custom_meta(&placeholder).expect("encode"),
+            "extra_meta": {},
         });
-        let backfilled = backfill(an_operation_id(), &meta, 1_700_000_000_000).expect("recognised");
-        let details = wire::decode_receive_details(&backfilled.details).expect("decode");
-        assert_eq!(details.address.to_string(), an_address());
+        assert!(!is_address_allocation(&meta));
+        assert!(!is_address_allocation(&serde_json::Value::Null));
     }
 
     #[test]

@@ -617,6 +617,8 @@ pub(crate) enum FederationDbPrefix {
     OperationRecord = 0xb0,
     /// The chronological index over those records, for paging activity newest first.
     OperationIndex = 0xb1,
+    /// How far into the client's event log on-chain deposits have been given records.
+    DepositCursor = 0xb2,
 }
 
 /// The key of one operation's SDK record.
@@ -730,6 +732,17 @@ impl_db_record!(
 impl_db_lookup!(
     key = OperationIndexKey,
     query_prefix = OperationIndexKeyPrefix
+);
+
+/// The key of the one value [`FederationDbPrefix::DepositCursor`] holds: the position in the
+/// client's event log that the next search for on-chain deposits starts from.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub(crate) struct DepositCursorKey;
+
+impl_db_record!(
+    key = DepositCursorKey,
+    value = u64,
+    db_prefix = FederationDbPrefix::DepositCursor,
 );
 
 /// The SDK's clock, in milliseconds since the Unix epoch.
@@ -1279,6 +1292,7 @@ mod operation_record_tests {
         // `ExternalReservedStart = 0xb1 ..= ExternalReservedEnd = 0xcf`.
         assert_eq!(FederationDbPrefix::OperationRecord as u8, 0xb0);
         assert_eq!(FederationDbPrefix::OperationIndex as u8, 0xb1);
+        assert_eq!(FederationDbPrefix::DepositCursor as u8, 0xb2);
     }
 
     #[test]

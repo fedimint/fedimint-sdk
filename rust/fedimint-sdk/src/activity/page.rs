@@ -49,6 +49,19 @@ pub(crate) async fn page(
         .as_ref()
         .map(|cursor| (cursor.created_at(), cursor.id().upstream()));
 
+    // An on-chain deposit can be without a record until the wallet's announcement of it is
+    // read, and nothing reads one while no deposit subscription is open, so the walk below is
+    // brought up to date first. A failure costs this page the deposits found since the last
+    // pass, not the history it already has.
+    if let Err(err) = crate::onchain::pick_up_deposits(federation).await {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            federation = %federation.id,
+            error = %err,
+            "could not record the on-chain deposits this federation's wallet found",
+        );
+    }
+
     let db = federation.db();
     let mut dbtx = db.begin_transaction_nc().await;
     let mut entries = dbtx
@@ -74,8 +87,16 @@ pub(crate) async fn page(
 
     let mut dbtx = db.begin_transaction_nc().await;
     let mut records = Vec::with_capacity(keys.len());
+    // The last key this page consumed, whether or not it became a row: where the next page
+    // resumes.
+    let mut last = None;
     for key in keys {
+        last = Some((key.id, key.created_at));
         match dbtx.get_value(&OperationRecordKey(key.id)).await {
+            // Not a row: a deposit address a version of this crate recorded when it handed
+            // the address out, which nobody has paid. Its key still counted towards `limit`,
+            // so a page can come back shorter for it, never longer.
+            Some(record) if is_unpaid_address(&record) => {}
             Some(record) => records.push((key.id, record)),
             // The index and its record are written together (`FederationInner::write_record`),
             // so this never happens; a missing row is a better failure than a panic.
@@ -101,18 +122,24 @@ pub(crate) async fn page(
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
 
-    let next = has_more
-        .then(|| records.last())
-        .flatten()
-        .map(|(id, record)| {
-            Cursor::new(
-                FederationId::from_upstream(federation.id),
-                record.created_at,
-                OperationId::from_upstream(*id),
-            )
-        });
+    let next = has_more.then_some(last).flatten().map(|(id, created_at)| {
+        Cursor::new(
+            FederationId::from_upstream(federation.id),
+            created_at,
+            OperationId::from_upstream(id),
+        )
+    });
 
     Ok(ActivityPage { items, next })
+}
+
+/// Whether a record is a deposit address rather than a deposit: an on-chain receive record that
+/// never reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN), the phase every deposit record
+/// carries from the write that creates it, and has no ending.
+fn is_unpaid_address(record: &OperationRecord) -> bool {
+    record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
+        && record.phase.is_none()
+        && record.final_state.is_none()
 }
 
 /// The row for one record, brought up to date if its ending is not recorded yet.
@@ -349,6 +376,113 @@ mod tests {
         let third = page(&federation, Some(cursor), 2).await.expect("last page");
         assert_eq!(ids(&third), vec![opid(1)]);
         assert!(third.next.is_none());
+    }
+
+    /// A deposit address that an earlier version of this crate recorded when it handed the
+    /// address out, and that nobody paid, is not a row. Its key still counts towards the page,
+    /// so a page can come back short or empty, and the cursor still leads to what is behind it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unpaid_address_an_earlier_version_recorded_is_not_a_row() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let claimed = LnReceiveDriver
+            .encode_state(&LnReceiveState::Claimed)
+            .expect("encode");
+        write(
+            &db,
+            id_bytes(1),
+            record(
+                kinds::LN_RECEIVE,
+                "lnv2",
+                1,
+                receive_details_json(&receive_details()),
+                Some(claimed),
+            ),
+        )
+        .await;
+        let unpaid = serde_json::json!({
+            "address": "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl",
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 10u64,
+        })
+        .to_string();
+        for n in 2..=4u8 {
+            write(
+                &db,
+                id_bytes(n),
+                record(
+                    kinds::ONCHAIN_RECEIVE,
+                    "wallet",
+                    10 + u64::from(n),
+                    unpaid.clone(),
+                    None,
+                ),
+            )
+            .await;
+        }
+
+        let first = page(&federation, None, 2).await.expect("first page");
+        assert!(first.items.is_empty(), "{:?}", first.items);
+        let cursor = first.next.expect("two keys remain behind the page");
+
+        let second = page(&federation, Some(cursor), 2)
+            .await
+            .expect("second page");
+        assert_eq!(ids(&second), vec![opid(1)]);
+        assert!(second.next.is_none());
+    }
+
+    /// A deposit is a row from the moment it is found, with what arrived as its amount.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claimed_deposit_is_a_row_with_what_arrived() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let txid = "11".repeat(32);
+        let details = serde_json::json!({
+            "address": "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl",
+            "txid": txid,
+            "gross_deposited_sats": 100_000u64,
+            "fee_msats": 1_500u64,
+            "fee_breakdown": {
+                "peg_in_msats": 1_000u64,
+                "network_claim_msats": 0u64,
+                "primary_module_msats": 400u64,
+                "dust_msats": 100u64,
+            },
+            "net_credit_msats": 99_998_500u64,
+            "created_at": 1_700_000_000_000u64,
+        })
+        .to_string();
+        let claimed = crate::onchain::OnchainReceiveDriver
+            .encode_state(&crate::OnchainReceiveState::Claimed {
+                txid: txid.parse().expect("a well-formed transaction id"),
+                gross_deposited: crate::Sats::from_sats(100_000),
+                net_credit: Amount::from_msats(99_998_500),
+            })
+            .expect("encode");
+        let mut deposit = record(
+            kinds::ONCHAIN_RECEIVE,
+            "walletv2",
+            1_700_000_000_000,
+            details,
+            Some(claimed),
+        );
+        deposit.phase = Some(crate::onchain::PHASE_SEEN);
+        write(&db, id_bytes(1), deposit).await;
+
+        let activity = page(&federation, None, 10).await.expect("one row");
+        assert_eq!(activity.items.len(), 1);
+        let row = &activity.items[0];
+        assert_eq!(row.kind, OperationKind::OnchainReceive);
+        assert_eq!(row.status, ActivityStatus::Success);
+        assert!(row.is_final);
+        assert_eq!(row.amount, Some(Amount::from_msats(100_000_000)));
+        assert_eq!(row.fee, Some(Amount::from_msats(1_500)));
+        assert_eq!(row.direction, Some(Direction::Incoming));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -472,11 +472,6 @@ mod tests {
     fn receive_driver_decodes_what_it_encodes() {
         let driver = OnchainReceiveDriver;
         for state in [
-            OnchainReceiveState::WaitingForTransaction,
-            OnchainReceiveState::WaitingForConfirmation {
-                txid: a_txid(),
-                gross_deposited: Sats::from_sats(100_000),
-            },
             OnchainReceiveState::Confirmed {
                 txid: a_txid(),
                 gross_deposited: Sats::from_sats(100_000),

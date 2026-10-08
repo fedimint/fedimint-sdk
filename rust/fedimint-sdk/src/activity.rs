@@ -67,7 +67,7 @@ pub(crate) use page::page;
 /// | [`LnSend`](OperationKind::LnSend) | invoice amount, what the payee receives on success | fee bound by the executed quote |
 /// | [`LnReceive`](OperationKind::LnReceive) | invoice's face value, what the payer is asked for | receive-side fee taken out of it |
 /// | [`OnchainSend`](OperationKind::OnchainSend) | amount bound for the destination address | all federation-side funding costs, aggregated (peg-out, network, mint funding, change, dust) |
-/// | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain; `None` until a transaction is seen | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
+/// | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
 /// | [`Recovery`](OperationKind::Recovery) | `None`, nothing was transferred | `None` |
 /// | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
 ///
@@ -174,11 +174,8 @@ pub struct ActivityItem {
     /// stops two bindings from rendering the same row differently.
     ///
     /// `None` for a kind with no single counterparty figure: a recovery,
-    /// which transfers nothing; a row this SDK cannot interpret, where any
-    /// number would be invented; or an on-chain deposit before a transaction
-    /// has been seen, where there is nothing yet to report. A figure that
-    /// starts `None` and becomes known is written once and never changes
-    /// afterwards.
+    /// which transfers nothing, or a row this SDK cannot interpret, where any
+    /// number would be invented.
     pub amount: Option<Amount>,
     /// The fee the operation's terms carry, what this wallet pays for the
     /// transfer if it succeeds, when it is known.
@@ -191,7 +188,7 @@ pub struct ActivityItem {
     ///
     /// `None` when the kind has no fee at all, or when the fee is not knowable
     /// yet, an operation still in flight, or an on-chain deposit whose
-    /// claim fee only exists once something has arrived. `Some(zero)` and
+    /// claim has not settled. `Some(zero)` and
     /// `None` are different answers, and a UI should treat them so: the first
     /// says the terms carry no fee, the second that this row cannot say yet.
     pub fee: Option<Amount>,

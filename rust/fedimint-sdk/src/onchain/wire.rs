@@ -11,9 +11,10 @@ use crate::{
     OnchainReceiveState, OnchainSendDetails, OnchainSendState, Result, Sats, Timestamp, Txid,
 };
 
-/// The operation has seen a transaction past
-/// [`WaitingForTransaction`](crate::OnchainReceiveState::WaitingForTransaction): a deposit
-/// address has stopped being a pure watch. The only phase an on-chain record ever carries.
+/// The record is of a deposit: a payment the wallet has found. The only phase an on-chain
+/// record ever carries, and every deposit record carries it from the write that creates it. A
+/// receive record without it is a deposit address that a version of this crate recorded when it
+/// handed the address out, which nobody has paid.
 ///
 /// `pub(crate)`, not `pub(super)`: `federation.rs`'s erase guard
 /// ([`has_seen_unclaimed_deposit`](crate::federation::FederationInner::has_seen_unclaimed_deposit))
@@ -87,7 +88,7 @@ impl From<ReceiveFeeBreakdownWire> for OnchainReceiveFeeBreakdown {
     }
 }
 
-/// [`OnchainReceiveDetails`] as stored, plus the two private fill-in-later fields.
+/// [`OnchainReceiveDetails`] as stored, plus the three private fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OnchainReceiveDetailsWire {
     pub(super) address: String,
@@ -97,22 +98,26 @@ pub(super) struct OnchainReceiveDetailsWire {
     pub(super) fee_breakdown: Option<ReceiveFeeBreakdownWire>,
     pub(super) net_credit_msats: Option<u64>,
     pub(super) created_at: u64,
-    /// walletv2 only: the upstream operation the claim runs under once one is linked. Not
-    /// part of the public record.
+    /// walletv2 only: the upstream operation the claim the record follows runs under. Not part
+    /// of the public record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) upstream_operation_id: Option<String>,
-    /// walletv2 only: the event-log position the next scan starts from. Not part of the
-    /// public record.
+    /// walletv2 only: the event-log position a search for a later claim of the same deposit
+    /// starts from. Not part of the public record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) event_cursor: Option<u64>,
+    /// walletv2 only: which output of [`txid`](Self::txid) paid the address. Not part of the
+    /// public record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) vout: Option<u32>,
 }
 
 impl From<&OnchainReceiveDetails> for OnchainReceiveDetailsWire {
     fn from(details: &OnchainReceiveDetails) -> OnchainReceiveDetailsWire {
         OnchainReceiveDetailsWire {
             address: details.address.to_string(),
-            txid: details.txid.as_ref().map(ToString::to_string),
-            gross_deposited_sats: details.gross_deposited.map(Sats::sats),
+            txid: Some(details.txid.to_string()),
+            gross_deposited_sats: Some(details.gross_deposited.sats()),
             fee_msats: details.fee.map(Amount::msats),
             fee_breakdown: details
                 .fee_breakdown
@@ -122,6 +127,7 @@ impl From<&OnchainReceiveDetails> for OnchainReceiveDetailsWire {
             created_at: details.created_at.epoch_millis(),
             upstream_operation_id: None,
             event_cursor: None,
+            vout: None,
         }
     }
 }
@@ -130,14 +136,18 @@ impl TryFrom<OnchainReceiveDetailsWire> for OnchainReceiveDetails {
     type Error = Error;
 
     fn try_from(wire: OnchainReceiveDetailsWire) -> Result<OnchainReceiveDetails> {
-        let txid = match wire.txid {
-            Some(txid) => Some(parse_txid(&txid)?),
-            None => None,
+        // Every deposit record names its payment. One that does not is a deposit address a
+        // version of this crate recorded when it handed the address out, which nobody has paid.
+        let (Some(txid), Some(gross_deposited)) = (wire.txid, wire.gross_deposited_sats) else {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                "this record is a deposit address that has not been paid",
+            ));
         };
         Ok(OnchainReceiveDetails {
             address: parse_address(&wire.address)?,
-            txid,
-            gross_deposited: wire.gross_deposited_sats.map(Sats::from_sats),
+            txid: parse_txid(&txid)?,
+            gross_deposited: Sats::from_sats(gross_deposited),
             fee: wire.fee_msats.map(Amount::from_msats),
             fee_breakdown: wire.fee_breakdown.map(OnchainReceiveFeeBreakdown::from),
             net_credit: wire.net_credit_msats.map(Amount::from_msats),
@@ -160,11 +170,6 @@ enum OnchainSendStateWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum OnchainReceiveStateWire {
-    WaitingForTransaction,
-    WaitingForConfirmation {
-        txid: String,
-        gross_deposited_sats: u64,
-    },
     Confirmed {
         txid: String,
         gross_deposited_sats: u64,
@@ -209,16 +214,6 @@ pub(super) fn decode_send_state(encoded: &str) -> Result<OnchainSendState> {
 
 pub(super) fn encode_receive_state(state: &OnchainReceiveState) -> Result<String> {
     let wire = match state {
-        OnchainReceiveState::WaitingForTransaction => {
-            OnchainReceiveStateWire::WaitingForTransaction
-        }
-        OnchainReceiveState::WaitingForConfirmation {
-            txid,
-            gross_deposited,
-        } => OnchainReceiveStateWire::WaitingForConfirmation {
-            txid: txid.to_string(),
-            gross_deposited_sats: gross_deposited.sats(),
-        },
         OnchainReceiveState::Confirmed {
             txid,
             gross_deposited,
@@ -245,16 +240,6 @@ pub(super) fn encode_receive_state(state: &OnchainReceiveState) -> Result<String
 pub(super) fn decode_receive_state(encoded: &str) -> Result<OnchainReceiveState> {
     let wire: OnchainReceiveStateWire = serde_json::from_str(encoded).map_err(decode_error)?;
     Ok(match wire {
-        OnchainReceiveStateWire::WaitingForTransaction => {
-            OnchainReceiveState::WaitingForTransaction
-        }
-        OnchainReceiveStateWire::WaitingForConfirmation {
-            txid,
-            gross_deposited_sats,
-        } => OnchainReceiveState::WaitingForConfirmation {
-            txid: parse_txid(&txid)?,
-            gross_deposited: Sats::from_sats(gross_deposited_sats),
-        },
         OnchainReceiveStateWire::Confirmed {
             txid,
             gross_deposited_sats,
@@ -357,11 +342,11 @@ mod tests {
         }
     }
 
-    fn waiting_receive_details() -> OnchainReceiveDetails {
+    fn found_receive_details() -> OnchainReceiveDetails {
         OnchainReceiveDetails {
             address: an_address(),
-            txid: None,
-            gross_deposited: None,
+            txid: a_txid(),
+            gross_deposited: Sats::from_sats(100_000),
             fee: None,
             fee_breakdown: None,
             net_credit: None,
@@ -371,8 +356,6 @@ mod tests {
 
     fn claimed_receive_details() -> OnchainReceiveDetails {
         OnchainReceiveDetails {
-            txid: Some(a_txid()),
-            gross_deposited: Some(Sats::from_sats(100_000)),
             fee: Some(Amount::from_msats(1_500)),
             fee_breakdown: Some(OnchainReceiveFeeBreakdown {
                 peg_in: Amount::from_msats(1_000),
@@ -381,7 +364,7 @@ mod tests {
                 dust: Amount::from_msats(100),
             }),
             net_credit: Some(Amount::from_msats(99_998_500)),
-            ..waiting_receive_details()
+            ..found_receive_details()
         }
     }
 
@@ -393,15 +376,37 @@ mod tests {
     }
 
     #[test]
-    fn receive_details_round_trip_through_json_with_every_option_none() {
-        let details = waiting_receive_details();
+    fn receive_details_round_trip_through_json_before_the_claim_settles() {
+        let details = found_receive_details();
         let json =
             serde_json::to_string(&OnchainReceiveDetailsWire::from(&details)).expect("encode");
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
     }
 
+    /// A record that names no payment is a deposit address a version of this crate recorded
+    /// when it handed the address out. It still reads as a wire record, which is what lets a
+    /// payment be filled in later, and it is not a deposit's details.
     #[test]
-    fn receive_details_round_trip_through_json_with_every_option_some() {
+    fn a_record_that_names_no_payment_is_not_a_deposit_s_details() {
+        let json = serde_json::json!({
+            "address": an_address().to_string(),
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_700_000_000_000u64,
+        })
+        .to_string();
+        let wire = decode_receive_wire(&json).expect("the stored shape still reads");
+        assert_eq!(wire.txid, None);
+        assert_eq!(wire.vout, None);
+        let err = decode_receive_details(&json).expect_err("no payment, no details");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn receive_details_round_trip_through_json_once_claimed() {
         let details = claimed_receive_details();
         let breakdown = details.fee_breakdown.clone().expect("set above");
         let summed = breakdown
@@ -419,21 +424,25 @@ mod tests {
 
     #[test]
     fn the_private_walletv2_fields_stay_off_the_public_record() {
-        let details = waiting_receive_details();
+        let details = found_receive_details();
         let mut wire = OnchainReceiveDetailsWire::from(&details);
         let json = encode_receive_wire(&wire).expect("encode");
         assert!(!json.contains("upstream_operation_id"), "{json}");
         assert!(!json.contains("event_cursor"), "{json}");
+        assert!(!json.contains("vout"), "{json}");
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
 
         wire.upstream_operation_id = Some("ab".repeat(32));
         wire.event_cursor = Some(42);
+        wire.vout = Some(1);
         let json = encode_receive_wire(&wire).expect("encode");
         assert!(json.contains("upstream_operation_id"), "{json}");
         assert!(json.contains("event_cursor"), "{json}");
+        assert!(json.contains("vout"), "{json}");
         let decoded = decode_receive_wire(&json).expect("decode");
         assert_eq!(decoded.upstream_operation_id, wire.upstream_operation_id);
         assert_eq!(decoded.event_cursor, wire.event_cursor);
+        assert_eq!(decoded.vout, wire.vout);
         // The public record still does not expose them.
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
     }
@@ -511,7 +520,7 @@ mod tests {
         );
 
         let mut value =
-            serde_json::to_value(OnchainReceiveDetailsWire::from(&waiting_receive_details()))
+            serde_json::to_value(OnchainReceiveDetailsWire::from(&found_receive_details()))
                 .expect("encode");
         value.as_object_mut().expect("an object").insert(
             "address".to_owned(),

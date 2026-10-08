@@ -492,18 +492,51 @@ final class DemoModel: ObservableObject {
 
     // MARK: - On-chain
 
+    /// Shows a deposit address, then follows the first deposit the wallet finds.
+    ///
+    /// The subscription is opened before the address is requested. It yields
+    /// only the deposits found after it was opened, so one opened later could
+    /// miss a payment that is found right away.
+    ///
+    /// An address is not an operation: a deposit becomes one once the
+    /// federation's wallet finds the payment. Until then there is nothing to
+    /// follow, so the block waits with the address on screen. The wait ends with
+    /// a deposit or with an error, which is shown under the address. It cannot
+    /// be interrupted, so a request that was superseded stays parked until it
+    /// ends, and the guard after the wait stops it from writing.
     func deposit() {
+        // An earlier request's watcher renders into this section too. The wait
+        // below lasts as long as the payment takes, so the watcher is stopped
+        // here, or its next update would overwrite this request's address.
+        watchTasks[.deposit]?.cancel()
+
         run(.deposit) {
             guard let onchain = self.federation?.onchain() else {
                 return "this federation has no wallet module"
             }
 
-            let receive = try await onchain.receive()
+            let deposits = try await onchain.deposits()
+            let address = try await onchain.receive()
             guard !self.isSuperseded else { return "superseded by a newer request" }
-            self.lastAddress = receive.address
+            self.lastAddress = address
 
-            let header = "Send bitcoin to:\n\(receive.address)\n\noperation \(receive.operation.id())"
-            let updates = receive.operation.updates()
+            // Written here and not returned: `run` renders what the block
+            // returns, and this block returns only once the wait below ends.
+            let payTo = "Send bitcoin to:\n\(address)"
+            self.results[.deposit] = payTo
+
+            let operation: OnchainReceiveOperation
+            do {
+                operation = try await deposits.next()
+            } catch let error as SdkError {
+                // The address stays on screen above the error: it may already
+                // have been shown to a payer.
+                return "\(payTo)\n\n\(self.describe(error))"
+            }
+            guard !self.isSuperseded else { return "superseded by a newer request" }
+
+            let header = "\(payTo)\n\noperation \(operation.id())"
+            let updates = operation.updates()
             self.watch(.deposit, header: header) { try await updates.next() }
             return header
         }
@@ -755,7 +788,7 @@ final class DemoModel: ObservableObject {
         watchTasks[section]?.cancel()
         // `[weak self]` for the same reason `balanceTask` uses it: the model
         // owns the task and the task would otherwise own the model, and a
-        // watcher can stay open for as long as an on-chain confirmation takes.
+        // watcher can stay open for as long as a deposit takes to be claimed.
         // It also makes a write from a watcher that outlives the screen a
         // no-op rather than a resurrection.
         watchTasks[section] = Task { [weak self] in

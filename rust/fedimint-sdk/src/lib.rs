@@ -406,7 +406,7 @@ pub use lightning::{
 };
 pub use meta::{ConsensusMetadata, Meta};
 pub use onchain::{
-    Onchain, OnchainQuote, OnchainReceive, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
+    Onchain, OnchainDeposits, OnchainQuote, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
     OnchainReceiveState, OnchainSendDetails, OnchainSendFeeBreakdown, OnchainSendState,
 };
 pub use operation::{

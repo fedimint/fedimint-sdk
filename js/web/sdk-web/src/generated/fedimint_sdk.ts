@@ -578,7 +578,7 @@ const FfiConverterTypeActivityStatus = (() => {
  * | [`LnSend`](OperationKind::LnSend) | invoice amount, what the payee receives on success | fee bound by the executed quote |
  * | [`LnReceive`](OperationKind::LnReceive) | invoice's face value, what the payer is asked for | receive-side fee taken out of it |
  * | [`OnchainSend`](OperationKind::OnchainSend) | amount bound for the destination address | all federation-side funding costs, aggregated (peg-out, network, mint funding, change, dust) |
- * | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain; `None` until a transaction is seen | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
+ * | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
  * | [`Recovery`](OperationKind::Recovery) | `None`, nothing was transferred | `None` |
  * | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
  *
@@ -690,11 +690,8 @@ export type ActivityItem = {
    * stops two bindings from rendering the same row differently.
    *
    * `None` for a kind with no single counterparty figure: a recovery,
-   * which transfers nothing; a row this SDK cannot interpret, where any
-   * number would be invented; or an on-chain deposit before a transaction
-   * has been seen, where there is nothing yet to report. A figure that
-   * starts `None` and becomes known is written once and never changes
-   * afterwards.
+   * which transfers nothing, or a row this SDK cannot interpret, where any
+   * number would be invented.
    */
   amount?: Amount
   /**
@@ -709,7 +706,7 @@ export type ActivityItem = {
    *
    * `None` when the kind has no fee at all, or when the fee is not knowable
    * yet, an operation still in flight, or an on-chain deposit whose
-   * claim fee only exists once something has arrived. `Some(zero)` and
+   * claim has not settled. `Some(zero)` and
    * `None` are different answers, and a UI should treat them so: the first
    * says the terms carry no fee, the second that this row cannot say yet.
    */
@@ -5314,22 +5311,18 @@ const FfiConverterTypeOnchainReceiveFeeBreakdown = (() => {
 })()
 
 /**
- * What an on-chain deposit is: the address to display, and the facts about
- * the funding transaction as they become known.
+ * What an on-chain deposit is: the address that was paid, the transaction
+ * that paid it, and what claiming it cost once that is known.
  *
  * Read with [`Operation::details`](crate::Operation::details) on an
- * `Operation<OnchainReceiveState>`. The record is committed in the same
- * storage transaction that creates the operation, so it is readable from
- * the moment [`Onchain::receive`] returns. No state carries the address, so
- * this record is what makes an operation id enough to rebuild a deposit
- * screen after a restart.
+ * `Operation<OnchainReceiveState>`. The record exists from the moment the
+ * deposit does, so it is readable as soon as [`OnchainDeposits::next`]
+ * hands the operation out. No state carries the address, so this record is
+ * what makes an operation id enough to rebuild a deposit screen after a
+ * restart.
  *
- * # Five fields fill in over time, each once and for good
+ * # Three fields fill in when the claim settles
  *
- * [`txid`](OnchainReceiveDetails::txid) and
- * [`gross_deposited`](OnchainReceiveDetails::gross_deposited) fill in when a
- * transaction is seen, at
- * [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation).
  * [`fee`](OnchainReceiveDetails::fee),
  * [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) and
  * [`net_credit`](OnchainReceiveDetails::net_credit) fill in when the claim
@@ -5342,11 +5335,8 @@ const FfiConverterTypeOnchainReceiveFeeBreakdown = (() => {
  * record twice cannot produce two contradictory receipts.
  *
  * `None` means "not established", never "lost", and a field may stay `None`
- * for good: a deposit still in
- * [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction) has
- * all five absent, and one that [`Failed`](OnchainReceiveState::Failed)
- * after its transaction was seen has the first two set and the rest `None`,
- * since no claim settled.
+ * for good: a deposit that [`Failed`](OnchainReceiveState::Failed) has all
+ * three absent, since no claim settled.
  *
  * # The aggregate, and the arithmetic these fields satisfy
  *
@@ -5365,39 +5355,31 @@ const FfiConverterTypeOnchainReceiveFeeBreakdown = (() => {
  */
 export type OnchainReceiveDetails = {
   /**
-   * The deposit address this operation watches.
+   * The deposit address that was paid.
    *
-   * Fixed when the operation was created and never changes. Display it,
-   * encode it as a QR code, or hand it to a sender.
-   *
-   * Fresh for this operation: never handed out before it, and never
-   * handed out again; see [`Onchain::receive`].
+   * One of the addresses [`Onchain::receive`] handed out.
    */
   address: Address
   /**
-   * The funding transaction, once one paying the address has been seen.
+   * The funding transaction.
    *
-   * `None` until then. Filled in when the deposit reaches
-   * [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation)
-   * and never changed afterwards, including if the deposit then
-   * [`Failed`](OnchainReceiveState::Failed), which carries no transaction
-   * of its own.
-   *
-   * This tracks the first output detected at the address; see
-   * [`Onchain::receive`].
+   * The same transaction [`Confirmed`](OnchainReceiveState::Confirmed)
+   * and [`Claimed`](OnchainReceiveState::Claimed) name. It is here as
+   * well so that a deposit that [`Failed`](OnchainReceiveState::Failed),
+   * which carries no transaction of its own, can still be described.
    */
-  txid?: Txid
+  txid: Txid
   /**
    * The gross amount that arrived on chain, before anything the
    * federation charges to claim it.
    *
    * Whole [`Sats`](crate::Sats): it is the value of an output in the
-   * funding transaction. `None` until a transaction is seen, then fixed.
+   * funding transaction.
    *
    * This is the counterparty figure, what the sender sent, and it is the
    * number to show beside the credit when a user asks why the two differ.
    */
-  grossDeposited?: Sats
+  grossDeposited: Sats
   /**
    * The aggregate of everything the federation charged to bring this
    * deposit into the balance, once the claim has settled.
@@ -5432,11 +5414,12 @@ export type OnchainReceiveDetails = {
    */
   netCredit?: Amount
   /**
-   * When the deposit address was allocated, by this device's clock.
+   * When the wallet found the deposit, by this device's clock.
    *
-   * A local reading, like [`ActivityItem::time`](crate::ActivityItem::time).
-   * Note that this is when the *address* was handed out, not when the
-   * funding transaction arrived; a deposit may be paid days later.
+   * A local reading, like [`ActivityItem::time`](crate::ActivityItem::time):
+   * the federation does not attest to it. It is neither when the address
+   * was handed out nor when the funding transaction was broadcast; a
+   * deposit is found only once that transaction has its confirmations.
    */
   createdAt: Timestamp
 }
@@ -5465,8 +5448,8 @@ const FfiConverterTypeOnchainReceiveDetails = (() => {
     readFromCursor(c: UniffiCursor): TypeName {
       return {
         address: FfiConverterTypeAddress.readFromCursor(c),
-        txid: FfiConverterOptionalTypeTxid.readFromCursor(c),
-        grossDeposited: FfiConverterOptionalTypeSats.readFromCursor(c),
+        txid: FfiConverterTypeTxid.readFromCursor(c),
+        grossDeposited: FfiConverterTypeSats.readFromCursor(c),
         fee: FfiConverterOptionalTypeAmount.readFromCursor(c),
         feeBreakdown:
           FfiConverterOptionalTypeOnchainReceiveFeeBreakdown.readFromCursor(c),
@@ -5476,8 +5459,8 @@ const FfiConverterTypeOnchainReceiveDetails = (() => {
     }
     writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterTypeAddress.writeIntoCursor(value.address, c)
-      FfiConverterOptionalTypeTxid.writeIntoCursor(value.txid, c)
-      FfiConverterOptionalTypeSats.writeIntoCursor(value.grossDeposited, c)
+      FfiConverterTypeTxid.writeIntoCursor(value.txid, c)
+      FfiConverterTypeSats.writeIntoCursor(value.grossDeposited, c)
       FfiConverterOptionalTypeAmount.writeIntoCursor(value.fee, c)
       FfiConverterOptionalTypeOnchainReceiveFeeBreakdown.writeIntoCursor(
         value.feeBreakdown,
@@ -5489,963 +5472,14 @@ const FfiConverterTypeOnchainReceiveDetails = (() => {
     allocationSize(value: TypeName): number {
       return (
         FfiConverterTypeAddress.allocationSize(value.address) +
-        FfiConverterOptionalTypeTxid.allocationSize(value.txid) +
-        FfiConverterOptionalTypeSats.allocationSize(value.grossDeposited) +
+        FfiConverterTypeTxid.allocationSize(value.txid) +
+        FfiConverterTypeSats.allocationSize(value.grossDeposited) +
         FfiConverterOptionalTypeAmount.allocationSize(value.fee) +
         FfiConverterOptionalTypeOnchainReceiveFeeBreakdown.allocationSize(
           value.feeBreakdown,
         ) +
         FfiConverterOptionalTypeAmount.allocationSize(value.netCredit) +
         FfiConverterTypeTimestamp.allocationSize(value.createdAt)
-      )
-    }
-  }
-  return new FFIConverter()
-})()
-
-// Enum: OnchainReceiveState
-export enum OnchainReceiveState_Tags {
-  WaitingForTransaction = 'WaitingForTransaction',
-  WaitingForConfirmation = 'WaitingForConfirmation',
-  Confirmed = 'Confirmed',
-  Claimed = 'Claimed',
-  Failed = 'Failed',
-}
-/**
- * The lifecycle of an on-chain deposit.
- *
- * The five variants are the application-level lifecycle of a deposit:
- * nothing seen, seen, confirmed, credited, or could not be credited.
- *
- * A deposit can stay in [`Confirmed`](Self::Confirmed) across an internal
- * retry of the claim, under the same operation id, until the claim
- * succeeds; [`Failed`](Self::Failed) is emitted only once no further claim
- * is possible, so an application never sees a still-claimable deposit
- * finalized.
- *
- * # The final state is self-contained
- *
- * [`Claimed`](Self::Claimed) carries the funding transaction, the gross
- * amount that arrived, and the net amount credited, and that is not
- * redundancy. A subscription yields the state an operation is in now and
- * never replays the ones before it, so an application that reattaches to a
- * deposit by id, after a restart, from an activity row, or from a
- * notification, may see [`Claimed`](Self::Claimed) as the very first state
- * it is ever shown, and it can render a full receipt from that state alone.
- *
- * The one state that is deliberately not self-contained is
- * [`Failed`](Self::Failed), which carries only a diagnostic reason even
- * though a deposit can fail after its transaction was seen. That is what
- * [`OnchainReceiveDetails`] is for: the address, and the transaction and
- * gross amount once one was seen, are on the details record too, so an
- * application never needs to have observed an earlier state to describe a
- * failed deposit.
- */
-
-type OnchainReceiveState_WaitingForTransaction_interface = {
-  /**
-   * @private
-   * This field is private and should not be used, use `tag` instead.
-   */
-  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
-  tag: OnchainReceiveState_Tags.WaitingForTransaction
-}
-
-type OnchainReceiveState_WaitingForConfirmation_interface = {
-  /**
-   * @private
-   * This field is private and should not be used, use `tag` instead.
-   */
-  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
-  tag: OnchainReceiveState_Tags.WaitingForConfirmation
-  inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
-}
-
-type OnchainReceiveState_Confirmed_interface = {
-  /**
-   * @private
-   * This field is private and should not be used, use `tag` instead.
-   */
-  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
-  tag: OnchainReceiveState_Tags.Confirmed
-  inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
-}
-
-type OnchainReceiveState_Claimed_interface = {
-  /**
-   * @private
-   * This field is private and should not be used, use `tag` instead.
-   */
-  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
-  tag: OnchainReceiveState_Tags.Claimed
-  inner: Readonly<{ txid: Txid; grossDeposited: Sats; netCredit: Amount }>
-}
-
-type OnchainReceiveState_Failed_interface = {
-  /**
-   * @private
-   * This field is private and should not be used, use `tag` instead.
-   */
-  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
-  tag: OnchainReceiveState_Tags.Failed
-  inner: Readonly<{ reason: string }>
-}
-export type OnchainReceiveState =
-  | OnchainReceiveState_WaitingForTransaction_interface
-  | OnchainReceiveState_WaitingForConfirmation_interface
-  | OnchainReceiveState_Confirmed_interface
-  | OnchainReceiveState_Claimed_interface
-  | OnchainReceiveState_Failed_interface
-
-export const OnchainReceiveState = (() => {
-  /**
-   * The address is being watched and no transaction paying it has been
-   * seen yet.
-   *
-   * A deposit can sit here indefinitely, and there is no call that ends
-   * it; see [`Onchain::receive`] for what that means for
-   * [`Operation::await_final`](crate::Operation::await_final) and for
-   * [`Sdk::forget_federation`](crate::Sdk::forget_federation).
-   */
-  class WaitingForTransaction_
-    extends UniffiEnum
-    implements OnchainReceiveState_WaitingForTransaction_interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
-    readonly tag = OnchainReceiveState_Tags.WaitingForTransaction
-    constructor() {
-      super('OnchainReceiveState', 'WaitingForTransaction')
-    }
-
-    static new(): WaitingForTransaction_ {
-      return new WaitingForTransaction_()
-    }
-
-    static instanceOf(obj: any): obj is WaitingForTransaction_ {
-      return obj.tag === OnchainReceiveState_Tags.WaitingForTransaction
-    }
-  }
-  /**
-   * A transaction paying the address has been seen and is waiting for
-   * enough confirmations for the federation to accept it.
-   */
-  class WaitingForConfirmation_
-    extends UniffiEnum
-    implements OnchainReceiveState_WaitingForConfirmation_interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
-    readonly tag = OnchainReceiveState_Tags.WaitingForConfirmation
-    readonly inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
-    constructor(inner: { txid: Txid; grossDeposited: Sats }) {
-      super('OnchainReceiveState', 'WaitingForConfirmation')
-
-      this.inner = Object.freeze(inner)
-    }
-    static new(inner: {
-      txid: Txid
-      grossDeposited: Sats
-    }): WaitingForConfirmation_ {
-      return new WaitingForConfirmation_(inner)
-    }
-
-    static instanceOf(obj: any): obj is WaitingForConfirmation_ {
-      return obj.tag === OnchainReceiveState_Tags.WaitingForConfirmation
-    }
-  }
-  /**
-   * The transaction has the confirmations the federation requires; the
-   * deposit is being claimed into the balance.
-   */
-  class Confirmed_
-    extends UniffiEnum
-    implements OnchainReceiveState_Confirmed_interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
-    readonly tag = OnchainReceiveState_Tags.Confirmed
-    readonly inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
-    constructor(inner: { txid: Txid; grossDeposited: Sats }) {
-      super('OnchainReceiveState', 'Confirmed')
-
-      this.inner = Object.freeze(inner)
-    }
-    static new(inner: { txid: Txid; grossDeposited: Sats }): Confirmed_ {
-      return new Confirmed_(inner)
-    }
-
-    static instanceOf(obj: any): obj is Confirmed_ {
-      return obj.tag === OnchainReceiveState_Tags.Confirmed
-    }
-  }
-  /**
-   * Final: the deposit is in the spendable balance.
-   *
-   * Self-contained on purpose, see the enum's own documentation. A
-   * caller holding only this state can name the transaction, what
-   * arrived, and what was credited, without having observed anything
-   * earlier.
-   */
-  class Claimed_
-    extends UniffiEnum
-    implements OnchainReceiveState_Claimed_interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
-    readonly tag = OnchainReceiveState_Tags.Claimed
-    readonly inner: Readonly<{
-      txid: Txid
-      grossDeposited: Sats
-      netCredit: Amount
-    }>
-    constructor(inner: {
-      txid: Txid
-      grossDeposited: Sats
-      netCredit: Amount
-    }) {
-      super('OnchainReceiveState', 'Claimed')
-
-      this.inner = Object.freeze(inner)
-    }
-    static new(inner: {
-      txid: Txid
-      grossDeposited: Sats
-      netCredit: Amount
-    }): Claimed_ {
-      return new Claimed_(inner)
-    }
-
-    static instanceOf(obj: any): obj is Claimed_ {
-      return obj.tag === OnchainReceiveState_Tags.Claimed
-    }
-  }
-  /**
-   * Final: the deposit could not be claimed.
-   *
-   * Carries no transaction and no amount even when one was seen. What
-   * arrived is on [`OnchainReceiveDetails`], which is where a caller that
-   * only ever saw this state reads it; no claim settled, so that record
-   * has no fee and no credit for it either.
-   */
-  class Failed_
-    extends UniffiEnum
-    implements OnchainReceiveState_Failed_interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
-    readonly tag = OnchainReceiveState_Tags.Failed
-    readonly inner: Readonly<{ reason: string }>
-    constructor(inner: { reason: string }) {
-      super('OnchainReceiveState', 'Failed')
-
-      this.inner = Object.freeze(inner)
-    }
-    static new(inner: { reason: string }): Failed_ {
-      return new Failed_(inner)
-    }
-
-    static instanceOf(obj: any): obj is Failed_ {
-      return obj.tag === OnchainReceiveState_Tags.Failed
-    }
-  }
-
-  function instanceOf(obj: any): obj is OnchainReceiveState {
-    return obj[uniffiTypeNameSymbol] === 'OnchainReceiveState'
-  }
-
-  return Object.freeze({
-    instanceOf,
-    WaitingForTransaction: WaitingForTransaction_,
-    WaitingForConfirmation: WaitingForConfirmation_,
-    Confirmed: Confirmed_,
-    Claimed: Claimed_,
-    Failed: Failed_,
-  })
-})()
-
-// FfiConverter for enum OnchainReceiveState
-const FfiConverterTypeOnchainReceiveState = (() => {
-  type TypeName = OnchainReceiveState
-  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: UniffiCursor): TypeName {
-      switch (c.readI32()) {
-        case 1:
-          return new OnchainReceiveState.WaitingForTransaction()
-        case 2:
-          return new OnchainReceiveState.WaitingForConfirmation({
-            txid: FfiConverterTypeTxid.readFromCursor(c),
-            grossDeposited: FfiConverterTypeSats.readFromCursor(c),
-          })
-        case 3:
-          return new OnchainReceiveState.Confirmed({
-            txid: FfiConverterTypeTxid.readFromCursor(c),
-            grossDeposited: FfiConverterTypeSats.readFromCursor(c),
-          })
-        case 4:
-          return new OnchainReceiveState.Claimed({
-            txid: FfiConverterTypeTxid.readFromCursor(c),
-            grossDeposited: FfiConverterTypeSats.readFromCursor(c),
-            netCredit: FfiConverterTypeAmount.readFromCursor(c),
-          })
-        case 5:
-          return new OnchainReceiveState.Failed({
-            reason: FfiConverterString.readFromCursor(c),
-          })
-        default:
-          throw new UniffiInternalError.UnexpectedEnumCase()
-      }
-    }
-    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
-      switch (value.tag) {
-        case OnchainReceiveState_Tags.WaitingForTransaction: {
-          c.writeI32(1)
-          return
-        }
-        case OnchainReceiveState_Tags.WaitingForConfirmation: {
-          c.writeI32(2)
-          const inner = value.inner
-          FfiConverterTypeTxid.writeIntoCursor(inner.txid, c)
-          FfiConverterTypeSats.writeIntoCursor(inner.grossDeposited, c)
-          return
-        }
-        case OnchainReceiveState_Tags.Confirmed: {
-          c.writeI32(3)
-          const inner = value.inner
-          FfiConverterTypeTxid.writeIntoCursor(inner.txid, c)
-          FfiConverterTypeSats.writeIntoCursor(inner.grossDeposited, c)
-          return
-        }
-        case OnchainReceiveState_Tags.Claimed: {
-          c.writeI32(4)
-          const inner = value.inner
-          FfiConverterTypeTxid.writeIntoCursor(inner.txid, c)
-          FfiConverterTypeSats.writeIntoCursor(inner.grossDeposited, c)
-          FfiConverterTypeAmount.writeIntoCursor(inner.netCredit, c)
-          return
-        }
-        case OnchainReceiveState_Tags.Failed: {
-          c.writeI32(5)
-          const inner = value.inner
-          FfiConverterString.writeIntoCursor(inner.reason, c)
-          return
-        }
-        default:
-          // Throwing from here means that OnchainReceiveState_Tags hasn't matched an ordinal.
-          throw new UniffiInternalError.UnexpectedEnumCase()
-      }
-    }
-    allocationSize(value: TypeName): number {
-      switch (value.tag) {
-        case OnchainReceiveState_Tags.WaitingForTransaction: {
-          return 4
-        }
-        case OnchainReceiveState_Tags.WaitingForConfirmation: {
-          const inner = value.inner
-          let size = 4
-          size += FfiConverterTypeTxid.allocationSize(inner.txid)
-          size += FfiConverterTypeSats.allocationSize(inner.grossDeposited)
-          return size
-        }
-        case OnchainReceiveState_Tags.Confirmed: {
-          const inner = value.inner
-          let size = 4
-          size += FfiConverterTypeTxid.allocationSize(inner.txid)
-          size += FfiConverterTypeSats.allocationSize(inner.grossDeposited)
-          return size
-        }
-        case OnchainReceiveState_Tags.Claimed: {
-          const inner = value.inner
-          let size = 4
-          size += FfiConverterTypeTxid.allocationSize(inner.txid)
-          size += FfiConverterTypeSats.allocationSize(inner.grossDeposited)
-          size += FfiConverterTypeAmount.allocationSize(inner.netCredit)
-          return size
-        }
-        case OnchainReceiveState_Tags.Failed: {
-          const inner = value.inner
-          let size = 4
-          size += FfiConverterString.allocationSize(inner.reason)
-          return size
-        }
-        default:
-          throw new UniffiInternalError.UnexpectedEnumCase()
-      }
-    }
-  }
-  return new FFIConverter()
-})()
-
-/**
- * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
- * `&mut self` can cross as `&self`.
- */
-export interface OnchainReceiveOperationUpdatesLike {
-  /**
-   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
-   */
-  next(asyncOpts_?: {
-    signal: AbortSignal
-  }) /*throws*/ : Promise<OnchainReceiveState | undefined>
-}
-/**
- * @deprecated Use `OnchainReceiveOperationUpdatesLike` instead.
- */
-export type OnchainReceiveOperationUpdatesInterface =
-  OnchainReceiveOperationUpdatesLike
-
-/**
- * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
- * `&mut self` can cross as `&self`.
- */
-export class OnchainReceiveOperationUpdates
-  extends UniffiAbstractObject
-  implements OnchainReceiveOperationUpdatesLike
-{
-  readonly [uniffiTypeNameSymbol] = 'OnchainReceiveOperationUpdates'
-  readonly [destructorGuardSymbol]: UniffiGcObject
-  readonly [pointerLiteralSymbol]: UniffiHandle
-  // No primary constructor declared for this class.
-  private constructor(pointer: UniffiHandle) {
-    super()
-    this[pointerLiteralSymbol] = pointer
-    this[destructorGuardSymbol] =
-      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.bless(pointer)
-  }
-
-  /**
-   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
-   */
-  async next(asyncOpts_?: {
-    signal: AbortSignal
-  }): Promise<OnchainReceiveState | undefined> /*throws*/ {
-    return await uniffiRustCallAsync(
-      /*rustCaller:*/ uniffiCaller,
-      /*rustFutureFunc:*/ () => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperationupdates_next(
-          uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.clonePointer(
-            this,
-          ),
-        )
-      },
-      /*pollFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
-      /*cancelFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
-      /*completeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
-      /*freeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
-      // Async returns always go through the JS-side converter: the
-      // FFI symbol returns the future handle (u64), and the user-level
-      // RustBuffer comes back via the shared `rust_future_complete_*`
-      // export. The bytes the runtime hands back must be deserialized
-      // here using the per-callable return-type converter.
-      // Borrowed view over foreign memory: the call site owns the free,
-      // as on the sync paths. Unconditional — a no-op where buffers are
-      // already JS-owned.
-      /*liftFunc:*/ (__rb) => {
-        try {
-          return FfiConverterOptionalTypeOnchainReceiveState.lift(__rb)
-        } finally {
-          nativeModule().rustbuffer_free(__rb)
-        }
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      /*asyncOpts:*/ asyncOpts_,
-      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
-        FfiConverterTypeError__as_error,
-      ),
-    )
-  }
-
-  uniffiDestroy(): void {
-    const ptr = (this as any)[destructorGuardSymbol]
-    if (ptr !== undefined) {
-      const pointer =
-        uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.pointer(this)
-      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.freePointer(pointer)
-      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.unbless(ptr)
-      delete (this as any)[destructorGuardSymbol]
-    }
-  }
-
-  static instanceOf(obj_: any): obj_ is OnchainReceiveOperationUpdates {
-    return uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.isConcreteType(
-      obj_,
-    )
-  }
-}
-
-const uniffiTypeOnchainReceiveOperationUpdatesObjectFactory: UniffiObjectFactory<OnchainReceiveOperationUpdatesLike> =
-  (() => {
-    /// <reference lib="es2021" />
-    const registry =
-      typeof FinalizationRegistry !== 'undefined'
-        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
-            uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.freePointer(
-              heldValue,
-            )
-          })
-        : null
-
-    return {
-      create(pointer: UniffiHandle): OnchainReceiveOperationUpdatesLike {
-        const instance = Object.create(OnchainReceiveOperationUpdates.prototype)
-        instance[pointerLiteralSymbol] = pointer
-        instance[destructorGuardSymbol] = this.bless(pointer)
-        instance[uniffiTypeNameSymbol] = 'OnchainReceiveOperationUpdates'
-        return instance
-      },
-
-      bless(p: UniffiHandle): UniffiGcObject {
-        const ptr = {
-          p, // make sure this object doesn't get optimized away.
-          markDestroyed: () => undefined,
-        }
-        if (registry) {
-          registry.register(ptr, p, ptr)
-        }
-        return ptr
-      },
-
-      unbless(ptr_: UniffiGcObject) {
-        if (registry) {
-          registry.unregister(ptr_)
-        }
-      },
-
-      pointer(obj_: OnchainReceiveOperationUpdatesLike): UniffiHandle {
-        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
-          throw new UniffiInternalError.UnexpectedNullPointer()
-        }
-        return (obj_ as any)[pointerLiteralSymbol]
-      },
-
-      clonePointer(obj_: OnchainReceiveOperationUpdatesLike): UniffiHandle {
-        const pointer = this.pointer(obj_)
-        return uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_clone_onchainreceiveoperationupdates(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      freePointer(pointer: UniffiHandle): void {
-        uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_free_onchainreceiveoperationupdates(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      isConcreteType(obj_: any): obj_ is OnchainReceiveOperationUpdatesLike {
-        return (
-          obj_[destructorGuardSymbol] &&
-          obj_[uniffiTypeNameSymbol] === 'OnchainReceiveOperationUpdates'
-        )
-      },
-    }
-  })()
-const FfiConverterTypeOnchainReceiveOperationUpdates = new FfiConverterObject(
-  uniffiTypeOnchainReceiveOperationUpdatesObjectFactory,
-)
-
-/**
- * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
- * handle, forwarding every method.
- */
-export interface OnchainReceiveOperationLike {
-  /**
-   * See [`Operation::await_final`](crate::Operation::await_final).
-   */
-  awaitFinal(asyncOpts_?: {
-    signal: AbortSignal
-  }) /*throws*/ : Promise<OnchainReceiveState>
-  /**
-   * See [`Operation::details`](crate::Operation::details).
-   */
-  details(asyncOpts_?: {
-    signal: AbortSignal
-  }) /*throws*/ : Promise<OnchainReceiveDetails>
-  /**
-   * See [`Operation::id`](crate::Operation::id).
-   */
-  id(): OperationId
-  /**
-   * See [`Operation::state`](crate::Operation::state).
-   */
-  state(asyncOpts_?: {
-    signal: AbortSignal
-  }) /*throws*/ : Promise<OnchainReceiveState>
-  /**
-   * See [`Operation::updates`](crate::Operation::updates).
-   */
-  updates(): OnchainReceiveOperationUpdatesLike
-}
-/**
- * @deprecated Use `OnchainReceiveOperationLike` instead.
- */
-export type OnchainReceiveOperationInterface = OnchainReceiveOperationLike
-
-/**
- * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
- * handle, forwarding every method.
- */
-export class OnchainReceiveOperation
-  extends UniffiAbstractObject
-  implements OnchainReceiveOperationLike
-{
-  readonly [uniffiTypeNameSymbol] = 'OnchainReceiveOperation'
-  readonly [destructorGuardSymbol]: UniffiGcObject
-  readonly [pointerLiteralSymbol]: UniffiHandle
-  // No primary constructor declared for this class.
-  private constructor(pointer: UniffiHandle) {
-    super()
-    this[pointerLiteralSymbol] = pointer
-    this[destructorGuardSymbol] =
-      uniffiTypeOnchainReceiveOperationObjectFactory.bless(pointer)
-  }
-
-  /**
-   * See [`Operation::await_final`](crate::Operation::await_final).
-   */
-  async awaitFinal(asyncOpts_?: {
-    signal: AbortSignal
-  }): Promise<OnchainReceiveState> /*throws*/ {
-    return await uniffiRustCallAsync(
-      /*rustCaller:*/ uniffiCaller,
-      /*rustFutureFunc:*/ () => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_await_final(
-          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
-        )
-      },
-      /*pollFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
-      /*cancelFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
-      /*completeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
-      /*freeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
-      // Async returns always go through the JS-side converter: the
-      // FFI symbol returns the future handle (u64), and the user-level
-      // RustBuffer comes back via the shared `rust_future_complete_*`
-      // export. The bytes the runtime hands back must be deserialized
-      // here using the per-callable return-type converter.
-      // Borrowed view over foreign memory: the call site owns the free,
-      // as on the sync paths. Unconditional — a no-op where buffers are
-      // already JS-owned.
-      /*liftFunc:*/ (__rb) => {
-        try {
-          return FfiConverterTypeOnchainReceiveState.lift(__rb)
-        } finally {
-          nativeModule().rustbuffer_free(__rb)
-        }
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      /*asyncOpts:*/ asyncOpts_,
-      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
-        FfiConverterTypeError__as_error,
-      ),
-    )
-  }
-
-  /**
-   * See [`Operation::details`](crate::Operation::details).
-   */
-  async details(asyncOpts_?: {
-    signal: AbortSignal
-  }): Promise<OnchainReceiveDetails> /*throws*/ {
-    return await uniffiRustCallAsync(
-      /*rustCaller:*/ uniffiCaller,
-      /*rustFutureFunc:*/ () => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_details(
-          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
-        )
-      },
-      /*pollFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
-      /*cancelFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
-      /*completeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
-      /*freeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
-      // Async returns always go through the JS-side converter: the
-      // FFI symbol returns the future handle (u64), and the user-level
-      // RustBuffer comes back via the shared `rust_future_complete_*`
-      // export. The bytes the runtime hands back must be deserialized
-      // here using the per-callable return-type converter.
-      // Borrowed view over foreign memory: the call site owns the free,
-      // as on the sync paths. Unconditional — a no-op where buffers are
-      // already JS-owned.
-      /*liftFunc:*/ (__rb) => {
-        try {
-          return FfiConverterTypeOnchainReceiveDetails.lift(__rb)
-        } finally {
-          nativeModule().rustbuffer_free(__rb)
-        }
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      /*asyncOpts:*/ asyncOpts_,
-      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
-        FfiConverterTypeError__as_error,
-      ),
-    )
-  }
-
-  /**
-   * See [`Operation::id`](crate::Operation::id).
-   */
-  id(): OperationId {
-    const __rb: Uint8Array = uniffiCaller.rustCall(
-      /*caller:*/ (callStatus) => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_id(
-          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
-          callStatus,
-        )
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-    )
-    try {
-      return FfiConverterTypeOperationId.lift(__rb)
-    } finally {
-      nativeModule().rustbuffer_free(__rb)
-    }
-  }
-
-  /**
-   * See [`Operation::state`](crate::Operation::state).
-   */
-  async state(asyncOpts_?: {
-    signal: AbortSignal
-  }): Promise<OnchainReceiveState> /*throws*/ {
-    return await uniffiRustCallAsync(
-      /*rustCaller:*/ uniffiCaller,
-      /*rustFutureFunc:*/ () => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_state(
-          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
-        )
-      },
-      /*pollFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
-      /*cancelFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
-      /*completeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
-      /*freeFunc:*/ nativeModule()
-        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
-      // Async returns always go through the JS-side converter: the
-      // FFI symbol returns the future handle (u64), and the user-level
-      // RustBuffer comes back via the shared `rust_future_complete_*`
-      // export. The bytes the runtime hands back must be deserialized
-      // here using the per-callable return-type converter.
-      // Borrowed view over foreign memory: the call site owns the free,
-      // as on the sync paths. Unconditional — a no-op where buffers are
-      // already JS-owned.
-      /*liftFunc:*/ (__rb) => {
-        try {
-          return FfiConverterTypeOnchainReceiveState.lift(__rb)
-        } finally {
-          nativeModule().rustbuffer_free(__rb)
-        }
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      /*asyncOpts:*/ asyncOpts_,
-      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
-        FfiConverterTypeError__as_error,
-      ),
-    )
-  }
-
-  /**
-   * See [`Operation::updates`](crate::Operation::updates).
-   */
-  updates(): OnchainReceiveOperationUpdatesLike {
-    return FfiConverterTypeOnchainReceiveOperationUpdates.lift(
-      uniffiCaller.rustCall(
-        /*caller:*/ (callStatus) => {
-          return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_updates(
-            uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
-            callStatus,
-          )
-        },
-        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      ),
-    )
-  }
-
-  uniffiDestroy(): void {
-    const ptr = (this as any)[destructorGuardSymbol]
-    if (ptr !== undefined) {
-      const pointer =
-        uniffiTypeOnchainReceiveOperationObjectFactory.pointer(this)
-      uniffiTypeOnchainReceiveOperationObjectFactory.freePointer(pointer)
-      uniffiTypeOnchainReceiveOperationObjectFactory.unbless(ptr)
-      delete (this as any)[destructorGuardSymbol]
-    }
-  }
-
-  static instanceOf(obj_: any): obj_ is OnchainReceiveOperation {
-    return uniffiTypeOnchainReceiveOperationObjectFactory.isConcreteType(obj_)
-  }
-}
-
-const uniffiTypeOnchainReceiveOperationObjectFactory: UniffiObjectFactory<OnchainReceiveOperationLike> =
-  (() => {
-    /// <reference lib="es2021" />
-    const registry =
-      typeof FinalizationRegistry !== 'undefined'
-        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
-            uniffiTypeOnchainReceiveOperationObjectFactory.freePointer(
-              heldValue,
-            )
-          })
-        : null
-
-    return {
-      create(pointer: UniffiHandle): OnchainReceiveOperationLike {
-        const instance = Object.create(OnchainReceiveOperation.prototype)
-        instance[pointerLiteralSymbol] = pointer
-        instance[destructorGuardSymbol] = this.bless(pointer)
-        instance[uniffiTypeNameSymbol] = 'OnchainReceiveOperation'
-        return instance
-      },
-
-      bless(p: UniffiHandle): UniffiGcObject {
-        const ptr = {
-          p, // make sure this object doesn't get optimized away.
-          markDestroyed: () => undefined,
-        }
-        if (registry) {
-          registry.register(ptr, p, ptr)
-        }
-        return ptr
-      },
-
-      unbless(ptr_: UniffiGcObject) {
-        if (registry) {
-          registry.unregister(ptr_)
-        }
-      },
-
-      pointer(obj_: OnchainReceiveOperationLike): UniffiHandle {
-        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
-          throw new UniffiInternalError.UnexpectedNullPointer()
-        }
-        return (obj_ as any)[pointerLiteralSymbol]
-      },
-
-      clonePointer(obj_: OnchainReceiveOperationLike): UniffiHandle {
-        const pointer = this.pointer(obj_)
-        return uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_clone_onchainreceiveoperation(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      freePointer(pointer: UniffiHandle): void {
-        uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_free_onchainreceiveoperation(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      isConcreteType(obj_: any): obj_ is OnchainReceiveOperationLike {
-        return (
-          obj_[destructorGuardSymbol] &&
-          obj_[uniffiTypeNameSymbol] === 'OnchainReceiveOperation'
-        )
-      },
-    }
-  })()
-const FfiConverterTypeOnchainReceiveOperation = new FfiConverterObject(
-  uniffiTypeOnchainReceiveOperationObjectFactory,
-)
-
-/**
- * The result of [`Onchain::receive`], with `operation` crossing as [`OnchainReceiveOperation`]
- * rather than the generic `Operation<OnchainReceiveState>` the real [`OnchainReceive`] carries.
- */
-export type OnchainReceiveHandle = {
-  /**
-   * See [`OnchainReceive::address`].
-   */
-  address: Address
-  /**
-   * See [`OnchainReceive::operation`].
-   */
-  operation: OnchainReceiveOperationLike
-}
-
-/**
- * Generated factory for {@link OnchainReceiveHandle} record objects.
- */
-export const OnchainReceiveHandle = (() => {
-  const defaults = () => ({})
-  const create = (() => {
-    return uniffiCreateRecord<
-      OnchainReceiveHandle,
-      ReturnType<typeof defaults>
-    >(defaults)
-  })()
-  return Object.freeze({
-    create,
-    new: create,
-    defaults: () => Object.freeze(defaults()) as Partial<OnchainReceiveHandle>,
-  })
-})()
-
-const FfiConverterTypeOnchainReceiveHandle = (() => {
-  type TypeName = OnchainReceiveHandle
-  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: UniffiCursor): TypeName {
-      return {
-        address: FfiConverterTypeAddress.readFromCursor(c),
-        operation: FfiConverterTypeOnchainReceiveOperation.readFromCursor(c),
-      }
-    }
-    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
-      FfiConverterTypeAddress.writeIntoCursor(value.address, c)
-      FfiConverterTypeOnchainReceiveOperation.writeIntoCursor(
-        value.operation,
-        c,
-      )
-    }
-    allocationSize(value: TypeName): number {
-      return (
-        FfiConverterTypeAddress.allocationSize(value.address) +
-        FfiConverterTypeOnchainReceiveOperation.allocationSize(value.operation)
       )
     }
   }
@@ -10747,6 +9781,953 @@ const uniffiTypeMetaObjectFactory: UniffiObjectFactory<MetaLike> = (() => {
 })()
 const FfiConverterTypeMeta = new FfiConverterObject(uniffiTypeMetaObjectFactory)
 
+// Enum: OnchainReceiveState
+export enum OnchainReceiveState_Tags {
+  Confirmed = 'Confirmed',
+  Claimed = 'Claimed',
+  Failed = 'Failed',
+}
+/**
+ * The lifecycle of an on-chain deposit.
+ *
+ * A deposit is an operation from the moment the wallet finds its payment
+ * (see [`Onchain::deposits`]), so the lifecycle starts there. The three
+ * variants are found and being claimed, credited, or could not be credited.
+ *
+ * A deposit can stay in [`Confirmed`](Self::Confirmed) across an internal
+ * retry of the claim, under the same operation id, until the claim
+ * succeeds; [`Failed`](Self::Failed) is emitted only once no further claim
+ * is possible, so an application never sees a still-claimable deposit
+ * finalized.
+ *
+ * # The final state is self-contained
+ *
+ * [`Claimed`](Self::Claimed) carries the funding transaction, the gross
+ * amount that arrived, and the net amount credited, and that is not
+ * redundancy. A subscription yields the state an operation is in now and
+ * never replays the ones before it, so an application that reattaches to a
+ * deposit by id, after a restart, from an activity row, or from a
+ * notification, may see [`Claimed`](Self::Claimed) as the very first state
+ * it is ever shown, and it can render a full receipt from that state alone.
+ *
+ * The one state that is deliberately not self-contained is
+ * [`Failed`](Self::Failed), which carries only a diagnostic reason. That is
+ * what [`OnchainReceiveDetails`] is for: the address, the transaction and
+ * the gross amount are on the details record too, so an application never
+ * needs to have observed an earlier state to describe a failed deposit.
+ */
+
+type OnchainReceiveState_Confirmed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
+  tag: OnchainReceiveState_Tags.Confirmed
+  inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
+}
+
+type OnchainReceiveState_Claimed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
+  tag: OnchainReceiveState_Tags.Claimed
+  inner: Readonly<{ txid: Txid; grossDeposited: Sats; netCredit: Amount }>
+}
+
+type OnchainReceiveState_Failed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'OnchainReceiveState'
+  tag: OnchainReceiveState_Tags.Failed
+  inner: Readonly<{ reason: string }>
+}
+export type OnchainReceiveState =
+  | OnchainReceiveState_Confirmed_interface
+  | OnchainReceiveState_Claimed_interface
+  | OnchainReceiveState_Failed_interface
+
+export const OnchainReceiveState = (() => {
+  /**
+   * The transaction has the confirmations the federation requires; the
+   * deposit is being claimed into the balance.
+   */
+  class Confirmed_
+    extends UniffiEnum
+    implements OnchainReceiveState_Confirmed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
+    readonly tag = OnchainReceiveState_Tags.Confirmed
+    readonly inner: Readonly<{ txid: Txid; grossDeposited: Sats }>
+    constructor(inner: { txid: Txid; grossDeposited: Sats }) {
+      super('OnchainReceiveState', 'Confirmed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { txid: Txid; grossDeposited: Sats }): Confirmed_ {
+      return new Confirmed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Confirmed_ {
+      return obj.tag === OnchainReceiveState_Tags.Confirmed
+    }
+  }
+  /**
+   * Final: the deposit is in the spendable balance.
+   *
+   * Self-contained on purpose, see the enum's own documentation. A
+   * caller holding only this state can name the transaction, what
+   * arrived, and what was credited, without having observed anything
+   * earlier.
+   */
+  class Claimed_
+    extends UniffiEnum
+    implements OnchainReceiveState_Claimed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
+    readonly tag = OnchainReceiveState_Tags.Claimed
+    readonly inner: Readonly<{
+      txid: Txid
+      grossDeposited: Sats
+      netCredit: Amount
+    }>
+    constructor(inner: {
+      txid: Txid
+      grossDeposited: Sats
+      netCredit: Amount
+    }) {
+      super('OnchainReceiveState', 'Claimed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: {
+      txid: Txid
+      grossDeposited: Sats
+      netCredit: Amount
+    }): Claimed_ {
+      return new Claimed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Claimed_ {
+      return obj.tag === OnchainReceiveState_Tags.Claimed
+    }
+  }
+  /**
+   * Final: the deposit could not be claimed.
+   *
+   * Carries no transaction and no amount. What arrived is on
+   * [`OnchainReceiveDetails`], which is where a caller that only ever saw
+   * this state reads it; no claim settled, so that record has no fee and
+   * no credit for it either.
+   */
+  class Failed_
+    extends UniffiEnum
+    implements OnchainReceiveState_Failed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'OnchainReceiveState'
+    readonly tag = OnchainReceiveState_Tags.Failed
+    readonly inner: Readonly<{ reason: string }>
+    constructor(inner: { reason: string }) {
+      super('OnchainReceiveState', 'Failed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { reason: string }): Failed_ {
+      return new Failed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Failed_ {
+      return obj.tag === OnchainReceiveState_Tags.Failed
+    }
+  }
+
+  function instanceOf(obj: any): obj is OnchainReceiveState {
+    return obj[uniffiTypeNameSymbol] === 'OnchainReceiveState'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Confirmed: Confirmed_,
+    Claimed: Claimed_,
+    Failed: Failed_,
+  })
+})()
+
+// FfiConverter for enum OnchainReceiveState
+const FfiConverterTypeOnchainReceiveState = (() => {
+  type TypeName = OnchainReceiveState
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new OnchainReceiveState.Confirmed({
+            txid: FfiConverterTypeTxid.readFromCursor(c),
+            grossDeposited: FfiConverterTypeSats.readFromCursor(c),
+          })
+        case 2:
+          return new OnchainReceiveState.Claimed({
+            txid: FfiConverterTypeTxid.readFromCursor(c),
+            grossDeposited: FfiConverterTypeSats.readFromCursor(c),
+            netCredit: FfiConverterTypeAmount.readFromCursor(c),
+          })
+        case 3:
+          return new OnchainReceiveState.Failed({
+            reason: FfiConverterString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case OnchainReceiveState_Tags.Confirmed: {
+          c.writeI32(1)
+          const inner = value.inner
+          FfiConverterTypeTxid.writeIntoCursor(inner.txid, c)
+          FfiConverterTypeSats.writeIntoCursor(inner.grossDeposited, c)
+          return
+        }
+        case OnchainReceiveState_Tags.Claimed: {
+          c.writeI32(2)
+          const inner = value.inner
+          FfiConverterTypeTxid.writeIntoCursor(inner.txid, c)
+          FfiConverterTypeSats.writeIntoCursor(inner.grossDeposited, c)
+          FfiConverterTypeAmount.writeIntoCursor(inner.netCredit, c)
+          return
+        }
+        case OnchainReceiveState_Tags.Failed: {
+          c.writeI32(3)
+          const inner = value.inner
+          FfiConverterString.writeIntoCursor(inner.reason, c)
+          return
+        }
+        default:
+          // Throwing from here means that OnchainReceiveState_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case OnchainReceiveState_Tags.Confirmed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterTypeTxid.allocationSize(inner.txid)
+          size += FfiConverterTypeSats.allocationSize(inner.grossDeposited)
+          return size
+        }
+        case OnchainReceiveState_Tags.Claimed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterTypeTxid.allocationSize(inner.txid)
+          size += FfiConverterTypeSats.allocationSize(inner.grossDeposited)
+          size += FfiConverterTypeAmount.allocationSize(inner.netCredit)
+          return size
+        }
+        case OnchainReceiveState_Tags.Failed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterString.allocationSize(inner.reason)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export interface OnchainReceiveOperationUpdatesLike {
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  next(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainReceiveState | undefined>
+}
+/**
+ * @deprecated Use `OnchainReceiveOperationUpdatesLike` instead.
+ */
+export type OnchainReceiveOperationUpdatesInterface =
+  OnchainReceiveOperationUpdatesLike
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export class OnchainReceiveOperationUpdates
+  extends UniffiAbstractObject
+  implements OnchainReceiveOperationUpdatesLike
+{
+  readonly [uniffiTypeNameSymbol] = 'OnchainReceiveOperationUpdates'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  async next(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainReceiveState | undefined> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperationupdates_next(
+          uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.clonePointer(
+            this,
+          ),
+        )
+      },
+      /*pollFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterOptionalTypeOnchainReceiveState.lift(__rb)
+        } finally {
+          nativeModule().rustbuffer_free(__rb)
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.pointer(this)
+      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.freePointer(pointer)
+      uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is OnchainReceiveOperationUpdates {
+    return uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.isConcreteType(
+      obj_,
+    )
+  }
+}
+
+const uniffiTypeOnchainReceiveOperationUpdatesObjectFactory: UniffiObjectFactory<OnchainReceiveOperationUpdatesLike> =
+  (() => {
+    /// <reference lib="es2021" />
+    const registry =
+      typeof FinalizationRegistry !== 'undefined'
+        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
+            uniffiTypeOnchainReceiveOperationUpdatesObjectFactory.freePointer(
+              heldValue,
+            )
+          })
+        : null
+
+    return {
+      create(pointer: UniffiHandle): OnchainReceiveOperationUpdatesLike {
+        const instance = Object.create(OnchainReceiveOperationUpdates.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'OnchainReceiveOperationUpdates'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        const ptr = {
+          p, // make sure this object doesn't get optimized away.
+          markDestroyed: () => undefined,
+        }
+        if (registry) {
+          registry.register(ptr, p, ptr)
+        }
+        return ptr
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        if (registry) {
+          registry.unregister(ptr_)
+        }
+      },
+
+      pointer(obj_: OnchainReceiveOperationUpdatesLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: OnchainReceiveOperationUpdatesLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_clone_onchainreceiveoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_free_onchainreceiveoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is OnchainReceiveOperationUpdatesLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'OnchainReceiveOperationUpdates'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeOnchainReceiveOperationUpdates = new FfiConverterObject(
+  uniffiTypeOnchainReceiveOperationUpdatesObjectFactory,
+)
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export interface OnchainReceiveOperationLike {
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainReceiveState>
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  details(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainReceiveDetails>
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  state(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainReceiveState>
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): OnchainReceiveOperationUpdatesLike
+}
+/**
+ * @deprecated Use `OnchainReceiveOperationLike` instead.
+ */
+export type OnchainReceiveOperationInterface = OnchainReceiveOperationLike
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export class OnchainReceiveOperation
+  extends UniffiAbstractObject
+  implements OnchainReceiveOperationLike
+{
+  readonly [uniffiTypeNameSymbol] = 'OnchainReceiveOperation'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeOnchainReceiveOperationObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  async awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainReceiveState> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_await_final(
+          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
+        )
+      },
+      /*pollFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeOnchainReceiveState.lift(__rb)
+        } finally {
+          nativeModule().rustbuffer_free(__rb)
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  async details(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainReceiveDetails> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_details(
+          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
+        )
+      },
+      /*pollFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeOnchainReceiveDetails.lift(__rb)
+        } finally {
+          nativeModule().rustbuffer_free(__rb)
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_id(
+          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeOperationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  async state(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainReceiveState> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_state(
+          uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
+        )
+      },
+      /*pollFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeOnchainReceiveState.lift(__rb)
+        } finally {
+          nativeModule().rustbuffer_free(__rb)
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): OnchainReceiveOperationUpdatesLike {
+    return FfiConverterTypeOnchainReceiveOperationUpdates.lift(
+      uniffiCaller.rustCall(
+        /*caller:*/ (callStatus) => {
+          return nativeModule().uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_updates(
+            uniffiTypeOnchainReceiveOperationObjectFactory.clonePointer(this),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeOnchainReceiveOperationObjectFactory.pointer(this)
+      uniffiTypeOnchainReceiveOperationObjectFactory.freePointer(pointer)
+      uniffiTypeOnchainReceiveOperationObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is OnchainReceiveOperation {
+    return uniffiTypeOnchainReceiveOperationObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeOnchainReceiveOperationObjectFactory: UniffiObjectFactory<OnchainReceiveOperationLike> =
+  (() => {
+    /// <reference lib="es2021" />
+    const registry =
+      typeof FinalizationRegistry !== 'undefined'
+        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
+            uniffiTypeOnchainReceiveOperationObjectFactory.freePointer(
+              heldValue,
+            )
+          })
+        : null
+
+    return {
+      create(pointer: UniffiHandle): OnchainReceiveOperationLike {
+        const instance = Object.create(OnchainReceiveOperation.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'OnchainReceiveOperation'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        const ptr = {
+          p, // make sure this object doesn't get optimized away.
+          markDestroyed: () => undefined,
+        }
+        if (registry) {
+          registry.register(ptr, p, ptr)
+        }
+        return ptr
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        if (registry) {
+          registry.unregister(ptr_)
+        }
+      },
+
+      pointer(obj_: OnchainReceiveOperationLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: OnchainReceiveOperationLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_clone_onchainreceiveoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_free_onchainreceiveoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is OnchainReceiveOperationLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'OnchainReceiveOperation'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeOnchainReceiveOperation = new FfiConverterObject(
+  uniffiTypeOnchainReceiveOperationObjectFactory,
+)
+
+/**
+ * One independent subscription to the deposits a federation's wallet finds.
+ *
+ * Obtained from [`Onchain::deposits`]. Not `Clone`, for the same reason
+ * [`OperationUpdates`](crate::OperationUpdates) is not: it is a single
+ * cursor, and a second consumer should open a second subscription.
+ * Dropping it ends only this subscription. Deposits are found and claimed
+ * whether or not anything is subscribed.
+ */
+export interface OnchainDepositsLike {
+  /**
+   * See [`OnchainDeposits::next`].
+   */
+  next(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainReceiveOperationLike>
+}
+/**
+ * @deprecated Use `OnchainDepositsLike` instead.
+ */
+export type OnchainDepositsInterface = OnchainDepositsLike
+
+/**
+ * One independent subscription to the deposits a federation's wallet finds.
+ *
+ * Obtained from [`Onchain::deposits`]. Not `Clone`, for the same reason
+ * [`OperationUpdates`](crate::OperationUpdates) is not: it is a single
+ * cursor, and a second consumer should open a second subscription.
+ * Dropping it ends only this subscription. Deposits are found and claimed
+ * whether or not anything is subscribed.
+ */
+export class OnchainDeposits
+  extends UniffiAbstractObject
+  implements OnchainDepositsLike
+{
+  readonly [uniffiTypeNameSymbol] = 'OnchainDeposits'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeOnchainDepositsObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`OnchainDeposits::next`].
+   */
+  async next(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainReceiveOperationLike> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
+          uniffiTypeOnchainDepositsObjectFactory.clonePointer(this),
+        )
+      },
+      /*pollFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_poll_u64,
+      /*cancelFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_cancel_u64,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_u64,
+      /*freeFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_free_u64,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      /*liftFunc:*/ FfiConverterTypeOnchainReceiveOperation.lift.bind(
+        FfiConverterTypeOnchainReceiveOperation,
+      ),
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeOnchainDepositsObjectFactory.pointer(this)
+      uniffiTypeOnchainDepositsObjectFactory.freePointer(pointer)
+      uniffiTypeOnchainDepositsObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is OnchainDeposits {
+    return uniffiTypeOnchainDepositsObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeOnchainDepositsObjectFactory: UniffiObjectFactory<OnchainDepositsLike> =
+  (() => {
+    /// <reference lib="es2021" />
+    const registry =
+      typeof FinalizationRegistry !== 'undefined'
+        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
+            uniffiTypeOnchainDepositsObjectFactory.freePointer(heldValue)
+          })
+        : null
+
+    return {
+      create(pointer: UniffiHandle): OnchainDepositsLike {
+        const instance = Object.create(OnchainDeposits.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'OnchainDeposits'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        const ptr = {
+          p, // make sure this object doesn't get optimized away.
+          markDestroyed: () => undefined,
+        }
+        if (registry) {
+          registry.register(ptr, p, ptr)
+        }
+        return ptr
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        if (registry) {
+          registry.unregister(ptr_)
+        }
+      },
+
+      pointer(obj_: OnchainDepositsLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: OnchainDepositsLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_free_onchaindeposits(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is OnchainDepositsLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'OnchainDeposits'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeOnchainDeposits = new FfiConverterObject(
+  uniffiTypeOnchainDepositsObjectFactory,
+)
+
 /**
  * A frozen, executable plan for one on-chain withdrawal.
  *
@@ -11960,6 +11941,48 @@ const FfiConverterTypeOnchainSendOperation = new FfiConverterObject(
  */
 export interface OnchainLike {
   /**
+   * Opens a subscription to the deposits this federation's wallet finds
+   * from now on.
+   *
+   * A deposit is found once the transaction paying one of the wallet's
+   * addresses has the confirmations the federation requires and the
+   * wallet has started claiming it. That is the moment it becomes an
+   * operation, and [`OnchainDeposits::next`] hands that operation out, in
+   * [`Confirmed`](OnchainReceiveState::Confirmed) or already past it.
+   * Before then there is nothing to observe: an address nobody has paid
+   * is not an operation, and neither is a payment still waiting for its
+   * confirmations.
+   *
+   * Open the subscription before showing an address from
+   * [`Onchain::receive`], so that a payment found straight away is not
+   * missed. It starts where it was opened: a deposit found earlier, or
+   * while no subscription was open, is not replayed. Every deposit found
+   * is in [activity](crate::Federation::activity), whether or not a
+   * subscription saw it.
+   *
+   * The subscription covers every address [`Onchain::receive`] has
+   * handed out, not only the last one. Read
+   * [`OnchainReceiveDetails::address`] to tell which one a deposit paid.
+   *
+   * A payment that does not exceed what the federation charges to claim
+   * it is never claimed, and never becomes an operation.
+   *
+   * On a wallet restored from its seed, a payment to an address that was
+   * handed out before the restore may reach the balance without becoming
+   * an operation, depending on the federation. It is then neither handed
+   * out here nor listed in activity.
+   *
+   * # Errors
+   *
+   * [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+   * recovery is incomplete,
+   * [`NotSupported`](crate::ErrorCode::NotSupported), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  deposits(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<OnchainDepositsLike>
+  /**
    * Plans a withdrawal and returns an executable quote for it.
    *
    * Like its lightning counterpart, this exists because the cost is only
@@ -12003,11 +12026,63 @@ export interface OnchainLike {
     asyncOpts_?: { signal: AbortSignal },
   ) /*throws*/ : Promise<OnchainQuoteLike>
   /**
-   * See [`Onchain::receive`].
+   * Hands back an address to deposit bitcoin to.
+   *
+   * The address belongs to this federation's wallet, and a payment to it
+   * is claimed into the balance, unless it is too small to cover what the
+   * federation charges for that. No operation comes with the address: a
+   * deposit becomes an operation once the wallet has found the payment,
+   * and [`Onchain::deposits`] is how an application learns that it has.
+   *
+   * # The same address can come back
+   *
+   * Which address this is depends on the federation. Some offer one
+   * unused address at a time: every call hands back the same address
+   * until a payment to it has been found, and a different one some time
+   * after that. Others hand back a new address on every call. Rely on
+   * neither. Show what this returns, and call it again whenever an
+   * address is needed.
+   *
+   * # One address, one payment
+   *
+   * Ask for an address again after a deposit rather than reusing one that
+   * has been paid. A second payment to an address that was already paid
+   * may take the wallet a long time to notice, and may be credited to the
+   * balance without becoming an operation of its own, appearing in
+   * [activity](crate::Federation::activity), or being handed out by
+   * [`Onchain::deposits`].
+   *
+   * # An address holds nothing open
+   *
+   * An address that was handed out is not a pending operation, however
+   * long it goes unpaid, so it never keeps
+   * [`Sdk::forget_federation`](crate::Sdk::forget_federation) from
+   * erasing the federation. A deposit that has been found does, from
+   * [`Confirmed`](OnchainReceiveState::Confirmed) until it reaches
+   * [`Claimed`](OnchainReceiveState::Claimed) or
+   * [`Failed`](OnchainReceiveState::Failed): the erase refuses with
+   * [`PendingOperations`](crate::ErrorCode::PendingOperations) until
+   * then.
+   *
+   * # No quote
+   *
+   * There is nothing to quote for a deposit. The sender pays the Bitcoin
+   * network fee out of their own wallet, and the federation's deposit
+   * terms apply to whatever arrives; the fee those terms take is knowable
+   * only once an amount exists, and it is reported then, see
+   * [`OnchainReceiveDetails::fee`].
+   *
+   * # Errors
+   *
+   * [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+   * recovery is incomplete,
+   * [`NotSupported`](crate::ErrorCode::NotSupported),
+   * [`Timeout`](crate::ErrorCode::Timeout) if the wallet has no address
+   * ready yet, which can happen shortly after joining and passes on its
+   * own, [`FederationClosed`](crate::ErrorCode::FederationClosed), and
+   * [`Internal`](crate::ErrorCode::Internal).
    */
-  receive(asyncOpts_?: {
-    signal: AbortSignal
-  }) /*throws*/ : Promise<OnchainReceiveHandle>
+  receive(asyncOpts_?: { signal: AbortSignal }) /*throws*/ : Promise<Address>
   /**
    * See [`Onchain::send`]. Fails with
    * [`ErrorCode::QuoteExpired`](crate::ErrorCode::QuoteExpired) if `quote` was already sent.
@@ -12073,6 +12148,76 @@ export class Onchain extends UniffiAbstractObject implements OnchainLike {
     super()
     this[pointerLiteralSymbol] = pointer
     this[destructorGuardSymbol] = uniffiTypeOnchainObjectFactory.bless(pointer)
+  }
+
+  /**
+   * Opens a subscription to the deposits this federation's wallet finds
+   * from now on.
+   *
+   * A deposit is found once the transaction paying one of the wallet's
+   * addresses has the confirmations the federation requires and the
+   * wallet has started claiming it. That is the moment it becomes an
+   * operation, and [`OnchainDeposits::next`] hands that operation out, in
+   * [`Confirmed`](OnchainReceiveState::Confirmed) or already past it.
+   * Before then there is nothing to observe: an address nobody has paid
+   * is not an operation, and neither is a payment still waiting for its
+   * confirmations.
+   *
+   * Open the subscription before showing an address from
+   * [`Onchain::receive`], so that a payment found straight away is not
+   * missed. It starts where it was opened: a deposit found earlier, or
+   * while no subscription was open, is not replayed. Every deposit found
+   * is in [activity](crate::Federation::activity), whether or not a
+   * subscription saw it.
+   *
+   * The subscription covers every address [`Onchain::receive`] has
+   * handed out, not only the last one. Read
+   * [`OnchainReceiveDetails::address`] to tell which one a deposit paid.
+   *
+   * A payment that does not exceed what the federation charges to claim
+   * it is never claimed, and never becomes an operation.
+   *
+   * On a wallet restored from its seed, a payment to an address that was
+   * handed out before the restore may reach the balance without becoming
+   * an operation, depending on the federation. It is then neither handed
+   * out here nor listed in activity.
+   *
+   * # Errors
+   *
+   * [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+   * recovery is incomplete,
+   * [`NotSupported`](crate::ErrorCode::NotSupported), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  async deposits(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<OnchainDepositsLike> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_onchain_deposits(
+          uniffiTypeOnchainObjectFactory.clonePointer(this),
+        )
+      },
+      /*pollFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_poll_u64,
+      /*cancelFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_cancel_u64,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_u64,
+      /*freeFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_free_u64,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      /*liftFunc:*/ FfiConverterTypeOnchainDeposits.lift.bind(
+        FfiConverterTypeOnchainDeposits,
+      ),
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
   }
 
   /**
@@ -12152,11 +12297,65 @@ export class Onchain extends UniffiAbstractObject implements OnchainLike {
   }
 
   /**
-   * See [`Onchain::receive`].
+   * Hands back an address to deposit bitcoin to.
+   *
+   * The address belongs to this federation's wallet, and a payment to it
+   * is claimed into the balance, unless it is too small to cover what the
+   * federation charges for that. No operation comes with the address: a
+   * deposit becomes an operation once the wallet has found the payment,
+   * and [`Onchain::deposits`] is how an application learns that it has.
+   *
+   * # The same address can come back
+   *
+   * Which address this is depends on the federation. Some offer one
+   * unused address at a time: every call hands back the same address
+   * until a payment to it has been found, and a different one some time
+   * after that. Others hand back a new address on every call. Rely on
+   * neither. Show what this returns, and call it again whenever an
+   * address is needed.
+   *
+   * # One address, one payment
+   *
+   * Ask for an address again after a deposit rather than reusing one that
+   * has been paid. A second payment to an address that was already paid
+   * may take the wallet a long time to notice, and may be credited to the
+   * balance without becoming an operation of its own, appearing in
+   * [activity](crate::Federation::activity), or being handed out by
+   * [`Onchain::deposits`].
+   *
+   * # An address holds nothing open
+   *
+   * An address that was handed out is not a pending operation, however
+   * long it goes unpaid, so it never keeps
+   * [`Sdk::forget_federation`](crate::Sdk::forget_federation) from
+   * erasing the federation. A deposit that has been found does, from
+   * [`Confirmed`](OnchainReceiveState::Confirmed) until it reaches
+   * [`Claimed`](OnchainReceiveState::Claimed) or
+   * [`Failed`](OnchainReceiveState::Failed): the erase refuses with
+   * [`PendingOperations`](crate::ErrorCode::PendingOperations) until
+   * then.
+   *
+   * # No quote
+   *
+   * There is nothing to quote for a deposit. The sender pays the Bitcoin
+   * network fee out of their own wallet, and the federation's deposit
+   * terms apply to whatever arrives; the fee those terms take is knowable
+   * only once an amount exists, and it is reported then, see
+   * [`OnchainReceiveDetails::fee`].
+   *
+   * # Errors
+   *
+   * [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+   * recovery is incomplete,
+   * [`NotSupported`](crate::ErrorCode::NotSupported),
+   * [`Timeout`](crate::ErrorCode::Timeout) if the wallet has no address
+   * ready yet, which can happen shortly after joining and passes on its
+   * own, [`FederationClosed`](crate::ErrorCode::FederationClosed), and
+   * [`Internal`](crate::ErrorCode::Internal).
    */
   async receive(asyncOpts_?: {
     signal: AbortSignal
-  }): Promise<OnchainReceiveHandle> /*throws*/ {
+  }): Promise<Address> /*throws*/ {
     return await uniffiRustCallAsync(
       /*rustCaller:*/ uniffiCaller,
       /*rustFutureFunc:*/ () => {
@@ -12182,7 +12381,7 @@ export class Onchain extends UniffiAbstractObject implements OnchainLike {
       // already JS-owned.
       /*liftFunc:*/ (__rb) => {
         try {
-          return FfiConverterTypeOnchainReceiveHandle.lift(__rb)
+          return FfiConverterTypeAddress.lift(__rb)
         } finally {
           nativeModule().rustbuffer_free(__rb)
         }
@@ -13865,8 +14064,8 @@ export interface FederationLike {
    *
    * Value that is committed to an in-flight operation, funding a
    * lightning payment, sitting in out-of-band notes that have not been
-   * redeemed or reclaimed, waiting on an on-chain deposit to confirm, is
-   * not counted here.
+   * redeemed or reclaimed, arriving in an on-chain deposit that is still
+   * being claimed, is not counted here.
    *
    * Holding is not spending, and this method takes no position on the
    * latter: whether a spend would be *permitted* is governed by the
@@ -14122,8 +14321,8 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
    *
    * Value that is committed to an in-flight operation, funding a
    * lightning payment, sitting in out-of-band notes that have not been
-   * redeemed or reclaimed, waiting on an on-chain deposit to confirm, is
-   * not counted here.
+   * redeemed or reclaimed, arriving in an on-chain deposit that is still
+   * being claimed, is not counted here.
    *
    * Holding is not spending, and this method takes no position on the
    * latter: whether a spend would be *permitted* is governed by the
@@ -15303,11 +15502,11 @@ export interface SdkLike {
    * could still reclaim). Either fails the call with
    * [`PendingOperations`](crate::ErrorCode::PendingOperations).
    *
-   * One class of non-final operation is exempt: an on-chain receive that
-   * has not yet seen a transaction. It holds no value, so it never
-   * blocks the erase; once a transaction has been seen it is an
-   * ordinary pending operation and does block until claimed or failed.
-   * See [`Onchain::receive`](crate::Onchain::receive).
+   * A deposit address is not an operation, so one that was handed out
+   * and never paid does not block the erase. An on-chain deposit the
+   * wallet has found is an ordinary pending operation and does block,
+   * until it is claimed or failed. See
+   * [`Onchain::receive`](crate::Onchain::receive).
    *
    * ## Recovery is never a reason to refuse
    *
@@ -16119,11 +16318,11 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    * could still reclaim). Either fails the call with
    * [`PendingOperations`](crate::ErrorCode::PendingOperations).
    *
-   * One class of non-final operation is exempt: an on-chain receive that
-   * has not yet seen a transaction. It holds no value, so it never
-   * blocks the erase; once a transaction has been seen it is an
-   * ordinary pending operation and does block until claimed or failed.
-   * See [`Onchain::receive`](crate::Onchain::receive).
+   * A deposit address is not an operation, so one that was handed out
+   * and never paid does not block the erase. An on-chain deposit the
+   * wallet has found is an ordinary pending operation and does block,
+   * until it is claimed or failed. See
+   * [`Onchain::receive`](crate::Onchain::receive).
    *
    * ## Recovery is never a reason to refuse
    *
@@ -16985,24 +17184,9 @@ const FfiConverterOptionalTypeLnReceiveState = new FfiConverterOptional(
   FfiConverterTypeLnReceiveState,
 )
 
-// FfiConverter for Txid | undefined
-const FfiConverterOptionalTypeTxid = new FfiConverterOptional(
-  FfiConverterTypeTxid,
-)
-
-// FfiConverter for Sats | undefined
-const FfiConverterOptionalTypeSats = new FfiConverterOptional(
-  FfiConverterTypeSats,
-)
-
 // FfiConverter for OnchainReceiveFeeBreakdown | undefined
 const FfiConverterOptionalTypeOnchainReceiveFeeBreakdown =
   new FfiConverterOptional(FfiConverterTypeOnchainReceiveFeeBreakdown)
-
-// FfiConverter for OnchainReceiveState | undefined
-const FfiConverterOptionalTypeOnchainReceiveState = new FfiConverterOptional(
-  FfiConverterTypeOnchainReceiveState,
-)
 
 // FfiConverter for number | undefined
 const FfiConverterOptionalUInt32 = new FfiConverterOptional(FfiConverterUInt32)
@@ -17030,6 +17214,11 @@ const FfiConverterOptionalTypeLightning = new FfiConverterOptional(
 // FfiConverter for ConsensusMetadata | undefined
 const FfiConverterOptionalTypeConsensusMetadata = new FfiConverterOptional(
   FfiConverterTypeConsensusMetadata,
+)
+
+// FfiConverter for OnchainReceiveState | undefined
+const FfiConverterOptionalTypeOnchainReceiveState = new FfiConverterOptional(
+  FfiConverterTypeOnchainReceiveState,
 )
 
 // FfiConverter for OnchainSendState | undefined
@@ -17453,7 +17642,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_federation_balance() !==
-    20311
+    14350
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_balance',
@@ -17816,6 +18005,14 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_onchain_deposits() !==
+    55310
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_onchain_deposits',
+    )
+  }
+  if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_onchain_quote() !== 17134
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
@@ -17824,7 +18021,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_onchain_receive() !==
-    8075
+    19532
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_onchain_receive',
@@ -17835,6 +18032,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_onchain_send',
+    )
+  }
+  if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_onchaindeposits_next() !==
+    10173
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_onchaindeposits_next',
     )
   }
   if (
@@ -18063,7 +18268,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_forget_federation() !==
-    8383
+    40943
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_sdk_forget_federation',
@@ -18187,10 +18392,10 @@ export default Object.freeze({
     FfiConverterTypeNetwork,
     FfiConverterTypeNotes,
     FfiConverterTypeOnchain,
+    FfiConverterTypeOnchainDeposits,
     FfiConverterTypeOnchainQuote,
     FfiConverterTypeOnchainReceiveDetails,
     FfiConverterTypeOnchainReceiveFeeBreakdown,
-    FfiConverterTypeOnchainReceiveHandle,
     FfiConverterTypeOnchainReceiveOperation,
     FfiConverterTypeOnchainReceiveOperationUpdates,
     FfiConverterTypeOnchainReceiveState,

@@ -427,13 +427,25 @@ protected:
                                                      const jsi::Value &thisVal,
                                                      const jsi::Value *args,
                                                      size_t count);
-  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
-      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
-      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchain_send(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchain_deposits(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchain_quote(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_free_onchaindeposits(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_fn_clone_onchainquote(
@@ -1030,13 +1042,19 @@ protected:
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_meta_get(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
-  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchain_receive(
-      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
-      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchain_deposits(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchain_quote(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchain_receive(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_onchainquote_amount(
@@ -1253,6 +1271,9 @@ protected:
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_internal_fn_method_onchain_ffi__bless_pointer(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_internal_fn_method_onchaindeposits_ffi__bless_pointer(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_internal_fn_method_onchainquote_ffi__bless_pointer(

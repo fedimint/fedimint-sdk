@@ -40,8 +40,12 @@ The `Federation` that `join` returns has the per-federation calls: `balance()`,
 `capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
 `lightning()` and `onchain()` facades (each `null` when the federation lacks that
 module), whose `quote` → `send` and `receive` calls return operation handles to
-observe with `state()`, `updates()` and `awaitFinal()`. The example app
-(`android/app`) drives each of them once.
+observe with `state()`, `updates()` and `awaitFinal()`. An on-chain deposit is the
+exception: `onchain.receive()` returns an address to pay and no operation, because
+a deposit becomes an operation only once the federation's wallet finds the
+payment. Open `onchain.deposits()` before showing the address, so that a payment
+found right away is not missed, and call `next()` on it to wait for the next
+deposit's operation. The example app (`android/app`) drives each of them once.
 
 ## Using it
 

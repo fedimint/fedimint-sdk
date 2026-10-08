@@ -16,7 +16,6 @@ import {
   readBalanceMsats,
   waitForBalance,
 } from '../flows/wallet'
-import { currentShape } from '../shape'
 
 const DEPOSIT_SATS = 100_000
 const WITHDRAW_SATS = 30_000
@@ -24,7 +23,7 @@ const WITHDRAW_SATS = 30_000
 const ONCHAIN_TIMEOUT = 180_000
 
 // Bitcoin in and out through the wallet module (wallet on v1, walletv2 on
-// v2): fund a fresh deposit address from devimint's bitcoind, mine it in,
+// v2): fund a deposit address from devimint's bitcoind, mine it in,
 // watch the claim credit the balance, then withdraw to a bitcoind address and
 // find the coins there. The same round trip as the Rust
 // `onchain_deposit_and_withdrawal_round_trip`, through the app.
@@ -47,7 +46,6 @@ export class OnchainService extends AppiumTestBase {
 
   async execute(): Promise<void> {
     console.log('Starting OnchainService test')
-    const shape = currentShape()
 
     // ── Deposit ──────────────────────────────────────────────────────────
     const before = await readBalanceMsats(this)
@@ -63,19 +61,9 @@ export class OnchainService extends AppiumTestBase {
     }
     const txid = sendToAddress(address, DEPOSIT_SATS)
     console.log(`Sent ${DEPOSIT_SATS} sat to ${address} in ${txid}`)
-    mineBlocks(1)
 
-    // v1 reports the pending confirmation explicitly; walletv2 never does,
-    // because its scanner only reports a deposit once it has claimed it.
-    if (shape === 'v1') {
-      await this.waitForTextInElement(
-        'depositResult',
-        `WaitingForConfirmation(txid=${txid}`,
-        ONCHAIN_TIMEOUT,
-      )
-      console.log('v1 reported the deposit waiting for confirmations')
-    }
-
+    // The wallet finds the deposit once its transaction has the confirmations
+    // the federation requires. The app has no operation to show before then.
     mineBlocks(21)
     const claimed = await this.waitForTextInElement(
       'depositResult',

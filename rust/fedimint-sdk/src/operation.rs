@@ -1,10 +1,11 @@
 //! The operation model: background work observed from the outside.
 //!
 //! Everything the SDK does that takes longer than a single call, paying an
-//! invoice, waiting for a deposit to confirm, redeeming ecash, is an
-//! *operation*. An operation is created by a facade call, runs in the
-//! background from that moment, is persisted as it goes, and reports its
-//! progress as a sequence of states. This module defines the vocabulary
+//! invoice, claiming a deposit, redeeming ecash, is an *operation*. An
+//! operation is created by a facade call, or for an on-chain deposit by the
+//! wallet finding the payment, runs in the background from that moment, is
+//! persisted as it goes, and reports its progress as a sequence of states.
+//! This module defines the vocabulary
 //! shared by all of them: the [`OperationState`] trait each state enum
 //! implements, the [`Operation`] handle used to observe one, the
 //! [`OperationUpdates`] subscriber that streams its transitions, the
@@ -78,8 +79,8 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 ///
 /// An [`OperationId`] is all it takes to pick an operation back up, and this
 /// record is half of what makes that true: the notes a sender must hand to a
-/// receiver, the invoice a payee must show as a QR code, the deposit address
-/// a depositor must display, and the terms an operation was executed on (a
+/// receiver, the invoice a payee must show as a QR code, the address and
+/// transaction of a deposit, and the terms an operation was executed on (a
 /// lightning fee and route, for instance) all live here rather than only in
 /// the value the original facade call returned, because
 /// [`Operation::updates`] is not a replay and would not hand them back.
@@ -98,13 +99,12 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 ///    successful lightning payment is the example: it exists exactly when
 ///    [`LnSendState::Success`](crate::LnSendState::Success) does.
 /// 3. **Set by a transition but not carried by every later state: both.**
-///    The state announces it; the record keeps it. The funding transaction a
-///    caller learns from
-///    [`WaitingForConfirmation`](crate::OnchainReceiveState::WaitingForConfirmation)
-///    is gone by [`Claimed`](crate::OnchainReceiveState::Claimed), and a
-///    lightning send's fee and route appear only on success; these are
-///    exactly the values an `Option` field on a record is for, absent until
-///    the fact is established, then set once and never changed again.
+///    The state announces it; the record keeps it. What claiming an
+///    on-chain deposit cost is known only at
+///    [`Claimed`](crate::OnchainReceiveState::Claimed), and a lightning
+///    send's fee and route appear only on success; these are exactly the
+///    values an `Option` field on a record is for, absent until the fact is
+///    established, then set once and never changed again.
 ///
 /// A caller never needs to have seen an earlier state: whatever it takes to
 /// render or complete a reattached operation, [`Operation::details`] and the

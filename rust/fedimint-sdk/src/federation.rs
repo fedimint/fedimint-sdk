@@ -140,8 +140,8 @@ impl Federation {
     ///
     /// Value that is committed to an in-flight operation, funding a
     /// lightning payment, sitting in out-of-band notes that have not been
-    /// redeemed or reclaimed, waiting on an on-chain deposit to confirm, is
-    /// not counted here.
+    /// redeemed or reclaimed, arriving in an on-chain deposit that is still
+    /// being claimed, is not counted here.
     ///
     /// Holding is not spending, and this method takes no position on the
     /// latter: whether a spend would be *permitted* is governed by the
@@ -524,11 +524,11 @@ pub(crate) struct FederationInner {
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
     reclaim_starts: tokio::sync::Mutex<()>,
-    /// Serialises the allocation of a deposit address per federation: asking the wallet module
-    /// for an address, checking that no unfinished record already names it and committing the
-    /// record for it happen under this lock, so two concurrent `Onchain::receive` calls that
-    /// are handed the same walletv2 address can never both record it.
-    deposit_allocations: tokio::sync::Mutex<()>,
+    /// Serialises rebuilding a record from the client's log per federation: the check that no
+    /// record already answers for a walletv2 deposit and the write of the record for it happen
+    /// under this lock, so two lookups racing over two claims of one deposit can never both
+    /// record it.
+    deposit_records: tokio::sync::Mutex<()>,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -559,14 +559,6 @@ fn is_unclaimed_placeholder(record: &crate::db::OperationRecord) -> bool {
     record.kind == record.module
 }
 
-/// What [`FederationInner::owner_of_deposit_address`] found: the `ONCHAIN_RECEIVE` operation
-/// that names an address, and whether it has already reached a final state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DepositAddressOwner {
-    pub(crate) id: fedimint_core::core::OperationId,
-    pub(crate) finished: bool,
-}
-
 impl FederationInner {
     /// Assembles the shared state for one federation.
     ///
@@ -594,7 +586,7 @@ impl FederationInner {
             recovery_progress: tokio::sync::watch::Sender::new(None),
             settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
-            deposit_allocations: tokio::sync::Mutex::new(()),
+            deposit_records: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -667,17 +659,14 @@ impl FederationInner {
         Ok(false)
     }
 
-    /// Whether this federation has an on-chain deposit that has seen a funding transaction but
-    /// not yet reached a final state.
+    /// Whether this federation has an on-chain deposit that has not yet reached a final state.
     ///
     /// The erase guard's on-chain counterpart to
     /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send): an `ONCHAIN_RECEIVE` record
-    /// that reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN) (past
-    /// [`WaitingForTransaction`](crate::OnchainReceiveState::WaitingForTransaction)) and has no
-    /// final state yet is a claim in progress, which erasing the federation must not abandon. A
-    /// deposit address that was handed out and never funded does not count: it has no phase at
-    /// all, and [`Onchain::receive`](crate::Onchain::receive)'s own doc says why that is
-    /// deliberate.
+    /// at [`PHASE_SEEN`](crate::onchain::PHASE_SEEN) with no final state is a claim in progress,
+    /// which erasing the federation must not abandon. Every deposit record is at that phase. A
+    /// receive record with no phase at all is a deposit address that a version of this crate
+    /// recorded when it handed the address out, which nobody has paid and which never counts.
     pub(crate) async fn has_seen_unclaimed_deposit(&self) -> Result<bool> {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
         use futures::StreamExt;
@@ -696,42 +685,6 @@ impl FederationInner {
             }
         }
         Ok(false)
-    }
-
-    /// The operation, if any, whose `ONCHAIN_RECEIVE` record already names `address`, and
-    /// whether that operation has reached a final state.
-    ///
-    /// Walks the operation index exactly as
-    /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send) does. Used by
-    /// [`backfill_at`](Self::backfill_at)'s adoption check to recognise a walletv2 deposit's
-    /// upstream `Receive` entry as one this SDK already tracks under the record
-    /// `Onchain::receive` created for the address, before a backfiller gets the chance to write a
-    /// second, orphaned record for the same deposit; and by walletv2's `receive` to refuse an
-    /// address an unfinished operation is still following.
-    pub(crate) async fn owner_of_deposit_address(
-        &self,
-        address: &str,
-    ) -> Result<Option<DepositAddressOwner>> {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
-        use futures::StreamExt;
-
-        let db = self.db();
-        let mut dbtx = db.begin_transaction_nc().await;
-        let mut records = dbtx
-            .find_by_prefix(&crate::db::OperationRecordKeyPrefix)
-            .await;
-        while let Some((key, record)) = records.next().await {
-            if record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
-                && crate::onchain::deposit_address_of_record(&record.details).as_deref()
-                    == Some(address)
-            {
-                return Ok(Some(DepositAddressOwner {
-                    id: key.0,
-                    finished: record.final_state.is_some(),
-                }));
-            }
-        }
-        Ok(None)
     }
 
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
@@ -993,11 +946,6 @@ impl FederationInner {
         self.reclaim_starts.lock().await
     }
 
-    /// Takes the per-federation deposit-allocation lock; see the field's own documentation.
-    pub(crate) async fn lock_deposit_allocations(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.deposit_allocations.lock().await
-    }
-
     /// `Ok` while this federation is still usable, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is not.
     ///
@@ -1119,16 +1067,8 @@ impl FederationInner {
         self: &Arc<Self>,
         id: fedimint_core::core::OperationId,
     ) -> crate::Result<Option<AnyOperation>> {
-        let db = self.db();
-        let mut dbtx = db.begin_transaction_nc().await;
-        let stored = dbtx.get_value(&crate::db::OperationRecordKey(id)).await;
-        drop(dbtx);
-        let record = match stored {
-            Some(record) => record,
-            None => match self.backfill(id).await? {
-                Some(record) => record,
-                None => return Ok(None),
-            },
+        let Some(record) = self.record_of(id).await? else {
+            return Ok(None);
         };
         Ok(Some(AnyOperation::from_record(Arc::new(OperationInner {
             federation: self.clone(),
@@ -1137,12 +1077,35 @@ impl FederationInner {
         }))))
     }
 
+    /// One operation's record, rebuilt from the client's own log if the log has an entry for
+    /// the id and no record answers for it yet.
+    ///
+    /// # Errors
+    ///
+    /// [`Storage`](crate::ErrorCode::Storage).
+    pub(crate) async fn record_of(
+        self: &Arc<Self>,
+        id: fedimint_core::core::OperationId,
+    ) -> crate::Result<Option<crate::db::OperationRecord>> {
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let stored = dbtx.get_value(&crate::db::OperationRecordKey(id)).await;
+        drop(dbtx);
+        match stored {
+            Some(record) => Ok(Some(record)),
+            None => self.backfill(id).await,
+        }
+    }
+
     /// Gives every operation in the client's log an SDK record, and upgrades any record this
     /// build can now place better than the build that wrote it could.
     ///
     /// Run when a federation is brought up. The client's operation log is authoritative for
     /// which operations exist; the SDK's records are a decoration over it that a crash between
-    /// the module's own commit and the SDK's write can leave incomplete.
+    /// the module's own commit and the SDK's write can leave incomplete. The one kind of entry
+    /// that is not an operation by itself is a wallet module's own bookkeeping, which
+    /// [`log_entry_is_not_an_operation`](crate::onchain::log_entry_is_not_an_operation) tells
+    /// apart and this pass leaves without a record.
     ///
     /// # Errors
     ///
@@ -1207,8 +1170,9 @@ impl FederationInner {
     /// Rebuilds one operation's record from the client's log entry, dating it from the client's
     /// own chronological index.
     ///
-    /// `Ok(None)` when the log has no entry with that id, which is what "this federation has no
-    /// operation with that id" means.
+    /// `Ok(None)` when the log has no entry with that id, or has one that is not an operation
+    /// by itself (see [`backfill_at`](Self::backfill_at)): either way this federation has no
+    /// operation with that id.
     async fn backfill(
         self: &Arc<Self>,
         id: fedimint_core::core::OperationId,
@@ -1251,15 +1215,12 @@ impl FederationInner {
         // and every entry here was written by a module rather than by this crate.
         let meta: serde_json::Value = entry.try_meta().unwrap_or(serde_json::Value::Null);
 
-        // A walletv2 deposit's own upstream `Receive` entry never gets a backfilled record of
-        // its own: `Onchain::receive` already minted one for the address before this entry ever
-        // existed (walletv2's `receive` call returns only the address, with no operation id of
-        // its own), and adopting it here by address is what stops the backfiller below from
-        // giving the same deposit a second, orphaned record under the upstream entry's id.
-        if module == "walletv2"
-            && let Some(address) = crate::onchain::deposit_address_of(&meta)
-            && self.owner_of_deposit_address(&address).await?.is_some()
-        {
+        // Held from the check below to the write at the end, so two lookups racing over two
+        // claims of one walletv2 deposit cannot both find it without a record and write one each.
+        let _deposits = self.deposit_records.lock().await;
+        // Not every entry a wallet module logs is an operation of its own: an address it handed
+        // out is not, and neither is another claim of a deposit that already has its record.
+        if crate::onchain::log_entry_is_not_an_operation(self, id, &module, &meta).await {
             return Ok(None);
         }
 
@@ -1650,6 +1611,17 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             federation = %federation.id,
             error = %err,
             "could not reconcile this federation's operation records",
+        );
+    }
+    // A deposit the wallet found while nothing was reading its announcements may have no
+    // record until this pass writes one, and a failure is no more a reason to deny the bring-up
+    // than the one above: the next listing of activity runs the pass again.
+    if let Err(err) = crate::onchain::pick_up_deposits(federation).await {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            federation = %federation.id,
+            error = %err,
+            "could not record the on-chain deposits this federation's wallet found",
         );
     }
 }
@@ -2417,9 +2389,9 @@ mod tests {
         assert_eq!(indexed, vec![(record.created_at, id)]);
     }
 
-    /// A stand-in `ONCHAIN_RECEIVE` details record naming `address`, in exactly the shape
-    /// `onchain::wire::OnchainReceiveDetailsWire` serialises: this module cannot name that type
-    /// itself, so the JSON is built by hand from its documented field names instead.
+    /// A stand-in `ONCHAIN_RECEIVE` details record naming `address` and no payment, in exactly
+    /// the shape `onchain::wire::OnchainReceiveDetailsWire` serialises: this module cannot name
+    /// that type itself, so the JSON is built by hand from its documented field names instead.
     fn onchain_receive_details(address: &str) -> serde_json::Value {
         serde_json::json!({
             "address": address,
@@ -2430,60 +2402,6 @@ mod tests {
             "net_credit_msats": null,
             "created_at": 1_700_000_000_000u64,
         })
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn owner_of_deposit_address_finds_a_planted_record_by_address_and_not_by_another() {
-        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
-        let federation = FederationInner::detached(db.clone(), true);
-        let id = UpstreamOperationId([7u8; 32]);
-        federation
-            .create_operation(
-                id,
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                &onchain_receive_details("owned-address"),
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
-
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("owned-address")
-                .await
-                .expect("lookup"),
-            Some(DepositAddressOwner {
-                id,
-                finished: false
-            })
-        );
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("some-other-address")
-                .await
-                .expect("lookup"),
-            None
-        );
-
-        // A record that reached a final state is still the address's owner, reported as
-        // finished.
-        let mut dbtx = db.begin_transaction().await;
-        let mut record = dbtx
-            .get_value(&OperationRecordKey(id))
-            .await
-            .expect("the record just created");
-        record.final_state = Some("\"claimed\"".to_owned());
-        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
-        dbtx.commit_tx().await;
-        assert_eq!(
-            federation
-                .owner_of_deposit_address("owned-address")
-                .await
-                .expect("lookup"),
-            Some(DepositAddressOwner { id, finished: true })
-        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2503,8 +2421,9 @@ mod tests {
             .await
             .expect("create");
 
-        // A fresh deposit that has not seen a transaction yet does not count: an address handed
-        // out and never funded must not block an erase.
+        // A receive record with no phase does not count: it is a deposit address a version of
+        // this crate recorded when it handed the address out, and one nobody paid must not block
+        // an erase.
         assert!(
             !federation
                 .has_seen_unclaimed_deposit()
