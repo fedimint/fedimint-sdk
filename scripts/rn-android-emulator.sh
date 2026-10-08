@@ -28,7 +28,13 @@ set -euo pipefail
 AVD=fedimint-sdk
 IMAGE="system-images;android-36;google_apis;x86_64"
 BOOT_TIMEOUT="${RN_ANDROID_EMULATOR_BOOT_TIMEOUT:-240}"
-AVD_DIR="${ANDROID_AVD_HOME:-$HOME/.android/avd}/$AVD.avd"
+# Exported, and created, so that avdmanager and the emulator use the directory this script looks
+# in: left to themselves they put virtual devices under $XDG_CONFIG_HOME/.android/avd wherever
+# XDG_CONFIG_HOME is set, as it is on GitHub's runners, and they only take ANDROID_AVD_HOME when
+# the directory exists.
+export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+mkdir -p "$ANDROID_AVD_HOME"
+AVD_DIR="$ANDROID_AVD_HOME/$AVD.avd"
 
 for tool in avdmanager emulator adb; do
   command -v "$tool" >/dev/null ||
