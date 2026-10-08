@@ -91,6 +91,13 @@ public API surface with the same care as a wire format.
   export, changing a function signature, or changing observable behavior is
   a breaking change and needs a major changeset — flag PRs that make such
   changes with only a patch/minor changeset, or none at all.
+- **React Native packages**: the two packages under `js/react-native/` are the
+  exception. They are released from `react-native-sdk-v*` tags by
+  `.github/workflows/react-native-sdk-release.yaml`, not through changesets
+  (they are in the `ignore` list of `js/.changeset/config.json`), so a change
+  to them needs no changeset. Their version is the release tag: both
+  `package.json` files stay `"private": true` at `0.0.0`. Flag a PR that
+  changes either field: it would let other publishing paths reach them.
 - **WASM coupling**: the TS wrappers and the WASM bindings
   (`wasm-web` / `wasm-bundler`, built from `fedimint-client-wasm`) must agree
   on the RPC method names, request/response shapes, and versioning. A change

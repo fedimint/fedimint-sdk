@@ -12,6 +12,9 @@
 # starts the emulator, waits until Android reports the boot complete, then stays attached so
 # Ctrl-C stops the device; leave it running and use `just rn-android-example` from another terminal.
 #
+# The wait for the boot is limited to RN_ANDROID_EMULATOR_BOOT_TIMEOUT seconds (default 240).
+# Raise it on a machine where a cold boot takes longer.
+#
 # Hardware acceleration is required: on Linux the user needs read and write access to
 # /dev/kvm. Without it the emulator refuses to start rather than crawling.
 #
@@ -24,6 +27,7 @@ set -euo pipefail
 
 AVD=fedimint-sdk
 IMAGE="system-images;android-36;google_apis;x86_64"
+BOOT_TIMEOUT="${RN_ANDROID_EMULATOR_BOOT_TIMEOUT:-240}"
 AVD_DIR="${ANDROID_AVD_HOME:-$HOME/.android/avd}/$AVD.avd"
 
 for tool in avdmanager emulator adb; do
@@ -71,7 +75,7 @@ trap 'kill "$EMULATOR_PID" 2>/dev/null || true' EXIT INT TERM
 # `adb wait-for-device` would block for good if the emulator died before registering, so the
 # device's appearance is polled inside the same bounded loop that watches the process.
 echo "==> Waiting for Android to boot"
-for _ in $(seq 1 120); do
+for _ in $(seq 1 $(((BOOT_TIMEOUT + 1) / 2))); do
   if [[ "$(adb get-state 2>/dev/null)" == "device" &&
     "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
     serial=$(adb devices | awk 'NR == 2 { print $1 }')
@@ -84,5 +88,5 @@ for _ in $(seq 1 120); do
   kill -0 "$EMULATOR_PID" 2>/dev/null || { echo "the emulator exited during boot" >&2; exit 1; }
   sleep 2
 done
-echo "Android did not finish booting within four minutes" >&2
+echo "Android did not finish booting within $BOOT_TIMEOUT seconds" >&2
 exit 1

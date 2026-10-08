@@ -175,6 +175,12 @@ Common failure categories in this repository:
   are often npm auth/registry errors, changeset misconfiguration, or a package
   that no longer builds. Treat clear upstream registry HTTP 5xx failures as
   transient unless they recur enough to justify a retry/caching fix.
+- The "React Native SDK Release" workflow publishes the two React Native
+  packages from a pushed `react-native-sdk-v*` tag, without changesets and
+  without an npm token (npm trusted publishing). A tag and an npm version are
+  permanent, so never propose moving or deleting a tag: a release that failed
+  halfway is re-run (it skips what is already on npm), and a bad one is fixed
+  by the next version. js/react-native/README.md describes the release.
 - Integration tests run vitest against a real devimint federation and can be
   flaky for timing reasons; a flaky failure still needs to be debugged and
   fixed when there is a high-confidence cause.
