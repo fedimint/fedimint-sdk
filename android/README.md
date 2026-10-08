@@ -11,16 +11,19 @@ is a view of that API rather than a copy of it that could drift.
 
 ## Scope
 
-Three `Sdk` methods, plus the constructor and the two value types they need:
+The table lists what it takes to open the SDK and join a federation: the
+`createFedimintSdk` function, three `Sdk` methods and the two handle types they
+use. `Sdk` has more methods, which list, reopen, close and forget federations,
+report their status, run recovery and shut the SDK down.
 
-| Kotlin                                                              | What it does                                  |
-| ------------------------------------------------------------------- | --------------------------------------------- |
-| `createFedimintSdk(dataDir, seed?)`                                 | Opens storage; `build()` establishes the seed |
-| `sdk.exportMnemonic()`                                              | The instance's `Mnemonic` handle, to back up  |
-| `sdk.preview(invite)`                                               | Reads a federation's config without joining   |
-| `sdk.join(invite)`                                                  | Joins it, returns a `Federation` handle       |
-| `Mnemonic.generate()` / `.fromWords(List)` / `mnemonic.words()`     | make / restore / read a seed                  |
-| `InviteCode.parse(String)` / `invite.federationId()` / `.display()` | parse / inspect / render a code               |
+| Kotlin                                                              | What it does                                 |
+| ------------------------------------------------------------------- | -------------------------------------------- |
+| `createFedimintSdk(dataDir, mnemonic?)`                             | Opens storage; establishes the seed          |
+| `sdk.exportMnemonic()`                                              | The instance's `Mnemonic` handle, to back up |
+| `sdk.preview(invite)`                                               | Reads a federation's config without joining  |
+| `sdk.join(invite)`                                                  | Joins it, returns a `Federation` handle      |
+| `Mnemonic.generate()` / `.fromWords(List)` / `mnemonic.words()`     | make / restore / read a seed                 |
+| `InviteCode.parse(String)` / `invite.federationId()` / `.display()` | parse / inspect / render a code              |
 
 `Mnemonic` and `InviteCode` are **opaque handles**, not strings — an invite code
 is a bearer credential and a seed is a secret that the Rust type keeps behind a
@@ -33,7 +36,7 @@ The seed is established by `createFedimintSdk`: pass a `Mnemonic` to restore, or
 `null` to load the seed the directory already holds — or, over an empty
 directory, generate and persist a fresh one. `sdk.exportMnemonic()` reads it back.
 
-The `Federation` that `join` returns carries the rest of the surface: `balance()`,
+The `Federation` that `join` returns has the per-federation calls: `balance()`,
 `capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
 `lightning()` and `onchain()` facades (each `null` when the federation lacks that
 module), whose `quote` → `send` and `receive` calls return operation handles to
@@ -213,10 +216,6 @@ android/
         ├── jniLibs/<abi>/*.so       generated, gitignored
         └── java/org/fedimint/sdk/   generated, gitignored
 ```
-
-## What's not here yet
-
-iOS bindings are a separate follow-up off the same `uniffi` feature.
 
 ## Publishing
 

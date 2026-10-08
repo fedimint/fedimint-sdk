@@ -109,7 +109,7 @@ final class DemoModel: ObservableObject {
     /// One long-lived operation watcher per section, so a new one can replace
     /// the old instead of racing it. Same ownership `balanceTask` has, and for
     /// the same reason: the Kotlin demo gets this free from `lifecycleScope`
-    /// (MainActivity.kt:506), and Swift has no equivalent ambient scope.
+    /// (`watch` in MainActivity.kt), and Swift has no equivalent ambient scope.
     private var watchTasks: [Section: Task<Void, Never>] = [:]
 
     /// One in-flight SDK action per section. See `run` for why this is separate
@@ -827,7 +827,7 @@ final class DemoModel: ObservableObject {
 /// Integer division rather than `Double(msats) / 1000`: the binding preserves
 /// the full `u64`, and going through `Double` would quietly round anything
 /// above 2^53 msats. Same output as the Kotlin demo's `formatMsats`
-/// (MainActivity.kt:553), so both render an amount identically.
+/// (MainActivity.kt), so both render an amount identically.
 func formatMsats(_ msats: UInt64) -> String {
     let sats = msats / 1_000
     return msats % 1_000 == 0 ? "\(sats) sat" : "\(sats) sat (\(msats) msat)"

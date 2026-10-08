@@ -2237,7 +2237,7 @@ async fn lightning_send_with_rejected_funding_resolves_after_a_restart() {
 /// modules' own funding rejections (`WithdrawState::Failed` for the first, `Aborted` for the
 /// second).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on the on-chain facade, plus fedimint/fedimint#6546 and #9099 as above"]
+#[ignore = "needs an on-chain double-spend fixture, and fedimint/fedimint#9099 as above"]
 async fn onchain_send_with_rejected_funding_waits_for_input_recovery() {
     use fedimint_sdk::{OnchainSendState, Sats};
 
