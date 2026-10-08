@@ -14,7 +14,7 @@
 # directory of tarballs they are given, and the cases for a whole pack run a copy of the pack
 # script in a throwaway tree with a fake `pnpm`. The example script is run from this checkout
 # with --no-install, against the real example and lockfile, and the smoke script against a fake
-# `adb`. Nothing beyond bash, git, node, tar and curl is needed.
+# `adb`. Nothing beyond bash, git, node and tar is needed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -108,14 +108,20 @@ WRAPPER=@fedimint/react-native
 #                                    E404 answer, or nothing at all and success when
 #                                    $FAKE_NPM/view-empty exists. The registry holds a version
 #                                    when $FAKE_NPM/published/<name>@<version> exists (`/` as `__`).
-#   npm view <name>@<version> dist.integrity|dist.tarball
-#                                    that marker's .integrity or .tarball file
+#   npm view <name>@<version> dist.integrity
+#                                    that marker's .integrity file
+#   npm view <name> dist-tags --json
+#                                    $FAKE_NPM/dist-tags-error.json with a failing status when it
+#                                    exists, else the package's dist-tags/<name>.json (`/` as
+#                                    `__`) when there is one, else the E404 answer
 #   npm publish ...                  appends its arguments to $FAKE_NPM/log. A dry run fails when
 #                                    $FAKE_NPM/dry-run-fails exists. Any other publish fails when
 #                                    $FAKE_NPM/publish-fails exists, else it puts the marker for
 #                                    the tarball's name and version in place, with the tarball's
-#                                    integrity and location, and then fails anyway when
-#                                    $FAKE_NPM/publish-fails-but-lands exists.
+#                                    integrity, sets the dist-tag given after --tag to the
+#                                    tarball's version in the package's dist-tags/<name>.json, and
+#                                    then fails anyway when $FAKE_NPM/publish-fails-but-lands
+#                                    exists.
 # With $FAKE_NPM/forbid-view, any `npm view` fails. Anything else fails loudly.
 mkdir "$WORK/bin"
 cat >"$WORK/bin/npm" <<'EOF'
@@ -146,8 +152,21 @@ if [[ $# -eq 4 && "$1" == view && "$3" == versions && "$4" == --json ]]; then
     echo '{"error":{"code":"E404","summary":"Not Found"}}'
     exit 1
 fi
+if [[ $# -eq 4 && "${1:-}" == view && "$3" == dist-tags && "$4" == --json ]]; then
+    name="${2//\//__}"
+    if [[ -f "$FAKE_NPM/dist-tags-error.json" ]]; then
+        cat "$FAKE_NPM/dist-tags-error.json"
+        exit 1
+    fi
+    if [[ -f "$FAKE_NPM/dist-tags/$name.json" ]]; then
+        cat "$FAKE_NPM/dist-tags/$name.json"
+        exit 0
+    fi
+    echo '{"error":{"code":"E404","summary":"Not Found"}}'
+    exit 1
+fi
 if [[ "${1:-}" == view && $# -eq 4 && "$3" == version && "$4" == --json ]] ||
-    [[ "${1:-}" == view && $# -eq 3 && ("$3" == dist.integrity || "$3" == dist.tarball) ]]; then
+    [[ "${1:-}" == view && $# -eq 3 && "$3" == dist.integrity ]]; then
     name="${2%@*}"
     version="${2##*@}"
     marker="$FAKE_NPM/published/${name//\//__}@$version"
@@ -164,34 +183,46 @@ if [[ "${1:-}" == view && $# -eq 4 && "$3" == version && "$4" == --json ]] ||
         echo '{"error":{"code":"E404","summary":"Not Found"}}'
         exit 1
     fi
-    cat "$marker.${3#dist.}"
+    cat "$marker.integrity"
     exit
 fi
 if [[ "${1:-}" == publish ]]; then
     echo "$*" >>"$FAKE_NPM/log"
     dry_run=0
     tarball=""
+    tag=""
+    previous=""
     for arg in "$@"; do
         [[ "$arg" != --dry-run ]] || dry_run=1
         [[ "$arg" != *.tgz ]] || tarball="$arg"
+        [[ "$previous" != --tag ]] || tag="$arg"
+        previous="$arg"
     done
     if ((dry_run)); then
         [[ ! -f "$FAKE_NPM/dry-run-fails" ]] || exit 1
         exit 0
     fi
     [[ ! -f "$FAKE_NPM/publish-fails" ]] || exit 1
-    identity="$(tar -xzOf "$tarball" package/package.json | node -e '
+    read -r package version < <(tar -xzOf "$tarball" package/package.json | node -e '
         const m = JSON.parse(require("fs").readFileSync(0, "utf8"));
-        console.log(m.name.replace("/", "__") + "@" + m.version);
-    ')"
-    mkdir -p "$FAKE_NPM/published"
+        console.log(m.name + " " + m.version);
+    ')
+    identity="${package//\//__}@$version"
+    mkdir -p "$FAKE_NPM/published" "$FAKE_NPM/dist-tags"
     : >"$FAKE_NPM/published/$identity"
     node -e '
         const crypto = require("crypto");
         const data = require("fs").readFileSync(process.argv[1]);
         console.log("sha512-" + crypto.createHash("sha512").update(data).digest("base64"));
     ' "$tarball" >"$FAKE_NPM/published/$identity.integrity"
-    echo "file://$tarball" >"$FAKE_NPM/published/$identity.tarball"
+    tags="$FAKE_NPM/dist-tags/${package//\//__}.json"
+    node -e '
+        const fs = require("fs");
+        const [file, tag, version] = process.argv.slice(1);
+        const tags = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+        tags[tag] = version;
+        fs.writeFileSync(file, JSON.stringify(tags) + "\n");
+    ' "$tags" "$tag" "$version"
     [[ ! -f "$FAKE_NPM/publish-fails-but-lands" ]] || exit 1
     exit 0
 fi
@@ -1214,7 +1245,21 @@ on_registry() {
     marker="$FAKE_NPM/published/${name//\//__}@$version"
     : >"$marker"
     integrity "$file" >"$marker.integrity"
-    echo "file://$file" >"$marker.tarball"
+}
+
+# registry_tags <name> <json>: the fake npm reports <json> as the dist-tags of <name>.
+registry_tags() {
+    mkdir -p "$FAKE_NPM/dist-tags"
+    printf '%s\n' "$2" >"$FAKE_NPM/dist-tags/${1//\//__}.json"
+}
+
+# sums_state <dir>: prints `present` or `absent` for <dir>/SHA256SUMS.
+sums_state() {
+    if [[ -e "$1/SHA256SUMS" ]]; then
+        echo present
+    else
+        echo absent
+    fi
 }
 
 # registry_integrity <name> <version> <digest>: the fake npm reports <digest> as the integrity of
@@ -1299,31 +1344,30 @@ expect_equal "SHA256SUMS is still written" "$(sha256 "$d/$BT")  $BT"$'\n'"$(sha2
     "$(cat "$d/SHA256SUMS")"
 
 fresh "$VERSION"
-served="$WORK/served-bindings.tgz"
+served="$WORK/served.tgz"
 echo "what npm serves" >"$served"
 on_registry "$BINDINGS" "$VERSION" "$served"
+cp "$d/$BT" "$WORK/bindings-before.tgz"
 run "$publish" "$d"
-expect_equal "bindings on npm with another digest: the release succeeds" 0 "$STATUS"
-expect_contains "the replacement is announced" "replaced $BT" "$OUT"
-expect_equal "the local bindings tarball is the published file" same "$(same "$d/$BT" "$served")"
-expect_equal "SHA256SUMS matches the replaced file" \
-    "$(sha256 "$served")  $BT"$'\n'"$(sha256 "$d/$NT")  $NT" "$(cat "$d/SHA256SUMS")"
-expect_equal "SHA256SUMS of the replaced file is accepted by the checker" ok "$(check_sums "$d")"
-expect_equal "only the wrapper is published after a replacement" \
-    "publish $NT --tag beta --access public" "$(publish_log "$d")"
+expect_equal "bindings on npm with another digest: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the package and says it is another tarball" \
+    "$BINDINGS@$VERSION is on npm as another tarball" "$OUT"
+expect_equal "nothing is published next to bindings that are another tarball" "" \
+    "$(publish_log "$d")"
+expect_equal "the local bindings tarball is unchanged" same \
+    "$(same "$d/$BT" "$WORK/bindings-before.tgz")"
+expect_equal "no SHA256SUMS is written for bindings that are another tarball" absent \
+    "$(sums_state "$d")"
 
 fresh "$VERSION"
-echo "what npm serves" >"$served"
-on_registry "$BINDINGS" "$VERSION" "$served"
-registry_integrity "$BINDINGS" "$VERSION" "sha512-AAAA"
+on_registry "$BINDINGS" "$VERSION" "$d/$BT"
+registry_integrity "$BINDINGS" "$VERSION" "md5-AAAA"
 cp "$d/$BT" "$WORK/bindings-before.tgz"
-expect_fail "a download that does not match dist.integrity is refused" "dist.integrity" -- \
+expect_fail "a dist.integrity that is not a sha512 digest is refused" "not a sha512 digest" -- \
     "$publish" "$d"
-expect_equal "the local bindings tarball is kept when the download is refused" same \
+expect_equal "the local bindings tarball is kept when dist.integrity is refused" same \
     "$(same "$d/$BT" "$WORK/bindings-before.tgz")"
-expect_equal "nothing is published when the download is refused" "" "$(publish_log "$d")"
-expect_equal "no partial download is left in the directory" 2 \
-    "$(find "$d" -mindepth 1 | wc -l | tr -d ' ')"
+expect_equal "nothing is published when dist.integrity is refused" "" "$(publish_log "$d")"
 
 fresh "$VERSION"
 echo '{"error":{"code":"ECONNREFUSED"}}' >"$FAKE_NPM/view-error.json"
@@ -1420,19 +1464,18 @@ rewrite "$d/$NT" edit_manifest 'm.name = "@fedimint/react-native-bindings"'
 expect_fail "a wrapper tarball holding another package is refused" "not $WRAPPER" -- \
     "$publish" "$d"
 
-# A publish that fails while another upload of the same version landed: the local tarball
-# gives way to the published one, as for a version that was on npm from the start.
+# A publish that fails while another upload of the same version landed: what is on npm is not
+# this tarball, so the release stops there, before the wrapper is attempted, and the local file
+# stays as it is.
 fresh "$VERSION"
 : >"$FAKE_NPM/publish-fails"
 mkdir "$FAKE_NPM/published"
-for name in "$BINDINGS" "$WRAPPER"; do
-    marker="$FAKE_NPM/published/${name//\//__}@$VERSION"
-    echo "published by someone else" >"$marker.tgz"
-    integrity "$marker.tgz" >"$marker.integrity"
-    echo "file://$marker.tgz" >"$marker.tarball"
-done
-# The fake only says a version is on npm once its marker exists, so the versions appear between
-# the first question and the failing publish.
+marker="$FAKE_NPM/published/${BINDINGS//\//__}@$VERSION"
+echo "published by someone else" >"$marker.tgz"
+integrity "$marker.tgz" >"$marker.integrity"
+# The fake only says a version is on npm once its marker exists, so the bindings appear between
+# the first question and the failing publish. Only they do, so that nothing after the failed
+# publish can stand in for the check made there.
 cat >"$WORK/bin/npm-appears" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == publish ]]; then
@@ -1445,11 +1488,178 @@ EOF
 chmod +x "$WORK/bin/npm-appears"
 mkdir "$WORK/appears"
 ln -s "$WORK/bin/npm-appears" "$WORK/appears/npm"
+cp "$d/$BT" "$WORK/bindings-before.tgz"
 REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" "$d"
-expect_equal "a publish that fails over a version someone else published succeeds" 0 "$STATUS"
-expect_equal "the local bindings tarball is replaced by the published one" same \
-    "$(same "$d/$BT" "$FAKE_NPM/published/${BINDINGS//\//__}@$VERSION.tgz")"
-expect_equal "SHA256SUMS matches the files after such a publish" ok "$(check_sums "$d")"
+expect_equal "a publish that fails over a version someone else published fails the release" 1 \
+    "$STATUS"
+expect_contains "the refusal names the bindings" \
+    "$BINDINGS@$VERSION is on npm as another tarball" "$OUT"
+expect_equal "the version on npm is not taken for this tarball" no \
+    "$([[ "$OUT" == *"on npm although"* ]] && echo yes || echo no)"
+expect_equal "the local bindings tarball is unchanged after such a publish" same \
+    "$(same "$d/$BT" "$WORK/bindings-before.tgz")"
+expect_equal "only the bindings were attempted" "publish $BT --tag beta --access public" \
+    "$(publish_log "$d")"
+expect_equal "no SHA256SUMS is written after such a publish" absent "$(sums_state "$d")"
+
+# A wrapper that someone else publishes while the bindings are uploaded: both packages passed
+# before the upload, and the wrapper is looked at again when its turn comes.
+fresh "$VERSION"
+mkdir "$FAKE_NPM/published"
+marker="$FAKE_NPM/published/${WRAPPER//\//__}@$VERSION"
+echo "published by someone else" >"$marker.tgz"
+integrity "$marker.tgz" >"$marker.integrity"
+REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" "$d"
+expect_equal "a wrapper that appears on npm during the release fails it" 1 "$STATUS"
+expect_contains "the refusal names the wrapper that appeared" \
+    "$WRAPPER@$VERSION is on npm as another tarball" "$OUT"
+expect_equal "the wrapper that appeared is not skipped as if it were this one" no \
+    "$([[ "$OUT" == *"$WRAPPER@$VERSION is already on npm, skipped"* ]] && echo yes || echo no)"
+expect_equal "only the bindings were uploaded before the wrapper appeared" \
+    "publish $BT --tag beta --access public" "$(publish_log "$d")"
+expect_equal "no SHA256SUMS is written when the wrapper appeared" absent "$(sums_state "$d")"
+
+# Both packages are looked at before anything is uploaded.
+fresh "$VERSION"
+echo "what npm serves" >"$served"
+on_registry "$WRAPPER" "$VERSION" "$served"
+run "$publish" "$d"
+expect_equal "a wrapper on npm as another tarball: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the wrapper" "$WRAPPER@$VERSION is on npm as another tarball" \
+    "$OUT"
+expect_equal "the bindings are not uploaded first" "" "$(publish_log "$d")"
+
+fresh "$VERSION"
+on_registry "$BINDINGS" "$VERSION" "$d/$BT"
+on_registry "$WRAPPER" "$VERSION" "$served"
+run "$publish" "$d"
+expect_equal "same bindings and another wrapper on npm: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the wrapper when the bindings match" \
+    "$WRAPPER@$VERSION is on npm as another tarball" "$OUT"
+expect_equal "nothing is published next to a wrapper that is another tarball" "" \
+    "$(publish_log "$d")"
+expect_equal "no SHA256SUMS is written for a wrapper that is another tarball" absent \
+    "$(sums_state "$d")"
+
+# A dist-tag never moves back.
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
+run "$publish" "$d"
+expect_equal "bindings whose beta is on a newer version: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the package, the dist-tag and the version it is on" \
+    "the dist-tag beta of $BINDINGS is on 0.1.0-beta.2" "$OUT"
+expect_contains "the refusal names the version being published" "0.1.0-beta.1 is not newer" "$OUT"
+expect_equal "nothing is published when the bindings' beta is ahead" "" "$(publish_log "$d")"
+
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.0.9-beta.3"}'
+registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
+run "$publish" "$d"
+expect_equal "a wrapper whose beta is on a newer version: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the wrapper's beta" \
+    "the dist-tag beta of $WRAPPER is on 0.1.0-beta.2" "$OUT"
+expect_equal "the bindings are not uploaded before the wrapper's dist-tag is read" "" \
+    "$(publish_log "$d")"
+
+fresh "$VERSION"
+on_registry "$BINDINGS" "$VERSION" "$d/$BT"
+registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
+run "$publish" "$d"
+expect_equal "an older release run again after a newer one: the release fails" 1 "$STATUS"
+expect_contains "the older release is refused over the wrapper's dist-tag" \
+    "the dist-tag beta of $WRAPPER is on 0.1.0-beta.2" "$OUT"
+expect_equal "nothing is published for an older release run again" "" "$(publish_log "$d")"
+
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.0.9-beta.3","canary":"0.0.0-canary-abc123"}'
+registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.0.9-beta.3","canary":"0.0.0-canary-abc123"}'
+run "$publish" "$d"
+expect_equal "dist-tags on older versions: the release succeeds" 0 "$STATUS"
+expect_equal "both packages are published under beta over an older beta" \
+    "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
+    "$(publish_log "$d")"
+
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.0.0"}'
+registry_tags "$WRAPPER" '{"latest":"0.0.0"}'
+run "$publish" "$d"
+expect_equal "packages without a beta dist-tag: the release succeeds" 0 "$STATUS"
+expect_equal "both packages are published under beta when there is none yet" \
+    "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
+    "$(publish_log "$d")"
+
+fresh 0.1.0
+registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.2.0-beta.1"}'
+registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.2.0-beta.1"}'
+run "$publish" "$d"
+expect_equal "a final version with a beta that is ahead: the release succeeds" 0 "$STATUS"
+expect_equal "both packages are published under latest, whatever beta is on" \
+    "publish $BT0 --tag latest --access public"$'\n'"publish $NT0 --tag latest --access public" \
+    "$(publish_log "$d")"
+
+fresh 0.1.0
+registry_tags "$BINDINGS" '{"latest":"0.2.0"}'
+run "$publish" "$d"
+expect_equal "a final version below latest: the release fails" 1 "$STATUS"
+expect_contains "the refusal names latest" "the dist-tag latest of $BINDINGS is on 0.2.0" "$OUT"
+expect_equal "nothing is published below latest" "" "$(publish_log "$d")"
+
+# A dist-tag can be on a version that is no release version. It counts as the release it starts
+# with, as any version on a registry does.
+fresh 0.1.0
+registry_tags "$BINDINGS" '{"latest":"0.2.0-rc.1"}'
+run "$publish" "$d"
+expect_equal "a final version below a latest outside the grammar: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the version latest is on, as npm has it" \
+    "the dist-tag latest of $BINDINGS is on 0.2.0-rc.1" "$OUT"
+expect_equal "nothing is published below a latest outside the grammar" "" "$(publish_log "$d")"
+
+# A dist-tag that cannot be read must not look like one that is not there.
+fresh "$VERSION"
+echo '{"error":{"code":"E500"}}' >"$FAKE_NPM/dist-tags-error.json"
+run "$publish" "$d"
+expect_equal "dist-tags that cannot be read: the release fails" 1 "$STATUS"
+expect_contains "the refusal names the error code" "E500" "$OUT"
+expect_equal "nothing is published when the dist-tags cannot be read" "" "$(publish_log "$d")"
+
+for answer in '"0.1.0"' '[]'; do
+    fresh "$VERSION"
+    registry_tags "$BINDINGS" "$answer"
+    run "$publish" "$d"
+    expect_equal "dist-tags that are $answer: the release fails" 1 "$STATUS"
+    expect_contains "dist-tags that are $answer are refused as unreadable" \
+        "which this script does not read" "$OUT"
+    expect_equal "nothing is published for dist-tags that are $answer" "" "$(publish_log "$d")"
+done
+
+# One registry across two releases: the older one cannot follow the newer one.
+fresh "$VERSION"
+d1="$d"
+d2="$(mktemp -d "$WORK/pub.XXXX")"
+tarballs "$d2" 0.1.0-beta.2
+BT2=fedimint-react-native-bindings-0.1.0-beta.2.tgz
+NT2=fedimint-react-native-0.1.0-beta.2.tgz
+run "$publish" "$d2"
+expect_equal "the newer beta is published" 0 "$STATUS"
+run "$publish" "$d1"
+expect_equal "the older beta is refused after the newer one" 1 "$STATUS"
+expect_contains "the older beta is refused over the bindings' dist-tag" \
+    "the dist-tag beta of $BINDINGS is on 0.1.0-beta.2" "$OUT"
+expect_equal "only the two uploads of the newer beta were made" \
+    "publish $BT2 --tag beta --access public"$'\n'"publish $NT2 --tag beta --access public" \
+    "$(publish_log "$d2")"
+expect_equal "no SHA256SUMS is written for the refused older beta" absent "$(sums_state "$d1")"
+tag_reads="$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
+run "$publish" "$d2"
+expect_equal "the newer beta run again: the release succeeds" 0 "$STATUS"
+expect_contains "the newer beta skips the bindings" \
+    "$BINDINGS@0.1.0-beta.2 is already on npm, skipped" "$OUT"
+expect_contains "the newer beta skips the wrapper" \
+    "$WRAPPER@0.1.0-beta.2 is already on npm, skipped" "$OUT"
+expect_equal "the dist-tags of versions that are on npm are not read" "$tag_reads" \
+    "$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
+expect_equal "running the newer beta again uploads nothing" 2 \
+    "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
 
 fresh 1.0.0-rc.1
 expect_fail "tarballs of a version outside the grammar are refused" \

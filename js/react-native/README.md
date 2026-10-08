@@ -94,8 +94,14 @@ on `main`, if the version is not a beta or a release, or if it is not newer than
 A tag cannot be moved or deleted, and a version on npm cannot be published again. A release that
 turns out wrong is fixed by releasing the next version.
 
-If a release fails halfway, run it again (Actions → the failed run → Re-run failed jobs). A
-package that already made it to npm is skipped, and the release continues from there.
+If a release fails halfway, run its failed jobs again (Actions → the failed run → Re-run failed
+jobs). They reuse the tarballs the run built and tested: a package that already made it to npm
+is skipped, and the release continues from there. Re-run all jobs is not the way to finish a
+release: it builds the packages again, and if a package that is already on npm comes out any
+different, the release stops rather than publish a pair that was never tested together. A
+release also stops when the dist-tag it publishes under, `beta` or `latest`, has moved on to a
+newer version in the meantime, since finishing it would move the dist-tag back. In both cases,
+release the next version.
 
 To try the release without releasing, run the workflow by hand (Actions → React Native SDK
 Release → Run workflow) on any branch, with a version. That is a dry run: it does what a release
@@ -148,8 +154,9 @@ safe to release from a pushed tag, and all three have to be in place before the 
   environment `npm` as its publisher, with `npm publish` among the allowed actions. npm drops a
   trusted publisher that has not published within two days of being set up, so set it up right
   before the first release. Once a release has gone through, set both packages' publishing access
-  to "Require two-factor authentication and disallow tokens": the workflow is then the only way
-  to publish them.
+  to "Require two-factor authentication and disallow tokens": no token can publish them then.
+  That leaves this workflow and a maintainer who publishes by hand, signed in with two-factor
+  authentication.
 - **The `npm` environment** (Settings → Environments), with no required reviewers and with
   deployments limited to tags matching `react-native-sdk-v*`. The `publish` job is the only one
   that names it. A job that names an environment which does not exist creates it without any

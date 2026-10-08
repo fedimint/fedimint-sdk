@@ -34,12 +34,14 @@ name: React Native SDK Release
 #   test-ios        app, the way an app adds them, and build it. On Android
 #                   the app also runs on an emulator, where it opens the SDK
 #                   and generates a mnemonic
-#   publish         to npm, bindings first; a version already there is
-#                   skipped, so a half-finished release can be run again
+#   publish         to npm, bindings first; a version already there as the
+#                   same tarball is skipped, so the failed jobs of a
+#                   half-finished release can be run again
 #   github-release  the GitHub Release: the notes, both tarballs, their sums
 #
 # What is published is what was tested: `publish` uploads the very tarballs
-# `pack` made and the two test jobs installed.
+# `pack` made and the two test jobs installed, and stops when npm already has
+# one of the two versions as any other tarball.
 #
 # A manual run (workflow_dispatch, on any ref, with a version) is a dry run.
 # It does what a release does up to and including the two test jobs, and
@@ -47,9 +49,10 @@ name: React Native SDK Release
 # release.
 #
 # Nothing here holds a credential for npm. `publish` uses npm trusted
-# publishing: npm accepts an upload from this workflow file in this
-# repository, running in the `npm` environment, and from nowhere else. What
-# gates a release is therefore who may push the tag, plus the checks above:
+# publishing: the trusted publisher set up on npm accepts an upload from this
+# workflow file in this repository, running in the `npm` environment, and from
+# no other workflow. What gates a release is therefore who may push the tag,
+# plus the checks above:
 #
 #   * a tag ruleset for `react-native-sdk-v*` limits creating one to
 #     maintainers, and a second one forbids updating and deleting one for
@@ -80,9 +83,13 @@ on:
         required: true
         type: string
 
-# Releases run one at a time and in the order their tags were pushed: two at
-# once could leave the `beta` dist-tag on the older one. `queue: max` keeps
-# every waiting release; without it a third tag would cancel the second.
+# Releases run one at a time. `queue: max` lets up to 100 of them wait;
+# without it a third tag would cancel the second. They start in the order
+# they began to wait, which GitHub does not promise to be the order the tags
+# were pushed in. Whatever the order, no dist-tag moves back to an older
+# release: `check` refuses a release that starts when a newer tag exists, and
+# scripts/react-native-sdk-publish.sh refuses to publish under a dist-tag
+# that is already on a newer version.
 # Dry runs publish nothing, so each gets a group of its own and neither waits
 # for a release nor holds one up.
 concurrency:
@@ -478,7 +485,7 @@ jobs:
           path: ${{ runner.temp }}/tarballs
 
       # Bindings first, then the package that names them as a peer. A package
-      # whose version is already on npm is skipped: see
+      # whose version is already on npm as the same tarball is skipped: see
       # scripts/react-native-sdk-publish.sh.
       - name: 'Publish'
         run: scripts/react-native-sdk-publish.sh "$RUNNER_TEMP/tarballs"

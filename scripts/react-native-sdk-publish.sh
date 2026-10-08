@@ -13,13 +13,22 @@
 # version as a peer, so it must never be on npm before them. A beta goes to the dist-tag `beta`
 # and a release to `latest`, since npm refuses a prerelease without a tag.
 #
-# A release that stopped half way can simply be run again. A package whose version is already on
-# npm is skipped, and so is one that turns out to be on npm although `npm publish` reported an
-# error. When the local tarball of such a package is not the one npm serves, it is replaced with
-# the one npm serves after checking it against the digest npm reports. Whichever run published
-# a version, the files in <dir> are then exactly what is on npm, and
-# <dir>/SHA256SUMS lists their SHA-256 digests in the format `sha256sum -c` reads, for the
-# GitHub Release to carry.
+# The two tarballs were tested as a pair, and only that pair is ever released. A release that
+# stopped half way can be run again with the same tarballs: a package whose version is already
+# on npm is skipped, and so is one that turns out to be on npm although `npm publish` reported
+# an error, as long as npm serves that very tarball. A version that is on npm as any other
+# tarball stops the script. That is what building the packages again for a release that already
+# published one of them leads to, unless the build comes out byte for byte the same, and the way
+# out is the next version.
+#
+# A dist-tag never moves back either. When the dist-tag a package would be published under is
+# already on a newer version, a later release has replaced this one, and the script stops.
+#
+# Both packages are checked before anything is uploaded: one whose version is on npm has to be
+# there as the local tarball, and one whose version is not must not move its dist-tag back. A
+# release that is refused there has uploaded nothing. When the script succeeds, the files in
+# <dir> are exactly what is on npm, and <dir>/SHA256SUMS lists their SHA-256 digests in the
+# format `sha256sum -c` reads, for the GitHub Release to carry.
 #
 # A registry that cannot be asked stops the script before anything further is published: a
 # version that is on npm must not look like one that is not. Publishing uses npm's trusted
@@ -38,8 +47,6 @@ WRAPPER_NAME=@fedimint/react-native
 # The oldest npm that can publish with trusted publishing.
 MIN_NPM=(11 5 1)
 
-DOWNLOAD=""
-
 die() {
     echo "$*" >&2
     exit 1
@@ -48,11 +55,6 @@ die() {
 usage() {
     sed -n '/^#   scripts/p' "${BASH_SOURCE[0]}" | sed 's/^#   /usage: /' >&2
     exit 2
-}
-
-# Removes a download that was not finished.
-cleanup() {
-    [[ -z "$DOWNLOAD" ]] || rm -f "$DOWNLOAD"
 }
 
 # Fails unless the tool $1 is on PATH. $2 says what it is needed for.
@@ -150,47 +152,95 @@ on_npm() {
         "${out:-nothing}; nothing further is published, run the release again when npm answers"
 }
 
-# Replaces the tarball $1 of $2@$3, which is on npm, with the one npm serves when they differ.
-reconcile() {
-    local tarball="$1" spec="$2@$3" want have url got
+# Prints the version the dist-tag $2 of the package $1 is on, or nothing when the package has no
+# such dist-tag or was never published. Stops when npm cannot say: a dist-tag that cannot be
+# read must not look like one that is not there. It prints, so call it as
+# `x="$(dist_tag ...)" || exit 1`: its own exit only leaves the command substitution.
+dist_tag() {
+    local name="$1" tag="$2" out status=0 code
+    out="$(npm view "$name" dist-tags --json 2>/dev/null)" || status=$?
+    if ((status == 0)); then
+        printf '%s' "$out" | node -e '
+            const tags = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            if (tags === null || typeof tags !== "object" || Array.isArray(tags)) process.exit(1);
+            const version = tags[process.argv[1]];
+            if (version === undefined) process.exit(0);
+            if (typeof version !== "string") process.exit(1);
+            console.log(version);
+        ' "$tag" 2>/dev/null ||
+            die "npm answered ${out:-nothing} when asked for the dist-tags of $name, which" \
+                "this script does not read; check that npm works and run the release again"
+        return 0
+    fi
+    code="$(printf '%s' "$out" | node -e '
+        const error = JSON.parse(require("fs").readFileSync(0, "utf8")).error;
+        if (error && typeof error.code === "string") console.log(error.code);
+    ' 2>/dev/null || true)"
+    # A package that was never published has no dist-tag to move.
+    [[ "$code" != E404 ]] || return 0
+    if [[ -n "$code" ]]; then
+        die "cannot read the dist-tags of $name from npm: error code $code; nothing was" \
+            "uploaded, run the release again when npm answers"
+    fi
+    die "cannot read the dist-tags of $name from npm: npm exited with status $status and" \
+        "printed ${out:-nothing}; nothing was uploaded, run the release again when npm answers"
+}
+
+# Stops the script when the dist-tag $3 of the package $1 is on a version that $2 is not newer
+# than: publishing $2 under it would move the dist-tag back.
+need_newer_than_tag() {
+    local name="$1" version="$2" tag="$3" current
+    current="$(dist_tag "$name" "$tag")" || exit 1
+    [[ -n "$current" ]] || return 0
+    "$VERSION_SCRIPT" check-newer --published "$version" <<<"$current" >/dev/null 2>&1 ||
+        die "the dist-tag $tag of $name is on $current, and $version is not newer: publishing" \
+            "it would move $tag back. A later release has replaced this one, so nothing was" \
+            "uploaded."
+}
+
+# Stops the script unless the tarball $1 is the one npm serves for $2@$3, which is on npm.
+need_same_tarball() {
+    local tarball="$1" spec="$2@$3" want have
     want="$(npm view "$spec" dist.integrity)" ||
         die "cannot read dist.integrity of $spec from npm; run the release again"
     [[ "$want" == sha512-* ]] ||
         die "npm reports the dist.integrity of $spec as ${want:-nothing}, not a sha512 digest"
     have="$(integrity "$tarball")"
-    if [[ "$have" == "$want" ]]; then
-        return
+    [[ "$have" == "$want" ]] ||
+        die "$spec is on npm as another tarball than ${tarball##*/}: npm reports the integrity" \
+            "$want and this file has $have. The two packages were tested as the pair in this" \
+            "directory, and only that pair is released, so the release stops here. Release" \
+            "the next version."
+}
+
+# Looks at $2@$3, the package in the tarball $1, before anything is uploaded. Stops the script
+# when the version is on npm as another tarball, or when it is not on npm and publishing it
+# under the dist-tag $4 would move that dist-tag back.
+preflight() {
+    local tarball="$1" name="$2" version="$3" tag="$4"
+    if on_npm "$name" "$version"; then
+        need_same_tarball "$tarball" "$name" "$version"
+    else
+        need_newer_than_tag "$name" "$version" "$tag"
     fi
-    url="$(npm view "$spec" dist.tarball)" ||
-        die "cannot read dist.tarball of $spec from npm; run the release again"
-    DOWNLOAD="$(mktemp "$(dirname "$tarball")/.download.XXXXXX")"
-    curl -fsSL --retry 3 -o "$DOWNLOAD" "$url" || die "cannot download $url"
-    got="$(integrity "$DOWNLOAD")"
-    [[ "$got" == "$want" ]] ||
-        die "the file at $url has the digest $got, not the dist.integrity $want that npm" \
-            "reports for $spec; $tarball was kept. Run the release again."
-    chmod 644 "$DOWNLOAD"
-    mv "$DOWNLOAD" "$tarball"
-    DOWNLOAD=""
-    echo "replaced ${tarball##*/} with the tarball npm serves for $spec, which differs from it"
 }
 
 # Publishes the tarball $1 of $2@$3 under the dist-tag $4, unless that version is on npm.
 publish_one() {
     local tarball="$1" name="$2" version="$3" tag="$4"
     if on_npm "$name" "$version"; then
-        reconcile "$tarball" "$name" "$version"
+        need_same_tarball "$tarball" "$name" "$version"
         echo "$name@$version is already on npm, skipped"
         return
     fi
     if ! npm publish "$tarball" --tag "$tag" --access public; then
         # The registry can take an upload and still answer with an error, and someone else can
-        # have published the version in the meantime. A retry must not fail on publishing over a
-        # version that is there, but what is there may not be this tarball.
+        # have published the version in the meantime. Only the first leaves this tarball on npm.
         on_npm "$name" "$version" ||
             die "npm publish of $name@$version failed and the version is not on npm; nothing" \
-                "further was published. Fix the cause and run the release again."
-        reconcile "$tarball" "$name" "$version"
+                "further was published. Fix the cause and run the release again with the same" \
+                "tarballs."
+        need_same_tarball "$tarball" "$name" "$version"
         echo "$name@$version is on npm although npm publish reported a failure"
         return
     fi
@@ -228,7 +278,6 @@ need tar "to read the tarballs"
 need npm "to publish"
 [[ -d "$dir" ]] || die "$dir is not a directory; pass the directory the tarballs are in"
 dir="$(cd "$dir" && pwd)"
-trap cleanup EXIT
 
 bindings_tarball="$(find_one "bindings tarball" "$dir" "fedimint-react-native-bindings-*.tgz")"
 wrapper_tarball="$(find_one "wrapper tarball" "$dir" "fedimint-react-native-[0-9]*.tgz")"
@@ -262,8 +311,10 @@ if ((dry_run)); then
     exit 0
 fi
 
-need curl "to download a published tarball that differs from the local one"
 check_npm
+# Nothing is uploaded before both packages have passed.
+preflight "$bindings_tarball" "$bindings_name" "$version" "$tag"
+preflight "$wrapper_tarball" "$wrapper_name" "$version" "$tag"
 publish_one "$bindings_tarball" "$bindings_name" "$version" "$tag"
 publish_one "$wrapper_tarball" "$wrapper_name" "$version" "$tag"
 write_sums "$dir" "${bindings_tarball##*/}" "${wrapper_tarball##*/}"
