@@ -1620,8 +1620,6 @@ mod tests {
     /// client, and a federation rejecting a claim cannot be provoked from a test.
     #[cfg(not(target_family = "wasm"))]
     mod stored {
-        use fedimint_core::db::IDatabaseTransactionOpsCoreTyped as _;
-
         use super::*;
         use crate::db::{OperationRecordKey, federation_namespace, in_memory_root};
         use crate::onchain::deposit_fixtures::{ADDRESS, a_walletv2_claim, txid};
