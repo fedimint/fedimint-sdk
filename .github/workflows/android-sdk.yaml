@@ -127,7 +127,7 @@ jobs:
           if-no-files-found: error
 
   # Assembles the example APK the E2E job installs, in the lean `.#android` shell
-  # on a machine of its own: a Gradle build on the same four cores as an
+  # on a machine of its own: a Gradle build on the same machine as an
   # emulator and a devimint federation starved the emulator until Android's
   # System UI stopped responding, so the build happens where nothing else is
   # running. It is also the one place the example app is compiled against the

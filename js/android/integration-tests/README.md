@@ -53,7 +53,7 @@ exactly once and the next job downloads its output rather than redoing it:
 | `native`   | `android-native.yaml` (self-hosted) | —                 | `jniLibs`, the cross-compiled `.so`                       |
 | `bindings` | `android-sdk.yaml`                  | — (Rust)          | `android-bindings`, generated once from that `.so`        |
 | `apk`      | `android-apk.yaml`                  | `.#android`       | `android-example-apk` — Gradle on the two artifacts above |
-| `e2e`      | `android-e2e.yml`                   | `.#android-tests` | the run itself — installs the APK, no Gradle              |
+| `e2e`      | `android-e2e.yml` (self-hosted Mac) | `.#android-tests` | the run itself — installs the APK, no Gradle              |
 
 The AAR job (`aar`) downloads the same `jniLibs` and `android-bindings` and only assembles the
 release AAR; the example app is compiled once, by `apk`.
