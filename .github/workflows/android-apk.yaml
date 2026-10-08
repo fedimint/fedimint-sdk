@@ -53,8 +53,10 @@ jobs:
   build:
     name: 'Assemble the Android example APK'
     # Hosted, unlike the native library: there is no cross-compile here to
-    # want a persistent /nix/store for. What it does download is the Android
-    # SDK closure, which is cached in Cachix like any other Nix output.
+    # want a persistent /nix/store for. What it does download is the `.#android`
+    # shell, the Android SDK included. The build-rn-android action pushes that
+    # shell to Cachix from `main`. Whatever of it the cache lacks is built here
+    # instead, on every run.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:

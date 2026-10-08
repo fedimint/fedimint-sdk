@@ -32,6 +32,30 @@ runs:
         nix develop --accept-flake-config .#android --command \
           pnpm --dir js install --frozen-lockfile
 
+    - name: Push the Android shell to Cachix
+      # android-apk.yaml enters `.#android` on a GitHub-hosted runner, whose store starts empty,
+      # so that job builds whatever part of the shell no binary cache holds. The public NixOS
+      # cache has neither the Android SDK packages nor ubrn, and both change when a fedimint pin
+      # bump moves the nixpkgs the shell is built from. Only a job with the Cachix token can push
+      # them, and a pull request from a fork has none, so a pin bump merged from a fork can leave
+      # them out of the cache. Every APK job then rebuilds them, which takes it from about 4
+      # minutes to about 11.
+      #
+      # The job that calls this action runs on `main`, with the token, after every change to what
+      # the shell is made of: the flake, nix/ and rust/ubrn. It has just entered the shell, so
+      # the packages are in its store whether it built them or already had them. Like the
+      # libraries above, they have to be pushed explicitly, because cachix-action only pushes
+      # what a run builds. A dev shell's derivation builds to a file that refers to every package
+      # of the shell, so pushing that file pushes them all, and cachix uploads only what the
+      # cache lacks.
+      shell: bash
+      continue-on-error: true
+      run: |
+        system=$(nix eval --impure --raw --expr builtins.currentSystem)
+        nix build --accept-flake-config --no-link --print-out-paths \
+          ".#devShells.$system.android" \
+          | cachix push fedimint
+
     - name: Generate the bindings and stage the libraries
       # Needs the nix-packaged ubrn and cargo from the shell, and the install above so ubrn
       # formats with the workspace's prettier exactly as a contributor's run does.
