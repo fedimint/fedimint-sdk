@@ -278,7 +278,14 @@ so a new payment method only adds the SDK calls.
   new send for it. The id (not secret) is also kept in the ViewModel's
   `SavedStateHandle`: if Android kills the process in the background and later
   restores the screen with its inputs, the new ViewModel starts locked on that
-  operation and points to it, instead of offering the payment again.
+  operation and points to it, instead of offering the payment again. Android
+  saves that state when the screen stops, and a write made while it is stopped
+  waits for the next stop, so a send finishing in the background could miss the
+  snapshot. So before calling the SDK, the ViewModel also records that a
+  submission is in progress, while the screen is still in front. A screen
+  restored with that record but no id stays locked and looks in the SDK's
+  persistent history for an operation of its kind created since: found, it locks
+  on it; not found, nothing was sent and it unlocks and says so.
 - **A failed send drops its review.** The SDK spends a quote even on a failed send
   (expired, changed, insufficient balance), so the review disappears with the
   error, and Review fetches a fresh quote for the same inputs.
@@ -332,9 +339,13 @@ so a new payment method only adds the SDK calls.
   are unique by operation id (the list's keys require it). `ActivityViewModel`
   takes the page loader as a function, so this is unit tested
   (`ActivityViewModelTest`).
-- **Home shows the newest five rows and reloads them whenever the balance moves**,
-  because money arriving or leaving is when a row appears or settles. It uses its
-  own `balanceUpdates()` subscription, since each one is an independent cursor.
+- **Home shows the newest five rows and reloads them when the balance moves, when
+  Home comes back into view, and every 10 s while a row is still pending.** The
+  balance alone isn't enough: an ecash send settles when its receiver redeems it,
+  long after the balance was debited, and an operation created on another screen
+  (opening On-chain Receive) moves nothing. The timer stops once every row is
+  final and runs only while Home is visible (`HomeViewModelTest` covers both cases
+  with a constant balance).
 - **An operation is opened untyped, then narrowed.** `federation.operation(id)`
   returns an `AnyOperation`. The detail screen asks `support()` first: an
   operation written by a newer SDK, or for a module this build doesn't know, is
