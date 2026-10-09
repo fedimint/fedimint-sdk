@@ -404,29 +404,16 @@ pub(super) async fn adopt(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Paid {
     txid: String,
-    /// `None` only for a record that keeps no output index and follows no claim whose log entry
-    /// names one. Such a record is told apart by its address instead.
-    vout: Option<u32>,
-    address: String,
+    vout: u32,
 }
 
-impl Paid {
-    fn same_output(&self, other: &Paid) -> bool {
-        if self.txid != other.txid {
-            return false;
-        }
-        match (self.vout, other.vout) {
-            (Some(ours), Some(theirs)) => ours == theirs,
-            _ => self.address == other.address,
-        }
-    }
-}
-
-/// The output a walletv2 `Receive` log entry claims, or `None` for any other entry.
+/// The output a walletv2 `Receive` log entry claims, or `None` for any other entry. A `Receive`
+/// entry that names no address or no output is one of those: [`backfill`] records no deposit for
+/// it.
 pub(super) fn paid_by(meta: &serde_json::Value) -> Option<Paid> {
     let meta: WalletOperationMeta = serde_json::from_value(meta.clone()).ok()?;
     let WalletOperationMeta::Receive(ReceiveMeta {
-        address: Some(address),
+        address: Some(_),
         outpoint: Some(outpoint),
         ..
     }) = meta
@@ -435,57 +422,25 @@ pub(super) fn paid_by(meta: &serde_json::Value) -> Option<Paid> {
     };
     Some(Paid {
         txid: Txid::from_upstream(outpoint.txid).to_string(),
-        vout: Some(outpoint.vout),
-        address: address.assume_checked_ref().to_string(),
+        vout: outpoint.vout,
     })
 }
 
 /// Whether a stored deposit record is of the output `paid`.
-pub(super) async fn names(db: &Database, details: &str, paid: &Paid) -> bool {
-    let Ok(details) = wire::decode_receive_wire(details) else {
-        return false;
-    };
-    paid_of(db, &details)
-        .await
-        .is_some_and(|recorded| recorded.same_output(paid))
+pub(super) fn names(details: &str, paid: &Paid) -> bool {
+    wire::decode_receive_wire(details)
+        .ok()
+        .and_then(|details| paid_of(&details))
+        .is_some_and(|recorded| recorded == *paid)
 }
 
-/// The output a deposit record was written for, or `None` for a record that names no payment.
-async fn paid_of(db: &Database, details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
-    let txid = details.txid.clone()?;
-    let vout = match details.vout {
-        Some(vout) => Some(vout),
-        None => claimed_vout(db, details, &txid).await,
-    };
+/// The output a deposit record was written for, or `None` for a record that keeps no output
+/// index. Every record of a walletv2 deposit keeps one.
+fn paid_of(details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
     Some(Paid {
-        txid,
-        vout,
-        address: details.address.clone(),
+        txid: details.txid.clone(),
+        vout: details.vout?,
     })
-}
-
-/// The output index of a record that keeps none, read from the log entry of the claim the record
-/// follows: every claim of a deposit is of the same output. `None` when the record follows no
-/// claim, or the entry is not there to read or names another transaction.
-async fn claimed_vout(
-    db: &Database,
-    details: &wire::OnchainReceiveDetailsWire,
-    txid: &str,
-) -> Option<u32> {
-    let upstream = details
-        .upstream_operation_id
-        .as_deref()?
-        .parse::<OperationId>()
-        .ok()?;
-    let entry = fedimint_client::oplog::OperationLog::new(db.clone())
-        .get_operation(upstream)
-        .await?;
-    let meta: serde_json::Value = entry.try_meta().ok()?;
-    let claimed = paid_by(&meta)?;
-    if claimed.txid != txid {
-        return None;
-    }
-    claimed.vout
 }
 
 /// One claim of a deposit: the upstream operation it runs under, and the event-log position a
@@ -538,10 +493,9 @@ pub(super) async fn find_claim(
             };
             let claimed = Paid {
                 txid: Txid::from_upstream(outpoint.txid).to_string(),
-                vout: Some(outpoint.vout),
-                address: event.address.assume_checked_ref().to_string(),
+                vout: outpoint.vout,
             };
-            if event.operation_id == rejected || !claimed.same_output(paid) {
+            if event.operation_id == rejected || claimed != *paid {
                 continue;
             }
             return Ok(Link {
@@ -822,16 +776,12 @@ async fn read_paid(db: &Database, id: OperationId) -> Result<Paid> {
             id.fmt_full()
         )));
     };
-    paid_of(db, &details).await.ok_or_else(|| unpaid(id))
-}
-
-/// What a record that follows no claim is asked for: a version of this crate that recorded an
-/// address when it was handed out wrote one, and an address nobody has paid has no state.
-fn unpaid(id: OperationId) -> Error {
-    internal(format!(
-        "operation {} is a deposit address that has not been paid",
-        id.fmt_full()
-    ))
+    paid_of(&details).ok_or_else(|| {
+        internal(format!(
+            "the record of operation {} names no output",
+            id.fmt_full()
+        ))
+    })
 }
 
 fn claimed_from(details: wire::OnchainReceiveDetailsWire) -> Result<OnchainReceiveState> {
@@ -853,23 +803,26 @@ fn parse_upstream_id(text: &str) -> Result<OperationId> {
     })
 }
 
-/// The claim a deposit's record follows, or `None` for a record that follows none.
-fn wire_link(details: &wire::OnchainReceiveDetailsWire) -> Result<Option<Link>> {
-    let (Some(upstream), Some(txid), Some(gross)) = (
-        details.upstream_operation_id.as_deref(),
-        details.txid.as_deref(),
-        details.gross_deposited_sats,
-    ) else {
-        return Ok(None);
+/// The claim a deposit's record follows.
+///
+/// # Errors
+///
+/// [`Internal`](ErrorCode::Internal) for a record that names no claim, or whose claim or
+/// transaction id does not parse. Every record of a walletv2 deposit is written with the claim
+/// it follows.
+fn wire_link(details: &wire::OnchainReceiveDetailsWire) -> Result<Link> {
+    let Some(upstream) = details.upstream_operation_id.as_deref() else {
+        return Err(internal("a walletv2 deposit record names no claim"));
     };
-    Ok(Some(Link {
+    Ok(Link {
         upstream: parse_upstream_id(upstream)?,
-        txid: txid
+        txid: details
+            .txid
             .parse::<Txid>()
             .map_err(|_| internal("a stored transaction id does not parse"))?,
-        gross: Sats::from_sats(gross),
+        gross: Sats::from_sats(details.gross_deposited_sats),
         cursor: details.event_cursor.unwrap_or(0),
-    }))
+    })
 }
 
 fn federation_closed() -> Error {
@@ -897,9 +850,7 @@ pub(super) async fn current_receive(
     if details.net_credit_msats.is_some() {
         return claimed_from(details);
     }
-    let Some(mut found) = wire_link(&details)? else {
-        return Err(unpaid(id));
-    };
+    let mut found = wire_link(&details)?;
     let client = federation.client(false).await?;
     let mut progress = observe_link(&client, &db, id, &found).await?;
     // The module claims a deposit again, under a fresh upstream operation, when the federation
@@ -1040,11 +991,10 @@ async fn receive_step(
                     return Some((claimed_from(details), ReceiveCursor::Done));
                 }
                 match wire_link(&details) {
-                    Ok(Some(found)) => ReceiveCursor::Linked {
+                    Ok(found) => ReceiveCursor::Linked {
                         link: found,
                         announced: false,
                     },
-                    Ok(None) => return Some((Err(unpaid(ctx.id)), ReceiveCursor::Done)),
                     Err(err) => return Some((Err(err), ReceiveCursor::Done)),
                 }
             }
@@ -1278,8 +1228,8 @@ pub(super) fn backfill(
         }) => {
             let wire = wire::OnchainReceiveDetailsWire {
                 address: address.assume_checked_ref().to_string(),
-                txid: Some(Txid::from_upstream(outpoint.txid).to_string()),
-                gross_deposited_sats: Some(value.to_sat()),
+                txid: Txid::from_upstream(outpoint.txid).to_string(),
+                gross_deposited_sats: value.to_sat(),
                 fee_msats: None,
                 fee_breakdown: None,
                 net_credit_msats: None,
@@ -1291,12 +1241,12 @@ pub(super) fn backfill(
             Some(Backfilled {
                 kind: kinds::ONCHAIN_RECEIVE,
                 details: wire::encode_receive_wire(&wire).ok()?,
-                phase: Some(wire::PHASE_SEEN),
+                phase: None,
                 final_state: None,
             })
         }
-        // A claim that names no address or no outpoint cannot be reported as a deposit: there
-        // is no transaction to show for it.
+        // A claim that names no address or no outpoint cannot be reported as a deposit: its
+        // record has to name both the address that was paid and the output that paid it.
         WalletOperationMeta::Receive(_) => None,
     }
 }
@@ -1502,8 +1452,7 @@ mod tests {
         let meta = receive_meta(Some(upstream_address()), 100_000, 500, Some(outpoint));
         let paid = paid_by(&meta).expect("a claim of an output");
         assert_eq!(paid.txid, Txid::from_upstream(outpoint.txid).to_string());
-        assert_eq!(paid.vout, Some(3));
-        assert_eq!(paid.address, an_address().to_string());
+        assert_eq!(paid.vout, 3);
 
         // Only a claim that names both the address and the output is one of a deposit.
         assert!(paid_by(&receive_meta(None, 100_000, 500, Some(outpoint))).is_none());
@@ -1584,15 +1533,15 @@ mod tests {
         let meta = receive_meta(Some(upstream_address()), 100_000, 500, Some(outpoint));
         let backfilled = backfill(id, &meta, 1_700_000_000_000).expect("recognised");
         assert_eq!(backfilled.kind, kinds::ONCHAIN_RECEIVE);
-        assert_eq!(backfilled.phase, Some(wire::PHASE_SEEN));
+        assert_eq!(backfilled.phase, None);
         assert_eq!(backfilled.final_state, None);
         let raw = wire::decode_receive_wire(&backfilled.details).expect("decode");
         assert_eq!(
             raw.address,
             upstream_address().assume_checked_ref().to_string()
         );
-        assert_eq!(raw.txid, Some(Txid::from_upstream(txid).to_string()));
-        assert_eq!(raw.gross_deposited_sats, Some(100_000));
+        assert_eq!(raw.txid, Txid::from_upstream(txid).to_string());
+        assert_eq!(raw.gross_deposited_sats, 100_000);
         // The claim the record follows is the entry's own, and the output is kept whole, which
         // is what tells a later claim of the same deposit from a claim of another.
         assert_eq!(raw.upstream_operation_id, Some(id.fmt_full().to_string()));
@@ -1621,8 +1570,8 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     mod stored {
         use super::*;
-        use crate::db::{OperationRecordKey, federation_namespace, in_memory_root};
-        use crate::onchain::deposit_fixtures::{ADDRESS, a_walletv2_claim, txid};
+        use crate::db::{federation_namespace, in_memory_root};
+        use crate::onchain::deposit_fixtures::{a_walletv2_claim, txid};
         use crate::operation::write_details_in;
 
         fn operation(byte: u8) -> OperationId {
@@ -1657,9 +1606,8 @@ mod tests {
         async fn a_record_follows_the_claim_it_was_written_for() {
             let (db, _federation, id) = a_recorded_deposit().await;
 
-            let found = wire_link(&stored(&db, id).await)
-                .expect("reads")
-                .expect("a deposit record follows a claim");
+            let found =
+                wire_link(&stored(&db, id).await).expect("a deposit record follows a claim");
             assert_eq!(found.upstream, id);
             assert_eq!(found.txid.to_string(), txid(3).to_string());
             assert_eq!(found.gross, Sats::from_sats(100_000));
@@ -1673,12 +1621,7 @@ mod tests {
             let before = stored(&db, id).await;
             let later = Link {
                 upstream: operation(2),
-                txid: before
-                    .txid
-                    .as_deref()
-                    .expect("set")
-                    .parse()
-                    .expect("a txid"),
+                txid: before.txid.parse().expect("a txid"),
                 gross: Sats::from_sats(100_000),
                 cursor: 5,
             };
@@ -1696,7 +1639,7 @@ mod tests {
             assert_eq!(after.vout, before.vout);
             assert_eq!(after.gross_deposited_sats, before.gross_deposited_sats);
             assert_eq!(after.created_at, before.created_at);
-            let found = wire_link(&after).expect("reads").expect("still follows");
+            let found = wire_link(&after).expect("still follows");
             assert_eq!(found.upstream, operation(2));
             assert_eq!(found.cursor, 5);
 
@@ -1828,80 +1771,28 @@ mod tests {
             .expect("a claim of an output")
         }
 
-        #[tokio::test(flavor = "multi_thread")]
-        async fn a_record_names_the_output_it_was_written_for_and_no_other() {
-            let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        #[test]
+        fn a_record_names_the_output_it_was_written_for_and_no_other() {
             let outpoint = bitcoin::OutPoint {
                 txid: a_bitcoin_txid(),
                 vout: 3,
             };
             let details = details_of_a_claim(outpoint);
 
-            assert!(names(&db, &details, &a_claim_of(outpoint)).await);
+            assert!(names(&details, &a_claim_of(outpoint)));
             // Another output of the same transaction is another deposit, even to the same
             // address.
             let sibling = bitcoin::OutPoint {
                 txid: outpoint.txid,
                 vout: 4,
             };
-            assert!(!names(&db, &details, &a_claim_of(sibling)).await);
+            assert!(!names(&details, &a_claim_of(sibling)));
             let elsewhere = bitcoin::OutPoint {
                 txid: bitcoin::Txid::from_byte_array([7; 32]),
                 vout: 3,
             };
-            assert!(!names(&db, &details, &a_claim_of(elsewhere)).await);
-            assert!(!names(&db, "not a record", &a_claim_of(outpoint)).await);
-        }
-
-        /// A record that keeps no output index, and follows no claim whose log entry could
-        /// supply one, is matched by its transaction and its address.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn a_record_with_no_output_index_to_be_had_is_matched_by_its_address() {
-            let db = federation_namespace(&in_memory_root(), [1u8; 32]);
-            let outpoint = bitcoin::OutPoint {
-                txid: a_bitcoin_txid(),
-                vout: 3,
-            };
-            let mut record =
-                wire::decode_receive_wire(&details_of_a_claim(outpoint)).expect("decode");
-            record.vout = None;
-            let details = wire::encode_receive_wire(&record).expect("encode");
-            assert!(names(&db, &details, &a_claim_of(outpoint)).await);
-
-            record.address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_owned();
-            let elsewhere = wire::encode_receive_wire(&record).expect("encode");
-            assert!(!names(&db, &elsewhere, &a_claim_of(outpoint)).await);
-        }
-
-        /// A record that follows no claim is a deposit address an earlier version of this crate
-        /// recorded when it handed the address out. Nobody paid it, so it has no state.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn a_record_that_follows_no_claim_has_no_state() {
-            let (db, federation, id) = a_recorded_deposit().await;
-            let unpaid = serde_json::json!({
-                "address": ADDRESS,
-                "txid": null,
-                "gross_deposited_sats": null,
-                "fee_msats": null,
-                "fee_breakdown": null,
-                "net_credit_msats": null,
-                "created_at": 1_600_000_000_000u64,
-                "event_cursor": 0,
-            })
-            .to_string();
-            write_details_in(&db, id, unpaid).await.expect("write");
-            assert!(
-                db.begin_transaction_nc()
-                    .await
-                    .get_value(&OperationRecordKey(id))
-                    .await
-                    .is_some()
-            );
-
-            let err = current_receive(&federation, id)
-                .await
-                .expect_err("an unpaid address has no state");
-            assert_eq!(err.code, ErrorCode::Internal);
+            assert!(!names(&details, &a_claim_of(elsewhere)));
+            assert!(!names("not a record", &a_claim_of(outpoint)));
         }
     }
 }

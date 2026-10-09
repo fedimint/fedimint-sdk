@@ -29,8 +29,8 @@ use super::{
 };
 use crate::federation::{FederationInner, write_record_in};
 use crate::operation::{
-    Backfilled, Driver, READABLE_STATE_SCHEMA, custom_meta, from_custom_meta, kinds,
-    record_phase_in, until_final, write_details_in,
+    Backfilled, Driver, READABLE_STATE_SCHEMA, custom_meta, from_custom_meta, kinds, until_final,
+    write_details_in,
 };
 use crate::sdk::{CONTACT_TIMEOUT, SdkInner};
 use crate::{
@@ -406,8 +406,8 @@ pub(super) async fn adopt(
             };
             let details = wire::OnchainReceiveDetailsWire {
                 address,
-                txid: Some(found.txid.to_string()),
-                gross_deposited_sats: Some(found.gross.sats()),
+                txid: found.txid.to_string(),
+                gross_deposited_sats: found.gross.sats(),
                 fee_msats: None,
                 fee_breakdown: None,
                 net_credit_msats: None,
@@ -422,7 +422,7 @@ pub(super) async fn adopt(
                 module: "wallet".to_owned(),
                 created_at: found.found_at,
                 details: wire::encode_receive_wire(&details)?,
-                phase: Some(wire::PHASE_SEEN),
+                phase: None,
                 cancel_requested_at: None,
                 final_state: None,
             };
@@ -445,24 +445,7 @@ pub(super) async fn adopt(
             return Ok(None);
         }
     };
-    match details.txid {
-        Some(txid) if txid != found.txid.to_string() => Ok(None),
-        // The record of this very payment. One can name its payment and still lack its phase: a
-        // version of this crate that recorded an address when it was handed out wrote the two
-        // separately, the payment first, and could be interrupted in between.
-        Some(_) => {
-            if record.phase.is_none() {
-                record_phase_in(&db, id, wire::PHASE_SEEN).await?;
-            }
-            Ok(Some(id))
-        }
-        // A record written by a version of this crate that recorded an address when it was
-        // handed out: it names no payment until this one is filled in.
-        None => {
-            fill_seen(&db, id, found).await?;
-            Ok(Some(id))
-        }
-    }
+    Ok((details.txid == found.txid.to_string()).then_some(id))
 }
 
 /// The address the v1 operation `id` was allocated for, or `None` if `id` is not an address
@@ -511,10 +494,6 @@ pub(super) enum Progress {
 // are therefore that replay catching up, the second of them behind a round trip to the bitcoin
 // backend, and not where the deposit is: the first state is there at once, and none is reported
 // that is behind the claim the record stands for.
-//
-// The one record that can be ahead of its claim was written by a version of this crate that
-// recorded a deposit when it first saw the transaction. Until that transaction has the
-// federation's confirmations it reads as `Confirmed` too: no earlier state is left to report.
 //
 // Only the progress is taken from upstream. The transaction and the amount every state reports
 // are the record's own, the ones the module announced, because upstream's stream follows the
@@ -587,12 +566,6 @@ pub(super) async fn subscribe_deposit(
 }
 
 /// The payment the record of `id` stands for.
-///
-/// # Errors
-///
-/// [`Internal`](ErrorCode::Internal) for a record that names no payment. Only a version of this
-/// crate that recorded an address when it was handed out wrote one, and it is a deposit address
-/// nobody has paid, which has no state to report.
 async fn payment_of(db: &Database, id: OperationId) -> Result<Payment> {
     let Some(record) = db
         .begin_transaction_nc()
@@ -606,74 +579,13 @@ async fn payment_of(db: &Database, id: OperationId) -> Result<Payment> {
         )));
     };
     let details = wire::decode_receive_wire(&record.details)?;
-    let (Some(txid), Some(gross)) = (details.txid, details.gross_deposited_sats) else {
-        return Err(internal(format!(
-            "operation {} is a deposit address that has not been paid",
-            id.fmt_full()
-        )));
-    };
     Ok(Payment {
-        txid: txid
+        txid: details
+            .txid
             .parse()
             .map_err(|_| internal("a stored transaction id does not parse"))?,
-        gross: Sats::from_sats(gross),
+        gross: Sats::from_sats(details.gross_deposited_sats),
     })
-}
-
-/// Turns a record that names no payment into the record of the deposit `found` announces: the
-/// payment is filled in, the record is dated from when the deposit was found, which moves it in
-/// the chronological index too, and it is marked as a deposit.
-///
-/// Only a record written by a version of this crate that recorded an address when it was handed
-/// out needs it. It is one write, so the record is an unpaid address until it is the deposit in
-/// full. A record that has gone, or that names a payment by now, is left as it is.
-async fn fill_seen(db: &Database, id: OperationId, found: &Found) -> Result<()> {
-    db.autocommit(
-        |dbtx, _| {
-            let found = found.clone();
-            Box::pin(async move {
-                let key = crate::db::OperationRecordKey(id);
-                let Some(mut record) = dbtx.get_value(&key).await else {
-                    return Ok(Ok(()));
-                };
-                let mut details = match wire::decode_receive_wire(&record.details) {
-                    Ok(details) => details,
-                    Err(err) => return Ok(Err(err)),
-                };
-                if details.txid.is_some() {
-                    return Ok(Ok(()));
-                }
-                details.txid = Some(found.txid.to_string());
-                details.gross_deposited_sats = Some(found.gross.sats());
-                details.created_at = found.found_at;
-                record.details = match wire::encode_receive_wire(&details) {
-                    Ok(details) => details,
-                    Err(err) => return Ok(Err(err)),
-                };
-                // The index entry repeats the record's own time, so it moves with it.
-                dbtx.remove_entry(&crate::db::OperationIndexKey {
-                    created_at: record.created_at,
-                    id,
-                })
-                .await;
-                record.created_at = found.found_at;
-                record.phase = Some(wire::PHASE_SEEN);
-                dbtx.insert_entry(&key, &record).await;
-                dbtx.insert_entry(
-                    &crate::db::OperationIndexKey {
-                        created_at: record.created_at,
-                        id,
-                    },
-                    &(),
-                )
-                .await;
-                Ok::<_, core::convert::Infallible>(Ok(()))
-            })
-        },
-        Some(100),
-    )
-    .await
-    .map_err(crate::db::storage_error)?
 }
 
 /// The net credit for a claimed deposit: read back if an earlier subscription already computed
@@ -1104,18 +1016,16 @@ mod tests {
         use crate::db::{federation_namespace, in_memory_root};
         use crate::onchain::deposit_fixtures::{ADDRESS, txid};
 
-        /// A v1 receive record with `txid` and `gross_deposited_sats` as its payment.
-        async fn a_record(
-            txid: serde_json::Value,
-            gross_deposited_sats: serde_json::Value,
-        ) -> (Database, OperationId) {
+        /// Every state of a deposit reports the payment its record was written for.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_deposit_reports_the_payment_on_its_record() {
             let db = federation_namespace(&in_memory_root(), [1u8; 32]);
             let federation = FederationInner::detached(db.clone(), true);
             let id = OperationId([1; 32]);
             let details = serde_json::json!({
                 "address": ADDRESS,
-                "txid": txid,
-                "gross_deposited_sats": gross_deposited_sats,
+                "txid": txid(1).to_string(),
+                "gross_deposited_sats": 70_000,
                 "fee_msats": null,
                 "fee_breakdown": null,
                 "net_credit_msats": null,
@@ -1132,13 +1042,7 @@ mod tests {
                 )
                 .await
                 .expect("create");
-            (db, id)
-        }
 
-        /// Every state of a deposit reports the payment its record was written for.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn a_deposit_reports_the_payment_on_its_record() {
-            let (db, id) = a_record(txid(1).to_string().into(), 70_000.into()).await;
             assert_eq!(
                 payment_of(&db, id).await.expect("a payment"),
                 Payment {
@@ -1148,16 +1052,9 @@ mod tests {
             );
         }
 
-        /// A record that names no payment is a deposit address an earlier version of this
-        /// crate recorded when it handed the address out. Nobody paid it, so it has no state.
         #[tokio::test(flavor = "multi_thread")]
-        async fn an_address_nobody_paid_has_no_payment_to_report() {
-            let (db, id) = a_record(serde_json::Value::Null, serde_json::Value::Null).await;
-            let err = payment_of(&db, id)
-                .await
-                .expect_err("an unpaid address has no payment");
-            assert_eq!(err.code, ErrorCode::Internal);
-
+        async fn an_operation_without_a_record_has_no_payment_to_report() {
+            let db = federation_namespace(&in_memory_root(), [1u8; 32]);
             let err = payment_of(&db, OperationId([2; 32]))
                 .await
                 .expect_err("no record, no payment");

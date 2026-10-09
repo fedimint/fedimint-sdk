@@ -663,13 +663,9 @@ impl FederationInner {
     ///
     /// The erase guard's on-chain counterpart to
     /// [`has_unsettled_ecash_send`](Self::has_unsettled_ecash_send): an `ONCHAIN_RECEIVE` record
-    /// at [`PHASE_SEEN`](crate::onchain::PHASE_SEEN) with no final state is a claim in progress,
-    /// which erasing the federation must not abandon. Every deposit record is at that phase. A
-    /// receive record with no phase at all never counts: it is a deposit address that a version
-    /// of this crate recorded when it handed the address out. The caller first runs
-    /// [`mark_paid_records`](crate::onchain::mark_paid_records), which marks the deposits that
-    /// version left unmarked, and [`pick_up_deposits`](crate::onchain::pick_up_deposits), which
-    /// records the ones found since the last pass.
+    /// with no final state is a claim in progress, which erasing the federation must not
+    /// abandon. The caller first runs [`pick_up_deposits`](crate::onchain::pick_up_deposits),
+    /// which records the deposits found since the last pass.
     pub(crate) async fn has_seen_unclaimed_deposit(&self) -> Result<bool> {
         use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
         use futures::StreamExt;
@@ -681,7 +677,6 @@ impl FederationInner {
             .await;
         while let Some((_, record)) = records.next().await {
             if record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
-                && record.phase == Some(crate::onchain::PHASE_SEEN)
                 && record.final_state.is_none()
             {
                 return Ok(true);
@@ -1060,11 +1055,12 @@ impl FederationInner {
         record_recovery_attempt_in(&self.db(), attempt).await
     }
 
-    /// Looks one operation up by id, rebuilding its record from the client's own log if a crash
-    /// left the log entry without one.
+    /// Looks one operation up by id, rebuilding its record from the client's own log if the log
+    /// has an entry for the id and no record answers for it yet.
     ///
-    /// A record that is a deposit address rather than a deposit is not an operation and answers
-    /// `None`, see [`is_unpaid_address`](crate::onchain::is_unpaid_address).
+    /// `None` when there is no such operation. A log entry that is not an operation has none
+    /// either: a deposit address a wallet module handed out, or a later claim of a deposit that
+    /// already has its record.
     ///
     /// # Errors
     ///
@@ -1076,9 +1072,6 @@ impl FederationInner {
         let Some(record) = self.record_of(id).await? else {
             return Ok(None);
         };
-        if crate::onchain::is_unpaid_address(&record) {
-            return Ok(None);
-        }
         Ok(Some(AnyOperation::from_record(Arc::new(OperationInner {
             federation: self.clone(),
             id,
@@ -1620,17 +1613,6 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             federation = %federation.id,
             error = %err,
             "could not reconcile this federation's operation records",
-        );
-    }
-    // A deposit an earlier version of this crate left unmarked reads as an address nobody has
-    // paid until it is marked. A failure is no more a reason to deny the bring-up than the one
-    // above: the deposit stays out of sight until the federation next comes up.
-    if let Err(err) = crate::onchain::mark_paid_records(federation).await {
-        tracing::warn!(
-            target: "fedimint_sdk",
-            federation = %federation.id,
-            error = %err,
-            "could not mark the on-chain deposits an earlier version recorded",
         );
     }
     // A deposit the wallet found while nothing was reading its announcements may have no
@@ -2409,14 +2391,14 @@ mod tests {
         assert_eq!(indexed, vec![(record.created_at, id)]);
     }
 
-    /// A stand-in `ONCHAIN_RECEIVE` details record naming `address` and no payment, in exactly
-    /// the shape `onchain::wire::OnchainReceiveDetailsWire` serialises: this module cannot name
-    /// that type itself, so the JSON is built by hand from its documented field names instead.
+    /// A stand-in `ONCHAIN_RECEIVE` details record of a deposit to `address`, in exactly the
+    /// shape `onchain::wire::OnchainReceiveDetailsWire` serialises: this module cannot name that
+    /// type itself, so the JSON is built by hand from its documented field names instead.
     fn onchain_receive_details(address: &str) -> serde_json::Value {
         serde_json::json!({
             "address": address,
-            "txid": null,
-            "gross_deposited_sats": null,
+            "txid": "11".repeat(32),
+            "gross_deposited_sats": 70_000u64,
             "fee_msats": null,
             "fee_breakdown": null,
             "net_credit_msats": null,
@@ -2425,7 +2407,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn has_seen_unclaimed_deposit_tracks_the_phase_and_the_final_state() {
+    async fn has_seen_unclaimed_deposit_tracks_the_final_state() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);
         let federation = FederationInner::detached(db.clone(), true);
         let id = UpstreamOperationId([8u8; 32]);
@@ -2434,26 +2416,14 @@ mod tests {
                 id,
                 kinds::ONCHAIN_RECEIVE,
                 "wallet",
-                &onchain_receive_details("waiting-address"),
+                &onchain_receive_details("paid-address"),
                 Arc::new(crate::onchain::OnchainReceiveDriver)
                     as Arc<dyn crate::operation::Driver<crate::OnchainReceiveState>>,
             )
             .await
             .expect("create");
 
-        // A receive record with no phase does not count: it is a deposit address a version of
-        // this crate recorded when it handed the address out, and one nobody paid must not block
-        // an erase.
-        assert!(
-            !federation
-                .has_seen_unclaimed_deposit()
-                .await
-                .expect("lookup")
-        );
-
-        crate::operation::record_phase_in(&db, id, crate::onchain::PHASE_SEEN)
-            .await
-            .expect("record the phase");
+        // A deposit with no final state is a claim in progress.
         assert!(
             federation
                 .has_seen_unclaimed_deposit()
@@ -2532,7 +2502,7 @@ mod tests {
             let operation = federation
                 .create_operation(
                     id,
-                    kinds::ONCHAIN_SEND,
+                    kinds::ONCHAIN_RECEIVE,
                     "wallet",
                     &serde_json::json!({"address": "…"}),
                     Arc::new(crate::operation::ProbeEcashSendDriver)
@@ -2553,11 +2523,11 @@ mod tests {
             .await
             .expect("lookup")
             .expect("the operation is still there after a real restart");
-        assert_eq!(found.kind(), crate::OperationKind::OnchainSend);
+        assert_eq!(found.kind(), crate::OperationKind::OnchainReceive);
         assert_eq!(found.raw_kind().module.as_deref(), Some("wallet"));
         // On-chain has a driver, so the typed handle exists here; what this test actually checks
         // is that the record survives a real restart, below.
-        assert!(found.as_onchain_send().is_some());
+        assert!(found.as_onchain_receive().is_some());
         // The record itself is byte-for-byte what was written before the restart.
         let db = federation.db();
         let mut dbtx = db.begin_transaction_nc().await;

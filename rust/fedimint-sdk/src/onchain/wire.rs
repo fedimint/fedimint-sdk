@@ -1,8 +1,8 @@
-//! The persisted shapes of the on-chain facade: details records and final states as JSON, and
-//! the phase a phase-keyed mapping reads after a restart.
+//! The persisted shapes of the on-chain facade: details records and final states as JSON.
 //!
-//! These are storage format. A field added later must be `Option` with `#[serde(default)]`, and
-//! a field is never renamed or removed: every record already written reads through this file.
+//! These are storage format: a record written through this file has to read through every later
+//! version of it. A field added later must be `Option` with `#[serde(default)]`, and a field is
+//! never renamed or removed.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,18 +10,6 @@ use crate::{
     Address, Amount, Error, ErrorCode, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
     OnchainReceiveState, OnchainSendDetails, OnchainSendState, Result, Sats, Timestamp, Txid,
 };
-
-/// The record is of a deposit: a payment the wallet has found. The only phase an on-chain
-/// record ever carries, and a record carries it from the very write that makes it a deposit's.
-/// A receive record without it was written by a version of this crate that recorded a deposit
-/// address when it handed the address out: nobody has paid the address, or that version was
-/// interrupted between recording the payment and marking the record. A record of the second
-/// kind is marked when its federation comes up (see `deposits::mark_paid_records`).
-///
-/// `pub(crate)`, not `pub(super)`: `federation.rs`'s erase guard
-/// ([`has_seen_unclaimed_deposit`](crate::federation::FederationInner::has_seen_unclaimed_deposit))
-/// reads it too, through the re-export at `src/onchain.rs`.
-pub(crate) const PHASE_SEEN: u32 = 1;
 
 /// [`OnchainSendDetails`] as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,8 +82,8 @@ impl From<ReceiveFeeBreakdownWire> for OnchainReceiveFeeBreakdown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OnchainReceiveDetailsWire {
     pub(super) address: String,
-    pub(super) txid: Option<String>,
-    pub(super) gross_deposited_sats: Option<u64>,
+    pub(super) txid: String,
+    pub(super) gross_deposited_sats: u64,
     pub(super) fee_msats: Option<u64>,
     pub(super) fee_breakdown: Option<ReceiveFeeBreakdownWire>,
     pub(super) net_credit_msats: Option<u64>,
@@ -118,8 +106,8 @@ impl From<&OnchainReceiveDetails> for OnchainReceiveDetailsWire {
     fn from(details: &OnchainReceiveDetails) -> OnchainReceiveDetailsWire {
         OnchainReceiveDetailsWire {
             address: details.address.to_string(),
-            txid: Some(details.txid.to_string()),
-            gross_deposited_sats: Some(details.gross_deposited.sats()),
+            txid: details.txid.to_string(),
+            gross_deposited_sats: details.gross_deposited.sats(),
             fee_msats: details.fee.map(Amount::msats),
             fee_breakdown: details
                 .fee_breakdown
@@ -138,18 +126,10 @@ impl TryFrom<OnchainReceiveDetailsWire> for OnchainReceiveDetails {
     type Error = Error;
 
     fn try_from(wire: OnchainReceiveDetailsWire) -> Result<OnchainReceiveDetails> {
-        // Every deposit record names its payment. One that does not is a deposit address a
-        // version of this crate recorded when it handed the address out, which nobody has paid.
-        let (Some(txid), Some(gross_deposited)) = (wire.txid, wire.gross_deposited_sats) else {
-            return Err(Error::new(
-                ErrorCode::Internal,
-                "this record is a deposit address that has not been paid",
-            ));
-        };
         Ok(OnchainReceiveDetails {
             address: parse_address(&wire.address)?,
-            txid: parse_txid(&txid)?,
-            gross_deposited: Sats::from_sats(gross_deposited),
+            txid: parse_txid(&wire.txid)?,
+            gross_deposited: Sats::from_sats(wire.gross_deposited_sats),
             fee: wire.fee_msats.map(Amount::from_msats),
             fee_breakdown: wire.fee_breakdown.map(OnchainReceiveFeeBreakdown::from),
             net_credit: wire.net_credit_msats.map(Amount::from_msats),
@@ -383,28 +363,6 @@ mod tests {
         let json =
             serde_json::to_string(&OnchainReceiveDetailsWire::from(&details)).expect("encode");
         assert_eq!(decode_receive_details(&json).expect("decode"), details);
-    }
-
-    /// A record that names no payment is a deposit address a version of this crate recorded
-    /// when it handed the address out. It still reads as a wire record, which is what lets a
-    /// payment be filled in later, and it is not a deposit's details.
-    #[test]
-    fn a_record_that_names_no_payment_is_not_a_deposit_s_details() {
-        let json = serde_json::json!({
-            "address": an_address().to_string(),
-            "txid": null,
-            "gross_deposited_sats": null,
-            "fee_msats": null,
-            "fee_breakdown": null,
-            "net_credit_msats": null,
-            "created_at": 1_700_000_000_000u64,
-        })
-        .to_string();
-        let wire = decode_receive_wire(&json).expect("the stored shape still reads");
-        assert_eq!(wire.txid, None);
-        assert_eq!(wire.vout, None);
-        let err = decode_receive_details(&json).expect_err("no payment, no details");
-        assert_eq!(err.code, ErrorCode::Internal);
     }
 
     #[test]
