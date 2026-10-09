@@ -358,6 +358,7 @@ mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
 mod db;
+mod discovery;
 mod ecash;
 mod error;
 mod federation;
@@ -422,8 +423,9 @@ pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, Sd
 pub use ffi::create_fedimint_sdk;
 pub use storage::Storage;
 pub use types::{
-    Address, Amount, Bolt11Invoice, Cursor, FederationId, FederationPreview, GatewayId, InviteCode,
-    Mnemonic, Network, Notes, OperationId, Preimage, Sats, Timestamp, Txid,
+    Address, Amount, Bolt11Invoice, Cursor, DEFAULT_DISCOVERY_URL, DiscoveredFederation,
+    FederationId, FederationPreview, GatewayId, InviteCode, Mnemonic, Network, Notes, OperationId,
+    Preimage, Sats, Timestamp, Txid,
 };
 
 // The `async-compat` dependency in Cargo.toml is never named in the source: it is there only to
