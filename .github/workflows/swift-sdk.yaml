@@ -95,7 +95,7 @@ jobs:
       # assembly can see them. Restored to the exact paths the local
       # plain-cargo producer writes, so the scripts below need no special case.
       - name: 'Download the Apple slices'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ needs.native.outputs.slices-artifact }}
           path: rust/fedimint-sdk/target/
@@ -104,7 +104,7 @@ jobs:
       # single dependency is uniffi itself. No Apple targets: the cross-compile
       # belongs to the `native` job.
       - name: 'Set up Rust'
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache-workspaces: rust/uniffi-bindgen
 
@@ -123,7 +123,7 @@ jobs:
           ./scripts/assemble-ios-xcframework.sh
 
       - name: 'Upload the generated Swift bindings'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: swift-bindings
           path: ios/Sources/FedimintSdk/FedimintSdk.swift
@@ -152,7 +152,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator'
 
       - name: 'Upload the XCFramework'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: FedimintSdkFFI.xcframework
           path: ios/Frameworks/FedimintSdkFFI.xcframework/
