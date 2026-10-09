@@ -41,11 +41,11 @@ const useIsOpen = (wallet: FedimintWallet | null) => {
   return { open, checkIsOpen }
 }
 
-const useBalance = (wallet: FedimintWallet | null, checkIsOpen: () => void) => {
+const useBalance = (wallet: FedimintWallet | null, checkIsOpen: () => void, open: boolean) => {
   const [balance, setBalance] = useState(0)
 
   useEffect(() => {
-    if (!wallet) return
+    if (!wallet || !open) return
 
     const unsubscribe = wallet.balance.subscribeBalance((bal) => {
       checkIsOpen()
@@ -55,7 +55,7 @@ const useBalance = (wallet: FedimintWallet | null, checkIsOpen: () => void) => {
     return () => {
       unsubscribe?.()
     }
-  }, [wallet, checkIsOpen])
+  }, [wallet, checkIsOpen, open])
 
   return balance
 }
@@ -155,7 +155,7 @@ const App = () => {
 const AppContent = () => {
   const wallet = useWallet()
   const { open, checkIsOpen } = useIsOpen(wallet)
-  const balance = useBalance(wallet, checkIsOpen)
+  const balance = useBalance(wallet, checkIsOpen, open)
 
   return (
     <>
@@ -703,9 +703,14 @@ const JoinFederation = ({
       setJoining(true)
       const res = await wallet.joinFederation(inviteCode)
       console.log('join federation res', res)
-      setJoinResult('Joined!')
-      setJoinError('')
-      checkIsOpen()
+      if (res) {
+        setJoinResult('Joined!')
+        setJoinError('')
+        checkIsOpen()
+      } else {
+        setJoinError('Failed to join federation')
+        setJoinResult('')
+      }
     } catch (e: any) {
       console.log('Error joining federation', e)
       setJoinError(typeof e === 'object' ? e.toString() : (e as string))
@@ -905,11 +910,17 @@ const GenerateLightningInvoice = () => {
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
   const [copyFeedback, setCopyFeedback] = useState('')
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    return () => clearTimeout(timeoutRef.current)
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setInvoice('')
     setError('')
+    setCopyFeedback('')
     setGenerating(true)
     try {
       if (!wallet) throw new Error('Wallet unavailable')
@@ -973,7 +984,8 @@ const GenerateLightningInvoice = () => {
               } catch (err) {
                 setCopyFeedback('Failed to copy')
               }
-              setTimeout(() => setCopyFeedback(''), 2000)
+              clearTimeout(timeoutRef.current)
+              timeoutRef.current = setTimeout(() => setCopyFeedback(''), 2000)
             }}
           >
             {copyFeedback || 'Copy'}
