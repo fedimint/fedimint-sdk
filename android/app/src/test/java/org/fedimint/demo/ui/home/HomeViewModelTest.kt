@@ -77,16 +77,39 @@ class HomeViewModelTest {
     private fun fed(id: String) =
         FederationInfo(id = id, name = "Federation $id", network = Network.SIGNET, status = FederationStatus.Running)
 
-    private fun item(id: String) = ActivityItem(
+    private fun item(id: String, final: Boolean = true) = ActivityItem(
         operationId = id,
-        kind = OperationKind.LN_RECEIVE,
+        kind = OperationKind.ECASH_SEND,
         time = 1uL,
         amount = 1_000uL,
         fee = 0uL,
-        direction = Direction.INCOMING,
-        status = ActivityStatus.SUCCESS,
-        isFinal = true,
+        direction = Direction.OUTGOING,
+        status = if (final) ActivityStatus.SUCCESS else ActivityStatus.PENDING,
+        isFinal = final,
     )
+
+    /** One federation whose balance never changes, and scripted history reads. */
+    private inner class QuietSource(vararg pages: List<ActivityItem>) : HomeViewModel.Source {
+        private val pages = ArrayDeque(pages.toList())
+        var reads = 0
+
+        override val federations = MutableStateFlow<List<FederationInfo>?>(listOf(fed("A")))
+        override val selected: Flow<FederationId?> = MutableStateFlow("A")
+
+        override fun balance(id: FederationId): Flow<Amount> = flow {
+            emit(1_000uL) // once: the balance doesn't move in these tests
+            awaitCancellation()
+        }
+
+        override suspend fun capabilities(id: FederationId) = capsA
+
+        override suspend fun recent(id: FederationId): List<ActivityItem> {
+            reads++
+            return if (pages.size > 1) pages.removeFirst() else pages.first()
+        }
+
+        override fun select(id: FederationId) = Unit
+    }
 
     @Test fun `switching federation never shows the previous one's data`() = runTest(dispatcher) {
         val source = Source()
@@ -120,5 +143,31 @@ class HomeViewModelTest {
             assertTrue(s.recent.none { it.operationId == "op-A" })
             assertNotEquals(capsA, s.capabilities)
         }
+    }
+
+    @Test fun `a pending row settles on Home without the balance moving`() = runTest(dispatcher) {
+        // An ecash send: debited when sent, so redemption leaves the balance unchanged.
+        val source = QuietSource(listOf(item("op-1", final = false)), listOf(item("op-1", final = true)))
+        val vm = HomeViewModel(source)
+        backgroundScope.launch { vm.state.collect {} }
+        advanceUntilIdle() // includes the pending-row refresh timer
+
+        val row = vm.state.value.recent.single()
+        assertTrue("settled", row.isFinal)
+        assertEquals(ActivityStatus.SUCCESS, row.status)
+        assertEquals("reloaded once more, then stopped", 2, source.reads)
+    }
+
+    @Test fun `an operation created elsewhere shows when Home is back in view`() = runTest(dispatcher) {
+        // e.g. opening On-chain Receive creates a deposit, then the user goes back.
+        val source = QuietSource(emptyList(), listOf(item("op-new")))
+        val vm = HomeViewModel(source)
+        backgroundScope.launch { vm.state.collect {} }
+        advanceUntilIdle()
+        assertTrue(vm.state.value.recent.isEmpty())
+
+        vm.refresh() // what Home resuming does
+        advanceUntilIdle()
+        assertEquals(listOf("op-new"), vm.state.value.recent.map { it.operationId })
     }
 }

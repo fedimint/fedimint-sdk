@@ -43,11 +43,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -56,12 +60,14 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.transformLatest
 import org.fedimint.demo.ui.activity.ActivityRow
 import org.fedimint.demo.ui.common.StatusBadge
 import org.fedimint.demo.ui.common.appViewModel
+import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.canTransact
 import org.fedimint.demo.ui.common.explanation
 import org.fedimint.demo.ui.common.formatSats
@@ -158,19 +164,37 @@ class HomeViewModel(private val source: Source) : ViewModel() {
             .catch { emit(For(id, null)) }
     }
 
+    private val refreshes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
     /**
-     * Reloaded whenever the balance moves: money arriving or leaving is when a
-     * row appears or settles. Its own balance subscription, since each one is
-     * an independent cursor.
+     * Home came back into view. Operations change without the balance moving
+     * (one created on another screen, say), so it reloads then too.
+     */
+    fun refresh() {
+        refreshes.tryEmit(Unit)
+    }
+
+    /**
+     * Reloaded when the balance moves (its own subscription: each is an
+     * independent cursor) and when Home comes back into view. While a row is
+     * still pending it keeps reloading on a timer, because settling doesn't
+     * always move the balance: an ecash send redeemed by its receiver was
+     * debited long before. All of it runs only while Home is collected.
      */
     private val recent = openActiveId.flatMapLatest { id ->
         if (id == null) {
             flowOf(For(null, emptyList()))
         } else {
-            source.balance(id)
-                .mapLatest { For(id, source.recent(id)) }
+            merge(source.balance(id).map { }.catch { }, refreshes)
+                .transformLatest {
+                    while (true) {
+                        val items = attempt { source.recent(id) }.getOrNull()
+                        if (items != null) emit(For(id, items))
+                        if (items != null && items.all { item -> item.isFinal }) break
+                        delay(PENDING_REFRESH_MILLIS)
+                    }
+                }
                 .onStart { emit(For(id, emptyList())) }
-                .catch { emit(For(id, emptyList())) }
         }
     }
 
@@ -193,6 +217,9 @@ class HomeViewModel(private val source: Source) : ViewModel() {
 
     companion object {
         private const val RECENT_ROWS = 5
+
+        /** How often recent activity reloads while a row is pending and Home is visible. */
+        const val PENDING_REFRESH_MILLIS = 10_000L
 
         fun from(session: WalletSession, history: History) = HomeViewModel(
             object : Source {
@@ -223,6 +250,7 @@ fun HomeScreen(
     onOpenRecoveryPhrase: () -> Unit,
 ) {
     val vm = appViewModel { HomeViewModel.from(it.session, it.history) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refresh() }
     val state by vm.state.collectAsStateWithLifecycle()
     var sheet by remember { mutableStateOf<PaymentDirection?>(null) }
 
