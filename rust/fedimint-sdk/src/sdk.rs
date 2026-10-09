@@ -1064,9 +1064,13 @@ impl Sdk {
             }
             // An on-chain deposit the wallet has found but not yet claimed is checked the same
             // way, and outside the live-client guard for the same reason: the guard must hold
-            // regardless of whether the client happens to be running. A deposit found while
-            // nothing was reading the wallet's announcements may have no record yet, so they
-            // are read first.
+            // regardless of whether the client happens to be running. Two things come first, so
+            // that the check sees every deposit. One that an earlier version of this crate
+            // recorded without marking it as a deposit is marked: on a federation that has not
+            // come up since, it still reads as an address nobody has paid. And the wallet's
+            // announcements are read: a deposit found while nothing was reading them may have
+            // no record yet.
+            crate::onchain::mark_paid_records(&federation).await?;
             crate::onchain::pick_up_deposits(&federation).await?;
             if federation.has_seen_unclaimed_deposit().await? {
                 self.persist_closed(&federation).await?;
@@ -3268,6 +3272,68 @@ mod tests {
             assert_eq!(
                 sdk.federation_status(&public),
                 Some(FederationStatus::Closed)
+            );
+            assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        /// A version of this crate that recorded an address when it was handed out could leave
+        /// a deposit without the mark of one. The erase guard marks it first, so a federation
+        /// that has not come up since still refuses the erase.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_refuses_a_deposit_an_earlier_version_left_unmarked() {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            use crate::onchain::deposit_fixtures::{ADDRESS, txid};
+
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let deposit = fedimint_core::core::OperationId([45u8; 32]);
+            let record = crate::db::OperationRecord {
+                schema_version: crate::operation::READABLE_STATE_SCHEMA,
+                kind: crate::operation::kinds::ONCHAIN_RECEIVE.to_string(),
+                module: "wallet".to_string(),
+                created_at: 1_000,
+                details: serde_json::json!({
+                    "address": ADDRESS,
+                    "txid": txid(1).to_string(),
+                    "gross_deposited_sats": 70_000,
+                    "fee_msats": null,
+                    "fee_breakdown": null,
+                    "net_credit_msats": null,
+                    "created_at": 1_000,
+                })
+                .to_string(),
+                phase: None,
+                cancel_requested_at: None,
+                final_state: None,
+            };
+            let db = fed_inner.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&crate::db::OperationRecordKey(deposit), &record)
+                .await;
+            dbtx.commit_tx().await;
+
+            let err = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("a deposit that is still being claimed must refuse the erase");
+            assert_eq!(err.code, crate::ErrorCode::PendingOperations);
+            assert_eq!(
+                db.begin_transaction_nc()
+                    .await
+                    .get_value(&crate::db::OperationRecordKey(deposit))
+                    .await
+                    .expect("still there")
+                    .phase,
+                Some(crate::onchain::PHASE_SEEN)
             );
             assert_eq!(sdk.stored_federations().len(), 1);
         }

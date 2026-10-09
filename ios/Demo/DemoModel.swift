@@ -500,14 +500,13 @@ final class DemoModel: ObservableObject {
     ///
     /// An address is not an operation: a deposit becomes one once the
     /// federation's wallet finds the payment. Until then there is nothing to
-    /// follow, so the block waits with the address on screen. The wait ends with
-    /// a deposit or with an error, which is shown under the address. It cannot
-    /// be interrupted, so a request that was superseded stays parked until it
-    /// ends, and the guard after the wait stops it from writing.
+    /// follow, so the block ends with the address on screen and leaves the wait
+    /// for the deposit to `watchNextDeposit`.
     func deposit() {
-        // An earlier request's watcher renders into this section too. The wait
-        // below lasts as long as the payment takes, so the watcher is stopped
-        // here, or its next update would overwrite this request's address.
+        // An earlier request's watcher renders into this section too, and it
+        // may still be waiting for a payment to that request's address. It is
+        // stopped here, or its next update would overwrite this request's
+        // address.
         watchTasks[.deposit]?.cancel()
 
         run(.deposit) {
@@ -520,24 +519,8 @@ final class DemoModel: ObservableObject {
             guard !self.isSuperseded else { return "superseded by a newer request" }
             self.lastAddress = address
 
-            // Written here and not returned: `run` renders what the block
-            // returns, and this block returns only once the wait below ends.
-            let payTo = "Send bitcoin to:\n\(address)"
-            self.results[.deposit] = payTo
-
-            let operation: OnchainReceiveOperation
-            do {
-                operation = try await deposits.next()
-            } catch let error as SdkError {
-                // The address stays on screen above the error: it may already
-                // have been shown to a payer.
-                return "\(payTo)\n\n\(self.describe(error))"
-            }
-            guard !self.isSuperseded else { return "superseded by a newer request" }
-
-            let header = "\(payTo)\n\noperation \(operation.id())"
-            let updates = operation.updates()
-            self.watch(.deposit, header: header) { try await updates.next() }
+            let header = "Send bitcoin to:\n\(address)"
+            self.watchNextDeposit(deposits, header: header)
             return header
         }
     }
@@ -743,8 +726,8 @@ final class DemoModel: ObservableObject {
     /// including an `SdkError` — which is what a real application would branch
     /// on. This is the Swift counterpart of the Android demo's `section`.
     /// Kept in its own dictionary rather than sharing `watchTasks`: a `run`
-    /// block may install a watcher on the *same* section — `run(.deposit)`
-    /// calls `watch(.deposit)` — so one shared key would have the watcher
+    /// block may install a watcher on the *same* section, as `run(.lnReceive)`
+    /// does with `watch(.lnReceive)`, so one shared key would have the watcher
     /// cancel its own caller.
     ///
     /// Deliberately not cancelled by `attach`, for the mirror-image reason:
@@ -788,7 +771,7 @@ final class DemoModel: ObservableObject {
         watchTasks[section]?.cancel()
         // `[weak self]` for the same reason `balanceTask` uses it: the model
         // owns the task and the task would otherwise own the model, and a
-        // watcher can stay open for as long as a deposit takes to be claimed.
+        // watcher can stay open for as long as an invoice goes unpaid.
         // It also makes a write from a watcher that outlives the screen a
         // no-op rather than a resurrection.
         watchTasks[section] = Task { [weak self] in
@@ -817,6 +800,49 @@ final class DemoModel: ObservableObject {
                     self?.results[section] = "\(header)\n\nstopped watching: \(error)"
                 }
             }
+        }
+    }
+
+    /// Waits for the next deposit on `deposits`, then follows its operation
+    /// with `watch` under `header` plus the operation's id. The id cannot be in
+    /// `header` earlier: a deposit has an operation only once the wallet has
+    /// found it. This is the Swift counterpart of the Android demo's
+    /// `watchNextDeposit`.
+    ///
+    /// The wait lasts until the wallet finds its next deposit, to any address
+    /// it has handed out, and `next()` cannot be interrupted. That is why it
+    /// runs in a watcher task and not in the `run` block that showed the
+    /// address: a watcher does not hold the model, see `watch`. A wait that
+    /// fails, such as the federation closing, is rendered under `header`.
+    private func watchNextDeposit(_ deposits: OnchainDeposits, header: String) {
+        watchTasks[.deposit]?.cancel()
+        watchTasks[.deposit] = Task { [weak self] in
+            let operation: OnchainReceiveOperation
+            do {
+                operation = try await deposits.next()
+            } catch let error as SdkError {
+                // The address stays on screen above the error: it may already
+                // have been shown to a payer.
+                if !Task.isCancelled, let self {
+                    self.results[.deposit] = "\(header)\n\n\(self.describe(error))"
+                }
+                return
+            } catch {
+                if !Task.isCancelled { self?.results[.deposit] = "\(header)\n\n\(error)" }
+                return
+            }
+            // A cancelled watcher gets here once a deposit is found, since the
+            // call above cannot be interrupted. That deposit is not its to show.
+            // Bound only now, after the wait, so nothing strong was held across
+            // it.
+            guard !Task.isCancelled, let self else { return }
+
+            let found = "\(header)\n\noperation \(operation.id())"
+            self.results[.deposit] = found
+            let updates = operation.updates()
+            // `watch` cancels the watcher this section has, which is this task.
+            // That is the hand-over: nothing follows it here.
+            self.watch(.deposit, header: found) { try await updates.next() }
         }
     }
 

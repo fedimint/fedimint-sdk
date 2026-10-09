@@ -15,8 +15,8 @@ use crate::{
 /// record ever carries, and a record carries it from the very write that makes it a deposit's.
 /// A receive record without it was written by a version of this crate that recorded a deposit
 /// address when it handed the address out: nobody has paid the address, or that version was
-/// interrupted while recording the payment, and the record gets its phase when the wallet's
-/// announcement of the payment is read.
+/// interrupted between recording the payment and marking the record. A record of the second
+/// kind is marked when its federation comes up (see `deposits::mark_paid_records`).
 ///
 /// `pub(crate)`, not `pub(super)`: `federation.rs`'s erase guard
 /// ([`has_seen_unclaimed_deposit`](crate::federation::FederationInner::has_seen_unclaimed_deposit))

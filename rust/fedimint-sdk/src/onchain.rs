@@ -30,7 +30,9 @@ mod wire;
 /// What a test outside this module needs to plant a deposit the wallet found.
 #[cfg(all(test, not(target_family = "wasm")))]
 pub(crate) use deposits::fixtures as deposit_fixtures;
-pub(crate) use deposits::{log_entry_is_not_an_operation, pick_up_deposits};
+pub(crate) use deposits::{
+    is_unpaid_address, log_entry_is_not_an_operation, mark_paid_records, pick_up_deposits,
+};
 pub(crate) use driver::{OnchainBackfiller, OnchainReceiveDriver, OnchainSendDriver};
 /// The only phase an on-chain record ever carries, re-exported for `federation.rs`'s erase
 /// guard; see [`wire`]'s own doc for what it means.

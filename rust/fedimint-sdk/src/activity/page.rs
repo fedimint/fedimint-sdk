@@ -96,7 +96,7 @@ pub(crate) async fn page(
             // Not a row: a deposit address a version of this crate recorded when it handed
             // the address out, which nobody has paid. Its key still counted towards `limit`,
             // so a page can come back shorter for it, never longer.
-            Some(record) if is_unpaid_address(&record) => {}
+            Some(record) if crate::onchain::is_unpaid_address(&record) => {}
             Some(record) => records.push((key.id, record)),
             // The index and its record are written together (`FederationInner::write_record`),
             // so this never happens; a missing row is a better failure than a panic.
@@ -131,15 +131,6 @@ pub(crate) async fn page(
     });
 
     Ok(ActivityPage { items, next })
-}
-
-/// Whether a record is a deposit address rather than a deposit: an on-chain receive record that
-/// never reached [`PHASE_SEEN`](crate::onchain::PHASE_SEEN), the phase that marks a record as a
-/// deposit's, and has no ending.
-fn is_unpaid_address(record: &OperationRecord) -> bool {
-    record.kind == crate::operation::kinds::ONCHAIN_RECEIVE
-        && record.phase.is_none()
-        && record.final_state.is_none()
 }
 
 /// The row for one record, brought up to date if its ending is not recorded yet.
@@ -434,36 +425,6 @@ mod tests {
             .expect("second page");
         assert_eq!(ids(&second), vec![opid(1)]);
         assert!(second.next.is_none());
-    }
-
-    /// Only a receive record that is neither marked as a deposit nor ended is an unpaid address.
-    /// A deposit the wallet has found and not finished claiming is a row like any other.
-    #[test]
-    fn only_a_receive_record_without_a_phase_or_an_ending_is_an_unpaid_address() {
-        let receive = |phase: Option<u32>, final_state: Option<&str>| {
-            let mut receive = record(
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                1,
-                "{}".to_owned(),
-                final_state.map(str::to_owned),
-            );
-            receive.phase = phase;
-            receive
-        };
-        assert!(is_unpaid_address(&receive(None, None)));
-        assert!(!is_unpaid_address(&receive(
-            Some(crate::onchain::PHASE_SEEN),
-            None
-        )));
-        assert!(!is_unpaid_address(&receive(None, Some("{}"))));
-        assert!(!is_unpaid_address(&record(
-            kinds::LN_RECEIVE,
-            "lnv2",
-            1,
-            "{}".to_owned(),
-            None,
-        )));
     }
 
     /// A claimed deposit is a row, with what arrived as its amount.

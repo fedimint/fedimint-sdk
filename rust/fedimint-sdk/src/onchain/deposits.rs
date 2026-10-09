@@ -17,10 +17,10 @@ use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_eventlog::{DBTransactionEventLogExt as _, EventLogId};
 use futures::StreamExt as _;
 
-use super::{internal, v1, v2};
-use crate::db::{DepositCursorKey, OperationRecordKeyPrefix};
+use super::{internal, v1, v2, wire};
+use crate::db::{DepositCursorKey, OperationRecord, OperationRecordKeyPrefix};
 use crate::federation::FederationInner;
-use crate::operation::kinds;
+use crate::operation::{kinds, record_phase_in};
 use crate::{Error, ErrorCode, OnchainReceiveState, Operation, Result};
 
 /// Brings this federation's deposit records up to date with what its wallet has found.
@@ -95,6 +95,54 @@ pub(crate) async fn log_entry_is_not_an_operation(
     }
 }
 
+/// Marks as a deposit every receive record that names its payment and is not marked as one.
+///
+/// A version of this crate that recorded an address when it was handed out wrote the payment
+/// onto the record and marked the record as a deposit's in two writes. One interrupted between
+/// them left a deposit that reads as an address nobody has paid: it is not listed, not found by
+/// its id, and not counted by the erase guard. Every record written since gets its mark from the
+/// write that names its payment.
+///
+/// It runs when a federation comes up and before the erase guard reads the records, so that
+/// every record has its mark by the time anything asks whether it is a deposit's.
+///
+/// # Errors
+///
+/// [`Storage`](crate::ErrorCode::Storage).
+pub(crate) async fn mark_paid_records(federation: &FederationInner) -> Result<()> {
+    let db = federation.db();
+    let unmarked: Vec<OperationId> = db
+        .begin_transaction_nc()
+        .await
+        .find_by_prefix(&OperationRecordKeyPrefix)
+        .await
+        .filter_map(|(key, record)| {
+            let unmarked = is_unpaid_address(&record)
+                && wire::decode_receive_wire(&record.details)
+                    .is_ok_and(|details| details.txid.is_some());
+            core::future::ready(unmarked.then_some(key.0))
+        })
+        .collect()
+        .await;
+    for id in unmarked {
+        record_phase_in(&db, id, wire::PHASE_SEEN).await?;
+    }
+    Ok(())
+}
+
+/// Whether a record is a deposit address rather than a deposit: an on-chain receive record that
+/// is not marked as a deposit's (see [`PHASE_SEEN`](wire::PHASE_SEEN)) and has no ending.
+///
+/// Only a version of this crate that recorded an address when it was handed out wrote one. An
+/// address is not an operation, so such a record is not listed in activity and is not found by
+/// its id. One written for the v1 module becomes the deposit's record once the address is paid,
+/// because the module claims the payment under the operation it handed the address out under.
+/// One written for walletv2 never does: the module claims the payment under an operation of its
+/// own, and the deposit's record is written under that one.
+pub(crate) fn is_unpaid_address(record: &OperationRecord) -> bool {
+    record.kind == kinds::ONCHAIN_RECEIVE && record.phase.is_none() && record.final_state.is_none()
+}
+
 /// The state behind an [`OnchainDeposits`](crate::OnchainDeposits).
 pub(super) struct Subscription {
     federation: Arc<FederationInner>,
@@ -110,6 +158,8 @@ struct Cursor {
     /// The deposits already handed out. A v1 address paid by two outputs of one transaction is
     /// announced once per output under the one operation, and this is what hands it out once.
     announced: HashSet<OperationId>,
+    /// Whether the deposits announced before this subscription was opened have their records.
+    caught_up: bool,
 }
 
 impl core::fmt::Debug for Subscription {
@@ -142,6 +192,15 @@ impl Subscription {
                 return Err(not_running());
             }
             self.federation.ensure_open()?;
+            if !cursor.caught_up {
+                // A deposit announced before this subscription was opened may have no record
+                // yet, and gets one before anything announced later is read. The walletv2
+                // module claims a deposit again when the federation rejects a claim, and the
+                // record the deposit already has is what tells that later claim from a new
+                // deposit.
+                pick_up_deposits(&self.federation).await?;
+                cursor.caught_up = true;
+            }
             // Marked unchanged before the walk, not after: an event logged while the walk is
             // still reading has to wake the wait below, or it would sit unnoticed until some
             // later, unrelated event did.
@@ -186,6 +245,7 @@ impl Subscription {
                 position,
                 added,
                 announced: HashSet::new(),
+                caught_up: false,
             }),
         }
     }
@@ -412,6 +472,28 @@ mod tests {
             .await
     }
 
+    /// Writes a receive record with `details` under `id`, without the mark of a deposit's: the
+    /// way a version of this crate that recorded an address when it was handed out first wrote
+    /// one.
+    async fn an_earlier_record(
+        federation: &Arc<FederationInner>,
+        id: OperationId,
+        module: &str,
+        details: &serde_json::Value,
+    ) {
+        federation
+            .create_operation(
+                id,
+                kinds::ONCHAIN_RECEIVE,
+                module,
+                details,
+                Arc::new(crate::onchain::OnchainReceiveDriver)
+                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
+            )
+            .await
+            .expect("create");
+    }
+
     /// Waits until `subscription` has a `next` in flight: the call takes the cursor's lock
     /// before anything else and holds it for as long as it runs.
     async fn until_waiting(subscription: &Subscription) {
@@ -619,18 +701,10 @@ mod tests {
             "net_credit_msats": null,
             "created_at": 1_600_000_000_000u64,
         });
-        federation
-            .create_operation(
-                id,
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                &unpaid,
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
+        an_earlier_record(&federation, id, "wallet", &unpaid).await;
         assert_eq!(record(&db, id).await.expect("written").phase, None);
+        // An address nobody has paid is not an operation.
+        assert!(federation.operation(id).await.expect("lookup").is_none());
 
         log(
             &db,
@@ -645,6 +719,7 @@ mod tests {
 
         let stored = record(&db, id).await.expect("still there");
         assert_eq!(stored.phase, Some(wire::PHASE_SEEN));
+        assert!(federation.operation(id).await.expect("lookup").is_some());
         let details = wire::decode_receive_details(&stored.details).expect("a deposit's details");
         assert_eq!(details.txid.to_string(), txid(1).to_string());
         assert_eq!(details.gross_deposited, crate::Sats::from_sats(70_000));
@@ -674,16 +749,17 @@ mod tests {
         assert_eq!(record(&db, id).await, Some(stored));
     }
 
-    /// A version of this crate that recorded an address when it was handed out filled the
-    /// payment in with two writes, the payment and then the phase. One interrupted between
-    /// them left a record that names its payment and is still marked as an unpaid address, and
-    /// reading the announcement finishes it.
+    /// A version of this crate that recorded an address when it was handed out wrote the payment
+    /// onto the record and marked the record as a deposit's in two writes. One interrupted
+    /// between them left a deposit that reads as an unpaid address, until the federation comes
+    /// up and marks it.
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_interrupted_fill_in_is_finished_when_the_announcement_is_read_again() {
+    async fn a_federation_coming_up_marks_the_deposits_left_unmarked() {
         let (db, federation) = a_federation();
-        let id = operation(1);
-        write_log_entry(&db, id, "wallet", v1::fixtures::allocation(ADDRESS)).await;
-        let half_filled = serde_json::json!({
+        // On the v1 module, under the operation the address was handed out under.
+        let on_v1 = operation(1);
+        write_log_entry(&db, on_v1, "wallet", v1::fixtures::allocation(ADDRESS)).await;
+        let paid = serde_json::json!({
             "address": ADDRESS,
             "txid": txid(1).to_string(),
             "gross_deposited_sats": 70_000,
@@ -692,17 +768,98 @@ mod tests {
             "net_credit_msats": null,
             "created_at": 1_600_000_000_000u64,
         });
-        federation
-            .create_operation(
-                id,
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                &half_filled,
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
+        an_earlier_record(&federation, on_v1, "wallet", &paid).await;
+        // On walletv2, under an id of the crate's own making, following the module's claim.
+        let followed = operation(2);
+        write_log_entry(
+            &db,
+            followed,
+            "walletv2",
+            v2::fixtures::claim(ADDRESS, 100_000, outpoint(3, 0)),
+        )
+        .await;
+        let on_v2 = operation(9);
+        let claimed = serde_json::json!({
+            "address": ADDRESS,
+            "txid": txid(3).to_string(),
+            "gross_deposited_sats": 100_000,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_600_000_000_000u64,
+            "upstream_operation_id": followed.fmt_full().to_string(),
+            "event_cursor": 0,
+        });
+        an_earlier_record(&federation, on_v2, "walletv2", &claimed).await;
+        // And an address nobody has paid.
+        let unpaid = operation(8);
+        let nothing = serde_json::json!({
+            "address": ADDRESS,
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_600_000_000_000u64,
+            "event_cursor": 0,
+        });
+        an_earlier_record(&federation, unpaid, "walletv2", &nothing).await;
+
+        // Unmarked, both deposits read as addresses: not found by their ids, and not counted
+        // by the erase guard.
+        for id in [on_v1, on_v2] {
+            assert!(is_unpaid_address(&record(&db, id).await.expect("written")));
+            assert!(federation.operation(id).await.expect("lookup").is_none());
+        }
+        assert!(!federation.has_seen_unclaimed_deposit().await.expect("read"));
+
+        crate::federation::reconcile_on_open(&federation).await;
+
+        for id in [on_v1, on_v2] {
+            let stored = record(&db, id).await.expect("still there");
+            assert_eq!(stored.phase, Some(wire::PHASE_SEEN));
+            assert!(!is_unpaid_address(&stored));
+            let found = federation
+                .operation(id)
+                .await
+                .expect("lookup")
+                .expect("the deposit is an operation");
+            assert!(found.as_onchain_receive().is_some());
+        }
+        assert!(federation.has_seen_unclaimed_deposit().await.expect("read"));
+        // The claim the walletv2 record follows got no record of its own.
+        assert_eq!(record(&db, followed).await, None);
+        // The address nobody has paid is still only an address.
+        assert!(is_unpaid_address(
+            &record(&db, unpaid).await.expect("still there")
+        ));
+        assert!(
+            federation
+                .operation(unpaid)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+    }
+
+    /// The same half-written deposit on the v1 module, on a federation that came up without
+    /// marking it: reading the wallet's announcement of the payment marks it too, so the
+    /// subscription that reads it can hand the deposit out.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deposit_left_unmarked_is_marked_when_its_announcement_is_read() {
+        let (db, federation) = a_federation();
+        let id = operation(1);
+        write_log_entry(&db, id, "wallet", v1::fixtures::allocation(ADDRESS)).await;
+        let paid = serde_json::json!({
+            "address": ADDRESS,
+            "txid": txid(1).to_string(),
+            "gross_deposited_sats": 70_000,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_600_000_000_000u64,
+        });
+        an_earlier_record(&federation, id, "wallet", &paid).await;
         assert_eq!(record(&db, id).await.expect("written").phase, None);
         log(
             &db,
@@ -711,11 +868,69 @@ mod tests {
         )
         .await;
 
-        pick_up_deposits(&federation).await.expect("pick up");
+        let (_logged, added) = tokio::sync::watch::channel(());
+        let subscription = Subscription::starting_at(federation.clone(), 0, added);
+        let deposit = subscription.next().await.expect("a deposit");
 
+        assert_eq!(deposit.id(), crate::OperationId::from_upstream(id));
         assert_eq!(
             record(&db, id).await.expect("still there").phase,
             Some(wire::PHASE_SEEN)
+        );
+    }
+
+    /// An address an earlier version of this crate recorded for walletv2 when it handed the
+    /// address out has an id of the crate's own making, which the module knows nothing of. It is
+    /// not an operation, before the address is paid or after: the deposit is the operation the
+    /// module claims the payment under.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_walletv2_address_recorded_when_it_was_handed_out_is_never_an_operation() {
+        let (db, federation) = a_federation();
+        let address = operation(9);
+        let unpaid = serde_json::json!({
+            "address": ADDRESS,
+            "txid": null,
+            "gross_deposited_sats": null,
+            "fee_msats": null,
+            "fee_breakdown": null,
+            "net_credit_msats": null,
+            "created_at": 1_600_000_000_000u64,
+            "event_cursor": 0,
+        });
+        an_earlier_record(&federation, address, "walletv2", &unpaid).await;
+        let written = record(&db, address).await.expect("written");
+        assert!(
+            federation
+                .operation(address)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+
+        let claim = operation(1);
+        a_walletv2_claim(&db, claim, outpoint(3, 0), 0).await;
+        pick_up_deposits(&federation).await.expect("pick up");
+
+        let stored = record(&db, claim)
+            .await
+            .expect("the deposit has its record");
+        assert_eq!(stored.phase, Some(wire::PHASE_SEEN));
+        let details = wire::decode_receive_details(&stored.details).expect("a deposit's details");
+        assert_eq!(details.address.to_string(), ADDRESS);
+        let found = federation
+            .operation(claim)
+            .await
+            .expect("lookup")
+            .expect("the deposit is an operation");
+        assert!(found.as_onchain_receive().is_some());
+        // The address's record is as it was, and still not an operation.
+        assert_eq!(record(&db, address).await, Some(written));
+        assert!(
+            federation
+                .operation(address)
+                .await
+                .expect("lookup")
+                .is_none()
         );
     }
 
@@ -726,17 +941,8 @@ mod tests {
         let (db, federation) = a_federation();
         let unreadable = operation(1);
         write_log_entry(&db, unreadable, "wallet", v1::fixtures::allocation(ADDRESS)).await;
-        federation
-            .create_operation(
-                unreadable,
-                kinds::ONCHAIN_RECEIVE,
-                "wallet",
-                &serde_json::json!({ "not": "a deposit record" }),
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
+        let not_a_deposit = serde_json::json!({ "not": "a deposit record" });
+        an_earlier_record(&federation, unreadable, "wallet", &not_a_deposit).await;
         let written = record(&db, unreadable).await;
         log(
             &db,
@@ -758,17 +964,8 @@ mod tests {
     async fn an_unreadable_walletv2_record_does_not_hold_up_the_deposits_after_it() {
         let (db, federation) = a_federation();
         let unreadable = operation(1);
-        federation
-            .create_operation(
-                unreadable,
-                kinds::ONCHAIN_RECEIVE,
-                "walletv2",
-                &serde_json::json!({ "not": "a deposit record" }),
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
-            )
-            .await
-            .expect("create");
+        let not_a_deposit = serde_json::json!({ "not": "a deposit record" });
+        an_earlier_record(&federation, unreadable, "walletv2", &not_a_deposit).await;
         let written = record(&db, unreadable).await;
         a_walletv2_claim(&db, unreadable, outpoint(3, 0), 0).await;
         let later = operation(2);
@@ -958,17 +1155,10 @@ mod tests {
             "upstream_operation_id": followed.fmt_full().to_string(),
             "event_cursor": 0,
         });
-        federation
-            .create_operation(
-                old,
-                kinds::ONCHAIN_RECEIVE,
-                "walletv2",
-                &details,
-                Arc::new(crate::onchain::OnchainReceiveDriver)
-                    as Arc<dyn crate::operation::Driver<OnchainReceiveState>>,
-            )
+        an_earlier_record(&federation, old, "walletv2", &details).await;
+        record_phase_in(&db, old, wire::PHASE_SEEN)
             .await
-            .expect("create");
+            .expect("mark");
 
         let sibling = operation(2);
         a_walletv2_claim(&db, sibling, outpoint(3, 1), 0).await;
@@ -1017,6 +1207,37 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// Only a receive record that is neither marked as a deposit's nor ended is an unpaid
+    /// address. A deposit the wallet has found and not finished claiming is an operation like
+    /// any other.
+    #[test]
+    fn only_a_receive_record_without_a_mark_or_an_ending_is_an_unpaid_address() {
+        let a_record =
+            |kind: &str, phase: Option<u32>, final_state: Option<&str>| OperationRecord {
+                schema_version: crate::operation::READABLE_STATE_SCHEMA,
+                kind: kind.to_owned(),
+                module: "wallet".to_owned(),
+                created_at: 1,
+                details: "{}".to_owned(),
+                phase,
+                cancel_requested_at: None,
+                final_state: final_state.map(str::to_owned),
+            };
+        let receive = kinds::ONCHAIN_RECEIVE;
+        assert!(is_unpaid_address(&a_record(receive, None, None)));
+        assert!(!is_unpaid_address(&a_record(
+            receive,
+            Some(wire::PHASE_SEEN),
+            None
+        )));
+        assert!(!is_unpaid_address(&a_record(receive, None, Some("{}"))));
+        assert!(!is_unpaid_address(&a_record(
+            kinds::ONCHAIN_SEND,
+            None,
+            None
+        )));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_subscription_hands_out_only_what_is_announced_after_it_was_opened() {
         let (db, federation) = a_federation();
@@ -1028,15 +1249,41 @@ mod tests {
         let waited =
             tokio::time::timeout(std::time::Duration::from_millis(200), subscription.next()).await;
         assert!(waited.is_err(), "nothing was announced since it was opened");
-        // The deposit announced before the subscription was opened was never its to hand out,
-        // and has no record until something lists what the wallet found.
-        assert_eq!(record(&db, earlier).await, None);
+        // The deposit announced before the subscription was opened was never its to hand out.
+        // It has its record all the same, from the first call on.
+        assert!(record(&db, earlier).await.is_some());
 
         let later = operation(2);
         a_paid_v1_address(&db, later, txid(2), 1).await;
         let deposit = subscription.next().await.expect("a deposit");
         assert_eq!(deposit.id(), crate::OperationId::from_upstream(later));
-        assert_eq!(record(&db, earlier).await, None);
+    }
+
+    /// A deposit found before a subscription was opened is not the subscription's to hand out,
+    /// and that holds when the federation rejects its claim and the module claims it again
+    /// afterwards. The later claim joins the record the deposit has, even if nothing had read
+    /// the first claim's announcement by the time the subscription was opened.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_later_claim_of_a_deposit_found_before_a_subscription_is_not_handed_out() {
+        let (db, federation) = a_federation();
+        let rejected = operation(1);
+        let paid = outpoint(3, 1);
+        a_walletv2_claim(&db, rejected, paid, 0).await;
+
+        let (_logged, added) = tokio::sync::watch::channel(());
+        let subscription = Subscription::starting_at(federation.clone(), 1, added);
+        assert_eq!(record(&db, rejected).await, None);
+
+        let retried = operation(2);
+        a_walletv2_claim(&db, retried, paid, 1).await;
+        let found_after = operation(3);
+        a_walletv2_claim(&db, found_after, outpoint(4, 0), 2).await;
+
+        // The first deposit handed out is the one found after the subscription was opened.
+        let deposit = subscription.next().await.expect("a deposit");
+        assert_eq!(deposit.id(), crate::OperationId::from_upstream(found_after));
+        assert!(record(&db, rejected).await.is_some());
+        assert_eq!(record(&db, retried).await, None);
     }
 
     /// A call already waiting is woken by the announcement, not only answered by the next call.
