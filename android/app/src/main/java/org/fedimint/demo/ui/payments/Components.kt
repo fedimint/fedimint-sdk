@@ -268,7 +268,37 @@ fun DoneButton(state: PaymentViewModel.UiState, onDone: () -> Unit) {
  * anything that could send again.
  */
 @Composable
-fun SubmittedNotice(state: PaymentViewModel.UiState, onOpenOperation: (OperationId) -> Unit) {
+fun SubmittedNotice(
+    state: PaymentViewModel.UiState,
+    onOpenOperation: (OperationId) -> Unit,
+    onCheckAgain: () -> Unit,
+) {
+    when {
+        state.checkingSubmission -> {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (state.submissionCheckFailed) {
+                            "The app closed while this was being submitted, and the wallet couldn't " +
+                                "check yet whether it went through. Nothing more will be sent from here."
+                        } else {
+                            "The app closed while this was being submitted. Checking whether it went through…"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (state.submissionCheckFailed) OutlinedButton(onClick = onCheckAgain) { Text("Check again") }
+                }
+            }
+            return
+        }
+        state.notSubmitted -> {
+            Text(
+                "The app closed before this was submitted. Nothing was sent.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            return
+        }
+    }
     val id = state.operationId ?: return
     if (!state.needsActivityLink) return
     Card(Modifier.fillMaxWidth()) {

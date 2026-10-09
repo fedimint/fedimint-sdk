@@ -11,10 +11,12 @@ import androidx.lifecycle.createSavedStateHandle
 import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
+import org.fedimint.demo.wallet.History
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.OnchainQuote
 import org.fedimint.sdk.OperationId
+import org.fedimint.sdk.OperationKind
 
 // ── Receive ──────────────────────────────────────────────────────────────
 
@@ -23,11 +25,12 @@ class OnchainReceiveViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.ONCHAIN_RECEIVE)) {
 
     init {
         // A screen restored after process death already has its operation; don't open another.
-        if (state.value.operationId == null) newAddress()
+        if (state.value.operationId == null && !state.value.checkingSubmission) newAddress()
     }
 
     fun newAddress() = execute {
@@ -43,13 +46,13 @@ class OnchainReceiveViewModel(
 
 @Composable
 fun OnchainReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { OnchainReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { OnchainReceiveViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
 
     PaymentScreen("Deposit bitcoin", onBack) {
         state.output?.let { OutputCard(it) }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         if (!state.started && !state.working) PrimaryButton("Try again", vm::newAddress, enabled = true, working = false)
         DoneButton(state, onBack)
@@ -62,7 +65,8 @@ class OnchainSendViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.ONCHAIN_SEND)) {
 
     private var quote: OnchainQuote? = null
 
@@ -96,7 +100,7 @@ class OnchainSendViewModel(
 
 @Composable
 fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { OnchainSendViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { OnchainSendViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var address by rememberSaveable { mutableStateOf("") }
     var amount by rememberSaveable { mutableStateOf("") }
@@ -127,7 +131,7 @@ fun OnchainSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOper
             }
         }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }

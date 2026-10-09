@@ -1,6 +1,7 @@
 package org.fedimint.demo.ui.payments
 
 import androidx.lifecycle.SavedStateHandle
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -37,7 +38,10 @@ class PaymentViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     /** Exposes the base class's protected steps with fake SDK calls. */
-    private class Vm(savedState: SavedStateHandle = SavedStateHandle()) : PaymentViewModel(savedState) {
+    private class Vm(
+        savedState: SavedStateHandle = SavedStateHandle(),
+        reconcile: (suspend (Long) -> String?)? = null,
+    ) : PaymentViewModel(savedState, reconcile, now = { 1_000L }) {
         var sends = 0
 
         fun quoted() = mutableState.update { it.copy(review = Review(emptyList(), "100 sats", null)) }
@@ -56,6 +60,7 @@ class PaymentViewModelTest {
 
         companion object {
             const val KEY = KEY_OPERATION
+            const val SUBMITTING = KEY_SUBMITTING
         }
     }
 
@@ -162,5 +167,65 @@ class PaymentViewModelTest {
         vm.failSend("Not enough balance for that.")
         advanceUntilIdle()
         assertNull(saved.get<String>(Vm.KEY))
+        assertNull("no submission left in progress", saved.get<Long>(Vm.SUBMITTING))
+    }
+
+    /** What Android keeps when the screen stops: the handle's contents at that moment. */
+    private fun SavedStateHandle.snapshot() = SavedStateHandle(keys().associateWith { get<Any?>(it) })
+
+    @Test fun `state saved while the send is still running restores locked on the operation`() = test { _ ->
+        val saved = SavedStateHandle()
+        val sending = Vm(saved)
+        val sdkReturns = CompletableDeferred<Unit>()
+        sending.quoted()
+        sending.send(flow { awaitCancellation() }, id = "op-1", before = { sdkReturns.await() })
+        advanceUntilIdle()
+
+        // The app goes to the background mid-call and Android saves the screen now...
+        val snapshot = saved.snapshot()
+        // ...then the send completes in the background, too late for that snapshot.
+        sdkReturns.complete(Unit)
+        advanceUntilIdle()
+        assertNull("the snapshot predates the operation id", snapshot.get<String>(Vm.KEY))
+
+        // The process is killed and the screen restored from the snapshot.
+        val restored = Vm(snapshot, reconcile = { since -> "op-1".takeIf { since == 1_000L } })
+        assertTrue("locked before the check even returns", restored.state.value.started)
+        assertNull(restored.state.value.review)
+        advanceUntilIdle()
+
+        val s = restored.state.value
+        assertEquals("found in the SDK's history", "op-1", s.operationId)
+        assertTrue(s.started)
+        assertFalse(s.checkingSubmission)
+        assertNull(s.review)
+        assertEquals(0, restored.sends)
+    }
+
+    @Test fun `restored mid-send with nothing in history unlocks and says nothing was sent`() = test { _ ->
+        val restored = Vm(SavedStateHandle(mapOf(Vm.SUBMITTING to 1_000L)), reconcile = { null })
+        advanceUntilIdle()
+
+        val s = restored.state.value
+        assertNull(s.operationId)
+        assertTrue(s.notSubmitted)
+        assertFalse("the draft can be submitted again", s.started)
+    }
+
+    @Test fun `a failed check stays locked until a retry finds the operation`() = test { _ ->
+        var historyReachable = false
+        val restored = Vm(
+            SavedStateHandle(mapOf(Vm.SUBMITTING to 1_000L)),
+            reconcile = { if (historyReachable) "op-1" else throw IllegalStateException("This federation isn't open.") },
+        )
+        advanceUntilIdle()
+        assertTrue(restored.state.value.started)
+        assertTrue(restored.state.value.submissionCheckFailed)
+
+        historyReachable = true
+        restored.checkSubmission()
+        advanceUntilIdle()
+        assertEquals("op-1", restored.state.value.operationId)
+        assertFalse(restored.state.value.submissionCheckFailed)
     }
 }

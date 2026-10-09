@@ -12,10 +12,12 @@ import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
 import org.fedimint.demo.ui.common.formatSats
 import org.fedimint.demo.ui.common.shortId
+import org.fedimint.demo.wallet.History
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.LnQuote
 import org.fedimint.sdk.OperationId
+import org.fedimint.sdk.OperationKind
 
 // ── Receive ──────────────────────────────────────────────────────────────
 
@@ -23,7 +25,8 @@ class LightningReceiveViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.LN_RECEIVE)) {
 
     fun create(sats: ULong, description: String) = execute {
         val handle = payments.lightningReceive(federationId, sats * 1_000uL, description)
@@ -37,7 +40,7 @@ class LightningReceiveViewModel(
 
 @Composable
 fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { LightningReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { LightningReceiveViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
@@ -57,7 +60,7 @@ fun LightningReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpe
         }
         state.output?.let { OutputCard(it) }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
@@ -69,7 +72,8 @@ class LightningSendViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.LN_SEND)) {
 
     private var quote: LnQuote? = null
 
@@ -108,7 +112,7 @@ class LightningSendViewModel(
 
 @Composable
 fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { LightningSendViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { LightningSendViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var invoice by rememberSaveable { mutableStateOf("") }
 
@@ -133,7 +137,7 @@ fun LightningSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOp
             }
         }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }

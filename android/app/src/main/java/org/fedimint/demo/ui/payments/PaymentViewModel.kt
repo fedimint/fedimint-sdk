@@ -12,7 +12,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.fedimint.demo.ui.common.attempt
 import org.fedimint.demo.ui.common.userMessage
+import org.fedimint.demo.wallet.History
+import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.OperationId
+import org.fedimint.sdk.OperationKind
 import org.fedimint.sdk.Timestamp
 import org.fedimint.sdk.Exception as SdkException
 
@@ -40,8 +43,22 @@ import org.fedimint.sdk.Exception as SdkException
  * operation ([UiState.restored]) and points to it in Activity; it can't turn a
  * submitted payment back into a draft. Screens that create nothing (recovery,
  * operation detail) pass no handle.
+ *
+ * Saved state is captured when the screen stops, and a write made while it is
+ * stopped waits for the next stop. So a send that completes in the background
+ * would be missing from a snapshot taken mid-call. Before calling the SDK,
+ * [execute] therefore records that a submission is in progress (while the
+ * screen is still in front, so the snapshot has it). A screen restored with
+ * that record but no operation id stays locked and asks [reconcile], which
+ * looks in the SDK's persistent history for an operation of this screen's kind
+ * created since then: found, it locks on that operation; not found, nothing
+ * was sent and the screen unlocks.
  */
-abstract class PaymentViewModel(private val savedState: SavedStateHandle? = null) : ViewModel() {
+abstract class PaymentViewModel(
+    private val savedState: SavedStateHandle? = null,
+    private val reconcile: (suspend (sinceMillis: Long) -> OperationId?)? = null,
+    private val now: () -> Long = System::currentTimeMillis,
+) : ViewModel() {
     /** A quote the user must approve before anything is sent. */
     data class Review(val rows: List<Pair<String, String>>, val total: String, val expiresAtMillis: Long?)
 
@@ -60,20 +77,63 @@ abstract class PaymentViewModel(private val savedState: SavedStateHandle? = null
         val followFailed: Boolean = false,
         /** The operation came from saved state after the process was recreated; nothing follows it here. */
         val restored: Boolean = false,
+        /**
+         * Restored mid-submission: whether anything was sent is being checked
+         * against the SDK's history. The screen stays locked until it knows.
+         */
+        val checkingSubmission: Boolean = false,
+        /** That check failed (e.g. the federation isn't open); it can be retried. */
+        val submissionCheckFailed: Boolean = false,
+        /** The check found nothing: the app closed before anything was submitted. */
+        val notSubmitted: Boolean = false,
     ) {
         /** Once an operation exists, the inputs are locked: this screen is now following it. */
-        val started: Boolean get() = operationId != null || progress != null || output != null
+        val started: Boolean
+            get() = operationId != null || progress != null || output != null || checkingSubmission
 
         /** The operation exists but this screen can't show its state: point to it instead. */
         val needsActivityLink: Boolean get() = operationId != null && (progress == null || followFailed)
     }
 
     protected val mutableState = MutableStateFlow(
-        savedState?.get<String>(KEY_OPERATION)
-            ?.let { UiState(operationId = it, restored = true) }
-            ?: UiState(),
+        when {
+            savedState?.get<String>(KEY_OPERATION) != null ->
+                UiState(operationId = savedState.get<String>(KEY_OPERATION), restored = true)
+            savedState?.get<Long>(KEY_SUBMITTING) != null -> UiState(checkingSubmission = true)
+            else -> UiState()
+        },
     )
     val state = mutableState.asStateFlow()
+
+    init {
+        if (mutableState.value.checkingSubmission) checkSubmission()
+    }
+
+    /**
+     * Restored mid-submission: find out from the SDK's history whether the
+     * operation was created. Until then the screen stays locked; a failed check
+     * keeps it locked and can be retried.
+     */
+    fun checkSubmission() {
+        val since = savedState?.get<Long>(KEY_SUBMITTING) ?: return
+        mutableState.update { it.copy(checkingSubmission = true, submissionCheckFailed = false, error = null) }
+        viewModelScope.launch {
+            attempt { reconcile?.invoke(since) }
+                .onSuccess { id ->
+                    savedState?.remove<Long>(KEY_SUBMITTING)
+                    if (id != null) {
+                        savedState?.set(KEY_OPERATION, id)
+                        mutableState.update { it.copy(checkingSubmission = false, operationId = id, restored = true) }
+                    } else {
+                        mutableState.update { it.copy(checkingSubmission = false, notSubmitted = true) }
+                    }
+                }
+                .onFailure { e ->
+                    Log.w(TAG, "checking a restored submission failed: ${describe(e)}", e)
+                    mutableState.update { it.copy(submissionCheckFailed = true, error = userMessage(e)) }
+                }
+        }
+    }
 
     private val handles = mutableListOf<AutoCloseable>()
 
@@ -102,15 +162,24 @@ abstract class PaymentViewModel(private val savedState: SavedStateHandle? = null
      * Creates an operation: [create] makes the SDK call (a send, a receive)
      * and returns the new operation's id, after starting to follow it.
      *
-     * On success the id is recorded straight away, which locks the screen.
-     * On failure any review is dropped: a send has consumed its quote either
-     * way, so approving again must start from a fresh one.
+     * The submission is recorded in saved state before the call, while the
+     * screen is in front (see the class comment). On success the id replaces
+     * that record and locks the screen. On failure the record is dropped (the
+     * SDK reports a failed call only when nothing was created) and so is any
+     * review: a send has consumed its quote either way, so approving again
+     * must start from a fresh one.
      */
     protected fun execute(create: suspend () -> OperationId) = step(
-        onFailure = { mutableState.update { it.copy(review = null) } },
+        onFailure = {
+            savedState?.remove<Long>(KEY_SUBMITTING)
+            mutableState.update { it.copy(review = null) }
+        },
     ) {
+        savedState?.set(KEY_SUBMITTING, now())
+        mutableState.update { it.copy(notSubmitted = false) }
         val id = create()
         savedState?.set(KEY_OPERATION, id)
+        savedState?.remove<Long>(KEY_SUBMITTING)
         mutableState.update { it.copy(review = null, operationId = id) }
     }
 
@@ -142,6 +211,26 @@ abstract class PaymentViewModel(private val savedState: SavedStateHandle? = null
 
         /** Saved-state key for the created operation's id. */
         const val KEY_OPERATION = "operation_id"
+
+        /** Saved-state key for when a submission started, until it returns. */
+        const val KEY_SUBMITTING = "submitting_since"
+
+        /** Clock skew allowed between the recorded start and the SDK's operation time. */
+        private const val RECONCILE_SLACK_MILLIS = 60_000L
+
+        /**
+         * A [reconcile] that looks in [history] for the newest operation of
+         * [kind] created since the submission started.
+         */
+        fun reconcileWith(
+            history: History,
+            federationId: FederationId,
+            kind: OperationKind,
+        ): suspend (Long) -> OperationId? = { since ->
+            history.page(federationId).items
+                .firstOrNull { it.kind == kind && it.time.toLong() >= since - RECONCILE_SLACK_MILLIS }
+                ?.operationId
+        }
 
         fun expiry(ts: Timestamp): Long = ts.toLong()
 

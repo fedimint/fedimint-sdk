@@ -14,11 +14,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.fedimint.demo.ui.common.appViewModel
+import org.fedimint.demo.wallet.History
 import org.fedimint.demo.wallet.Payments
 import org.fedimint.sdk.EcashQuote
 import org.fedimint.sdk.FederationId
 import org.fedimint.sdk.Notes
 import org.fedimint.sdk.OperationId
+import org.fedimint.sdk.OperationKind
 
 // ── Send ─────────────────────────────────────────────────────────────────
 
@@ -26,7 +28,8 @@ class EcashSendViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.ECASH_SEND)) {
 
     private var quote: EcashQuote? = null
 
@@ -63,7 +66,7 @@ class EcashSendViewModel(
 
 @Composable
 fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { EcashSendViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { EcashSendViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     var amount by rememberSaveable { mutableStateOf("") }
     val sats = amount.toULongOrNull()
@@ -90,7 +93,7 @@ fun EcashSendScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperat
             )
         }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
@@ -107,7 +110,8 @@ class EcashReceiveViewModel(
     private val payments: Payments,
     private val federationId: FederationId,
     savedState: SavedStateHandle,
-) : PaymentViewModel(savedState) {
+    history: History,
+) : PaymentViewModel(savedState, reconcileWith(history, federationId, OperationKind.ECASH_RECEIVE)) {
 
     private val _notesText = MutableStateFlow("")
     val notesText = _notesText.asStateFlow()
@@ -138,7 +142,7 @@ class EcashReceiveViewModel(
 
 @Composable
 fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOperation: (OperationId) -> Unit) {
-    val vm = appViewModel { EcashReceiveViewModel(it.payments, federationId, createSavedStateHandle()) }
+    val vm = appViewModel { EcashReceiveViewModel(it.payments, federationId, createSavedStateHandle(), it.history) }
     val state by vm.state.collectAsStateWithLifecycle()
     val notesText by vm.notesText.collectAsStateWithLifecycle()
 
@@ -154,7 +158,7 @@ fun EcashReceiveScreen(federationId: FederationId, onBack: () -> Unit, onOpenOpe
             }
         }
         state.progress?.let { ProgressCard(it) }
-        SubmittedNotice(state, onOpenOperation)
+        SubmittedNotice(state, onOpenOperation, vm::checkSubmission)
         ErrorText(state.error)
         DoneButton(state, onBack)
     }
