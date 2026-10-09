@@ -365,13 +365,21 @@ RustBuffer uniffi_fedimint_sdk_fn_method_meta_config_metadata(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
 void uniffi_fedimint_sdk_fn_free_onchain(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
-/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchain_receive(
-    /*handle*/ uint64_t ptr);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchain_send(
     /*handle*/ uint64_t ptr,
     /*handle*/ uint64_t quote);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchain_deposits(
+    /*handle*/ uint64_t ptr);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchain_quote(
     /*handle*/ uint64_t ptr, RustBuffer address, uint64_t amount);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchain_receive(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_onchaindeposits(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
+    /*handle*/ uint64_t ptr);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_onchainquote(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
 void uniffi_fedimint_sdk_fn_free_onchainquote(
@@ -696,9 +704,11 @@ uint16_t uniffi_fedimint_sdk_checksum_method_meta_all();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_config_metadata();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_consensus_metadata();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_get();
-uint16_t uniffi_fedimint_sdk_checksum_method_onchain_receive();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_send();
+uint16_t uniffi_fedimint_sdk_checksum_method_onchain_deposits();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_quote();
+uint16_t uniffi_fedimint_sdk_checksum_method_onchain_receive();
+uint16_t uniffi_fedimint_sdk_checksum_method_onchaindeposits_next();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchainquote_amount();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchainquote_expires_at();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchainquote_fee();
@@ -3625,17 +3635,6 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_free_onchain(rt, thisVal,
                                                                  args, count);
           });
-  props["ubrn_uniffi_fedimint_sdk_fn_method_onchain_receive"] =
-      jsi::Function::createFromHostFunction(
-          rt,
-          jsi::PropNameID::forAscii(
-              rt, "ubrn_uniffi_fedimint_sdk_fn_method_onchain_receive"),
-          1,
-          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
-                 const jsi::Value *args, size_t count) -> jsi::Value {
-            return this->cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
-                rt, thisVal, args, count);
-          });
   props["ubrn_uniffi_fedimint_sdk_fn_method_onchain_send"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -3647,6 +3646,17 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_method_onchain_send(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_onchain_deposits"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_onchain_deposits"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_onchain_deposits(
+                rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_fn_method_onchain_quote"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -3656,6 +3666,50 @@ NativeFedimintSdk::NativeFedimintSdk(
           [this](jsi::Runtime &rt, const jsi::Value &thisVal,
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_fedimint_sdk_fn_method_onchain_quote(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_onchain_receive"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_onchain_receive"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_onchaindeposits"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_onchaindeposits"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_onchaindeposits"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_onchaindeposits"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_onchaindeposits(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_onchaindeposits_next"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_onchaindeposits_next"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
                 rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_fn_clone_onchainquote"] =
@@ -5830,6 +5884,40 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_checksum_method_meta_get(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_deposits"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_onchain_deposits"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_onchain_deposits(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_quote"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_onchain_quote"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_checksum_method_onchain_quote(
+                rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_receive"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -5842,27 +5930,18 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_checksum_method_onchain_receive(
                     rt, thisVal, args, count);
           });
-  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"] =
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next"] =
       jsi::Function::createFromHostFunction(
           rt,
           jsi::PropNameID::forAscii(
-              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"),
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next"),
           0,
           [this](jsi::Runtime &rt, const jsi::Value &thisVal,
                  const jsi::Value *args, size_t count) -> jsi::Value {
-            return this->cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
-                rt, thisVal, args, count);
-          });
-  props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_quote"] =
-      jsi::Function::createFromHostFunction(
-          rt,
-          jsi::PropNameID::forAscii(
-              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_onchain_quote"),
-          0,
-          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
-                 const jsi::Value *args, size_t count) -> jsi::Value {
-            return this->cpp_uniffi_fedimint_sdk_checksum_method_onchain_quote(
-                rt, thisVal, args, count);
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next(
+                    rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_onchainquote_amount"] =
       jsi::Function::createFromHostFunction(
@@ -6668,6 +6747,18 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_internal_fn_method_onchain_ffi__bless_pointer(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_internal_fn_method_onchaindeposits_ffi__bless_pointer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_internal_fn_method_"
+                                        "onchaindeposits_ffi__bless_pointer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_internal_fn_method_onchaindeposits_ffi__bless_pointer(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_internal_fn_method_onchainquote_ffi__bless_pointer"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -7263,6 +7354,21 @@ NativeFedimintSdk::cpp_uniffi_internal_fn_method_onchain_ffi__bless_pointer(
   auto static destructor = [](uint64_t p) {
     RustCallStatus status = {0};
     uniffi_fedimint_sdk_fn_free_onchain(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_onchaindeposits_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_onchaindeposits(p, &status);
   };
   auto ptrObj =
       std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
@@ -9154,16 +9260,6 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_onchain(
 
   return jsi::Value::undefined();
 }
-jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
-    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
-    size_t count) {
-  auto value = uniffi_fedimint_sdk_fn_method_onchain_receive(
-      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
-                                                        args[0]));
-
-  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
-                                                         value);
-}
 jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_send(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -9172,6 +9268,17 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_send(
                                                         args[0]),
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[1]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_deposits(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_onchain_deposits(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
 
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
@@ -9185,6 +9292,56 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_quote(
       uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
                                                          args[1]),
       uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[2]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchain_receive(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_onchain_receive(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_onchaindeposits(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_onchaindeposits(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
 
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
@@ -11265,14 +11422,6 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_meta_get(
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value
-NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_receive(
-    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
-    size_t count) {
-  auto value = uniffi_fedimint_sdk_checksum_method_onchain_receive();
-
-  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
-}
-jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -11281,10 +11430,34 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_deposits(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_onchain_deposits();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_quote(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_onchain_quote();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_receive(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_onchain_receive();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_onchaindeposits_next();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }

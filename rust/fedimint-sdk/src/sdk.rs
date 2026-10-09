@@ -894,11 +894,11 @@ impl Sdk {
     ///   could still reclaim). Either fails the call with
     ///   [`PendingOperations`](crate::ErrorCode::PendingOperations).
     ///
-    /// One class of non-final operation is exempt: an on-chain receive that
-    /// has not yet seen a transaction. It holds no value, so it never
-    /// blocks the erase; once a transaction has been seen it is an
-    /// ordinary pending operation and does block until claimed or failed.
-    /// See [`Onchain::receive`](crate::Onchain::receive).
+    /// A deposit address is not an operation, so one that was handed out
+    /// and never paid does not block the erase. An on-chain deposit the
+    /// wallet has found is an ordinary pending operation and does block,
+    /// until it is claimed or failed. See
+    /// [`Onchain::receive`](crate::Onchain::receive).
     ///
     /// ## Recovery is never a reason to refuse
     ///
@@ -1062,14 +1062,17 @@ impl Sdk {
                      or reclaimed",
                 ));
             }
-            // An on-chain deposit that has seen a funding transaction but not yet been claimed
-            // is checked the same way, and outside the live-client guard for the same reason:
-            // the guard must hold regardless of whether the client happens to be running.
+            // An on-chain deposit the wallet has found but not yet claimed is checked the same
+            // way, and outside the live-client guard for the same reason: the guard must hold
+            // regardless of whether the client happens to be running. A deposit found while
+            // nothing was reading the wallet's announcements may have no record yet, so they
+            // are read first.
+            crate::onchain::pick_up_deposits(&federation).await?;
             if federation.has_seen_unclaimed_deposit().await? {
                 self.persist_closed(&federation).await?;
                 return Err(crate::Error::new(
                     crate::ErrorCode::PendingOperations,
-                    "this federation still has a deposit that has been seen but not claimed",
+                    "this federation still has a deposit that has been found but not claimed",
                 ));
             }
         }
@@ -3212,6 +3215,56 @@ mod tests {
             assert_eq!(err2.code, crate::ErrorCode::PendingOperations);
 
             // The federation remains stored and closed.
+            assert_eq!(
+                sdk.federation_status(&public),
+                Some(FederationStatus::Closed)
+            );
+            assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        /// A deposit the wallet found while nothing was reading its announcements has no record
+        /// yet. The erase guard reads them first, so the claim in progress still blocks the
+        /// erase.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_refuses_a_deposit_the_wallet_found_and_nothing_recorded() {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            use crate::onchain::deposit_fixtures::{a_paid_v1_address, txid};
+
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let deposit = fedimint_core::core::OperationId([44u8; 32]);
+            let db = fed_inner.db();
+            a_paid_v1_address(&db, deposit, txid(1), 0).await;
+            assert!(
+                db.begin_transaction_nc()
+                    .await
+                    .get_value(&crate::db::OperationRecordKey(deposit))
+                    .await
+                    .is_none(),
+                "nothing has read the announcement yet"
+            );
+
+            let err = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("a deposit that is still being claimed must refuse the erase");
+            assert_eq!(err.code, crate::ErrorCode::PendingOperations);
+            // And again, with the record now written.
+            let err = sdk
+                .forget_federation(&public)
+                .await
+                .expect_err("a second forget must also refuse");
+            assert_eq!(err.code, crate::ErrorCode::PendingOperations);
+
             assert_eq!(
                 sdk.federation_status(&public),
                 Some(FederationStatus::Closed)

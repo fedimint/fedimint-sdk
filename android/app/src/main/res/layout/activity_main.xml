@@ -269,7 +269,7 @@
                 style="@style/Result" />
         </LinearLayout>
 
-        <!-- onchain.receive -->
+        <!-- onchain.deposits / onchain.receive -->
         <LinearLayout style="@style/Section">
 
             <TextView

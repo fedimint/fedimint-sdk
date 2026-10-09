@@ -7,7 +7,6 @@ use crate::{
     EcashReceiveState, EcashSendDetails, EcashSendState, Error, ErrorCode, LnReceiveDetails,
     LnReceiveState, LnSendDetails, LnSendState, OnchainReceiveDetails, OnchainReceiveState,
     OnchainSendDetails, OnchainSendState, OperationDetails, OperationState, RecoveryState, Result,
-    Sats,
 };
 
 /// The three numbers a row carries, as the table on [`ActivityItem`](crate::ActivityItem) fixes
@@ -95,9 +94,7 @@ impl Bucket for OnchainSendState {
 impl Bucket for OnchainReceiveState {
     fn bucket(&self) -> ActivityStatus {
         match self {
-            OnchainReceiveState::WaitingForTransaction
-            | OnchainReceiveState::WaitingForConfirmation { .. }
-            | OnchainReceiveState::Confirmed { .. } => ActivityStatus::Pending,
+            OnchainReceiveState::Confirmed { .. } => ActivityStatus::Pending,
             OnchainReceiveState::Claimed { .. } => ActivityStatus::Success,
             OnchainReceiveState::Failed { .. } => ActivityStatus::Failed,
         }
@@ -173,10 +170,7 @@ impl Accounted for OnchainSendDetails {
 impl Accounted for OnchainReceiveDetails {
     fn figures(&self) -> Figures {
         Figures {
-            // `gross_deposited` is `Option<Sats>`, so `to_amount`'s own `Option<Amount>` has to
-            // be flattened rather than mapped into it; the brief's `.map` would leave this an
-            // `Option<Option<Amount>>`, which does not typecheck against `Figures::amount`.
-            amount: self.gross_deposited.and_then(Sats::to_amount),
+            amount: self.gross_deposited.to_amount(),
             fee: self.fee,
             direction: Some(Direction::Incoming),
         }
@@ -262,7 +256,7 @@ mod tests {
     use super::*;
     use crate::db::OperationRecord;
     use crate::federation::FederationInner;
-    use crate::{Address, LightningRoute, OnchainReceiveFeeBreakdown, Timestamp, Txid};
+    use crate::{Address, LightningRoute, OnchainReceiveFeeBreakdown, Sats, Timestamp, Txid};
 
     /// A real out-of-band ecash token worth 1 satoshi, copied from `ecash.rs`'s own tests: no
     /// part of it may appear in a `Debug` output, but nothing here prints one.
@@ -348,12 +342,12 @@ mod tests {
         }
     }
 
-    /// A deposit before any transaction has been seen: every fillable field is still `None`.
-    fn onchain_receive_details_waiting() -> OnchainReceiveDetails {
+    /// A deposit the wallet has found and not yet claimed: what the claim costs is still `None`.
+    fn onchain_receive_details_found() -> OnchainReceiveDetails {
         OnchainReceiveDetails {
             address: an_address(),
-            txid: None,
-            gross_deposited: None,
+            txid: a_txid(),
+            gross_deposited: Sats::from_sats(100_000),
             fee: None,
             fee_breakdown: None,
             net_credit: None,
@@ -363,7 +357,8 @@ mod tests {
 
     /// The same deposit once its claim has settled.
     fn onchain_receive_details_claimed() -> OnchainReceiveDetails {
-        let gross = Sats::from_sats(100_000);
+        let found = onchain_receive_details_found();
+        let gross = found.gross_deposited;
         let fee = Amount::from_msats(1_500);
         let net_credit = gross
             .to_amount()
@@ -371,8 +366,6 @@ mod tests {
             .checked_sub(fee)
             .expect("the fee is smaller than the deposit");
         OnchainReceiveDetails {
-            txid: Some(a_txid()),
-            gross_deposited: Some(gross),
             fee: Some(fee),
             fee_breakdown: Some(OnchainReceiveFeeBreakdown {
                 peg_in: fee,
@@ -381,7 +374,7 @@ mod tests {
                 dust: Amount::from_msats(0),
             }),
             net_credit: Some(net_credit),
-            ..onchain_receive_details_waiting()
+            ..found
         }
     }
 
@@ -510,10 +503,6 @@ mod tests {
 
     #[test]
     fn onchain_receive_state_lands_in_its_documented_bucket() {
-        let waiting_for_confirmation = OnchainReceiveState::WaitingForConfirmation {
-            txid: a_txid(),
-            gross_deposited: Sats::from_sats(100_000),
-        };
         let confirmed = OnchainReceiveState::Confirmed {
             txid: a_txid(),
             gross_deposited: Sats::from_sats(100_000),
@@ -527,22 +516,11 @@ mod tests {
             reason: String::new(),
         };
 
-        assert_eq!(
-            OnchainReceiveState::WaitingForTransaction.bucket(),
-            ActivityStatus::Pending
-        );
-        assert_eq!(waiting_for_confirmation.bucket(), ActivityStatus::Pending);
         assert_eq!(confirmed.bucket(), ActivityStatus::Pending);
         assert_eq!(claimed.bucket(), ActivityStatus::Success);
         assert_eq!(failed.bucket(), ActivityStatus::Failed);
 
-        for state in [
-            OnchainReceiveState::WaitingForTransaction,
-            waiting_for_confirmation,
-            confirmed,
-            claimed,
-            failed,
-        ] {
+        for state in [confirmed, claimed, failed] {
             assert_eq!(state.bucket() == ActivityStatus::Pending, !state.is_final());
         }
     }
@@ -635,12 +613,12 @@ mod tests {
     }
 
     #[test]
-    fn onchain_receive_details_yield_no_figures_before_a_transaction_and_the_credit_after() {
-        let waiting = onchain_receive_details_waiting();
+    fn onchain_receive_details_yield_the_gross_at_once_and_the_fee_once_claimed() {
+        let found = onchain_receive_details_found();
         assert_eq!(
-            waiting.figures(),
+            found.figures(),
             Figures {
-                amount: None,
+                amount: Some(Amount::from_msats(100_000_000)),
                 fee: None,
                 direction: Some(Direction::Incoming),
             }
@@ -650,7 +628,7 @@ mod tests {
         assert_eq!(
             claimed.figures(),
             Figures {
-                amount: claimed.gross_deposited.and_then(Sats::to_amount),
+                amount: claimed.gross_deposited.to_amount(),
                 fee: claimed.fee,
                 direction: Some(Direction::Incoming),
             }

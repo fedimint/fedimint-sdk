@@ -74,9 +74,14 @@ generate and persist a fresh one. `sdk.exportMnemonic()` reads it back.
 The `Federation` that `join` returns carries the rest: `balance()`,
 `balanceUpdates()`, `capabilities()`, `meta()`, `activity(cursor:limit:)`,
 `operation(id:)`, and the `ecash()`, `lightning()` and `onchain()` facades (each
-`nil` when the federation lacks that module), whose `quote` → `send` and
-`receive` calls return operation handles to observe with `state()`, `updates()`
-and `awaitFinal()`. The demo app (`ios/Demo`) drives each of them once.
+`nil` when the federation lacks that module). Their `quote` → `send` calls and
+the `receive` calls of `ecash()` and `lightning()` return operation handles to
+observe with `state()`, `updates()` and `awaitFinal()`. On-chain `receive()` is
+the exception: it returns an address to pay and no operation, because a deposit
+becomes an operation only once the federation's wallet finds the payment, and
+`onchain().deposits()` is where those operations arrive (see
+[Receiving on-chain](#receiving-on-chain)). The demo app (`ios/Demo`) drives
+each of them once.
 
 ## Using it
 
@@ -119,6 +124,59 @@ let balanceMsats: UInt64 = try await federation.balance()
 Every call that touches disk or the network is `async throws`, so it needs an
 `await` and a `Task` — there is no synchronous variant and no completion-handler
 variant.
+
+### Receiving on-chain
+
+`onchain.receive()` returns an address to pay, and nothing else exists for it
+yet: no operation, no operation id and no state. A deposit becomes an operation
+when the federation's wallet finds the payment, which is once its transaction
+has the confirmations the federation requires. `onchain.deposits()` opens a
+subscription to those operations. Open it _before_ the address is shown: it only
+yields the deposits found after it was opened, so one opened later can miss a
+payment that is found right away.
+
+```swift
+guard let onchain = federation.onchain() else { return }
+
+let deposits = try await onchain.deposits()
+let address = try await onchain.receive()
+show("Send bitcoin to \(address)")
+
+// Resolves with the next deposit found, to whichever of the wallet's addresses
+// it was paid. The deposit's details name that address.
+let operation = try await deposits.next()
+let details = try await operation.details()
+show("Deposit found at \(details.address)")
+
+let updates = operation.updates()
+while let state = try await updates.next() {
+    switch state {
+    case .confirmed(let txid, let sats): show("\(sats) sat found in \(txid)")
+    case .claimed(_, _, let msats):      show("credited \(msats / 1_000) sat")
+    case .failed(let reason):            show("failed: \(reason)")
+    }
+}
+```
+
+The first state an application sees is `.confirmed`, a deposit that was found
+and is being claimed, or `.claimed` if it looks later. `.claimed` and `.failed`
+are final. There is no state for an unpaid address, and none for a transaction
+that is still short of its confirmations.
+
+`next()` never ends cleanly: it resolves with a deposit, or throws an `SdkError`
+whose `code()` is `.federationClosed` once the federation is closed or the SDK
+shut down. Cancelling the `Task` that awaits it does not cancel the call; see
+[Cancelling a `Task`](#cancelling-a-task-does-not-cancel-an-sdk-call).
+
+- `activity(cursor:limit:)` lists every deposit found, including ones found while
+  no subscription was open, and `operation(id:)` finds a deposit by id across
+  restarts. An address nobody has paid has no activity row.
+- `receive()` promises only an address to pay. Depending on the federation,
+  repeated calls return the same address until a payment to it has been found,
+  or a new address every time. An application must not rely on either.
+- One address is for one payment: ask for a new one after a deposit rather than
+  reusing a paid one. A second payment to an address that was already paid may
+  go undetected for a long time on some federations.
 
 ### Protecting the wallet directory
 

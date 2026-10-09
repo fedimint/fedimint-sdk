@@ -114,8 +114,7 @@ const Deposit = () => {
       if (!onchain) {
         throw new Error('On-chain is not supported by this federation')
       }
-      const handle = await onchain.receive()
-      setAddress(handle.address)
+      setAddress(await onchain.receive())
     } catch (error) {
       setAddressError(errorMessage(error))
     } finally {

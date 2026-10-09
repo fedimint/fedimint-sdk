@@ -23,6 +23,7 @@ import org.fedimint.sdk.InviteCode
 import org.fedimint.sdk.LnQuote
 import org.fedimint.sdk.Mnemonic
 import org.fedimint.sdk.Notes
+import org.fedimint.sdk.OnchainDeposits
 import org.fedimint.sdk.OnchainQuote
 import org.fedimint.sdk.Sdk
 import org.fedimint.sdk.createFedimintSdk
@@ -400,19 +401,61 @@ class MainActivity : AppCompatActivity() {
 
     // ── On-chain ─────────────────────────────────────────────────────────
 
+    /**
+     * Shows an address to pay and follows the deposit once the wallet finds
+     * the payment.
+     *
+     * `deposits()` comes first: its subscription yields only the deposits
+     * found after it was opened, so opening it after the address is shown
+     * could miss a payment made right away. A deposit is an operation only
+     * once the wallet has found it, so until then the result line holds the
+     * address alone.
+     */
     private fun onDeposit() {
         val result = findViewById<TextView>(R.id.depositResult)
         section(R.id.depositResult) {
             val onchain = federation?.onchain() ?: return@section "this federation has no wallet module"
 
-            val receive = onchain.receive()
-            val header = "Send bitcoin to:\n${receive.address}\n\noperation ${receive.operation.id()}"
+            val deposits = onchain.deposits()
+            val address = try {
+                onchain.receive()
+            } catch (e: SdkException) {
+                deposits.close()
+                throw e
+            }
+            val header = "Send bitcoin to:\n$address"
             withContext(Dispatchers.Main) {
-                lastAddress = receive.address
+                lastAddress = address
                 depositCopy.isEnabled = true
             }
-            afterRender { watch(result, header, receive.operation.updates()) { it.next() } }
+            afterRender { watchNextDeposit(result, header, deposits) }
             header
+        }
+    }
+
+    /**
+     * Waits for the next deposit on `deposits`, then follows its operation
+     * with [watch] under `header` plus the operation's id. The id cannot be in
+     * `header` earlier: a deposit has an operation only once the wallet has
+     * found it.
+     *
+     * Takes the subscription already open, as [onDeposit] opens it before the
+     * address is shown, and closes it once the wait ends, including when the
+     * scope is cancelled. A wait that fails, such as the federation closing,
+     * is rendered under `header` the way [watch] renders a failure.
+     */
+    private fun watchNextDeposit(view: TextView, header: String, deposits: OnchainDeposits) {
+        lifecycleScope.launch {
+            val operation = try {
+                withContext(Dispatchers.IO) { deposits.next() }
+            } catch (e: SdkException) {
+                view.text = "$header\n\n${describe(e)}"
+                return@launch
+            } finally {
+                deposits.close()
+            }
+            val found = "$header\n\noperation ${operation.id()}"
+            watch(view, found, operation.updates()) { it.next() }
         }
     }
 
@@ -646,8 +689,6 @@ class MainActivity : AppCompatActivity() {
         is org.fedimint.sdk.OnchainSendState.Succeeded -> "Succeeded(txid=${state.txid})"
         is org.fedimint.sdk.OnchainSendState.Refunded -> "Refunded(${state.reason})"
         is org.fedimint.sdk.OnchainSendState.Failed -> "Failed(${state.reason})"
-        is org.fedimint.sdk.OnchainReceiveState.WaitingForConfirmation ->
-            "WaitingForConfirmation(txid=${state.txid}, gross=${state.grossDeposited} sat)"
         is org.fedimint.sdk.OnchainReceiveState.Confirmed ->
             "Confirmed(txid=${state.txid}, gross=${state.grossDeposited} sat)"
         is org.fedimint.sdk.OnchainReceiveState.Claimed ->

@@ -7,7 +7,12 @@
 //!
 //! Builds an instance over `<data-dir>`, joining `<invite-code>` the first time and
 //! reopening the same federation on every later run, then prints a deposit address for a
-//! counterparty to pay, or withdraws to an address outside the federation.
+//! counterparty to pay and follows the deposit once the federation's wallet finds it, or
+//! withdraws to an address outside the federation.
+//!
+//! A deposit becomes an operation only when the wallet finds the payment, which is once its
+//! transaction has the confirmations the federation requires. `receive` waits for that after
+//! printing the address.
 //!
 //! `scripts/run-sdk-examples.sh` runs this example against a federation it starts with
 //! devimint, paying the deposit address and mining the confirmations itself.
@@ -44,26 +49,30 @@ async fn main() -> fedimint_sdk::Result<()> {
             // There is nothing to quote on this side: the sender pays whatever network fee
             // their own wallet charges, and the federation's own charge for claiming the
             // deposit is only knowable once an amount has arrived.
-            let receive = onchain.receive().await?;
-            println!("address: {}", receive.address);
+            //
+            // The subscription is opened before the address is shown, because it yields only
+            // the deposits found after it was opened: one found right after the address is
+            // paid would be missed otherwise.
+            let mut deposits = onchain.deposits().await?;
+            let address = onchain.receive().await?;
+            println!("address: {address}");
             println!("send a deposit to this address");
-            let mut updates = receive.operation.updates();
+            let operation = deposits.next().await?;
+            println!("operation: {}", operation.id());
+            let mut updates = operation.updates();
             let mut last_state = None;
             while let Some(state) = updates.next().await? {
                 println!("state: {state:?}");
                 last_state = Some(state);
             }
             // `Claimed` is the only terminal state whose deposit was actually credited:
-            // `Failed` carries no transaction and no amount even when one was seen, so
-            // there is no receipt to show.
+            // `Failed` credits nothing, so there is no receipt to show.
             match last_state {
                 Some(OnchainReceiveState::Claimed { .. }) => {
-                    let details = receive.operation.details().await?;
+                    let details = operation.details().await?;
                     println!(
                         "{} gross, {} fee, {} credited",
-                        details
-                            .gross_deposited
-                            .expect("a claimed deposit knows what arrived"),
+                        details.gross_deposited,
                         details.fee.expect("a claimed deposit knows its fee"),
                         details
                             .net_credit

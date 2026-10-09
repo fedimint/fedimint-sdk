@@ -49,6 +49,19 @@ pub(crate) async fn page(
         .as_ref()
         .map(|cursor| (cursor.created_at(), cursor.id().upstream()));
 
+    // An on-chain deposit can be without a record until the wallet's announcement of it is
+    // read, and nothing reads one while no deposit subscription is open, so the walk below is
+    // brought up to date first. A failure costs this page the deposits found since the last
+    // pass, not the history it already has.
+    if let Err(err) = crate::onchain::pick_up_deposits(federation).await {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            federation = %federation.id,
+            error = %err,
+            "could not record the on-chain deposits this federation's wallet found",
+        );
+    }
+
     let db = federation.db();
     let mut dbtx = db.begin_transaction_nc().await;
     let mut entries = dbtx
@@ -349,6 +362,58 @@ mod tests {
         let third = page(&federation, Some(cursor), 2).await.expect("last page");
         assert_eq!(ids(&third), vec![opid(1)]);
         assert!(third.next.is_none());
+    }
+
+    /// A claimed deposit is a row, with what arrived as its amount.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claimed_deposit_is_a_row_with_what_arrived() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        let txid = "11".repeat(32);
+        let details = serde_json::json!({
+            "address": "bcrt1q2nfxmhd4n3c8834pj72xagvyr9gl57n5r94fsl",
+            "txid": txid,
+            "gross_deposited_sats": 100_000u64,
+            "fee_msats": 1_500u64,
+            "fee_breakdown": {
+                "peg_in_msats": 1_000u64,
+                "network_claim_msats": 0u64,
+                "primary_module_msats": 400u64,
+                "dust_msats": 100u64,
+            },
+            "net_credit_msats": 99_998_500u64,
+            "created_at": 1_700_000_000_000u64,
+        })
+        .to_string();
+        let claimed = crate::onchain::OnchainReceiveDriver
+            .encode_state(&crate::OnchainReceiveState::Claimed {
+                txid: txid.parse().expect("a well-formed transaction id"),
+                gross_deposited: crate::Sats::from_sats(100_000),
+                net_credit: Amount::from_msats(99_998_500),
+            })
+            .expect("encode");
+        write(
+            &db,
+            id_bytes(1),
+            record(
+                kinds::ONCHAIN_RECEIVE,
+                "walletv2",
+                1_700_000_000_000,
+                details,
+                Some(claimed),
+            ),
+        )
+        .await;
+
+        let activity = page(&federation, None, 10).await.expect("one row");
+        assert_eq!(activity.items.len(), 1);
+        let row = &activity.items[0];
+        assert_eq!(row.kind, OperationKind::OnchainReceive);
+        assert_eq!(row.status, ActivityStatus::Success);
+        assert!(row.is_final);
+        assert_eq!(row.amount, Some(Amount::from_msats(100_000_000)));
+        assert_eq!(row.fee, Some(Amount::from_msats(1_500)));
+        assert_eq!(row.direction, Some(Direction::Incoming));
     }
 
     #[tokio::test(flavor = "multi_thread")]

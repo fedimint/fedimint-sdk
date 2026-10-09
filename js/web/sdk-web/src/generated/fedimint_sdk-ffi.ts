@@ -465,6 +465,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_onchain_deposits: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_onchain_quote: {
       args: [],
       ret: FfiType.UInt16,
@@ -476,6 +481,11 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_checksum_method_onchain_send: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_checksum_method_onchaindeposits_next: {
       args: [],
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
@@ -1100,6 +1110,11 @@ const DEFINITIONS = {
       ret: FfiType.Handle,
       hasRustCallStatus: true,
     },
+    uniffi_fedimint_sdk_fn_method_onchain_deposits: {
+      args: [FfiType.Handle],
+      ret: FfiType.Handle,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_fn_method_onchain_quote: {
       args: [FfiType.Handle, FfiType.RustBuffer, FfiType.UInt64],
       ret: FfiType.Handle,
@@ -1112,6 +1127,11 @@ const DEFINITIONS = {
     },
     uniffi_fedimint_sdk_fn_method_onchain_send: {
       args: [FfiType.Handle, FfiType.Handle],
+      ret: FfiType.Handle,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_fn_method_onchaindeposits_next: {
+      args: [FfiType.Handle],
       ret: FfiType.Handle,
       hasRustCallStatus: false,
     },
@@ -1516,6 +1536,16 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_free_onchain: {
+      args: [FfiType.Handle],
+      ret: FfiType.Void,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_clone_onchaindeposits: {
+      args: [FfiType.Handle],
+      ret: FfiType.Handle,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_free_onchaindeposits: {
       args: [FfiType.Handle],
       ret: FfiType.Void,
       hasRustCallStatus: true,
@@ -1988,9 +2018,11 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_notes_display(): number
   uniffi_fedimint_sdk_checksum_method_notes_value(): number
   uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
+  uniffi_fedimint_sdk_checksum_method_onchain_deposits(): number
   uniffi_fedimint_sdk_checksum_method_onchain_quote(): number
   uniffi_fedimint_sdk_checksum_method_onchain_receive(): number
   uniffi_fedimint_sdk_checksum_method_onchain_send(): number
+  uniffi_fedimint_sdk_checksum_method_onchaindeposits_next(): number
   uniffi_fedimint_sdk_checksum_method_onchainquote_amount(): number
   uniffi_fedimint_sdk_checksum_method_onchainquote_expires_at(): number
   uniffi_fedimint_sdk_checksum_method_onchainquote_fee(): number
@@ -2349,6 +2381,7 @@ interface NativeModuleInterface {
     notes: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
+  uniffi_fedimint_sdk_fn_method_onchain_deposits(uniffiSelf: bigint): bigint
   uniffi_fedimint_sdk_fn_method_onchain_quote(
     uniffiSelf: bigint,
     address: Uint8Array,
@@ -2359,6 +2392,7 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     quote: bigint,
   ): bigint
+  uniffi_fedimint_sdk_fn_method_onchaindeposits_next(uniffiSelf: bigint): bigint
   uniffi_fedimint_sdk_fn_method_onchainquote_amount(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -2668,6 +2702,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   uniffi_fedimint_sdk_fn_free_onchain(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  uniffi_fedimint_sdk_fn_free_onchaindeposits(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void

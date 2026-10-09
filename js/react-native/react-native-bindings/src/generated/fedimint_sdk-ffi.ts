@@ -120,9 +120,11 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_display(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_value(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_onchain_deposits(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchain_quote(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchain_receive(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_onchaindeposits_next(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainquote_amount(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainquote_expires_at(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainquote_fee(): number
@@ -485,6 +487,9 @@ interface NativeModuleInterface {
     notes: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_onchain_deposits(
+    uniffiSelf: bigint,
+  ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_onchain_quote(
     uniffiSelf: bigint,
     address: Uint8Array,
@@ -494,6 +499,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_method_onchain_send(
     uniffiSelf: bigint,
     quote: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_onchaindeposits_next(
+    uniffiSelf: bigint,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_onchainquote_amount(
     uniffiSelf: bigint,
@@ -807,6 +815,14 @@ interface NativeModuleInterface {
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_onchaindeposits(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_onchaindeposits(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
   ubrn_uniffi_fedimint_sdk_fn_clone_onchainquote(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -1027,14 +1043,6 @@ interface NativeModuleInterface {
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject
-  ubrn_uniffi_internal_fn_method_onchainreceiveoperationupdates_ffi__bless_pointer(
-    pointer: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): UniffiGcObject
-  ubrn_uniffi_internal_fn_method_onchainreceiveoperation_ffi__bless_pointer(
-    pointer: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): UniffiGcObject
   ubrn_uniffi_internal_fn_method_balanceupdates_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -1076,6 +1084,18 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject
   ubrn_uniffi_internal_fn_method_meta_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_onchainreceiveoperationupdates_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_onchainreceiveoperation_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_onchaindeposits_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject

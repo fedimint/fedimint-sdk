@@ -21,18 +21,17 @@ use crate::{
     OperationState, Result, Sats, Timestamp, Txid,
 };
 
+mod deposits;
 mod driver;
 mod v1;
 mod v2;
 mod wire;
 
+/// What a test outside this module needs to plant a deposit the wallet found.
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) use deposits::fixtures as deposit_fixtures;
+pub(crate) use deposits::{log_entry_is_not_an_operation, pick_up_deposits};
 pub(crate) use driver::{OnchainBackfiller, OnchainReceiveDriver, OnchainSendDriver};
-/// The deposit address a walletv2 `Receive` upstream meta names, for `federation.rs`'s
-/// reconciler; re-exported so it does not have to name the upstream wallet types itself.
-pub(crate) use v2::deposit_address_of;
-/// The only phase an on-chain record ever carries, re-exported for `federation.rs`'s erase
-/// guard; see [`wire`]'s own doc for what it means.
-pub(crate) use wire::PHASE_SEEN;
 
 /// The on-chain facade for one federation, backed by its wallet module.
 ///
@@ -80,63 +79,56 @@ pub struct Onchain {
     inner: Arc<OnchainInner>,
 }
 
+// `receive`, `deposits` and `quote` are exported under their own names,
+// unchanged: an address is a plain value, and `OnchainDeposits` and
+// `OnchainQuote` are UniFFI objects (see below), and a bare object returned
+// through `Result<T>` crosses the boundary with no adapter needed. `send`
+// still needs one, in `ffi/onchain.rs`: its real parameter is an owned
+// `OnchainQuote`, which an object can never cross as (only
+// `Arc<OnchainQuote>` can).
+#[cfg_attr(
+    all(feature = "uniffi", not(target_family = "wasm")),
+    uniffi::export(async_runtime = "tokio")
+)]
+#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
 impl Onchain {
-    /// Hands back a deposit address to fund, and an operation that follows
-    /// whatever arrives at it.
+    /// Hands back an address to deposit bitcoin to.
     ///
-    /// Every call allocates a fresh deposit address, never handed out before
-    /// and never handed out again, and commits one durable operation for it
-    /// before returning. The operation begins in
-    /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
-    /// and stays there for as long as nobody pays; when an output paying the
-    /// address is detected, the same operation adopts it and starts
-    /// reporting it, under the same [`OperationId`](crate::OperationId).
-    /// The operation's existence does not mean a deposit is under way: only
-    /// a state past
-    /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
-    /// means that.
+    /// The address belongs to this federation's wallet, and a payment to it
+    /// is claimed into the balance, unless it is too small to cover what the
+    /// federation charges for that. No operation comes with the address: a
+    /// deposit becomes an operation once the wallet has found the payment,
+    /// and [`Onchain::deposits`] is how an application learns that it has.
     ///
-    /// Two calls yield two addresses and two operations, so a per-payer
-    /// address can be minted on demand. The address is watched persistently,
-    /// so a deposit that arrives while the application is closed is picked
-    /// up when the SDK is next built over the same storage, and the address
-    /// survives a restart because it is on the operation's details record.
+    /// # The same address can come back
     ///
-    /// # One address, one payer, one deposit
+    /// Which address this is depends on the federation. Some offer one
+    /// unused address at a time: every call hands back the same address
+    /// until a payment to it has been found, and a different one some time
+    /// after that. Others hand back a new address on every call. Rely on
+    /// neither. Show what this returns, and call it again whenever an
+    /// address is needed.
     ///
-    /// This handle follows one deposit: the first output detected paying the
-    /// address. A second output paying the same address is not reported by
-    /// this operation, and this facade does not promise that the second
-    /// becomes an operation of its own, appears in
-    /// [activity](crate::Federation::activity), or is credited on its own
-    /// schedule.
+    /// # One address, one payment
     ///
-    /// Do not hand a deposit address to two people, do not show it again
-    /// once it has been funded, and treat anything that does arrive twice as
-    /// something to reconcile from
-    /// [`Federation::balance`](crate::Federation::balance) and
-    /// [activity](crate::Federation::activity) rather than as something this
-    /// API tracked on the application's behalf.
+    /// Ask for an address again after a deposit rather than reusing one that
+    /// has been paid. A second payment to an address that was already paid
+    /// may take the wallet a long time to notice, and may be credited to the
+    /// balance without becoming an operation of its own, appearing in
+    /// [activity](crate::Federation::activity), or being handed out by
+    /// [`Onchain::deposits`].
     ///
-    /// # An unused address never finishes
+    /// # An address holds nothing open
     ///
-    /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
-    /// has no timeout, because a Bitcoin address has no expiry. An operation
-    /// nobody pays stays non-final indefinitely, and there is no cancel,
-    /// retire, or expire call for one. Do not await
-    /// [`Operation::await_final`](crate::Operation::await_final) on a fresh
-    /// deposit expecting it to resolve.
-    ///
-    /// A receive operation that has not yet seen a transaction does not
-    /// count as a pending operation for
-    /// [`Sdk::forget_federation`](crate::Sdk::forget_federation)'s guard, so
-    /// an address that was displayed once and never funded does not block
-    /// erasing the federation. Once a transaction has been seen, from
-    /// [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation)
-    /// onwards, the operation is an ordinary pending one and the erase
-    /// refuses with [`PendingOperations`](crate::ErrorCode::PendingOperations)
-    /// until it reaches [`Claimed`](OnchainReceiveState::Claimed) or
-    /// [`Failed`](OnchainReceiveState::Failed).
+    /// An address that was handed out is not a pending operation, however
+    /// long it goes unpaid, so it never keeps
+    /// [`Sdk::forget_federation`](crate::Sdk::forget_federation) from
+    /// erasing the federation. A deposit that has been found does, from
+    /// [`Confirmed`](OnchainReceiveState::Confirmed) until it reaches
+    /// [`Claimed`](OnchainReceiveState::Claimed) or
+    /// [`Failed`](OnchainReceiveState::Failed): the erase refuses with
+    /// [`PendingOperations`](crate::ErrorCode::PendingOperations) until
+    /// then.
     ///
     /// # No quote
     ///
@@ -151,49 +143,69 @@ impl Onchain {
     /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
     /// recovery is incomplete,
     /// [`NotSupported`](crate::ErrorCode::NotSupported),
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
-    /// [`Timeout`](crate::ErrorCode::Timeout),
-    /// [`Storage`](crate::ErrorCode::Storage),
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed), and
-    /// [`Internal`](crate::ErrorCode::Internal) if the federation's wallet
-    /// handed back an address an unfinished operation of this SDK is still
-    /// following rather than a fresh one. A wallet that offers one unused
-    /// address at a time does that when a second call is made before the
-    /// first address has been paid; the address is not handed out again, and
-    /// the operation already following it is unaffected. Right after such
-    /// an address's deposit is claimed, the same wallet may still be
-    /// deriving its next address: the call waits for it using a dedicated
-    /// 120-second scanner wait timeout, and is [`Timeout`](crate::ErrorCode::Timeout) past
-    /// it, never a repeat of the funded address.
-    pub async fn receive(&self) -> Result<OnchainReceive> {
-        let federation = &self.inner.federation;
+    /// [`Timeout`](crate::ErrorCode::Timeout) if the wallet has no address
+    /// ready yet, which can happen shortly after joining and passes on its
+    /// own, [`FederationClosed`](crate::ErrorCode::FederationClosed), and
+    /// [`Internal`](crate::ErrorCode::Internal).
+    pub async fn receive(&self) -> Result<Address> {
         // The recovery lock applies to a deposit exactly as it does to a send; see this type's
         // own doc.
-        let client = federation.client(true).await?;
+        let client = self.inner.federation.client(true).await?;
         match module(&client)? {
-            WalletModule::V1(module) => {
-                v1::receive(federation, &client, &module, Arc::new(OnchainReceiveDriver)).await
-            }
-            WalletModule::V2(module) => {
-                v2::receive(federation, &client, &module, Arc::new(OnchainReceiveDriver)).await
-            }
+            WalletModule::V1(module) => v1::receive(&module).await,
+            WalletModule::V2(module) => v2::receive(&module).await,
         }
     }
-}
 
-// `quote` is exported under its own name, unchanged: `OnchainQuote` is a
-// UniFFI object (see below), and a bare object returned through `Result<T>`
-// crosses the boundary with no adapter needed. `receive` and `send` still
-// need one, in `ffi/onchain.rs`: `receive`'s real return type names the generic
-// `Operation<OnchainReceiveState>`, which cannot cross at all, and `send`'s
-// real parameter is an owned `OnchainQuote`, which an object can never
-// cross as (only `Arc<OnchainQuote>` can).
-#[cfg_attr(
-    all(feature = "uniffi", not(target_family = "wasm")),
-    uniffi::export(async_runtime = "tokio")
-)]
-#[cfg_attr(all(feature = "uniffi", target_family = "wasm"), uniffi::export)]
-impl Onchain {
+    /// Opens a subscription to the deposits this federation's wallet finds
+    /// from now on.
+    ///
+    /// A deposit is found once the transaction paying one of the wallet's
+    /// addresses has the confirmations the federation requires and the
+    /// wallet has started claiming it. That is the moment it becomes an
+    /// operation, and [`OnchainDeposits::next`] hands that operation out, in
+    /// [`Confirmed`](OnchainReceiveState::Confirmed) or already past it.
+    /// Before then there is nothing to observe: an address nobody has paid
+    /// is not an operation, and neither is a payment still waiting for its
+    /// confirmations.
+    ///
+    /// Open the subscription before showing an address from
+    /// [`Onchain::receive`], so that a payment found straight away is not
+    /// missed. It starts where it was opened: a deposit found earlier, or
+    /// while no subscription was open, is not replayed. Every deposit found
+    /// is in [activity](crate::Federation::activity), whether or not a
+    /// subscription saw it.
+    ///
+    /// The subscription covers every address [`Onchain::receive`] has
+    /// handed out, not only the last one. Read
+    /// [`OnchainReceiveDetails::address`] to tell which one a deposit paid.
+    ///
+    /// A payment that does not exceed what the federation charges to claim
+    /// it is never claimed, and never becomes an operation.
+    ///
+    /// On a wallet restored from its seed, a payment to an address that was
+    /// handed out before the restore may reach the balance without becoming
+    /// an operation, depending on the federation. It is then neither handed
+    /// out here nor listed in activity.
+    ///
+    /// # Errors
+    ///
+    /// [`Recovering`](crate::ErrorCode::Recovering) while this federation's
+    /// recovery is incomplete,
+    /// [`NotSupported`](crate::ErrorCode::NotSupported), and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    pub async fn deposits(&self) -> Result<OnchainDeposits> {
+        let federation = &self.inner.federation;
+        let client = federation.client(true).await?;
+        // Only for the refusal: a federation whose configuration dropped its wallet module has
+        // no deposits to wait for.
+        module(&client)?;
+        let subscription = deposits::Subscription::open(federation.clone(), &client).await;
+        Ok(OnchainDeposits {
+            inner: Arc::new(subscription),
+        })
+    }
+
     /// Plans a withdrawal and returns an executable quote for it.
     ///
     /// Like its lightning counterpart, this exists because the cost is only
@@ -540,32 +552,63 @@ pub struct OnchainSendFeeBreakdown {
     pub change: Amount,
 }
 
-/// The result of [`Onchain::receive`]: the address to fund, and the
-/// operation tracking the deposit.
+/// One independent subscription to the deposits a federation's wallet finds.
 ///
-/// The address is here for convenience, not for safekeeping. It is also
-/// persisted on the operation's details record, so an application that has
-/// lost this struct, after a process restart or a screen rebuilt from an
-/// operation id, reads it back with
-/// [`Operation::details`](crate::Operation::details) and gets the same
-/// address to display or re-encode as a QR code.
-///
-/// The address is fresh for this operation; see [`Onchain::receive`] for
-/// what that promises, and why one address should go to one payer.
+/// Obtained from [`Onchain::deposits`]. Not `Clone`, for the same reason
+/// [`OperationUpdates`](crate::OperationUpdates) is not: it is a single
+/// cursor, and a second consumer should open a second subscription.
+/// Dropping it ends only this subscription. Deposits are found and claimed
+/// whether or not anything is subscribed.
 #[derive(Debug)]
-#[non_exhaustive]
-pub struct OnchainReceive {
-    /// The deposit address to display, encode as a QR code, or hand to a
-    /// sender.
-    pub address: Address,
-    /// Tracks the deposit from the first sight of a transaction through to
-    /// the balance credit.
+// Crosses a UniFFI boundary as an opaque object directly, as `BalanceUpdates`
+// does and for the same reason: everything `next` changes is behind the
+// subscription's own lock, so `&mut self` on `next` is a plain-Rust API
+// discipline ("one subscriber, one cursor") and the `#[uniffi::export]` block
+// in `ffi/onchain.rs` calls the same body through `&self`.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
+pub struct OnchainDeposits {
+    inner: Arc<deposits::Subscription>,
+}
+
+impl OnchainDeposits {
+    /// Waits for the next deposit and returns its operation.
     ///
-    /// Starts in
-    /// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction)
-    /// and stays there until an output paying the address is detected, which
-    /// may be never.
-    pub operation: Operation<OnchainReceiveState>,
+    /// Each deposit is handed out once, in the order the wallet found them.
+    /// The operation is the deposit's own: follow it with
+    /// [`Operation::updates`](crate::Operation::updates) or
+    /// [`Operation::await_final`](crate::Operation::await_final), read what
+    /// arrived with [`Operation::details`](crate::Operation::details), and
+    /// keep its [`id`](crate::Operation::id) to find it again with
+    /// [`Federation::operation`](crate::Federation::operation).
+    ///
+    /// Like [`BalanceUpdates::next`](crate::BalanceUpdates::next), this
+    /// never resolves to a clean end: there is always a next deposit to wait
+    /// for, so the only way the wait ends without one is the federation
+    /// being closed or the SDK shutting down, reported as an error.
+    ///
+    /// This call is cancellation-safe: dropping the future it returns before
+    /// it resolves cancels only that wait. The subscription remains usable,
+    /// and a deposit found while no future was pending is handed out by the
+    /// following call.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once the
+    /// federation is closed or the SDK shut down, the terminal condition for
+    /// this subscription. Other errors are infrastructure failures:
+    /// [`Storage`](crate::ErrorCode::Storage) or
+    /// [`Internal`](crate::ErrorCode::Internal).
+    pub async fn next(&mut self) -> Result<Operation<OnchainReceiveState>> {
+        self.next_shared().await
+    }
+
+    /// The body of [`OnchainDeposits::next`], taking `&self`: every field it
+    /// touches is behind the subscription's own lock, so the UniFFI-facing
+    /// `next` (which can only ever hold a shared `Arc<OnchainDeposits>`,
+    /// never an exclusive one) can call it too.
+    pub(crate) async fn next_shared(&self) -> Result<Operation<OnchainReceiveState>> {
+        self.inner.next().await
+    }
 }
 
 /// The lifecycle of an on-chain withdrawal.
@@ -725,8 +768,9 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 
 /// The lifecycle of an on-chain deposit.
 ///
-/// The five variants are the application-level lifecycle of a deposit:
-/// nothing seen, seen, confirmed, credited, or could not be credited.
+/// A deposit is an operation from the moment the wallet finds its payment
+/// (see [`Onchain::deposits`]), so the lifecycle starts there. The three
+/// variants are found and being claimed, credited, or could not be credited.
 ///
 /// A deposit can stay in [`Confirmed`](Self::Confirmed) across an internal
 /// retry of the claim, under the same operation id, until the claim
@@ -745,33 +789,14 @@ impl crate::operation::DetailedOperationState for OnchainSendState {
 /// it is ever shown, and it can render a full receipt from that state alone.
 ///
 /// The one state that is deliberately not self-contained is
-/// [`Failed`](Self::Failed), which carries only a diagnostic reason even
-/// though a deposit can fail after its transaction was seen. That is what
-/// [`OnchainReceiveDetails`] is for: the address, and the transaction and
-/// gross amount once one was seen, are on the details record too, so an
-/// application never needs to have observed an earlier state to describe a
-/// failed deposit.
+/// [`Failed`](Self::Failed), which carries only a diagnostic reason. That is
+/// what [`OnchainReceiveDetails`] is for: the address, the transaction and
+/// the gross amount are on the details record too, so an application never
+/// needs to have observed an earlier state to describe a failed deposit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[non_exhaustive]
 pub enum OnchainReceiveState {
-    /// The address is being watched and no transaction paying it has been
-    /// seen yet.
-    ///
-    /// A deposit can sit here indefinitely, and there is no call that ends
-    /// it; see [`Onchain::receive`] for what that means for
-    /// [`Operation::await_final`](crate::Operation::await_final) and for
-    /// [`Sdk::forget_federation`](crate::Sdk::forget_federation).
-    WaitingForTransaction,
-    /// A transaction paying the address has been seen and is waiting for
-    /// enough confirmations for the federation to accept it.
-    WaitingForConfirmation {
-        /// The funding transaction.
-        txid: Txid,
-        /// The gross amount that transaction paid to the address, before
-        /// anything the federation charges to claim it.
-        gross_deposited: Sats,
-    },
     /// The transaction has the confirmations the federation requires; the
     /// deposit is being claimed into the balance.
     Confirmed {
@@ -806,10 +831,10 @@ pub enum OnchainReceiveState {
     },
     /// Final: the deposit could not be claimed.
     ///
-    /// Carries no transaction and no amount even when one was seen. What
-    /// arrived is on [`OnchainReceiveDetails`], which is where a caller that
-    /// only ever saw this state reads it; no claim settled, so that record
-    /// has no fee and no credit for it either.
+    /// Carries no transaction and no amount. What arrived is on
+    /// [`OnchainReceiveDetails`], which is where a caller that only ever saw
+    /// this state reads it; no claim settled, so that record has no fee and
+    /// no credit for it either.
     Failed {
         /// Human-readable explanation. Diagnostic only, not a stable
         /// contract, and not something to match on.
@@ -822,30 +847,24 @@ impl crate::operation::sealed::Sealed for OnchainReceiveState {}
 impl OperationState for OnchainReceiveState {
     fn is_final(&self) -> bool {
         match self {
-            OnchainReceiveState::WaitingForTransaction
-            | OnchainReceiveState::WaitingForConfirmation { .. }
-            | OnchainReceiveState::Confirmed { .. } => false,
+            OnchainReceiveState::Confirmed { .. } => false,
             OnchainReceiveState::Claimed { .. } | OnchainReceiveState::Failed { .. } => true,
         }
     }
 }
 
-/// What an on-chain deposit is: the address to display, and the facts about
-/// the funding transaction as they become known.
+/// What an on-chain deposit is: the address that was paid, the transaction
+/// that paid it, and what claiming it cost once that is known.
 ///
 /// Read with [`Operation::details`](crate::Operation::details) on an
-/// `Operation<OnchainReceiveState>`. The record is committed in the same
-/// storage transaction that creates the operation, so it is readable from
-/// the moment [`Onchain::receive`] returns. No state carries the address, so
-/// this record is what makes an operation id enough to rebuild a deposit
-/// screen after a restart.
+/// `Operation<OnchainReceiveState>`. The record exists from the moment the
+/// deposit does, so it is readable as soon as [`OnchainDeposits::next`]
+/// hands the operation out. No state carries the address, so this record is
+/// what makes an operation id enough to rebuild a deposit screen after a
+/// restart.
 ///
-/// # Five fields fill in over time, each once and for good
+/// # Three fields fill in when the claim settles
 ///
-/// [`txid`](OnchainReceiveDetails::txid) and
-/// [`gross_deposited`](OnchainReceiveDetails::gross_deposited) fill in when a
-/// transaction is seen, at
-/// [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation).
 /// [`fee`](OnchainReceiveDetails::fee),
 /// [`fee_breakdown`](OnchainReceiveDetails::fee_breakdown) and
 /// [`net_credit`](OnchainReceiveDetails::net_credit) fill in when the claim
@@ -858,11 +877,8 @@ impl OperationState for OnchainReceiveState {
 /// record twice cannot produce two contradictory receipts.
 ///
 /// `None` means "not established", never "lost", and a field may stay `None`
-/// for good: a deposit still in
-/// [`WaitingForTransaction`](OnchainReceiveState::WaitingForTransaction) has
-/// all five absent, and one that [`Failed`](OnchainReceiveState::Failed)
-/// after its transaction was seen has the first two set and the rest `None`,
-/// since no claim settled.
+/// for good: a deposit that [`Failed`](OnchainReceiveState::Failed) has all
+/// three absent, since no claim settled.
 ///
 /// # The aggregate, and the arithmetic these fields satisfy
 ///
@@ -882,34 +898,26 @@ impl OperationState for OnchainReceiveState {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct OnchainReceiveDetails {
-    /// The deposit address this operation watches.
+    /// The deposit address that was paid.
     ///
-    /// Fixed when the operation was created and never changes. Display it,
-    /// encode it as a QR code, or hand it to a sender.
-    ///
-    /// Fresh for this operation: never handed out before it, and never
-    /// handed out again; see [`Onchain::receive`].
+    /// One of the addresses [`Onchain::receive`] handed out.
     pub address: Address,
-    /// The funding transaction, once one paying the address has been seen.
+    /// The funding transaction.
     ///
-    /// `None` until then. Filled in when the deposit reaches
-    /// [`WaitingForConfirmation`](OnchainReceiveState::WaitingForConfirmation)
-    /// and never changed afterwards, including if the deposit then
-    /// [`Failed`](OnchainReceiveState::Failed), which carries no transaction
-    /// of its own.
-    ///
-    /// This tracks the first output detected at the address; see
-    /// [`Onchain::receive`].
-    pub txid: Option<Txid>,
+    /// The same transaction [`Confirmed`](OnchainReceiveState::Confirmed)
+    /// and [`Claimed`](OnchainReceiveState::Claimed) name. It is here as
+    /// well so that a deposit that [`Failed`](OnchainReceiveState::Failed),
+    /// which carries no transaction of its own, can still be described.
+    pub txid: Txid,
     /// The gross amount that arrived on chain, before anything the
     /// federation charges to claim it.
     ///
     /// Whole [`Sats`](crate::Sats): it is the value of an output in the
-    /// funding transaction. `None` until a transaction is seen, then fixed.
+    /// funding transaction.
     ///
     /// This is the counterparty figure, what the sender sent, and it is the
     /// number to show beside the credit when a user asks why the two differ.
-    pub gross_deposited: Option<Sats>,
+    pub gross_deposited: Sats,
     /// The aggregate of everything the federation charged to bring this
     /// deposit into the balance, once the claim has settled.
     ///
@@ -937,11 +945,12 @@ pub struct OnchainReceiveDetails {
     /// a receipt built from the record and one built from the state cannot
     /// disagree.
     pub net_credit: Option<Amount>,
-    /// When the deposit address was allocated, by this device's clock.
+    /// When the wallet found the deposit, by this device's clock.
     ///
-    /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time).
-    /// Note that this is when the *address* was handed out, not when the
-    /// funding transaction arrived; a deposit may be paid days later.
+    /// A local reading, like [`ActivityItem::time`](crate::ActivityItem::time):
+    /// the federation does not attest to it. It is neither when the address
+    /// was handed out nor when the funding transaction was broadcast; a
+    /// deposit is found only once that transaction has its confirmations.
     pub created_at: Timestamp,
 }
 
@@ -1666,17 +1675,6 @@ pub(super) fn now() -> Timestamp {
     Timestamp::from_epoch_millis(crate::db::now_millis())
 }
 
-/// The deposit address a stored `ONCHAIN_RECEIVE` details record names, or `None` if it does
-/// not decode as one.
-///
-/// Lets `FederationInner::owner_of_deposit_address` walk the operation index and compare
-/// addresses without naming this facade's wire types itself.
-pub(crate) fn deposit_address_of_record(details: &str) -> Option<String> {
-    wire::decode_receive_wire(details)
-        .ok()
-        .map(|wire| wire.address)
-}
-
 #[cfg(test)]
 mod tests {
     use fedimint_client_module::error::{ClientModuleError, InsufficientBalanceError};
@@ -1735,22 +1733,6 @@ mod tests {
         assert!(
             OnchainSendState::Failed {
                 reason: String::new(),
-            }
-            .is_final()
-        );
-    }
-
-    #[test]
-    fn onchain_receive_state_waiting_for_transaction_is_not_final() {
-        assert!(!OnchainReceiveState::WaitingForTransaction.is_final());
-    }
-
-    #[test]
-    fn onchain_receive_state_waiting_for_confirmation_is_not_final() {
-        assert!(
-            !OnchainReceiveState::WaitingForConfirmation {
-                txid: a_txid(),
-                gross_deposited: Sats::from_sats(100_000),
             }
             .is_final()
         );
@@ -1842,7 +1824,7 @@ mod tests {
     }
 
     #[test]
-    fn receive_details_options_fill_in_once_and_agree_with_claimed() {
+    fn receive_details_fill_in_once_and_agree_with_claimed() {
         let gross = Sats::from_sats(100_000);
         let fee = Amount::from_msats(1_500);
         let net = gross
@@ -1851,23 +1833,21 @@ mod tests {
             .checked_sub(fee)
             .expect("the fee is smaller than the deposit");
 
-        let waiting = OnchainReceiveDetails {
+        let found = OnchainReceiveDetails {
             address: an_address(),
-            txid: None,
-            gross_deposited: None,
+            txid: a_txid(),
+            gross_deposited: gross,
             fee: None,
             fee_breakdown: None,
             net_credit: None,
             created_at: Timestamp::from_epoch_millis(1),
         };
-        // Nothing is known before a transaction is seen, and that is not a
-        // failure to record anything.
-        assert_eq!(waiting.txid, None);
-        assert_eq!(waiting.net_credit, None);
+        // What the claim costs is not known before it settles, and that is
+        // not a failure to record anything.
+        assert_eq!(found.fee, None);
+        assert_eq!(found.net_credit, None);
 
         let claimed = OnchainReceiveDetails {
-            txid: Some(a_txid()),
-            gross_deposited: Some(gross),
             fee: Some(fee),
             fee_breakdown: Some(OnchainReceiveFeeBreakdown {
                 peg_in: fee,
@@ -1876,12 +1856,14 @@ mod tests {
                 dust: Amount::from_msats(0),
             }),
             net_credit: Some(net),
-            ..waiting.clone()
+            ..found.clone()
         };
         // The fields that were already fixed are untouched by the fill-in.
-        assert_eq!(claimed.address, waiting.address);
-        assert_eq!(claimed.created_at, waiting.created_at);
-        assert_ne!(claimed, waiting);
+        assert_eq!(claimed.address, found.address);
+        assert_eq!(claimed.txid, found.txid);
+        assert_eq!(claimed.gross_deposited, found.gross_deposited);
+        assert_eq!(claimed.created_at, found.created_at);
+        assert_ne!(claimed, found);
 
         // The record and the final state report the same money.
         let state = OnchainReceiveState::Claimed {
@@ -1895,8 +1877,8 @@ mod tests {
                 gross_deposited,
                 net_credit,
             } => {
-                assert_eq!(claimed.txid, Some(txid));
-                assert_eq!(claimed.gross_deposited, Some(gross_deposited));
+                assert_eq!(claimed.txid, txid);
+                assert_eq!(claimed.gross_deposited, gross_deposited);
                 assert_eq!(claimed.net_credit, Some(net_credit));
             }
             _ => unreachable!("constructed as Claimed"),
@@ -1914,8 +1896,8 @@ mod tests {
         };
         let receive = OnchainReceiveDetails {
             address: an_address(),
-            txid: None,
-            gross_deposited: None,
+            txid: a_txid(),
+            gross_deposited: Sats::from_sats(1),
             fee: None,
             fee_breakdown: None,
             net_credit: None,
