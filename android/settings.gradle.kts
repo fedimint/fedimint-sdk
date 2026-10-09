@@ -24,6 +24,7 @@ rootProject.name = "fedimint-android"
 // The published library — this is what becomes the AAR.
 include(":fedimint-sdk")
 
-// A demo app that exercises the SDK on a device or emulator. Not published;
-// it exists so the native library can be run rather than only linked.
+// The reference wallet (android/app/DECISION.md): a real app on the SDK, run
+// on a device or emulator. Not published. Compiling it in CI proves the
+// generated bindings are usable from ordinary Kotlin.
 include(":app")

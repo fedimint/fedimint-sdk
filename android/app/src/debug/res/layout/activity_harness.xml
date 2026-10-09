@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Every SDK action on one scrolling screen, section by section, mirroring
+<!-- HarnessActivity: every SDK action on one scrolling screen, section by section, mirroring
      js/examples/vite-core. Each section has its own result line, so the
      outcome of one action never overwrites another's. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"

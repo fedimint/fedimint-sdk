@@ -1,13 +1,15 @@
 # @fedimint/integration-tests-android
 
 Android device-level tests for the fedimint SDK, driven via [Appium](https://appium.io/)
-against the example app in [`android/app`](../../../android).
+against the SDK harness in the debug build of [`android/app`](../../../android).
 
-**This tests the SDK, not the example app.** `android/app` is one scrolling screen that calls
-every export of `rust/fedimint-sdk`'s `uniffi` feature through the generated Kotlin bindings
-— it has no product surface of its own. What these tests add over `android-sdk.yaml`, which
+**This tests the SDK, not the wallet.** `android/app` is a reference wallet (Compose screens,
+`MainActivity`), but these tests don't drive it. They drive the SDK harness,
+`org.fedimint.demo.harness.HarnessActivity`: one scrolling screen, in debug builds only
+(`android/app/src/debug`), that calls every export of `rust/fedimint-sdk`'s `uniffi` feature
+through the generated Kotlin bindings. What these tests add over `android-sdk.yaml`, which
 compiles the same app, is a running device: the bindings are loaded, the native `.so` is
-mapped, and the calls actually execute. Tests here are organized by SDK capability, mirroring
+mapped, and the calls actually execute. The wallet's own flows are not covered here. Tests here are organized by SDK capability, mirroring
 the naming in `js/web/integration-tests/src/services/*.test.ts` (the WASM/browser
 equivalent), not by UI flow.
 
@@ -84,7 +86,7 @@ PLATFORM=android \
 AVD=<avd-name> \
 BUNDLE_PATH=android/app/build/outputs/apk/debug/app-debug.apk \
 APP_PACKAGE=org.fedimint.demo \
-APP_ACTIVITY=org.fedimint.demo.MainActivity \
+APP_ACTIVITY=org.fedimint.demo.harness.HarnessActivity \
 FM_SDK_SHAPE=v1 \
 ts-node --project tsconfig.json src/runner.ts mnemonic
 ```
@@ -206,11 +208,11 @@ service has to add its port to `reverse_devimint_ports`.
 ## Naming a view
 
 `clickElementByKey`/`getTextByKey`/`typeIntoElementByKey` take the bare id a view carries in
-[`activity_main.xml`](../../../android/app/src/main/res/layout/activity_main.xml) — `openWallet`,
+[`activity_harness.xml`](../../../android/app/src/debug/res/layout/activity_harness.xml) — `openWallet`,
 `walletResult`, `seed`. `AppiumTestBase` qualifies it with `APP_PACKAGE` into the
 `org.fedimint.demo:id/openWallet` resource-id that UiAutomator2 matches on, so a test never
 repeats the package. Prefer these over `clickOnText`/`isTextPresent`: an id is stable across
-copy changes, and several sections of the example app share button labels.
+copy changes, and several sections of the harness share button labels.
 
 Every section writes `working…` into its result line before the SDK call and overwrites it
 with the outcome, so assert on those with `waitForTextInElement(key, expected)` rather than
@@ -240,5 +242,5 @@ reading the text once.
 6. Assert outcomes, not text: the operation's final state, the structured error code
    (`readSdkError`), the exact balance change against the SDK's own quote (`waitForBalance`),
    and, where there is one, the other side of the payment. Every wait takes a timeout.
-7. If a view the test needs has no id yet, add one in `activity_main.xml` — that is a smaller
-   change than matching on text that the next copy edit breaks.
+7. If a view the test needs has no id yet, add one in `activity_harness.xml` (debug only) —
+   that is a smaller change than matching on text that the next copy edit breaks.
