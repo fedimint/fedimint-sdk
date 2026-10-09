@@ -92,8 +92,8 @@ pub(super) struct OnchainReceiveDetailsWire {
     /// of the public record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) upstream_operation_id: Option<String>,
-    /// walletv2 only: the event-log position a search for a later claim of the same deposit
-    /// starts from. Not part of the public record.
+    /// walletv2 only: the event-log position a search for another claim of the same deposit
+    /// starts from, which is the beginning of the log when absent. Not part of the public record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) event_cursor: Option<u64>,
     /// walletv2 only: which output of [`txid`](Self::txid) paid the address. Not part of the

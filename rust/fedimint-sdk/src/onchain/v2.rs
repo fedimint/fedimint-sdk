@@ -349,13 +349,9 @@ pub(super) fn deposit_found(entry: &PersistedLogEntry) -> Option<OperationId> {
 /// Gives the deposit claimed under `id` its record, and returns the operation that stands for
 /// it: `Some` exactly when `id` itself has a deposit record.
 ///
-/// The record is rebuilt from the claim's own log entry (see [`backfill`]). A claim that is a
-/// later attempt at a deposit already recorded under an earlier claim gets none, and neither
-/// does one whose entry cannot be read as a deposit, so both are answered with `None`.
-///
-/// `announced` is the event-log position just past the claim's announcement. A record that
-/// does not yet know where a search for a later claim of its deposit starts is told here, so
-/// that search never has to begin at the start of the log.
+/// The record is rebuilt from the claim's own log entry (see [`backfill`]). A claim of a deposit
+/// that is already recorded under another claim gets none, and neither does one whose entry
+/// cannot be read as a deposit, so both are answered with `None`.
 ///
 /// A record under `id` that does not read as a deposit's is left as it is and answered with
 /// `None` too, so one unreadable record cannot hold up every deposit announced after it.
@@ -366,7 +362,6 @@ pub(super) fn deposit_found(entry: &PersistedLogEntry) -> Option<OperationId> {
 pub(super) async fn adopt(
     federation: &Arc<FederationInner>,
     id: OperationId,
-    announced: u64,
 ) -> Result<Option<OperationId>> {
     let Some(record) = federation.record_of(id).await? else {
         return Ok(None);
@@ -374,28 +369,15 @@ pub(super) async fn adopt(
     if record.kind != kinds::ONCHAIN_RECEIVE || record.module != "walletv2" {
         return Ok(None);
     }
-    let details = match wire::decode_receive_wire(&record.details) {
-        Ok(details) => details,
-        Err(err) => {
-            tracing::warn!(
-                target: "fedimint_sdk",
-                federation = %federation.id,
-                operation = %id.fmt_full(),
-                error = %err,
-                "a deposit was announced for an operation whose record cannot be read",
-            );
-            return Ok(None);
-        }
-    };
-    if details.event_cursor.is_none() {
-        // Asked again inside the write: the record may have moved on to a later claim, and
-        // learnt its own position, since it was read above.
-        update_wire(&federation.db(), id, move |details| {
-            if details.event_cursor.is_none() {
-                details.event_cursor = Some(announced);
-            }
-        })
-        .await?;
+    if let Err(err) = wire::decode_receive_wire(&record.details) {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            federation = %federation.id,
+            operation = %id.fmt_full(),
+            error = %err,
+            "a deposit was announced for an operation whose record cannot be read",
+        );
+        return Ok(None);
     }
     Ok(Some(id))
 }
@@ -444,8 +426,13 @@ fn paid_of(details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
 }
 
 /// One claim of a deposit: the upstream operation it runs under, and the event-log position a
-/// search for a later claim starts from. That is just past the claim's announcement, or further
-/// on once a search has come back with nothing.
+/// search for another claim of the deposit starts from. For a record that has not searched yet
+/// that is the beginning of the log, because the claim it was written for need not be the first
+/// one made of its output. The module's scanner comes back to an output until a claim of it was
+/// accepted (`modules/fedimint-walletv2-client/src/lib.rs:864-930`), so a wallet that restarts
+/// while a claim is pending can claim an output that is still unspent a second time. After a
+/// search the position is just past the announcement of the claim that was found, or as far as
+/// a search that found none got.
 #[derive(Debug, Clone)]
 pub(super) struct Link {
     pub(super) upstream: OperationId,
@@ -513,8 +500,8 @@ pub(super) async fn find_claim(
     }
 }
 
-/// Records the claim a deposit's record follows and where a search for a later one starts: on
-/// moving to a later claim, the upstream operation it runs under and the end of its
+/// Records the claim a deposit's record follows and where a search for another one starts: on
+/// moving to another claim, the upstream operation it runs under and the end of its
 /// announcement, and after a search that found none, how far that search got. The transaction
 /// and the amount are the deposit's own and stay as they are.
 pub(super) async fn link(
@@ -555,17 +542,17 @@ pub(super) async fn upstream_state(
 // it has one per claim. The phases `OnchainReceiveState` reports here are this SDK's own
 // observation of the deposit across its claims, and the module's own claim machine lands on them
 // as `Funding` -> `Confirmed`, `Success` (once the mint has issued the claimed notes) ->
-// `Claimed`, or `Failed` if the mint could not issue one of them, `Aborted` (the output stays
-// claimable, and the module's next claim of it is followed under the same operation id) ->
-// stays `Confirmed`.
+// `Claimed`, or `Failed` if the mint could not issue one of them, `Aborted` (another claim of
+// the output, made already or still to come, is followed under the same operation id) -> stays
+// `Confirmed`.
 /// What the bounded (or, once already `Confirmed`, unbounded) check of a linked upstream
 /// operation found.
 enum ClaimProgress {
     /// The claim has not settled, or has settled but the mint has not finished issuing the
     /// claimed notes yet; still `Confirmed` either way.
     StillFunding,
-    /// The federation rejected the claim; still `Confirmed`, and a later `ReceivePaymentEvent`
-    /// for the same output moves the record on to the fresh upstream operation it names.
+    /// The federation rejected the claim; still `Confirmed`, and another `ReceivePaymentEvent`
+    /// for the same output moves the record on to the upstream operation it names.
     Aborted,
     /// The claim settled and reached its end: either its notes are issued and the wire record
     /// carries the credit (`Claimed`), or the mint could not issue one of them (`Failed`).
@@ -834,8 +821,8 @@ fn federation_closed() -> Error {
 
 /// The current state of a walletv2 deposit, following the same steps `subscribe_receive` runs
 /// continuously: a claimed record answers from storage, and otherwise the claim the record
-/// follows gets one bounded check, moving on past a rejected claim to the module's next one the
-/// way the subscription does.
+/// follows gets one bounded check, moving on past a rejected claim to another claim of the
+/// deposit the way the subscription does.
 pub(super) async fn current_receive(
     federation: &FederationInner,
     id: OperationId,
@@ -853,10 +840,10 @@ pub(super) async fn current_receive(
     let mut found = wire_link(&details)?;
     let client = federation.client(false).await?;
     let mut progress = observe_link(&client, &db, id, &found).await?;
-    // The module claims a deposit again, under a fresh upstream operation, when the federation
-    // rejects a claim, and announces the new claim like the first. `subscribe_receive` moves the
+    // A deposit whose claim the federation rejected has, or soon gets, another claim under an
+    // upstream operation of its own, announced like the first. `subscribe_receive` moves the
     // record on to it; this bounded read has to do the same, or a caller that only ever polls
-    // `state()` would stay pinned to the rejected claim and read `Confirmed` long after a later
+    // `state()` would stay pinned to the rejected claim and read `Confirmed` long after another
     // one credited the deposit. Each rejected claim answers its final state at once, so the
     // loop only ever spends the bound on the live claim at its end.
     while let ClaimProgress::Aborted = progress {
@@ -927,8 +914,8 @@ enum ReceiveCursor {
     Waiting {
         link: Link,
     },
-    /// The federation rejected the claim `link`: the wait is for the module to claim the
-    /// deposit again. `link.cursor` is how far the search for that claim has got.
+    /// The federation rejected the claim `link`: another claim of the deposit is searched for,
+    /// and waited for while there is none. `link.cursor` is how far the search has got.
     Retrying {
         link: Link,
     },
@@ -1611,8 +1598,8 @@ mod tests {
             assert_eq!(found.upstream, id);
             assert_eq!(found.txid.to_string(), txid(3).to_string());
             assert_eq!(found.gross, Sats::from_sats(100_000));
-            // Just past the claim's own announcement.
-            assert_eq!(found.cursor, 1);
+            // No search has been made for another claim, so one would start at the beginning.
+            assert_eq!(found.cursor, 0);
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1644,7 +1631,7 @@ mod tests {
             assert_eq!(found.cursor, 5);
 
             // Reading the first claim's announcement again does not move the record back.
-            assert_eq!(adopt(&federation, id, 1).await.expect("adopt"), Some(id));
+            assert_eq!(adopt(&federation, id).await.expect("adopt"), Some(id));
             assert_eq!(stored(&db, id).await, after);
         }
 
@@ -1721,6 +1708,37 @@ mod tests {
             }
             // And nothing after it.
             assert!(matches!(find_claim(&db, &paid, rejected, 3).await, Err(3)));
+        }
+
+        /// Two claims of one output can be in flight at once: a wallet that restarts while a
+        /// claim is pending can claim the output again, and the federation accepts only one of
+        /// the two. A record written for the later claim still finds the earlier one.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_search_finds_a_claim_announced_before_the_one_the_record_follows() {
+            let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+            let federation = FederationInner::detached(db.clone(), true);
+            let paid = bitcoin::OutPoint {
+                txid: txid(3),
+                vout: 1,
+            };
+            let (earlier, later) = (operation(1), operation(2));
+            a_walletv2_claim(&db, earlier, paid, 0).await;
+            a_walletv2_claim(&db, later, paid, 1).await;
+            // Looked up before anything read the announcements, the later claim gets the
+            // deposit's record, and the earlier one then joins it.
+            assert!(federation.operation(later).await.expect("lookup").is_some());
+            crate::onchain::pick_up_deposits(&federation)
+                .await
+                .expect("pick up");
+            assert!(read_wire(&db, earlier).await.expect("reads").is_none());
+            let followed = wire_link(&stored(&db, later).await).expect("follows a claim");
+            assert_eq!(followed.upstream, later);
+
+            let paid = read_paid(&db, later).await.expect("the output");
+            let found = find_claim(&db, &paid, later, followed.cursor)
+                .await
+                .expect("the earlier claim");
+            assert_eq!(found.upstream, earlier);
         }
 
         /// What a claim credited is written onto the record as it is stored at that moment, so

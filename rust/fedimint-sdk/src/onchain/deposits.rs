@@ -54,8 +54,9 @@ pub(crate) async fn pick_up_deposits(federation: &Arc<FederationInner>) -> Resul
 /// anything is paid: the deposit it may become gets its record from the wallet's announcement
 /// instead (see [`pick_up_deposits`]), which names the transaction the entry does not. And a
 /// walletv2 `Receive` entry for an output another deposit record already names is another claim
-/// of that same deposit, made because the federation rejected one: the deposit keeps its one
-/// record, which follows whichever claim is live.
+/// of that same deposit: the module claims an output again when the federation rejects a claim,
+/// and can do so when the wallet restarts while a claim of an output that is still unspent is
+/// pending. The deposit keeps its one record, which follows whichever claim is live.
 pub(crate) async fn log_entry_is_not_an_operation(
     federation: &FederationInner,
     id: OperationId,
@@ -138,9 +139,8 @@ impl Subscription {
             if !cursor.caught_up {
                 // A deposit announced before this subscription was opened may have no record
                 // yet, and gets one before anything announced later is read. The walletv2
-                // module claims a deposit again when the federation rejects a claim, and the
-                // record the deposit already has is what tells that later claim from a new
-                // deposit.
+                // module can claim a deposit more than once, and the record the deposit already
+                // has is what tells another claim of it from a new deposit.
                 pick_up_deposits(&self.federation).await?;
                 cursor.caught_up = true;
             }
@@ -218,7 +218,7 @@ async fn scan(
         for entry in &page {
             position = u64::from(entry.id().saturating_add(1));
             let deposit = if let Some(found) = v2::deposit_found(entry) {
-                v2::adopt(federation, found, position).await?
+                v2::adopt(federation, found).await?
             } else if let Some(found) = v1::deposit_found(entry) {
                 v1::adopt(federation, &found).await?
             } else {
@@ -701,10 +701,6 @@ mod tests {
         assert_eq!(v1_record.kind, kinds::ONCHAIN_RECEIVE);
         let v2_record = record(&db, on_v2).await.expect("the walletv2 deposit");
         assert_eq!(v2_record.kind, kinds::ONCHAIN_RECEIVE);
-        // Reconciling the log wrote the walletv2 record, and the pass after it told the record
-        // where its claim's announcement ends.
-        let stored = wire::decode_receive_wire(&v2_record.details).expect("decode");
-        assert_eq!(stored.event_cursor, Some(2));
         assert_eq!(position(&db).await, Some(2));
     }
 
@@ -736,10 +732,6 @@ mod tests {
         assert_eq!(details.address.to_string(), ADDRESS);
         assert_eq!(details.txid.to_string(), txid(3).to_string());
         assert_eq!(details.gross_deposited, crate::Sats::from_sats(100_000));
-        // The record knows where its claim's announcement ends, which is where a search for a
-        // later claim of the same deposit would start.
-        let stored = wire::decode_receive_wire(&stored.details).expect("decode");
-        assert_eq!(stored.event_cursor, Some(1));
         assert_eq!(position(&db).await, Some(1));
     }
 

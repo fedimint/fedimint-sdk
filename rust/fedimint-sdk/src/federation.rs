@@ -1059,7 +1059,7 @@ impl FederationInner {
     /// has an entry for the id and no record answers for it yet.
     ///
     /// `None` when there is no such operation. A log entry that is not an operation has none
-    /// either: a deposit address a wallet module handed out, or a later claim of a deposit that
+    /// either: a deposit address a wallet module handed out, or another claim of a deposit that
     /// already has its record.
     ///
     /// # Errors
