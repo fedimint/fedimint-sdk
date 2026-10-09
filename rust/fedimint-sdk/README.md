@@ -3,7 +3,7 @@
 The high-level Rust SDK over `fedimint-client`: one ergonomic API for wallets
 and apps to join federations, hold ecash, and send/receive over Lightning and
 on-chain. It is also the single surface every language binding (Swift,
-Kotlin, JS/wasm) is meant to generate from.
+Kotlin, JS/wasm) is generated from.
 
 ## Status
 
@@ -11,24 +11,24 @@ The surface documented throughout this crate is implemented behind every
 facade: `Ecash`, `Lightning`, `Onchain`, `Meta`, and recovery on `Sdk`. This
 crate tracks fedimint `master` at one pinned revision, the same one the
 repo's `flake.nix` pins for devimint and the wasm client, so the SDK and the
-federation its tests run against always come from one commit. What remains
-is the language bindings: the Swift, Kotlin and JavaScript SDKs this surface
-is meant to generate.
+federation its tests run against always come from one commit.
 
-The UniFFI layer is implemented, behind the `uniffi` feature: a
-`#[uniffi::export]` block in `src/sdk.rs` exposes the calls whose bodies are
-real (open an instance, show its mnemonic, preview a federation, join one),
-and [the Android SDK](../../android) is generated from them. The same
-feature compiles for `wasm32-unknown-unknown`, which is what
-[the browser SDK](../../js/web/sdk-web) is generated from, and for
-Android's native targets, which is what the React Native bindings
-([`js/react-native/react-native-bindings`](../../js/react-native/react-native-bindings),
-regenerated with `just generate-sdk-rn-bindings`) and the
-[`@fedimint/react-native`](../../js/react-native/react-native) package built
-over them are generated from. The exports hand out this crate's own types
-(`Sdk`, `FederationPreview`, `FederationId`, `Network`, `Mnemonic`, `Error`,
-`ErrorCode`), so a binding is a view of this API rather than a copy that can
-drift.
+The language bindings are generated from this surface with UniFFI, behind
+the `uniffi` feature. The exports hand out this crate's own types, so a
+binding is a view of this API rather than a copy that can drift:
+
+- [the Android SDK](../../android), in Kotlin
+- [the iOS SDK](../../ios), in Swift
+- [the browser SDK](../../js/web/sdk-web), in TypeScript
+- the React Native bindings
+  ([`js/react-native/react-native-bindings`](../../js/react-native/react-native-bindings))
+  and the [`@fedimint/react-native`](../../js/react-native/react-native)
+  package built over them
+
+The Kotlin and the Swift are generated when their SDK is built. The browser
+and React Native bindings are committed, and are regenerated with
+`just generate-sdk-web-bindings` and `just generate-sdk-rn-bindings` when
+this surface changes.
 
 The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the
