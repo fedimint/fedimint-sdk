@@ -1,0 +1,556 @@
+name: React Native SDK Release
+
+# Publishes the two React Native packages, @fedimint/react-native-bindings
+# and @fedimint/react-native, to npm. Everything happens in this workflow:
+# there is no version bump pull request, no approval and no manual publish
+# step. js/react-native/README.md describes it for whoever cuts a release.
+#
+# To release, push an annotated tag whose message is the release notes:
+#
+#   scripts/react-native-sdk-release.sh notes > notes.md    # then rewrite it
+#   scripts/react-native-sdk-release.sh tag 0.1.0-beta.1 notes.md
+#   git push origin react-native-sdk-v0.1.0-beta.1
+#
+# The tag is the version. The packages carry none: in the tree both are
+# `"private": true` at `0.0.0`, and only the tarballs `pack` makes have the
+# version and no `private`. That keeps every other publishing path in the
+# repository (changesets, a stray `pnpm publish -r`) away from them. Both
+# packages always go out together at the same version, `X.Y.Z-beta.N` under
+# the `beta` dist-tag and `X.Y.Z` under `latest`.
+#
+# The jobs, in order:
+#
+#   check           the tag: annotated, with notes, on main, its version in
+#                   the grammar and newer than every earlier tag and every
+#                   version of either package on npm
+#                   (scripts/react-native-sdk-release.sh)
+#   android-native  the Android libraries, the build the Android SDK ships
+#   ios-native      the Apple libraries, the build the Swift SDK ships
+#   xcframework     the Apple libraries as the bundle the podspec vendors
+#   pack            regenerates the bindings from the Android libraries and
+#                   fails if they differ from the committed ones, then packs
+#                   both tarballs and refuses any that is not fit to publish
+#   test-android    install the two tarballs into a copy of the bare example
+#   test-ios        app, the way an app adds them, and build it. On Android
+#                   the app also runs on an emulator, where it opens the SDK
+#                   and generates a mnemonic
+#   publish         to npm, bindings first; a version already there as the
+#                   same tarball is skipped, so the failed jobs of a
+#                   half-finished release can be run again
+#   github-release  the GitHub Release: the notes, both tarballs, their sums
+#
+# What is published is what was tested: `publish` uploads the very tarballs
+# `pack` made and the two test jobs installed, and stops when npm already has
+# one of the two versions as any other tarball.
+#
+# A manual run (workflow_dispatch, on any ref, with a version) is a dry run.
+# It does what a release does up to and including the two test jobs, and
+# then `npm publish --dry-run`. It never publishes, tags or creates a
+# release.
+#
+# Nothing here holds a credential for npm. `publish` uses npm trusted
+# publishing: the trusted publisher set up on npm accepts an upload from this
+# workflow file in this repository, running in the `npm` environment, and from
+# no other workflow. What gates a release is therefore who may push the tag,
+# plus the checks above:
+#
+#   * a tag ruleset for `react-native-sdk-v*` limits creating one to
+#     maintainers, and a second one forbids updating and deleting one for
+#     everybody. They are two rulesets because a bypass list applies to every
+#     rule of its ruleset;
+#   * the `npm` environment accepts only `react-native-sdk-v*` tags, and has
+#     no required reviewers. `publish` is the only job that names it, and it
+#     only runs on a tag push;
+#   * `id-token: write` exists on `publish` alone, `contents: write` on
+#     `github-release` alone.
+#
+# The environment has to exist before the first tag is pushed: a job that
+# names a missing environment creates it, without any rule. Trusted
+# publishing does not work on self-hosted runners, so `publish` runs on a
+# hosted one.
+#
+# A tag and an npm version are both permanent. A release that turns out bad
+# is fixed by the next one.
+
+on:
+  push:
+    tags:
+      - 'react-native-sdk-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to dry-run, X.Y.Z-beta.N or X.Y.Z. Nothing is published.'
+        required: true
+        type: string
+
+# Releases run one at a time. `queue: max` lets up to 100 of them wait;
+# without it a third tag would cancel the second. They start in the order
+# they began to wait, which GitHub does not promise to be the order the tags
+# were pushed in. Whatever the order, no dist-tag moves back to an older
+# release: `check` refuses a release that starts when a newer tag exists, and
+# scripts/react-native-sdk-publish.sh refuses to publish under a dist-tag
+# that is already on a newer version.
+# Dry runs publish nothing, so each gets a group of its own and neither waits
+# for a release nor holds one up.
+concurrency:
+  group: >-
+    ${{ github.event_name == 'push' && 'react-native-sdk-release'
+    || format('react-native-sdk-dry-run-{0}', github.run_id) }}
+  cancel-in-progress: false
+  queue: max
+
+# The least any job needs, and what the called workflows are given. The two
+# jobs that need more say so themselves.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Named so that `pipefail` is on, which the default shell leaves off.
+    shell: bash
+
+env:
+  # The iOS library, at the root of the bindings package, where its podspec
+  # vendors it from.
+  XCFRAMEWORK: >-
+    js/react-native/react-native-bindings/FedimintReactNativeBindingsFramework.xcframework
+
+jobs:
+  check:
+    name: 'Check the version'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+
+    steps:
+      # The whole history and every tag: the checks compare with the earlier
+      # release tags and need origin/main to tell whether the tagged commit
+      # is on it.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # scripts/react-native-sdk-release.sh holds the rules. A dry run has a
+      # version and no tag, so only the version's rules apply to it.
+      #
+      # The tag is fetched again first: its message is the release notes, and
+      # a checkout that left a lightweight tag in its place would make the
+      # tagged commit's message pass for them.
+      - name: 'Check the version'
+        id: check
+        env:
+          DRY_RUN_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            git fetch --no-tags --force origin \
+              "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            scripts/react-native-sdk-release.sh check-tag "$GITHUB_REF_NAME"
+            version="${GITHUB_REF_NAME#react-native-sdk-v}"
+          else
+            scripts/react-native-sdk-release.sh check "$DRY_RUN_VERSION"
+            version="$DRY_RUN_VERSION"
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  # libfedimint_sdk.so for arm64-v8a and x86_64, from the same workflow the
+  # Android SDK's release calls: one build of the library for both.
+  android-native:
+    name: 'Android libraries'
+    needs: check
+    uses: ./.github/workflows/android-native.yaml
+    secrets: inherit
+
+  # libfedimint_sdk.a per Apple target, from the workflow the Swift SDK calls.
+  ios-native:
+    name: 'Apple libraries'
+    needs: check
+    uses: ./.github/workflows/ios-native.yaml
+    secrets: inherit
+
+  # The Swift SDK's own XCFramework is not what the podspec vendors (another
+  # name, a macOS slice, headers nothing in React Native reads), so the same
+  # libraries are assembled once more. It is an assembly, not a build; see
+  # scripts/assemble-rn-ios-xcframework.sh.
+  xcframework:
+    name: 'Assemble the iOS xcframework'
+    needs: ios-native
+    # xcodebuild needs macOS. Pinned like ios-native.yaml, so that both use
+    # the same Xcode.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Where scripts/nix-build-ios-lib.sh leaves them and the script below
+      # looks for them.
+      - name: 'Download the Apple libraries'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.ios-native.outputs.slices-artifact }}
+          path: rust/fedimint-sdk/target/
+
+      - name: 'Install Nix'
+        uses: cachix/install-nix-action@v31
+
+      - name: 'Assemble the xcframework'
+        run: |
+          nix shell --accept-flake-config .#llvm-bitcode-strip --command \
+            scripts/assemble-rn-ios-xcframework.sh
+
+      - name: 'Upload the xcframework'
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-native-xcframework
+          path: ${{ env.XCFRAMEWORK }}/
+          if-no-files-found: error
+
+  pack:
+    name: 'Pack the two packages'
+    needs: [check, android-native, xcframework]
+    # Hosted: the tarballs that get published are made on a machine nothing
+    # else has run on. The `.#android` shell comes from the binary cache.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Setup Nix'
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Laid out like the store path of `.#fedimint-sdk-android-jni`, which is
+      # what scripts/generate-sdk-rn-bindings.sh takes.
+      - name: 'Download the Android libraries'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.android-native.outputs.jni-artifact }}
+          path: ${{ runner.temp }}/sdk-android-jni/jniLibs/
+
+      - name: 'Install JS dependencies'
+        run: |
+          nix develop --accept-flake-config .#android --command \
+            pnpm --dir js install --frozen-lockfile
+
+      # ubrn reads the bindings out of the very libraries that get packed,
+      # and puts those libraries where the Gradle project expects them.
+      - name: 'Generate the bindings and stage the Android libraries'
+        run: |
+          nix develop --accept-flake-config .#android --command \
+            scripts/generate-sdk-rn-bindings.sh "$RUNNER_TEMP/sdk-android-jni"
+
+      # The committed bindings are what gets packed. If they described
+      # another version of the library than the one beside them, UniFFI's
+      # checksum check would fail in every app at startup.
+      - name: 'The committed bindings must match the libraries'
+        run: |
+          if ! git diff --exit-code -- js/react-native/react-native-bindings; then
+            echo "::error::js/react-native/react-native-bindings does not match the libraries" \
+              "built from this commit; run just generate-sdk-rn-bindings and commit the result"
+            exit 1
+          fi
+
+      - name: 'Download the xcframework'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-xcframework
+          path: ${{ env.XCFRAMEWORK }}/
+
+      - name: 'Build the packages'
+        run: |
+          nix develop --accept-flake-config .#android --command \
+            pnpm --dir js run build:reactnative
+
+      # Writes the version, drops `private`, packs, and then checks the
+      # tarballs themselves: see scripts/react-native-sdk-pack.sh for what a
+      # tarball must and must not contain.
+      - name: 'Pack and check the tarballs'
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          nix develop --accept-flake-config .#android --command \
+            scripts/react-native-sdk-pack.sh "$VERSION" "$RUNNER_TEMP/tarballs"
+          {
+            echo '### Tarballs'
+            echo
+            echo '```'
+            ls -l "$RUNNER_TEMP/tarballs"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: 'Upload the tarballs'
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-native-tarballs
+          path: ${{ runner.temp }}/tarballs/*.tgz
+          if-no-files-found: error
+          # They are compressed already.
+          compression-level: 0
+
+  # The tarballs, not the workspace: scripts/react-native-sdk-example.sh
+  # copies the bare example out of the repository and installs the two
+  # tarballs into it as plain dependencies. The app is then built with the
+  # self-check entry (scripts/react-native-sdk-smoke.js) and run, so that a
+  # native library that is missing from the package, or does not match its
+  # bindings, stops the release here.
+  test-android:
+    name: 'Build RN Android from the tarballs and run it'
+    needs: pack
+    # Hosted Linux runners can run the emulator with KVM. The emulator is
+    # x86_64, so that is the library this run loads; the arm64-v8a one is
+    # built into the same APK and so at least has to link.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # /dev/kvm exists on the hosted runners but is not open to the runner's
+      # user; without it the emulator refuses to start.
+      - name: 'Enable KVM'
+        run: |
+          rule='KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'
+          echo "$rule" | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 'Setup Nix'
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: 'Download the tarballs'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-tarballs
+          path: ${{ runner.temp }}/tarballs
+
+      - name: 'Stage the example app with the tarballs installed'
+        run: |
+          nix develop --accept-flake-config .#rn-android-emulator --command \
+            scripts/react-native-sdk-example.sh "$RUNNER_TEMP/app" \
+            "$RUNNER_TEMP"/tarballs/fedimint-react-native-bindings-*.tgz \
+            "$RUNNER_TEMP"/tarballs/fedimint-react-native-[0-9]*.tgz
+
+      # A release build: it carries the JavaScript bundle, so the app needs
+      # no Metro server, and is signed with the example's debug key.
+      # ENTRY_FILE is React Native's own way to bundle another entry file.
+      - name: 'Build the APK'
+        working-directory: ${{ runner.temp }}/app/android
+        env:
+          ENTRY_FILE: index.smoke.js
+        run: |
+          nix develop --accept-flake-config "$GITHUB_WORKSPACE#rn-android-emulator" --command \
+            ./gradlew :app:assembleRelease --console=plain
+
+      - name: 'Run the app on an emulator'
+        run: |
+          nix develop --accept-flake-config .#rn-android-emulator --command \
+            scripts/react-native-sdk-smoke.sh --boot \
+            "$RUNNER_TEMP/app/android/app/build/outputs/apk/release/app-release.apk"
+
+  test-ios:
+    name: 'Build RN iOS from the tarballs'
+    needs: pack
+    runs-on: macos-15
+    timeout-minutes: 150
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Download the tarballs'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-tarballs
+          path: ${{ runner.temp }}/tarballs
+
+      - name: 'Stage the example app with the tarballs installed'
+        run: |
+          scripts/react-native-sdk-example.sh "$RUNNER_TEMP/app" \
+            "$RUNNER_TEMP"/tarballs/fedimint-react-native-bindings-*.tgz \
+            "$RUNNER_TEMP"/tarballs/fedimint-react-native-[0-9]*.tgz
+
+      - name: 'Install the pods'
+        working-directory: ${{ runner.temp }}/app/ios
+        run: |
+          bundle install
+          bundle exec pod install
+
+      # Both slices of the xcframework have to link: the simulator one, for
+      # both of its architectures, and the device one, which is what ends up
+      # on a phone. Nothing is signed, since nothing is installed.
+      - name: 'Build for the simulator'
+        working-directory: ${{ runner.temp }}/app/ios
+        run: |
+          xcodebuild build -quiet \
+            -workspace ReactNativeExample.xcworkspace \
+            -scheme ReactNativeExample \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/derived-simulator" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: 'Build for a device'
+        working-directory: ${{ runner.temp }}/app/ios
+        run: |
+          xcodebuild build -quiet \
+            -workspace ReactNativeExample.xcworkspace \
+            -scheme ReactNativeExample \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/derived-device" \
+            CODE_SIGNING_ALLOWED=NO
+
+  # The end of a dry run. It has no access to npm: no environment, no token
+  # and no `id-token` permission.
+  dry-run:
+    name: 'Dry run: npm publish --dry-run'
+    needs: [pack, test-android, test-ios]
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Set up Node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 'Download the tarballs'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-tarballs
+          path: ${{ runner.temp }}/tarballs
+
+      - name: 'npm publish --dry-run'
+        run: scripts/react-native-sdk-publish.sh --dry-run "$RUNNER_TEMP/tarballs"
+
+  publish:
+    name: 'Publish to npm'
+    needs: [pack, test-android, test-ios]
+    # Only a pushed tag publishes. The `npm` environment refuses any other
+    # ref too, but it would let a manual run started from a release tag
+    # through, which is why the event is checked here as well.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # Trusted publishing needs a hosted runner.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      # What npm exchanges for a short-lived publish token.
+      id-token: write
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # For its npm: trusted publishing needs 11.5.1 or later, and the
+      # runner's own is older. No registry is configured here on purpose:
+      # that would write a placeholder token, and npm would fall back to it,
+      # with a misleading error, should the token exchange ever fail.
+      - name: 'Set up Node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 'Download the tarballs'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-tarballs
+          path: ${{ runner.temp }}/tarballs
+
+      # Bindings first, then the package that names them as a peer. A package
+      # whose version is already on npm as the same tarball is skipped: see
+      # scripts/react-native-sdk-publish.sh.
+      - name: 'Publish'
+        run: scripts/react-native-sdk-publish.sh "$RUNNER_TEMP/tarballs"
+
+      # What npm serves, with its SHA-256 sums, for the GitHub Release.
+      - name: 'Upload the published tarballs'
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-native-published
+          path: |
+            ${{ runner.temp }}/tarballs/*.tgz
+            ${{ runner.temp }}/tarballs/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+
+  # The tag's page: its message as the notes, and what was published. A beta
+  # is marked as a pre-release. Running a release again updates the release
+  # instead of failing on it.
+  github-release:
+    name: 'Create the GitHub Release'
+    needs: [check, publish]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Download the published tarballs'
+        uses: actions/download-artifact@v4
+        with:
+          name: react-native-published
+          path: ${{ runner.temp }}/published
+
+      - name: 'Create or update the release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # The tag object itself, for its message: see the `check` job.
+          git fetch --no-tags --force origin "+refs/tags/$TAG:refs/tags/$TAG"
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            scripts/react-native-sdk-release.sh message "$TAG"
+            # The backticks are a Markdown code fence, not an expansion.
+            # shellcheck disable=SC2016
+            printf '\n```sh\nnpm install %s %s\n```\n' \
+              "@fedimint/react-native@$VERSION" "@fedimint/react-native-bindings@$VERSION"
+          } >"$notes"
+          prerelease=()
+          if [[ "$VERSION" == *-beta.* ]]; then
+            prerelease=(--prerelease)
+          fi
+          assets=("$RUNNER_TEMP"/published/*.tgz "$RUNNER_TEMP/published/SHA256SUMS")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "React Native SDK $VERSION" --notes-file "$notes" \
+              "${prerelease[@]}"
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" --verify-tag "${prerelease[@]}" \
+              --title "React Native SDK $VERSION" --notes-file "$notes" "${assets[@]}"
+          fi

@@ -126,6 +126,9 @@ importers:
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
+      '@fedimint/react-native-bindings':
+        specifier: workspace:*
+        version: link:../../react-native/react-native-bindings
       expo:
         specifier: ~55.0.0
         version: 55.0.9(@babel/core@7.29.0(supports-color@8.1.1))(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.7)(expo-router@55.0.8)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)(supports-color@8.1.1)(typescript@6.0.3)
@@ -215,6 +218,9 @@ importers:
       '@fedimint/react-native':
         specifier: workspace:*
         version: link:../../react-native/react-native
+      '@fedimint/react-native-bindings':
+        specifier: workspace:*
+        version: link:../../react-native/react-native-bindings
       '@react-native-clipboard/clipboard':
         specifier: ^1.16.3
         version: 1.16.3(react-native@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(@react-native-community/cli@20.0.0(supports-color@8.1.1)(typescript@6.0.3))(@react-native/metro-config@0.83.1(@babel/core@7.29.0(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.14)(react@19.2.4)(supports-color@8.1.1))(react@19.2.4)
@@ -347,9 +353,6 @@ importers:
 
   react-native/react-native:
     dependencies:
-      '@fedimint/react-native-bindings':
-        specifier: workspace:*
-        version: link:../react-native-bindings
       react:
         specifier: '>=18.0.0'
         version: 19.2.4
@@ -360,6 +363,9 @@ importers:
       '@expo/config-plugins':
         specifier: ^54.0.4
         version: 54.0.4(supports-color@8.1.1)
+      '@fedimint/react-native-bindings':
+        specifier: workspace:*
+        version: link:../react-native-bindings
       '@types/node':
         specifier: ^22.19.11
         version: 22.19.11

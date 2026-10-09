@@ -1,17 +1,29 @@
-name: Android SDK Release Scripts
+name: SDK Release Scripts
 
-# Tests the release gates: scripts/android-sdk-version.sh (what a valid
-# version is, and that a release is newer than every earlier one) and
-# scripts/android-sdk-changelog.sh (the release notes a release needs, and
-# the drafts the bump workflow writes). The release, tag and bump workflows
-# only run these scripts once something is being released, so this is what
-# checks them on a pull request. It needs no build and runs in seconds.
+# Tests the scripts that gate the SDK releases:
 #
-# It also checks the committed state the way a release will: the version in
-# android/gradle/libs.versions.toml is valid and android/CHANGELOG.md has
-# finished notes for it. A version bump pull request whose drafted notes were
-# never rewritten fails here, before merging it would start a release that
-# the tag workflow then refuses.
+#   * scripts/android-sdk-version.sh (what a valid version is, and that a
+#     release is newer than every earlier one) and
+#     scripts/android-sdk-changelog.sh (the release notes a release needs,
+#     and the drafts written from the commits since the last one), which the
+#     Android SDK's release, tag and bump workflows use;
+#   * the React Native release's own: scripts/react-native-sdk-release.sh
+#     (what a valid release tag is), scripts/react-native-sdk-pack.sh (what
+#     a tarball must contain), scripts/react-native-sdk-publish.sh (what gets
+#     published, and when not), scripts/react-native-sdk-example.sh and
+#     scripts/react-native-sdk-smoke.sh (how the tarballs are tested), and
+#     scripts/assemble-rn-ios-xcframework.sh.
+#
+# The release workflows only run these scripts once something is being
+# released, so this is what checks them on a pull request. It needs no build
+# and runs in seconds.
+#
+# It also checks the committed state the way an Android SDK release will:
+# the version in android/gradle/libs.versions.toml is valid and
+# android/CHANGELOG.md has finished notes for it. A version bump pull request
+# whose drafted notes were never rewritten fails here, before merging it
+# would start a release that the tag workflow then refuses. The React Native
+# packages have no committed version to check: theirs is the release tag.
 
 on:
   workflow_dispatch:
@@ -20,9 +32,19 @@ on:
       - 'scripts/android-sdk-version.sh'
       - 'scripts/android-sdk-changelog.sh'
       - 'scripts/test-android-sdk-scripts.sh'
+      - 'scripts/react-native-sdk-*'
+      - 'scripts/test-react-native-sdk-scripts.sh'
+      - 'scripts/assemble-rn-ios-xcframework.sh'
+      - 'scripts/test-assemble-rn-ios-xcframework.sh'
+      - 'scripts/rn-android-emulator.sh'
+      # scripts/react-native-sdk-example.sh stages the example and pins its
+      # dependencies from the lockfile; its tests run against both.
+      - 'js/examples/react-native/**'
+      - 'js/pnpm-lock.yaml'
       - 'android/gradle/libs.versions.toml'
       - 'android/CHANGELOG.md'
       - '.github/workflows/android-sdk-scripts.yaml'
+      - '.github/workflows/react-native-sdk-release.yaml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -43,10 +65,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 'Run the tests'
+      - name: 'Run the Android SDK tests'
         run: scripts/test-android-sdk-scripts.sh
 
-      - name: 'Check the committed version and its notes'
+      - name: 'Run the React Native tests'
+        run: |
+          scripts/test-react-native-sdk-scripts.sh
+          scripts/test-assemble-rn-ios-xcframework.sh
+
+      - name: 'Check the committed Android SDK version and its notes'
         run: |
           version="$(scripts/android-sdk-version.sh current)"
           scripts/android-sdk-changelog.sh check "$version"

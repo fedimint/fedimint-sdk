@@ -5,6 +5,7 @@
 #   scripts/android-sdk-changelog.sh section <version>
 #   scripts/android-sdk-changelog.sh check <version>
 #   scripts/android-sdk-changelog.sh draft <version> [<previous version>]
+#   scripts/android-sdk-changelog.sh commits --tag-prefix <prefix> --since <version> [--to <commit>] <path>...
 #
 # Each release has a `## <version>` section, newest first.
 #
@@ -18,6 +19,13 @@
 # from, and it is marked as a draft. The bump workflow runs it for the version
 # bump pull request. The notes are rewritten for users in that pull request,
 # and the marker is removed there. It needs the git history back to that tag.
+#
+# `commits` prints the commit list `draft` starts from, for any SDK: the
+# non-merge commits from the tag `<prefix><version>` up to <commit> (HEAD when
+# not given) that touched at least one of the paths, newest first, as
+# `- <subject> (<abbreviated hash>)`. It reads no file, so other SDK releases
+# draft their notes from it without an android/CHANGELOG.md. It fails when the
+# tag, annotated or lightweight, is not in the checkout.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,6 +64,12 @@ usage() {
     exit 2
 }
 
+# Fails unless android/CHANGELOG.md exists, which `section`, `check` and `draft`
+# need.
+need_changelog() {
+    [[ -f "$CHANGELOG" ]] || die "no $CHANGELOG"
+}
+
 # Prints the lines under `## $1` up to the next `## ` heading, without the
 # blank lines around them. Fails when there is no such section.
 section() {
@@ -73,6 +87,35 @@ section() {
     ' "$CHANGELOG"
 }
 
+# commits --tag-prefix <prefix> --since <version> [--to <commit>] <path>...
+# Prints "- <subject> (<hash>)" for each non-merge commit in
+# `<prefix><version>..<commit>` that touched one of the paths, newest first.
+commits() {
+    local prefix="" since="" to=HEAD tag target
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag-prefix | --since | --to)
+                [[ $# -ge 2 ]] || usage
+                case "$1" in
+                    --tag-prefix) prefix="$2" ;;
+                    --since) since="$2" ;;
+                    --to) to="$2" ;;
+                esac
+                shift 2
+                ;;
+            -*) usage ;;
+            *) break ;;
+        esac
+    done
+    [[ -n "$prefix" && -n "$since" && $# -gt 0 ]] || usage
+    tag="refs/tags/$prefix$since"
+    git -C "$ROOT" rev-parse -q --verify "$tag" >/dev/null ||
+        die "no tag $prefix$since in this checkout; fetch the tags and history"
+    target="$(git -C "$ROOT" rev-parse -q --verify "$to^{commit}")" ||
+        die "no commit $to in this checkout"
+    git -C "$ROOT" log --no-merges --format='- %s (%h)' "$tag..$target" -- "$@"
+}
+
 check() {
     local version="$1" notes
     notes="$(section "$version")" ||
@@ -85,16 +128,13 @@ check() {
 }
 
 draft() {
-    local version="$1" previous="${2:-}" commits entry tmp
+    local version="$1" previous="${2:-}" listed commits entry tmp
     if grep -qxF "## $version" "$CHANGELOG"; then
         die "android/CHANGELOG.md already has a \`## $version\` section"
     fi
     if [[ -n "$previous" ]]; then
-        git -C "$ROOT" rev-parse -q --verify "refs/tags/android-sdk-v$previous" >/dev/null ||
-            die "no tag android-sdk-v$previous in this checkout; fetch the tags and history"
-        commits="$(git -C "$ROOT" log --no-merges --format='- %s (%h)' \
-            "android-sdk-v$previous..HEAD" -- "${SDK_PATHS[@]}" |
-            grep -Ev -- "^- $BUMP_SUBJECT" || true)"
+        listed="$(commits --tag-prefix android-sdk-v --since "$previous" "${SDK_PATHS[@]}")"
+        commits="$(grep -Ev -- "^- $BUMP_SUBJECT" <<<"$listed" || true)"
         [[ -n "$commits" ]] || commits="- No changes to the SDK since $previous."
         entry="$DRAFT_MARKER the commits since $previous that touched the SDK.
      Rewrite them for users: what was added, changed or fixed, and anything that
@@ -120,19 +160,25 @@ $commits"
     mv "$tmp" "$CHANGELOG"
 }
 
-[[ -f "$CHANGELOG" ]] || die "no $CHANGELOG"
 case "${1:-}" in
     section)
+        need_changelog
         [[ $# -eq 2 ]] || usage
         section "$2" || die "android/CHANGELOG.md has no \`## $2\` section"
         ;;
     check)
+        need_changelog
         [[ $# -eq 2 ]] || usage
         check "$2"
         ;;
     draft)
+        need_changelog
         [[ $# -eq 2 || $# -eq 3 ]] || usage
         draft "$2" "${3:-}"
+        ;;
+    commits)
+        shift
+        commits "$@"
         ;;
     *) usage ;;
 esac

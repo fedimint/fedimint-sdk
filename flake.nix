@@ -605,6 +605,13 @@
             # See nix/web-bindgen.nix.
             ubrn = webBindgen.ubrn;
             wasm-bindgen-cli = webBindgen.wasm-bindgen-cli;
+            # Removes the LLVM bitcode rustc embeds in every object of an Apple static library;
+            # scripts/assemble-rn-ios-xcframework.sh runs it. Only this one tool is exposed: all
+            # of LLVM on PATH would put its dsymutil ahead of Xcode's.
+            llvm-bitcode-strip = pkgs.runCommand "llvm-bitcode-strip" { } ''
+              mkdir -p $out/bin
+              ln -s ${pkgs.llvm}/bin/llvm-bitcode-strip $out/bin/llvm-bitcode-strip
+            '';
           };
       }
     );

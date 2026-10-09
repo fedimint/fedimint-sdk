@@ -44,6 +44,12 @@ test-android-e2e shape="v1": build-android-apk
 test-android-sdk-scripts:
     ./scripts/test-android-sdk-scripts.sh
 
+# Test the React Native release scripts: what a valid release tag is, how the packages are
+# packed and checked, and when they are published. Needs only bash, git and node, no build.
+test-react-native-sdk-scripts:
+    ./scripts/test-react-native-sdk-scripts.sh
+    ./scripts/test-assemble-rn-ios-xcframework.sh
+
 # Assemble the release AAR. Publishing to Maven Central is .github/workflows/android-sdk-release.yaml.
 build-android-aar: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease
@@ -140,6 +146,11 @@ build-rn-ios:
     NIX_CONFIG=$'max-jobs = 1\ncores = 1' \
       nix develop --accept-flake-config .#ios -c scripts/build-sdk-rn-ios.sh
     nix develop --accept-flake-config .#ios -c pnpm --dir js run build:reactnative
+
+# The xcframework @fedimint/react-native-bindings is published with, assembled from the Apple
+# libraries `just build-ios-lib-nix` leaves behind. macOS with Xcode only; see the script.
+assemble-rn-ios-xcframework:
+    nix shell --accept-flake-config .#llvm-bitcode-strip -c scripts/assemble-rn-ios-xcframework.sh
 
 test-coverage:
     nix develop --accept-flake-config .#wasm-tests -c pnpm --dir js run test:coverage
