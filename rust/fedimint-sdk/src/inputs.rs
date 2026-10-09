@@ -43,7 +43,7 @@
 //! `Failed` an application investigates is a smaller harm than a `Refunded` that is wrong.
 //!
 //! Tightening this needs upstream to report the input recovery's own outcome; the gaps are
-//! tracked as fedimint#9099, fedimint#6546 and fedimint#8421.
+//! tracked as fedimint#9099 and fedimint#8421.
 
 use std::collections::BTreeMap;
 use std::sync::Weak;
@@ -60,25 +60,6 @@ use futures::StreamExt as _;
 use crate::Result;
 use crate::sdk::SdkInner;
 
-/// How often the gate re-reads whether the operation still has state machines running.
-///
-/// There is nothing to subscribe to here: the executor does not publish "this operation went
-/// quiet", so the only way to learn it is to look. A second between looks is short against a
-/// recovery measured in consensus rounds and long enough that a parked subscription is not
-/// doing meaningful work.
-///
-/// The loop this paces is deliberately unbounded, and deliberately has no backoff. It asks the
-/// local database whether the operation still has state machines running, so it costs nothing
-/// remote however long it runs, and there is no failure to back off from: the recovery either
-/// finishes or the client stops. What ends it is not a retry limit but the caller going away or
-/// the client's own shutdown, both of which [`settle`] documents.
-#[cfg(not(test))]
-const SETTLE_POLL: core::time::Duration = core::time::Duration::from_secs(1);
-/// Shortened under `cfg(test)` so a test that drives the gate does not sit out the production
-/// interval to do it.
-#[cfg(test)]
-const SETTLE_POLL: core::time::Duration = core::time::Duration::from_millis(25);
-
 /// How long one recovery output gets to report whether it issued its notes.
 ///
 /// This is asked only after the operation has gone quiet, so every output state machine has
@@ -87,7 +68,8 @@ const SETTLE_POLL: core::time::Duration = core::time::Duration::from_millis(25);
 /// ever, and a wait that elapses counts against restoration like any other unproven answer.
 #[cfg(not(test))]
 const OUTPUT_ISSUANCE_CHECK: core::time::Duration = core::time::Duration::from_secs(10);
-/// Shortened under `cfg(test)` for the same reason [`SETTLE_POLL`] is.
+/// Shortened under `cfg(test)` so a test that drives the gate does not sit out the production
+/// interval to do it.
 #[cfg(test)]
 const OUTPUT_ISSUANCE_CHECK: core::time::Duration = core::time::Duration::from_millis(50);
 
@@ -131,9 +113,7 @@ pub(crate) async fn settle(
 
     let stop = handle.task_group().make_handle().make_shutdown_rx();
     crate::federation::wait_holding_client(handle, stop, move |client| async move {
-        while client.has_active_states(id).await {
-            fedimint_core::runtime::sleep(SETTLE_POLL).await;
-        }
+        client.await_no_active_states(id).await;
         Ok(restoration_of(&client, id).await)
     })
     .await

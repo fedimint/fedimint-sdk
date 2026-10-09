@@ -2097,32 +2097,30 @@ async fn onchain_quote_refuses_what_cannot_be_withdrawn() {
 //
 // Every other test in this file returns early when there is no federation, for the reason the
 // `devimint!` macro documents. These are ignored for a different reason, which no federation
-// fixes: on the pinned fedimint the scenario cannot be produced and its outcome cannot be
+// fixes: the scenario has no fixture yet, and on the pinned fedimint its outcome cannot be
 // proven.
 //
-// - Provoking the rejection needs two clients holding the same notes, one of which spends them
-//   first. Restoring a second client from the same seed and racing it is the shape the bodies
-//   below use, and it depends on recovery handing back notes that are still spendable on the
-//   first client: fedimint/fedimint#6546.
+// - Provoking the rejection needs two instances holding the same notes, one of which spends
+//   them first. A second instance restored from the same seed holds them, the way
+//   `recovery_restores_a_wallet_with_history` sets one up, so spending them there first leaves
+//   this instance's funding transaction to be refused as a double spend. That fixture,
+//   `rejected_funding`, is not written yet.
 // - Proving the ending exactly needs the mint's own input-recovery outcome. Its state machine
 //   ends in `RefundSuccess` or `Error` and neither is nameable outside `fedimint-mint-client`,
 //   so the SDK reads what is public instead, the recovery transaction's acceptance and whether
 //   its outputs issued their notes, and deliberately reports `Failed` for the shapes that
 //   leaves undecided: fedimint/fedimint#9099.
-// - Knowing *when* the recovery has settled, rather than polling for it, needs an operation-level
-//   quiescence signal: fedimint/fedimint#8421.
 //
-// The assertions are written out in full rather than stubbed, so closing the upstream gaps is
-// most of the change. It is not the whole of it: the scenario these two need has no fixture yet,
-// because it cannot be built on the pinned fedimint, and `rejected_funding` panics rather than
-// quietly reporting that there is nothing to test. Removing `#[ignore]` on its own therefore
-// fails at the missing piece instead of passing without having asserted anything — implement the
-// fixture first. Run one with `cargo test --locked -- --ignored rejected_funding`.
+// The assertions are written out in full rather than stubbed, so the fixture and that upstream
+// gap are most of the change. `rejected_funding` panics rather than quietly reporting that
+// there is nothing to test, so removing `#[ignore]` on its own fails at the missing piece
+// instead of passing without having asserted anything. Implement the fixture first. Run one
+// with `cargo test --locked -- --ignored rejected_funding`.
 
 /// The contract, on the lightning send path: a rejected funding holds the operation open until
 /// the notes it selected have settled, and only then ends it.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs fedimint/fedimint#6546 to provoke the rejection and #9099 to prove the ending"]
+#[ignore = "needs the `rejected_funding` fixture, and fedimint/fedimint#9099 to prove the ending"]
 async fn lightning_send_with_rejected_funding_waits_for_input_recovery() {
     use fedimint_sdk::{ActivityStatus, LnSendState};
 
@@ -2178,7 +2176,7 @@ async fn lightning_send_with_rejected_funding_waits_for_input_recovery() {
 /// final state while the recovery runs, so a reattached operation re-enters the gate and reaches
 /// the same ending.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs fedimint/fedimint#6546 to provoke the rejection and #9099 to prove the ending"]
+#[ignore = "needs the `rejected_funding` fixture, and fedimint/fedimint#9099 to prove the ending"]
 async fn lightning_send_with_rejected_funding_resolves_after_a_restart() {
     use fedimint_sdk::{LnSendState, OperationKind};
 
@@ -2292,10 +2290,7 @@ async fn onchain_send_with_rejected_funding_waits_for_input_recovery() {
 /// that are already gone. Keeping the returned `Sdk` alive keeps that instance from being torn
 /// down while the send is still being observed.
 ///
-/// This is the half that fedimint/fedimint#6546 blocks: a restored client's notes have to still
-/// be spendable on the instance that was restored from for the race to be winnable at all.
-///
-/// Unimplemented until then, and it says so by panicking rather than by reporting that there is
+/// Not implemented yet, and it says so by panicking rather than by reporting that there is
 /// nothing to provoke. Both callers are `#[ignore]`d, so nothing reaches here by accident; a
 /// deliberate `--ignored` run against a live federation stops here, at the piece that is
 /// actually missing, instead of passing through assertions it never made. Returning `None` for
@@ -2307,9 +2302,9 @@ async fn rejected_funding(
     _lightning: &fedimint_sdk::Lightning,
 ) -> (Sdk, fedimint_sdk::Operation<fedimint_sdk::LnSendState>) {
     unimplemented!(
-        "the double spend this needs is blocked on fedimint/fedimint#6546: restore a second \
-         client onto the same notes, spend them there, then quote and send here so this send's \
-         funding transaction is refused"
+        "the double spend this needs is not written yet: restore a second instance onto the \
+         same notes, spend them there, then quote and send here so this send's funding \
+         transaction is refused"
     )
 }
 
