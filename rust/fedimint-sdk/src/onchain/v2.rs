@@ -447,6 +447,10 @@ pub(super) struct Link {
 /// for new entries, so a caller that wants to keep watching calls this again after the next
 /// [`Client::log_event_added_rx`] tick.
 ///
+/// A claim the module never announced is not found. The module commits a claim and logs its
+/// announcement in two database transactions, so a client that stops between them keeps the
+/// claim without the announcement (fedimint/fedimint#9338).
+///
 /// Returns the claim, if there is one, and otherwise the position the pass reached, which is
 /// where the next one starts.
 pub(super) async fn find_claim(
