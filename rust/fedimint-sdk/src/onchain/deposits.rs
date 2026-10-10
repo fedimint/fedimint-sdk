@@ -7,6 +7,43 @@
 //! also has a log entry of its own that names the payment, so reconciliation can write its
 //! record from that as well. A deposit address that was only handed out is announced by
 //! nothing, so it never has a record.
+//!
+//! # What a record holds
+//!
+//! A record is written once, when the deposit is found, with the address, the transaction and
+//! the amount that arrived, and those stay as written. What changes afterwards is the fee and
+//! the credit, filled in once the claim has credited the deposit, and on walletv2 the claim the
+//! record follows and the position its search for another one starts from. The final state is
+//! recorded the first time the deposit is seen to have ended, and a record without one counts as
+//! a claim in progress, which the erase guard refuses on.
+//!
+//! # What identifies a deposit
+//!
+//! On the v1 module it is the operation the paid address was allocated under. The module claims
+//! every payment to an address under that one operation, so the first payment announced is the
+//! deposit, and a later payment to the same address gets no record (fedimint/fedimint#8123).
+//!
+//! On walletv2 it is the output that paid the address. The module can claim an output more than
+//! once, each time under an operation of its own, and the deposit keeps the id of the claim its
+//! record was written for. No two records name one output: a running federation makes the check
+//! that none does and the write of a new one under one lock.
+//!
+//! # Positions in the event log
+//!
+//! Three positions in the client's event log are kept, each naming the next entry to read. They
+//! are positions in the log the client never trims, which only grows and where an entry keeps
+//! its place.
+//!
+//! - The pass's own, stored under [`DepositCursorKey`]. Every entry before it has been read, and
+//!   it only moves forward. It is stored after the records of the entries it passes, so a pass
+//!   that was interrupted reads some entries again and never skips one. An entry read again
+//!   finds its record there and writes nothing.
+//! - A subscription's, kept in memory. It starts at the end of the log as it stood when the
+//!   subscription was opened, and moves past a deposit only once that deposit's operation was
+//!   built to be handed out.
+//! - A walletv2 record's, where the search for another claim of its deposit starts. It is
+//!   stored with the claim the record follows, and a stream waiting for another claim keeps its
+//!   own in memory, further along. See [`v2::Link`].
 
 use std::collections::HashSet;
 use std::sync::Arc;

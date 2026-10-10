@@ -384,10 +384,7 @@ pub(super) async fn adopt(
 
 /// What identifies a deposit across the claims the module makes of it: the output that paid it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Paid {
-    txid: String,
-    vout: u32,
-}
+pub(super) struct Paid(bitcoin::OutPoint);
 
 /// The output a walletv2 `Receive` log entry claims, or `None` for any other entry. A `Receive`
 /// entry that names no address or no output is one of those: [`backfill`] records no deposit for
@@ -402,10 +399,7 @@ pub(super) fn paid_by(meta: &serde_json::Value) -> Option<Paid> {
     else {
         return None;
     };
-    Some(Paid {
-        txid: Txid::from_upstream(outpoint.txid).to_string(),
-        vout: outpoint.vout,
-    })
+    Some(Paid(outpoint))
 }
 
 /// Whether a stored deposit record is of the output `paid`.
@@ -416,13 +410,14 @@ pub(super) fn names(details: &str, paid: &Paid) -> bool {
         .is_some_and(|recorded| recorded == *paid)
 }
 
-/// The output a deposit record was written for, or `None` for a record that keeps no output
-/// index. Every record of a walletv2 deposit keeps one.
+/// The output a deposit record was written for, or `None` for a record that names none: it
+/// keeps no output index, or its transaction id does not parse. Every record of a walletv2
+/// deposit names one.
 fn paid_of(details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
-    Some(Paid {
-        txid: details.txid.clone(),
+    Some(Paid(bitcoin::OutPoint {
+        txid: details.txid.parse().ok()?,
         vout: details.vout?,
-    })
+    }))
 }
 
 /// One claim of a deposit: the upstream operation it runs under, and the event-log position a
@@ -433,6 +428,12 @@ fn paid_of(details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
 /// while a claim is pending can claim an output that is still unspent a second time. After a
 /// search the position is just past the announcement of the claim that was found, or as far as
 /// a search that found none got.
+///
+/// The claim and the position are stored in one write, and every pair stored holds the same
+/// promise: a claim of the output announced before the position is the one the record follows
+/// or one it has moved on from. Readers of one record do not wait for each other, so the pair
+/// stored last wins and may be the older of two. That costs the next search a stretch of the
+/// log it reads again, and cannot make it miss a claim.
 #[derive(Debug, Clone)]
 pub(super) struct Link {
     pub(super) upstream: OperationId,
@@ -445,6 +446,10 @@ pub(super) struct Link {
 /// `paid` other than `rejected`. It is one pass over the log as it stands now and does not wait
 /// for new entries, so a caller that wants to keep watching calls this again after the next
 /// [`Client::log_event_added_rx`] tick.
+///
+/// A claim the module never announced is not found. The module commits a claim and logs its
+/// announcement in two database transactions, so a client that stops between them keeps the
+/// claim without the announcement (fedimint/fedimint#9338).
 ///
 /// Returns the claim, if there is one, and otherwise the position the pass reached, which is
 /// where the next one starts.
@@ -478,11 +483,7 @@ pub(super) async fn find_claim(
             let Some(outpoint) = event.outpoint else {
                 continue;
             };
-            let claimed = Paid {
-                txid: Txid::from_upstream(outpoint.txid).to_string(),
-                vout: outpoint.vout,
-            };
-            if event.operation_id == rejected || claimed != *paid {
+            if event.operation_id == rejected || Paid(outpoint) != *paid {
                 continue;
             }
             return Ok(Link {
@@ -1437,9 +1438,7 @@ mod tests {
             vout: 3,
         };
         let meta = receive_meta(Some(upstream_address()), 100_000, 500, Some(outpoint));
-        let paid = paid_by(&meta).expect("a claim of an output");
-        assert_eq!(paid.txid, Txid::from_upstream(outpoint.txid).to_string());
-        assert_eq!(paid.vout, 3);
+        assert_eq!(paid_by(&meta), Some(Paid(outpoint)));
 
         // Only a claim that names both the address and the output is one of a deposit.
         assert!(paid_by(&receive_meta(None, 100_000, 500, Some(outpoint))).is_none());
@@ -1811,6 +1810,21 @@ mod tests {
             };
             assert!(!names(&details, &a_claim_of(elsewhere)));
             assert!(!names("not a record", &a_claim_of(outpoint)));
+
+            // A record that names no output is of none.
+            let recorded = wire::decode_receive_wire(&details).expect("decode");
+            let without_an_index = wire::OnchainReceiveDetailsWire {
+                vout: None,
+                ..recorded.clone()
+            };
+            let without_a_transaction = wire::OnchainReceiveDetailsWire {
+                txid: "not a transaction id".to_owned(),
+                ..recorded
+            };
+            for unnamed in [without_an_index, without_a_transaction] {
+                let unnamed = wire::encode_receive_wire(&unnamed).expect("encode");
+                assert!(!names(&unnamed, &a_claim_of(outpoint)));
+            }
         }
     }
 }

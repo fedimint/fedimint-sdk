@@ -2,7 +2,7 @@
 //!
 //! These are storage format: a record written through this file has to read through every later
 //! version of it. A field added later must be `Option` with `#[serde(default)]`, and a field is
-//! never renamed or removed.
+//! never renamed, removed or made required.
 
 use serde::{Deserialize, Serialize};
 
@@ -78,7 +78,8 @@ impl From<ReceiveFeeBreakdownWire> for OnchainReceiveFeeBreakdown {
     }
 }
 
-/// [`OnchainReceiveDetails`] as stored, plus the three private fields.
+/// [`OnchainReceiveDetails`] as stored, plus the three private fields. When a record is
+/// written and what changes in it afterwards is described in `super::deposits`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OnchainReceiveDetailsWire {
     pub(super) address: String,
