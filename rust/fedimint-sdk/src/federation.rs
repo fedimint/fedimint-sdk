@@ -524,10 +524,10 @@ pub(crate) struct FederationInner {
     /// the upstream call that starts the retry and the write that records it happen under this
     /// lock, so two subscribers that see the same rejected claim start exactly one retry.
     reclaim_starts: tokio::sync::Mutex<()>,
-    /// Serialises rebuilding a record from the client's log per federation: the check that no
-    /// record already answers for a walletv2 deposit and the write of the record for it happen
-    /// under this lock, so two lookups racing over two claims of one deposit can never both
-    /// record it.
+    /// Serialises rebuilding a record from the client's log while this federation runs: the
+    /// check that no record already answers for a walletv2 deposit and the write of the record
+    /// for it happen under this lock, so two lookups on it racing over two claims of one deposit
+    /// can never both record it. A federation opened in this one's place has a lock of its own.
     deposit_records: tokio::sync::Mutex<()>,
 }
 
