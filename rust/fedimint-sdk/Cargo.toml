@@ -98,6 +98,7 @@ futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["arbitrary_precision"] }
 tracing = "0.1.44"
+url = "2.5.8"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # Must equal the `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata this
@@ -146,6 +147,8 @@ tokio = { version = "1.48.0", features = [
     "io-util",
 ] }
 socket2 = { version = "0.5", features = ["all"] }
+# Native HTTP client for federation discovery. Uses reqwest since it's already in the workspace dependency tree.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Both of these are already in the graph underneath us — `n0-dns-resolver`
@@ -199,7 +202,14 @@ tokio = { version = "1.48.0", features = ["sync", "macros"] }
 # it in one graph do not link.
 wasm-bindgen = "=0.2.106"
 wasm-bindgen-futures = "0.4.56"
+# Lightweight fetch wrapper for federation discovery on WASM targets.
+# Uses the browser's built-in `fetch()` API, so the binary size cost is
+# effectively zero: no networking stack is bundled.
+gloo-net = { version = "0.6", default-features = false, features = ["http"] }
+gloo-timers = "0.3"
 web-sys = { version = "0.3.83", features = [
+    "AbortController",
+    "AbortSignal",
     "FileSystemDirectoryHandle",
     "FileSystemFileHandle",
     "FileSystemGetFileOptions",

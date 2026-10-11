@@ -21,6 +21,7 @@
 
 mod address;
 mod amount;
+mod discovery;
 mod ids;
 mod invite;
 mod invoice;
@@ -32,6 +33,7 @@ mod timestamp;
 
 pub use address::Address;
 pub use amount::{Amount, Sats};
+pub use discovery::{DEFAULT_DISCOVERY_URL, DiscoveredFederation};
 pub use ids::{Cursor, FederationId, GatewayId, OperationId, Txid};
 pub use invite::{FederationPreview, InviteCode};
 pub use invoice::Bolt11Invoice;

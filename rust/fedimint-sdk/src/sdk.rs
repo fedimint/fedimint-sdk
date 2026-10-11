@@ -236,6 +236,32 @@ impl Sdk {
         crate::modules::preview_of(&self.inner.module_inits, &config)
     }
 
+    /// Fetches a list of publicly known federations from an external
+    /// community-run index.
+    ///
+    /// When `url` is `None`, the SDK's built-in default
+    /// ([`DEFAULT_DISCOVERY_URL`]) is used. Applications that run their own
+    /// index, or want to show a curated list, pass their URL instead.
+    ///
+    /// The returned [`DiscoveredFederation`] records are *advertisements*,
+    /// not validated federation state. To verify one, take its
+    /// [`invite`](DiscoveredFederation::invite) field and feed it to
+    /// [`Sdk::preview`] or [`Sdk::join`].
+    ///
+    /// # Errors
+    ///
+    /// [`Internal`](crate::ErrorCode::Internal)
+    /// when the index cannot be contacted, and
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when its response cannot
+    /// be parsed.
+    pub async fn discover_federations(
+        &self,
+        url: Option<String>,
+    ) -> Result<Vec<crate::DiscoveredFederation>> {
+        self.inner.alive()?;
+        crate::discovery::fetch_discovered_federations(url).await
+    }
+
     /// Joins the federation named by `invite`, persists it, and returns a
     /// handle to it.
     ///
