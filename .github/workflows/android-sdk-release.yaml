@@ -101,7 +101,7 @@ jobs:
           persist-credentials: false
 
       # The catalog sets the version the artifacts are built with.
-      # scripts/android-sdk-version.sh holds the rules, the same ones the bump
+      # scripts/sdk-version.sh holds the rules, the same ones the bump
       # workflow uses:
       #
       #   * it is a beta or a release, `X.Y.Z-beta.N` or `X.Y.Z`;
@@ -121,7 +121,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(scripts/android-sdk-version.sh current)"
+          version="$(scripts/sdk-version.sh current android)"
           except=()
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             tag_version="${GITHUB_REF_NAME#android-sdk-v}"
@@ -133,8 +133,8 @@ jobs:
           fi
           released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/android-sdk-v" \
             --jq '.[].ref | ltrimstr("refs/tags/android-sdk-v")')"
-          scripts/android-sdk-version.sh check-newer "$version" "${except[@]}" <<<"$released"
-          scripts/android-sdk-changelog.sh check "$version"
+          scripts/sdk-version.sh check-newer "$version" "${except[@]}" <<<"$released"
+          scripts/sdk-changelog.sh check android "$version"
           echo "Version $version"
 
       # An upload has to come from a tag, so that the check above has a tag to
@@ -248,7 +248,9 @@ jobs:
           version="${TAG#android-sdk-v}"
           notes="$RUNNER_TEMP/notes.md"
           {
-            scripts/android-sdk-changelog.sh section "$version"
+            # Each paragraph and list item on one line: a GitHub Release shows every line
+            # break of its text, so the file's wrapping would show.
+            scripts/sdk-changelog.sh release-notes android "$version"
             # The backticks are a Markdown code fence, not an expansion.
             # shellcheck disable=SC2016
             printf '\n```kotlin\nimplementation("org.fedimint:sdk:%s")\n```\n' "$version"

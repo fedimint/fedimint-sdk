@@ -16,13 +16,13 @@ name: Android SDK Version Bump
 #   beta                  from a beta, the next beta.
 #   release               from a beta, release it: X.Y.Z-beta.N -> X.Y.Z.
 #
-# scripts/android-sdk-version.sh works the new version out and refuses a bump
+# scripts/sdk-version.sh works the new version out and refuses a bump
 # that does not fit, such as `patch` in the middle of a beta. It also checks
 # the new version against the `android-sdk-v*` tags already pushed, as the
 # release workflow does, so this cannot propose a version that is taken.
 #
 # The drafted notes list the commits since the last release that touched
-# the SDK (scripts/android-sdk-changelog.sh). Rewrite them for users in the
+# the SDK (scripts/sdk-changelog.sh). Rewrite them for users in the
 # pull request and remove the draft comment; the release refuses a draft.
 #
 # Merging the pull request is the decision to release: android-sdk-tag.yaml
@@ -98,7 +98,7 @@ jobs:
           START_AS_BETA: ${{ inputs.beta }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          current="$(scripts/android-sdk-version.sh current)"
+          current="$(scripts/sdk-version.sh current android)"
           args=("$BUMP")
           case "$BUMP" in
             patch | minor | major)
@@ -107,11 +107,11 @@ jobs:
               fi
               ;;
           esac
-          next="$(scripts/android-sdk-version.sh next "${args[@]}")"
+          next="$(scripts/sdk-version.sh next "${args[@]}")"
           released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/android-sdk-v" \
             --jq '.[].ref | ltrimstr("refs/tags/android-sdk-v")')"
-          scripts/android-sdk-version.sh check-newer "$next" <<<"$released"
-          latest="$(scripts/android-sdk-version.sh latest <<<"$released")"
+          scripts/sdk-version.sh check-newer "$next" <<<"$released"
+          latest="$(scripts/sdk-version.sh latest <<<"$released")"
           echo "Bumping $current -> $next"
           {
             echo "current=$current"
@@ -127,8 +127,8 @@ jobs:
           BUMP: ${{ inputs.bump }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/android-sdk-version.sh set "$NEXT"
-          scripts/android-sdk-changelog.sh draft "$NEXT" "$LATEST"
+          scripts/sdk-version.sh set "$NEXT" android
+          scripts/sdk-changelog.sh draft android "$NEXT" "$LATEST"
           branch="android-sdk/version-$NEXT"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

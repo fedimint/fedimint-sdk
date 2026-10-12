@@ -29,7 +29,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION_SCRIPT="$ROOT/scripts/android-sdk-version.sh"
+VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
 BINDINGS_NAME=@fedimint/react-native-bindings
 BINDINGS_DIR=js/react-native/react-native-bindings
 WRAPPER_DIR=js/react-native/react-native

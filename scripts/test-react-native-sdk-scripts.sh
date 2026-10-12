@@ -41,8 +41,9 @@ repo() {
     local dir
     dir="$(mktemp -d "$WORK/repo.XXXX")"
     mkdir -p "$dir/scripts"
-    cp "$ROOT/scripts/android-sdk-version.sh" "$ROOT/scripts/android-sdk-changelog.sh" \
-        "$ROOT/scripts/react-native-sdk-release.sh" "$dir/scripts/"
+    cp "$ROOT/scripts/sdk-components.sh" "$ROOT/scripts/sdk-version.sh" \
+        "$ROOT/scripts/sdk-changelog.sh" "$ROOT/scripts/react-native-sdk-release.sh" \
+        "$dir/scripts/"
     git -C "$dir" init -q -b main
     git -C "$dir" config user.name test
     git -C "$dir" config user.email test@example.invalid
@@ -703,20 +704,20 @@ expect_usage "check-tag takes one tag" -- "$rn" check-tag react-native-sdk-v0.1.
 echo
 echo "paths"
 
-# The packages' source paths are read out of the script, so this checks the list the script uses.
+# The packages' source paths are read out of scripts/sdk-components.sh, which the release script
+# takes them from, so this checks the list the script uses.
 paths=()
 while IFS= read -r path; do
     paths+=("$path")
-done < <(sed -n '/^PATHS=(/,/^)/p' "$ROOT/scripts/react-native-sdk-release.sh" |
-    sed -e '1d' -e '$d' -e 's/^ *//')
+done < <(bash -c '. "$1" && component_paths react-native' _ "$ROOT/scripts/sdk-components.sh")
 if [[ ${#paths[@]} -eq 0 ]]; then
-    fail "PATHS is read from the script" "found no entries"
+    fail "the paths are read from sdk-components.sh" "found no entries"
 fi
 for path in ${paths[@]+"${paths[@]}"}; do
     if [[ -n "$(git -C "$ROOT" ls-files -- "$path")" ]]; then
-        pass "PATHS entry $path exists in this checkout"
+        pass "path $path exists in this checkout"
     else
-        fail "PATHS entry $path exists in this checkout" "git ls-files lists nothing there"
+        fail "path $path exists in this checkout" "git ls-files lists nothing there"
     fi
 done
 
@@ -1118,8 +1119,8 @@ pack_tree() {
     bindings="$dir/js/react-native/react-native-bindings"
     native="$dir/js/react-native/react-native"
     mkdir -p "$dir/scripts" "$dir/js/node_modules"
-    cp "$ROOT/scripts/android-sdk-version.sh" "$ROOT/scripts/react-native-sdk-pack.sh" \
-        "$dir/scripts/"
+    cp "$ROOT/scripts/sdk-components.sh" "$ROOT/scripts/sdk-version.sh" \
+        "$ROOT/scripts/react-native-sdk-pack.sh" "$dir/scripts/"
     fill bindings 0.0.0 "$bindings"
     fill native 0.0.0 "$native"
     edit_manifest 'm.private = true' "$bindings"

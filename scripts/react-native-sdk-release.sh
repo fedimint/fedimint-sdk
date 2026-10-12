@@ -14,7 +14,7 @@
 # accepts a version twice, so a wrong tag is permanent. This script holds every rule about what
 # a release tag is, so the release workflow and a maintainer's shell apply the same ones.
 #
-# A version is `X.Y.Z-beta.N` or `X.Y.Z`, and nothing else (see android-sdk-version.sh). It must
+# A version is `X.Y.Z-beta.N` or `X.Y.Z`, and nothing else (see sdk-version.sh). It must
 # be newer than every earlier `react-native-sdk-v*` tag and than every version of either package
 # on npm, where a snapshot such as `0.0.0-canary-abc123` counts as the release it starts with.
 # A tag whose version is not in that grammar never released anything and is not counted.
@@ -45,26 +45,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION_SCRIPT="$ROOT/scripts/android-sdk-version.sh"
-CHANGELOG_SCRIPT="$ROOT/scripts/android-sdk-changelog.sh"
-TAG_PREFIX=react-native-sdk-v
+# shellcheck source=scripts/sdk-components.sh
+. "$ROOT/scripts/sdk-components.sh"
+VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
+CHANGELOG_SCRIPT="$ROOT/scripts/sdk-changelog.sh"
+TAG_PREFIX="$(component_tag_prefix react-native)"
 # Bindings first: the order they are published in.
 PACKAGES=(@fedimint/react-native-bindings @fedimint/react-native)
 # Releases come from main only.
 MAIN_REF=origin/main
-# What the two published packages are built from. A commit that touches none of these cannot
-# change them, so it does not belong in their notes.
-PATHS=(
-    js/react-native
-    rust/fedimint-sdk
-    rust/ubrn
-    nix
-    flake.nix
-    flake.lock
-    scripts/generate-sdk-rn-bindings.sh
-    scripts/assemble-rn-ios-xcframework.sh
-    scripts/react-native-sdk-pack.sh
-)
 
 die() {
     echo "$*" >&2
@@ -198,15 +187,20 @@ check_tag() {
 }
 
 notes() {
-    local commit="${1:-HEAD}" previous listed
+    local commit="${1:-HEAD}" previous listed path
+    local -a paths=()
     previous="$(released_tags | "$VERSION_SCRIPT" latest)"
     if [[ -z "$previous" ]]; then
         echo "nothing is released yet, so there are no earlier commits to list;" \
             "write the notes for the first release by hand" >&2
         return
     fi
+    # What the two published packages are built from.
+    while IFS= read -r path; do
+        paths+=("$path")
+    done < <(component_paths react-native)
     listed="$("$CHANGELOG_SCRIPT" commits --tag-prefix "$TAG_PREFIX" --since "$previous" \
-        --to "$commit" "${PATHS[@]}")"
+        --to "$commit" "${paths[@]}")"
     echo "these are the commits since $TAG_PREFIX$previous that touched the React Native" \
         "packages; rewrite them for users before tagging" >&2
     echo "${listed:-- No changes to the React Native packages since $previous.}"

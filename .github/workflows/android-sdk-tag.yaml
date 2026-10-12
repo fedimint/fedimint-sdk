@@ -13,7 +13,7 @@ name: Android SDK Tag
 #     releases, only leaves a notice, and nothing is released by surprise;
 #   * the release checks pass: the version is newer than every release, and
 #     android/CHANGELOG.md has finished notes for it
-#     (scripts/android-sdk-version.sh, scripts/android-sdk-changelog.sh).
+#     (scripts/sdk-version.sh, scripts/sdk-changelog.sh).
 #
 # Any other change to the catalog, such as a dependency bump, does nothing.
 #
@@ -86,7 +86,7 @@ jobs:
             exit 0
           }
 
-          version="$(scripts/android-sdk-version.sh current)"
+          version="$(scripts/sdk-version.sh current android)"
           if has_tag "$version"; then
             skip "android-sdk-v$version already exists; nothing to release"
           fi
@@ -108,8 +108,8 @@ jobs:
           # A failure here is a real problem with the release, typically notes
           # merged as a draft. The pull request that fixes it does not change
           # the version, so it does not bring this workflow back by itself.
-          if ! scripts/android-sdk-version.sh check-newer "$version" <<<"$released" ||
-            ! scripts/android-sdk-changelog.sh check "$version"; then
+          if ! scripts/sdk-version.sh check-newer "$version" <<<"$released" ||
+            ! scripts/sdk-changelog.sh check android "$version"; then
             echo "::error::$version cannot be released as it is. Fix the problem above in a pull request, then run the Android SDK Tag workflow by hand on main."
             exit 1
           fi
@@ -125,7 +125,7 @@ jobs:
           tag="android-sdk-v$VERSION"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag -a "$tag" -m "Android SDK $VERSION" -m "$(scripts/android-sdk-changelog.sh section "$VERSION")"
+          git tag -a "$tag" -m "Android SDK $VERSION" -m "$(scripts/sdk-changelog.sh section android "$VERSION")"
           git push origin "refs/tags/$tag"
           gh workflow run android-sdk-release.yaml --ref "$tag" -f publish=true
           {

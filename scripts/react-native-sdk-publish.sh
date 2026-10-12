@@ -9,7 +9,7 @@
 # <dir> holds the two tarballs scripts/react-native-sdk-pack.sh wrote: exactly one
 # `fedimint-react-native-bindings-*.tgz` and one `fedimint-react-native-<version>.tgz`, for the
 # same version, which has to be a release version (`X.Y.Z-beta.N` or `X.Y.Z`, see
-# android-sdk-version.sh). The bindings are published first: the wrapper names their exact
+# sdk-version.sh). The bindings are published first: the wrapper names their exact
 # version as a peer, so it must never be on npm before them. A beta goes to the dist-tag `beta`
 # and a release to `latest`, since npm refuses a prerelease without a tag.
 #
@@ -40,7 +40,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION_SCRIPT="$ROOT/scripts/android-sdk-version.sh"
+VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
 # The only two packages this script publishes, in the order it publishes them.
 BINDINGS_NAME=@fedimint/react-native-bindings
 WRAPPER_NAME=@fedimint/react-native
