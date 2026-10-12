@@ -139,9 +139,10 @@ build-rn-android: generate-sdk-rn-bindings
     nix develop --accept-flake-config .#android -c pnpm --dir js run build:reactnative
 
 # iOS: cargo cross-compiles rust/fedimint-sdk inside the `.#ios` shell (macOS with Xcode only),
-# ubrn assembles the xcframework and regenerates the bindings. UBRN_IOS_TARGETS (comma separated)
-# narrows the slices; CI passes aarch64-apple-ios on pull requests. NIX_CONFIG serialises the
-# build so rocksdb and aws-lc-sys do not exhaust macos-latest's memory.
+# then ubrn assembles the xcframework from those libraries and regenerates the bindings, building
+# nothing itself (scripts/build-sdk-rn-ios.sh). UBRN_IOS_TARGETS (comma separated) narrows the
+# slices; CI passes aarch64-apple-ios on pull requests. NIX_CONFIG serialises the build so rocksdb
+# and aws-lc-sys do not exhaust macos-latest's memory.
 build-rn-ios:
     nix develop --accept-flake-config .#ios -c pnpm --dir js install
     NIX_CONFIG=$'max-jobs = 1\ncores = 1' \

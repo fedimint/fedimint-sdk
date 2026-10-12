@@ -1,8 +1,9 @@
 # Read by `ubrn build android|ios` (scripts/generate-sdk-rn-bindings.sh,
 # scripts/build-sdk-rn-ios.sh): where the crate is, what to name the turbo-module, where the
-# generated code lands. `cargoExtras` names the crate feature that holds the UniFFI surface for
-# the builds ubrn drives itself (iOS); the Android libraries come prebuilt from nix and are read
-# with `--no-cargo`.
+# generated code lands. The libraries of both platforms are built before ubrn runs, and it reads
+# them with `--no-cargo`: the Android ones come from Nix (scripts/generate-sdk-rn-bindings.sh),
+# the iOS ones from cargo (scripts/build-sdk-rn-ios.sh). ubrn could not build them itself: the
+# manifest lists no `cdylib` or `staticlib`, and ubrn cannot be told to ask cargo for a crate type.
 rust:
   directory: ../../../rust
   manifestPath: fedimint-sdk/Cargo.toml
@@ -18,12 +19,12 @@ android:
     - arm64-v8a
     - x86_64
   useSharedLibrary: true
-  cargoExtras: ["--features", "uniffi"]
 
 ios:
   tags: [ios]
+  # scripts/build-sdk-rn-ios.sh builds its own list, these three by default, and hands it to
+  # ubrn with `--targets`. This one is what ubrn would use without that option.
   targets:
     - aarch64-apple-ios
     - aarch64-apple-ios-sim
     - x86_64-apple-ios
-  cargoExtras: ["--features", "uniffi"]

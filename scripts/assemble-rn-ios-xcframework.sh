@@ -34,14 +34,17 @@
 # second time, here. Nothing in target/ is modified, as the Swift SDK is assembled from the same
 # files.
 #
-# One thing is done to the libraries on the way: the LLVM bitcode that rustc embeds in every
-# object (the sections __LLVM,__bitcode and __LLVM,__cmdline) is removed. Nothing reads it, as
-# Xcode no longer accepts bitcode and this one is Rust's LLVM version anyway. It is 61% of each
-# archive: 354 MB with it and 137 MB without, 103 MB against 37 MB compressed, per architecture,
-# and the package carries three. Removing the two sections leaves the machine code byte for byte
-# the same and removes no exported symbol, only the local symbols that named the removed sections.
-# The simulator slice is merged from the stripped libraries, not from the merged archive
-# nix-build-ios-lib.sh makes, which has the bitcode.
+# One thing is done to the libraries on the way: the LLVM bitcode in them (the sections
+# __LLVM,__bitcode and __LLVM,__cmdline) is removed, and the result is checked to have none
+# left. Nothing reads it, as Xcode no longer accepts bitcode and this one is Rust's LLVM version
+# anyway. It is in the objects of Rust's standard library, which come prebuilt with the
+# toolchain: about 9 MB per architecture. The crate and its dependencies are compiled without
+# it, because their release profile has no `lto` (rust/fedimint-sdk/Cargo.toml says why); with
+# it, every one of their objects would carry bitcode too, some 200 MB more per architecture,
+# and this step would remove that as well. Removing the two sections leaves the machine code
+# byte for byte the same and removes no exported symbol, only the local symbols that named the
+# removed sections. The simulator slice is merged from the stripped libraries, not from the
+# merged archive nix-build-ios-lib.sh makes, which has the bitcode.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -97,18 +97,23 @@ rm -f "$MANIFEST"
 
 built=()
 for triple in $TARGETS; do
-    echo "==> cargo build --release --features uniffi --target $triple"
-    (cd "$CRATE_DIR" && cargo build \
+    # The manifest lists no `staticlib` (rust/fedimint-sdk/Cargo.toml says why), so
+    # this build asks for one, with `lib` beside it so that rustc compiles the crate
+    # as it does for every other build of it.
+    echo "==> cargo rustc --locked --release --lib --features uniffi --target $triple" \
+        "--crate-type lib --crate-type staticlib"
+    (cd "$CRATE_DIR" && cargo rustc \
         --locked \
         --release \
         --lib \
         --features uniffi \
-        --target "$triple")
+        --target "$triple" \
+        --crate-type lib \
+        --crate-type staticlib)
 
     out="$TARGET_DIR/$triple/release/$LIB_NAME"
     [[ -f "$out" ]] || {
         echo "no $LIB_NAME at $out after building $triple" >&2
-        echo "check that [lib] crate-type in rust/fedimint-sdk/Cargo.toml still has \"staticlib\"" >&2
         exit 1
     }
     built+=("$triple")

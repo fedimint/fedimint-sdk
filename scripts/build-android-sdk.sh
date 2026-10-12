@@ -69,6 +69,11 @@ else
         exit 1
     }
 
+    # The manifest lists no `cdylib` (rust/fedimint-sdk/Cargo.toml says why), so
+    # this build asks for one, with `lib` beside it so that rustc compiles the
+    # crate as it does for every other build of it. cargo-ndk passes the
+    # subcommand on to cargo, and copies the library out of the artifacts cargo
+    # reports whichever subcommand it was.
     echo "==> Building arm64-v8a + x86_64 .so via cargo-ndk (release)"
     rm -rf "$JNI_LIBS"
     (cd "$CRATE_DIR" && cargo ndk \
@@ -76,7 +81,7 @@ else
         --target x86_64 \
         --platform "$MIN_SDK" \
         --output-dir "$JNI_LIBS" \
-        build --release --lib --features uniffi)
+        rustc --release --lib --features uniffi --crate-type lib --crate-type cdylib)
 
     # cargo-ndk copies every cdylib it finds in the target dir, which sweeps up
     # a few dependency cdylibs (iroh's, at the time of writing) alongside ours.
