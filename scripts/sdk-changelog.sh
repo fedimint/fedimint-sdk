@@ -54,10 +54,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/scripts/sdk-components.sh"
 DRAFT_MARKER='<!-- draft:'
 # The commits that only bump a version and its notes, which a draft leaves out:
-# the release workflow's `chore(release): ` ones, and the `chore(android): bump
-# the Android SDK to ` ones of the Android SDK's bump workflow. Matched after
-# the `- ` each listed commit starts with, so no `^` here.
-BUMP_SUBJECTS='(chore\(release\): |chore\(android\): bump the Android SDK to )'
+# those of the version bump workflow, whose subjects start with
+# `chore(release): `. Matched after the `- ` each listed commit starts with, so
+# no `^` here.
+BUMP_SUBJECT='chore\(release\): '
 # The component the command is about, and where its notes are: the file
 # relative to the repository, and the path to it. select_component sets them.
 COMPONENT=""
@@ -188,7 +188,7 @@ draft() {
             paths+=("$path")
         done < <(component_paths "$COMPONENT")
         listed="$(commits --tag-prefix "$prefix" --since "$previous" "${paths[@]}")"
-        commits="$(grep -Ev -- "^- $BUMP_SUBJECTS" <<<"$listed" || true)"
+        commits="$(grep -Ev -- "^- $BUMP_SUBJECT" <<<"$listed" || true)"
         [[ -n "$commits" ]] || commits="- No changes to the SDK since $previous."
         entry="$DRAFT_MARKER the commits since $previous that touched the SDK.
      Rewrite them for users: what was added, changed or fixed, and anything that

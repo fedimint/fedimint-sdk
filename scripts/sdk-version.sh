@@ -4,6 +4,7 @@
 # grammar and ordering every SDK release in this repository shares.
 #
 #   scripts/sdk-version.sh components [all|bindings|<component>]
+#   scripts/sdk-version.sh files <component>
 #   scripts/sdk-version.sh current [<component>] [--at <commit>]
 #   scripts/sdk-version.sh next <major|minor|patch> [--beta]
 #   scripts/sdk-version.sh next <beta|release>
@@ -37,13 +38,15 @@
 #
 # `components` prints the names of all the components, of the `bindings` (the
 # ones generated from the crate's UniFFI surface) or of the one named, one per
-# line. `current` prints the version of the component named, or of the line
-# when none is named; with --at it reads the files of that commit rather than
-# the working tree. `next` starts from the version of the line. `set` first
-# reads the version in each file of the components named, and fails naming the
-# file, before it writes any, if one is missing, holds no version or holds one
-# outside the grammar. Then it writes <version> for each component named, and
-# reads each back.
+# line. `files` prints the files that hold the version of the component named,
+# relative to the repository, one per line: those `set` writes. It reads no
+# file, so it names them whether or not they exist. `current` prints the
+# version of the component named, or of the line when none is named; with --at
+# it reads the files of that commit rather than the working tree. `next`
+# starts from the version of the line. `set` first reads the version in each
+# file of the components named, and fails naming the file, before it writes
+# any, if one is missing, holds no version or holds one outside the grammar.
+# Then it writes <version> for each component named, and reads each back.
 #
 # `check-newer` and `latest` only read the already released versions, one per
 # line, on stdin. The Android SDK's workflows feed them the `android-sdk-v*`
@@ -236,6 +239,16 @@ version_files() {
         react-native) printf '%s\n' "json $BINDINGS_MANIFEST" "json $WRAPPER_MANIFEST" ;;
         *) die "no version files for $1" ;;
     esac
+}
+
+# files <component>: prints the files that hold the version of the component, one per line.
+files() {
+    local path
+    [[ $# -eq 1 ]] || usage
+    is_component "$1" || exit 1
+    while read -r _ path; do
+        echo "$path"
+    done < <(version_files "$1")
 }
 
 # Prints the version of the component $1. For the Rust crate that is the one in
@@ -448,6 +461,10 @@ case "${1:-}" in
     components)
         shift
         components "$@"
+        ;;
+    files)
+        shift
+        files "$@"
         ;;
     current)
         shift

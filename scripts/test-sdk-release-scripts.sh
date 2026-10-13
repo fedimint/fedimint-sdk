@@ -675,6 +675,34 @@ expect_fail "components refuses an empty name" "is not a component" -- "$v" comp
 expect_usage "components takes at most one argument" -- "$v" components all bindings
 
 echo
+echo "sdk-version.sh files"
+
+# The files that hold the version of a component are the ones `set` writes, so that a caller that
+# needs them asks for them rather than listing them again.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+v="$r/scripts/sdk-version.sh"
+# The files of the repository $1 that differ from its last commit, one per line, sorted.
+written() { git -C "$1" diff --name-only | LC_ALL=C sort; }
+for component in rust android react-native; do
+    expect_ok "files lists the files that hold the version of $component" \
+        "$(files_of "$component")" -- "$v" files "$component"
+    "$v" set 0.2.0 "$component"
+    expect_ok "files lists exactly the files that set writes for $component" \
+        "$(files_of "$component" | LC_ALL=C sort)" -- written "$r"
+    reset_repo "$r"
+done
+bare="$(bare_repo)"
+expect_ok "files names the files whether or not they exist" "$(files_of rust)" -- \
+    "$bare/scripts/sdk-version.sh" files rust
+expect_fail "files refuses an unknown component" \
+    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "$v" files sideways
+expect_fail "files refuses a group name" "all is not a component" -- "$v" files all
+expect_fail "files refuses an empty component" "is not a component" -- "$v" files ""
+expect_usage "files needs a component" -- "$v" files
+expect_usage "files takes one component" -- "$v" files rust android
+
+echo
 echo "sdk-version.sh current"
 
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -1035,7 +1063,7 @@ change "$r" rust/fedimint-sdk/Cargo.lock "chore(deps): bump a crate in the SDK l
 change "$r" rust/uniffi-bindgen/Cargo.lock "chore(deps): bump uniffi-bindgen's lockfile"
 change "$r" flake.lock "chore(nix): update the flake inputs"
 change "$r" js/web/index.ts "feat(web): unrelated to Android"
-change "$r" android/gradle/libs.versions.toml "chore(android): bump the Android SDK to 0.1.0-beta.2 (#9)"
+change "$r" android/gradle/libs.versions.toml "chore(release): bump the Android SDK to 0.1.0-beta.2 (#9)"
 "$c" draft android 0.1.0-beta.2 0.1.0-beta.1
 notes="$("$c" section android 0.1.0-beta.2)"
 for subject in "feat(sdk): a new call" \
@@ -1216,7 +1244,7 @@ subjects=(
     "chore(deps): bump uniffi-bindgen's lockfile"
     "chore(deps): bump ubrn's lockfile"
     "chore(release): bump the SDK to 1.0.0"
-    "chore(android): bump the Android SDK to 0.1.0-beta.2 (#9)"
+    "chore(release): bump the Android SDK to 0.1.0-beta.2 (#9)"
 )
 # Whether the drafts of rust, android and react-native list each subject, in the same order.
 listed=("n n y" "n y n" "y y y" "n y y" "n n n" "y y y" "y y y" "n y n" "n n y" "n n n" "n n n")
@@ -1622,6 +1650,20 @@ changelog_of() {
     esac
 }
 
+# What `tag` and `check-tag` refuse with when the files $2 (named in one list, as the refusal
+# does) of the component $1 have a change that is not committed.
+uncommitted() {
+    echo "$1 has changes that are not committed, in $2: what is tagged is the commit, not the" \
+        "working tree, so they have to be committed first"
+}
+
+# The files of the component $1 that `tag` and `check-tag` need committed: those that hold its
+# version, and its notes, one per line.
+guarded_files() {
+    files_of "$1"
+    changelog_of "$1"
+}
+
 # release_tag <repository> <component> <version> [<commit>]: tags the commit (HEAD when not
 # given) as the release of that version of the component, with a lightweight tag.
 release_tag() {
@@ -1724,6 +1766,15 @@ expect_contains() {
 run() {
     STATUS=0
     OUT="$("$@" 2>&1)" || STATUS=$?
+}
+
+# run_split <command...>: runs the command and leaves its standard output in $OUT, its standard
+# error in $ERR and its exit status in $STATUS.
+run_split() {
+    STATUS=0
+    "$@" >"$WORK/split.out" 2>"$WORK/split.err" || STATUS=$?
+    OUT="$(<"$WORK/split.out")"
+    ERR="$(<"$WORK/split.err")"
 }
 
 # expect_unasked <name>: since the registries were made fresh, nobody asked npm or crates.io.
@@ -2532,8 +2583,9 @@ for tag in rust-sdk-v0.1.0-beta.2 rust-sdk-v0.1.0 rust-sdk-v0.1.0-rc.1 rust-sdk-
     expect_fail "check-tag refuses $tag, which is not the version in the tree" "$wrong" -- \
         "$rel" check-tag "$tag"
 done
-git -C "$r" tag android-sdk-v0.1.0-beta.1
 put "$r" android 0.2.0
+commit_all "$r" "bump android"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
 wrong="android-sdk-v0.1.0-beta.1 names version 0.1.0-beta.1, but android is at 0.2.0 in the tree:"
 wrong="$wrong a release tag must name the version it releases"
 expect_fail "check-tag compares a tag with the version of its own component" "$wrong" -- \
@@ -2579,6 +2631,10 @@ for component in rust android react-native; do
         "$rel" check-tag "$tag"
     git -C "$r" tag -d "$(prefix_of "$component")0.1.0-beta.2" >/dev/null
     draft_notes 0.1.0-beta.1 >"$r/$file"
+    commit_all "$r" "notes that are still a draft"
+    sync_main "$r"
+    git -C "$r" tag -d "$tag" >/dev/null
+    git -C "$r" tag "$tag"
     expect_fail "check-tag refuses $tag when the notes are still a draft" "is still a draft" -- \
         "$rel" check-tag "$tag"
 done
@@ -2663,6 +2719,88 @@ crates_has 0.9.0
 expect_last "check-tag asks no registry for the Android SDK" \
     "android-sdk-v0.1.0-beta.1 can be released" -- "$rel" check-tag android-sdk-v0.1.0-beta.1
 expect_unasked "check-tag asks neither npm nor crates.io for the Android SDK"
+
+# What a tag releases is the commit, but the checks read the working tree. So the files that hold
+# the version of the component, and its notes, must have no change that is not committed, or a
+# tag could be checked against a version, or notes, that the commit does not have.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+put "$r" android 0.1.0-beta.2
+git -C "$r" tag android-sdk-v0.1.0-beta.2
+expect_fail "check-tag refuses a tag whose version is only in the working tree" \
+    "$(uncommitted android "$CATALOG")" -- "$rel" check-tag android-sdk-v0.1.0-beta.2
+git -C "$r" add "$CATALOG"
+expect_fail "check-tag refuses a version that is staged and not committed" \
+    "$(uncommitted android "$CATALOG")" -- "$rel" check-tag android-sdk-v0.1.0-beta.2
+commit_all "$r" "bump android"
+sync_main "$r"
+git -C "$r" tag -d android-sdk-v0.1.0-beta.2 >/dev/null
+git -C "$r" tag android-sdk-v0.1.0-beta.2
+expect_last "check-tag passes the tag once the version is committed" \
+    "android-sdk-v0.1.0-beta.2 can be released" -- "$rel" check-tag android-sdk-v0.1.0-beta.2
+
+# Each file that holds a version, and the notes, are guarded, for each component.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    rel="$r/scripts/sdk-release.sh"
+    tag="$(prefix_of "$component")0.1.0-beta.1"
+    git -C "$r" tag "$tag"
+    guarded=()
+    while IFS= read -r file; do
+        guarded+=("$file")
+    done < <(guarded_files "$component")
+    for file in "${guarded[@]}"; do
+        echo >>"$r/$file"
+        expect_fail "check-tag refuses $tag when $file has a change that is not committed" \
+            "$(uncommitted "$component" "$file")" -- "$rel" check-tag "$tag"
+        reset_repo "$r"
+    done
+    touch "${guarded[@]/#/$r/}"
+    expect_last "check-tag does not take files that were only touched for changed ones" \
+        "$tag can be released" -- "$rel" check-tag "$tag"
+done
+
+# A change in the files of the other components is not the concern of this tag, and the refusal
+# names the files of the tag's own component that have one, and no others.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+for component in rust react-native; do
+    while IFS= read -r file; do
+        echo >>"$r/$file"
+    done < <(guarded_files "$component")
+done
+expect_last "check-tag passes when only the files of the other components have changes" \
+    "android-sdk-v0.1.0-beta.1 can be released" -- "$rel" check-tag android-sdk-v0.1.0-beta.1
+echo >>"$r/$CATALOG"
+echo >>"$r/android/CHANGELOG.md"
+expect_fail "check-tag names the files of its own component that have changes, and no others" \
+    "$(uncommitted android "android/CHANGELOG.md, $CATALOG")" -- \
+    "$rel" check-tag android-sdk-v0.1.0-beta.1
+
+# The tag has to be on the checked out commit before its files are looked at, and the files are
+# looked at before the version in them is compared with the tag: the version of a file that is not
+# committed says nothing about the commit.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" tag rust-sdk-v0.1.0-beta.1
+tagged="$(short "$r")"
+change "$r" later.txt "a commit after the tag"
+echo >>"$r/$CARGO_TOML"
+expect_fail "check-tag names the commit before it looks at the files" \
+    "rust-sdk-v0.1.0-beta.1 points at commit $tagged, but the checked out commit is" -- \
+    "$rel" check-tag rust-sdk-v0.1.0-beta.1
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+put "$r" android 0.2.0
+expect_fail "check-tag names the change that is not committed before it compares the version" \
+    "$(uncommitted android "$CATALOG")" -- "$rel" check-tag android-sdk-v0.1.0-beta.1
 
 expect_usage "check-tag needs a tag" -- "$rel" check-tag
 expect_usage "check-tag takes one tag" -- "$rel" check-tag rust-sdk-v0.1.0-beta.1 android-sdk-v0.1.0
@@ -2990,6 +3128,16 @@ released_repo() {
     echo "$dir"
 }
 
+# What `pending` says on stderr about the component $1 whose earlier version was never released,
+# or could not be read: $2 is why, in the words of the note. The first release of such a component
+# is started by running the tag workflow by hand, and it has to be run before anything else is
+# merged, because a version is tagged on one commit.
+unreleased_note() {
+    local note="$1: $2, so this is not a version bump after a release; the tag workflow has to be"
+    echo "$note run by hand for $1 now, before anything else is merged, because components" \
+        "released together are tagged on one commit"
+}
+
 fresh_registries
 r="$(released_repo)"
 rel="$r/scripts/sdk-release.sh"
@@ -3035,9 +3183,8 @@ for component in rust android react-native; do
     old="$(git -C "$r" rev-parse HEAD)"
     "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 "$component"
     commit_all "$r" "bump $component"
-    notice="$component: the version changed from 0.1.0-beta.1, which was never released, to"
-    notice="$notice 0.1.0-beta.2, so this is not a version bump after a release; the tag workflow"
-    notice="$notice can be run by hand to release 0.1.0-beta.2"
+    notice="$(unreleased_note "$component" \
+        "the version changed from 0.1.0-beta.1, which was never released, to 0.1.0-beta.2")"
     expect_split "pending prints a notice, not $component, when it changed from an unreleased one" \
         "" "$notice" -- "$rel" pending "$old"
 done
@@ -3064,9 +3211,8 @@ expect_split "pending lists a component whose new version only has a branch name
     "rust" "" -- "$rel" pending "$old"
 git -C "$r" tag -d rust-sdk-v0.1.0-beta.1 >/dev/null
 git -C "$r" branch rust-sdk-v0.1.0-beta.1 "$old"
-notice="rust: the version changed from 0.1.0-beta.1, which was never released, to 0.2.0,"
-notice="$notice so this is not a version bump after a release; the tag workflow can be run by hand"
-notice="$notice to release 0.2.0"
+notice="$(unreleased_note rust \
+    "the version changed from 0.1.0-beta.1, which was never released, to 0.2.0")"
 expect_split "pending does not take a branch named like the old tag for its release" "" \
     "$notice" -- "$rel" pending "$old"
 
@@ -3078,23 +3224,108 @@ git -C "$r" tag -d android-sdk-v0.1.0-beta.1 >/dev/null
 "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust android react-native
 commit_all "$r" "bump every component"
 release_tag "$r" react-native 0.1.0-beta.2
-notice="android: the version changed from 0.1.0-beta.1, which was never released, to 0.1.0-beta.2,"
-notice="$notice so this is not a version bump after a release; the tag workflow can be run by hand"
-notice="$notice to release 0.1.0-beta.2"
+notice="$(unreleased_note android \
+    "the version changed from 0.1.0-beta.1, which was never released, to 0.1.0-beta.2")"
 expect_split "pending sorts the components that changed into the three cases" "rust" \
     "$notice"$'\n'"react-native-sdk-v0.1.0-beta.2 already exists; nothing to release" -- \
     "$rel" pending "$old"
 
-# The commit must exist, and the versions must be readable there.
+# The commit must exist.
 expect_fail "pending refuses a commit that does not exist" \
     "no commit nonexistent in this checkout" -- "$rel" pending nonexistent
+
+# A version that cannot be read at the commit is one that was never released: the component is
+# left out with a note, and the others are listed as usual. A push must not fail for a component
+# that had no version yet, or one outside the grammar, such as the one that first sets them up.
 git -C "$r" rm -q "$CARGO_TOML"
 commit_all "$r" "drop the crate's manifest"
 gone="$(git -C "$r" rev-parse HEAD)"
 put_file "$r" "$CARGO_TOML" 0.1.0-beta.2
 commit_all "$r" "restore the crate's manifest"
-expect_fail "pending names a version file that is missing at the commit" \
-    "no $CARGO_TOML at $gone" -- "$rel" pending "$gone"
+notice="$(unreleased_note rust "its earlier version could not be read (no $CARGO_TOML at $gone)")"
+expect_split "pending notes a version file that is missing at the commit, and succeeds" "" \
+    "$notice" -- "$rel" pending "$gone"
+
+fresh_registries
+r="$(released_repo)"
+rel="$r/scripts/sdk-release.sh"
+put_file "$r" "$CARGO_TOML" 0.1.0-alpha.1
+commit_all "$r" "the crate is at an alpha"
+old="$(git -C "$r" rev-parse HEAD)"
+put "$r" rust 0.1.0-beta.2
+"$r/scripts/sdk-version.sh" set 0.1.0-beta.2 android react-native
+commit_all "$r" "bump every component"
+reason="[package] version is 0.1.0-alpha.1 in $CARGO_TOML at $old;"
+reason="$reason a version must be X.Y.Z-beta.N or X.Y.Z"
+notice="$(unreleased_note rust "its earlier version could not be read ($reason)")"
+run_split "$rel" pending "$old"
+expect_equal "pending succeeds when the earlier version of a component is outside the grammar" \
+    0 "$STATUS"
+expect_equal "pending lists the other components that were bumped from a release" \
+    $'android\nreact-native' "$OUT"
+expect_equal "pending notes the component whose earlier version it cannot read, and why" \
+    "$notice" "$ERR"
+release_tag "$r" rust 0.1.0-beta.2
+expect_split "pending says that the new version is tagged, not that the old one is unreadable" \
+    $'android\nreact-native' "rust-sdk-v0.1.0-beta.2 already exists; nothing to release" -- \
+    "$rel" pending "$old"
+
+fresh_registries
+r="$(released_repo)"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" rm -q "$WRAPPER_MANIFEST"
+commit_all "$r" "drop the manifest of the React Native wrapper"
+old="$(git -C "$r" rev-parse HEAD)"
+put "$r" react-native 0.1.0-beta.2
+"$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust android
+commit_all "$r" "bump every component"
+notice="$(unreleased_note react-native \
+    "its earlier version could not be read (no $WRAPPER_MANIFEST at $old)")"
+run_split "$rel" pending "$old"
+expect_equal "pending succeeds when the earlier commit lacks a React Native manifest" 0 "$STATUS"
+expect_equal "pending lists the other components that were bumped from a release" \
+    $'rust\nandroid' "$OUT"
+expect_equal "pending notes the React Native SDK, and the manifest it could not read" \
+    "$notice" "$ERR"
+
+fresh_registries
+r="$(released_repo)"
+rel="$r/scripts/sdk-release.sh"
+put_file "$r" "$BINDINGS_MANIFEST" 0.2.0
+commit_all "$r" "the manifests of the React Native packages disagree"
+old="$(git -C "$r" rev-parse HEAD)"
+"$r/scripts/sdk-version.sh" set 0.2.0 react-native
+commit_all "$r" "bring the manifests together"
+disagreement="the React Native packages disagree: $BINDINGS_MANIFEST is 0.2.0"
+disagreement="$disagreement but $WRAPPER_MANIFEST is 0.1.0-beta.1 at $old"
+notice="$(unreleased_note react-native "its earlier version could not be read ($disagreement)")"
+expect_split "pending notes manifests that disagreed at the commit, and succeeds" "" "$notice" -- \
+    "$rel" pending "$old"
+
+# The push that first sets up the versions: none of them is there at the commit before.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    while IFS= read -r file; do
+        git -C "$r" rm -q "$file"
+    done < <(files_of "$component")
+done
+commit_all "$r" "no version files"
+old="$(git -C "$r" rev-parse HEAD)"
+git -C "$r" revert --no-edit HEAD >/dev/null
+notice="$(unreleased_note rust "its earlier version could not be read (no $CARGO_TOML at $old)")"
+notice="$notice"$'\n'"$(unreleased_note android \
+    "its earlier version could not be read (no $CATALOG at $old)")"
+notice="$notice"$'\n'"$(unreleased_note react-native \
+    "its earlier version could not be read (no $BINDINGS_MANIFEST at $old)")"
+expect_split "pending releases nothing by surprise in the push that first sets up the versions" \
+    "" "$notice" -- "$rel" pending "$old"
+put_file "$r" "$CATALOG" 0.2.0-rc.1
+expect_fail "pending still fails when a version in the tree cannot be read" \
+    "fedimintSdk version is 0.2.0-rc.1 in $CATALOG; a version must be X.Y.Z-beta.N or X.Y.Z" -- \
+    "$rel" pending "$old"
+
 expect_usage "pending needs a commit" -- "$rel" pending
 expect_usage "pending takes one commit" -- "$rel" pending HEAD HEAD
 expect_usage "pending refuses an empty commit" -- "$rel" pending ""
@@ -3158,6 +3389,547 @@ expect_fail "untagged names the version it cannot read" \
 expect_usage "untagged needs a component" -- "$rel" untagged
 
 echo
+echo "sdk-release.sh bump"
+
+# A repository with every component at the version $1, released: the notes have a section for it
+# and each component has a tag for it on the base commit. Prints its path.
+released_at() {
+    local dir component
+    dir="$(repo "$1" < <(notes_for "$1"))"
+    for component in rust android react-native; do
+        release_tag "$dir" "$component" "$1"
+    done
+    echo "$dir"
+}
+
+# expect_versions <name> <repository> <rust> <android> <react-native>: the components of the
+# repository are at these versions.
+expect_versions() {
+    local name="$1" dir="$2" got="" component
+    for component in rust android react-native; do
+        got="${got:+$got$'\n'}$component $("$dir/scripts/sdk-version.sh" current "$component")"
+    done
+    expect_equal "$name" "$(lines "rust $3" "android $4" "react-native $5")" "$got"
+}
+
+# expect_listed <name> <y|n> <notes> <subject>: the notes list the commit with that subject (y) or
+# leave it out (n).
+expect_listed() {
+    local name="$1" listing="$2" notes="$3" subject="$4"
+    if [[ "$listing" == y && "$notes" == *"- $subject ("* ]] ||
+        [[ "$listing" == n && "$notes" != *"$subject"* ]]; then
+        pass "$name"
+    else
+        fail "$name (expected $listing)" "$notes"
+    fi
+}
+
+# Every component is released at 0.1.0 and the line moves on to the first beta of the next patch.
+# The commits since the release touch the paths of some components only, and the draft of each
+# component lists the commits that touched its own paths.
+fresh_registries
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+subjects=(
+    "feat(rn): a new call"
+    "feat(android): a new call"
+    "feat(sdk): a new call"
+    "chore(nix): update the toolchain"
+    "feat(web): unrelated to every component"
+    "chore(release): bump the SDK to 0.1.0"
+)
+# Whether the drafts of rust, android and react-native list each subject, in the same order.
+listed=("n n y" "n y n" "y y y" "n y y" "n n n" "n n n")
+change "$r" js/react-native/react-native/src/index.ts "${subjects[0]}"
+change "$r" android/fedimint-sdk/src/Sdk.kt "${subjects[1]}"
+change "$r" rust/fedimint-sdk/src/lib.rs "${subjects[2]}"
+change "$r" nix/sdk.nix "${subjects[3]}"
+change "$r" js/web/index.ts "${subjects[4]}"
+change "$r" rust/fedimint-sdk/src/release.rs "${subjects[5]}"
+run_split "$rel" bump all patch --beta
+expect_equal "bump all patch --beta succeeds" 0 "$STATUS"
+expect_equal "bump prints the new version and nothing else on stdout" "0.1.1-beta.1" "$OUT"
+expect_contains "bump says on stderr what it checked" \
+    "rust tags: 0.1.1-beta.1 is newer than the latest release, 0.1.0" "$ERR"
+expect_versions "bump all gives every component the new version" "$r" 0.1.1-beta.1 \
+    0.1.1-beta.1 0.1.1-beta.1
+expect_changed "bump all writes the versions and the notes of every component and nothing else" \
+    "$r" "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" "$CATALOG" "$BINDINGS_MANIFEST" \
+    "$WRAPPER_MANIFEST" rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md \
+    js/react-native/CHANGELOG.md
+index=0
+for component in rust android react-native; do
+    notes="$("$r/scripts/sdk-changelog.sh" section "$component" 0.1.1-beta.1 || true)"
+    for i in "${!subjects[@]}"; do
+        read -ra want <<<"${listed[$i]}"
+        expect_listed "bump all drafts $component: ${subjects[$i]}" "${want[$index]}" "$notes" \
+            "${subjects[$i]}"
+    done
+    expect_contains "bump all drafts $component from the commits since its last release" \
+        "<!-- draft: the commits since 0.1.0 that touched the SDK." "$notes"
+    index=$((index + 1))
+done
+
+# The bindings alone, in the middle of a beta: the crate keeps its version and its notes.
+fresh_registries
+r="$(released_repo)"
+rel="$r/scripts/sdk-release.sh"
+crate_files=("$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" rust/fedimint-sdk/CHANGELOG.md)
+crate_sums="$(cd "$r" && cksum "${crate_files[@]}")"
+run_split "$rel" bump bindings beta
+expect_equal "bump bindings beta succeeds" 0 "$STATUS"
+expect_equal "bump bindings beta prints the next beta" "0.1.0-beta.2" "$OUT"
+expect_versions "bump bindings moves the bindings and not the crate" "$r" 0.1.0-beta.1 \
+    0.1.0-beta.2 0.1.0-beta.2
+expect_changed "bump bindings writes the versions and notes of the bindings and nothing else" \
+    "$r" "$CATALOG" "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" android/CHANGELOG.md \
+    js/react-native/CHANGELOG.md
+expect_equal "bump bindings leaves the crate's versions and notes byte for byte as they were" \
+    "$crate_sums" "$(cd "$r" && cksum "${crate_files[@]}")"
+
+# A component that is behind the line goes to the next version of the line, not to its own next.
+# Its draft starts from its own last release, which is not the line's version.
+fresh_registries
+r="$(released_at 0.2.0)"
+rel="$r/scripts/sdk-release.sh"
+put "$r" react-native 0.2.1
+commit_all "$r" "release react-native 0.2.1 alone"
+release_tag "$r" react-native 0.2.1
+run_split "$rel" bump android patch
+expect_equal "bump android patch succeeds" 0 "$STATUS"
+expect_equal "bump android patch goes to the next version of the line, not to its own" "0.2.2" \
+    "$OUT"
+expect_versions "bump android leaves the other components at their versions" "$r" 0.2.0 0.2.2 \
+    0.2.1
+expect_changed "bump android writes its version and its notes and nothing else" "$r" "$CATALOG" \
+    android/CHANGELOG.md
+expect_contains "bump android drafts from the commits since its own last release" \
+    "<!-- draft: the commits since 0.2.0 that touched the SDK." \
+    "$("$r/scripts/sdk-changelog.sh" section android 0.2.2)"
+
+# A beta of one component is released while the line is at a beta.
+fresh_registries
+r="$(released_at 0.3.0-beta.2)"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" bump react-native release
+expect_equal "bump react-native release succeeds" 0 "$STATUS"
+expect_equal "bump react-native release prints the release of the beta" "0.3.0" "$OUT"
+expect_versions "bump react-native release leaves the other components in their beta" "$r" \
+    0.3.0-beta.2 0.3.0-beta.2 0.3.0
+expect_changed "bump react-native writes both manifests and its notes and nothing else" "$r" \
+    "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" js/react-native/CHANGELOG.md
+
+# The crate alone is a component like the others.
+fresh_registries
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" bump rust minor
+expect_equal "bump rust minor prints the next minor" "0.2.0" "$OUT"
+expect_versions "bump rust moves the crate alone" "$r" 0.2.0 0.1.0 0.1.0
+expect_changed "bump rust writes the manifest, the lockfile, the Swift constant and its notes" \
+    "$r" "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" rust/fedimint-sdk/CHANGELOG.md
+
+# A component that has no release yet gets the draft for a first release, which lists no commits.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+release_tag "$r" rust 0.1.0-beta.1
+release_tag "$r" android 0.1.0-beta.1
+run_split "$rel" bump all beta
+expect_equal "bump all beta succeeds when a component has no release yet" 0 "$STATUS"
+expect_equal "bump all beta prints the next beta" "0.1.0-beta.2" "$OUT"
+for component in rust android; do
+    expect_contains "bump drafts $component from the commits since its release" \
+        "<!-- draft: the commits since 0.1.0-beta.1 that touched the SDK." \
+        "$("$r/scripts/sdk-changelog.sh" section "$component" 0.1.0-beta.2)"
+done
+notes="$("$r/scripts/sdk-changelog.sh" section react-native 0.1.0-beta.2 || true)"
+expect_contains "bump drafts a component that has no release as a first release" \
+    "<!-- draft: nothing is released yet" "$notes"
+if [[ "$notes" != *"the commits since"* ]]; then
+    pass "bump lists no commits for a component that has no release"
+else
+    fail "bump lists no commits for a component that has no release" "$notes"
+fi
+
+# What `next` refuses is refused, and nothing is written.
+fresh_registries
+r="$(released_at 0.1.0-beta.1)"
+rel="$r/scripts/sdk-release.sh"
+in_beta="0.1.0-beta.1 is a beta: bump \`beta\` for the next beta, or \`release\` to release it"
+expect_untouched "bump all minor in the middle of a beta fails as next does, and writes nothing" \
+    "$r" "$in_beta" -- "$rel" bump all minor
+expect_untouched "bump all patch --beta in the middle of a beta writes nothing" "$r" \
+    "0.1.0-beta.1 is a beta" -- "$rel" bump all patch --beta
+expect_untouched "bump android major in the middle of a beta writes nothing" "$r" \
+    "0.1.0-beta.1 is a beta" -- "$rel" bump android major
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+expect_untouched "bump all beta from a release fails as next does, and writes nothing" "$r" \
+    "0.1.0 is a release, not a beta: start the next version with major, minor or patch" -- \
+    "$rel" bump all beta
+expect_untouched "bump all release from a release writes nothing" "$r" \
+    "0.1.0 is a release, not a beta" -- "$rel" bump all release
+expect_untouched "bump all beta --beta fails as next does, and writes nothing" "$r" \
+    "--beta only goes with major, minor or patch" -- "$rel" bump all beta --beta
+
+# A group that is none is refused, and nothing is written.
+expect_untouched "bump refuses an unknown group, and writes nothing" "$r" \
+    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "$rel" bump sideways patch
+expect_untouched "bump refuses an empty group, and writes nothing" "$r" \
+    " is not a component: it must be one of rust, android, react-native" -- \
+    "$rel" bump "" patch
+expect_unasked "bump asks neither npm nor crates.io before it knows the group and the version"
+
+# A version that a registry or a tag already has is refused for any group, and nothing is written.
+fresh_registries
+crates_has 0.1.0 0.1.1
+expect_untouched "bump refuses a version that crates.io has, and writes nothing" "$r" \
+    "crates.io: 0.1.1 is already released; bump the version first" -- "$rel" bump all patch
+fresh_registries
+npm_has "$WRAPPER_PACKAGE" '["0.0.0","0.1.0","0.1.1"]'
+expect_untouched "bump refuses a version that npm has, and writes nothing" "$r" \
+    "$WRAPPER_PACKAGE: 0.1.1 is already released; bump the version first" -- \
+    "$rel" bump all patch
+expect_untouched "bump android refuses a version that npm has for the React Native packages" "$r" \
+    "$WRAPPER_PACKAGE: 0.1.1 is already released; bump the version first" -- \
+    "$rel" bump android patch
+fresh_registries
+npm_has "$BINDINGS_PACKAGE" '["0.0.0","0.1.0","0.2.0"]'
+expect_untouched "bump refuses a version below one that npm has, and writes nothing" "$r" \
+    "$BINDINGS_PACKAGE: 0.1.1 is lower than 0.2.0, which is already released" -- \
+    "$rel" bump all patch
+fresh_registries
+release_tag "$r" rust 0.1.1
+expect_untouched "bump android refuses a version that the tag of another component has" "$r" \
+    "rust tags: 0.1.1 is already released; bump the version first" -- "$rel" bump android patch
+
+# Nothing is written when the notes of a component, or a version file, would fail the bump later.
+# The notes of the last component already have the section, so the components before it must not
+# have been written either.
+fresh_registries
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+printf '\n## 0.1.1-beta.1\n\nWritten ahead.\n' >>"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "notes written ahead of the bump"
+expect_untouched "bump refuses notes that have the new version's section already" "$r" \
+    "js/react-native/CHANGELOG.md already has a \`## 0.1.1-beta.1\` section" -- \
+    "$rel" bump all patch --beta
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+rm "$r/android/CHANGELOG.md"
+expect_untouched "bump refuses a component without notes, and writes nothing" "$r" \
+    "no $r/android/CHANGELOG.md" -- "$rel" bump all patch --beta
+r="$(released_at 0.1.0)"
+rel="$r/scripts/sdk-release.sh"
+rm "$r/$VERSION_SWIFT"
+expect_untouched "bump refuses a version file that is missing, and writes nothing" "$r" \
+    "no $VERSION_SWIFT" -- "$rel" bump all patch --beta
+
+expect_usage "bump needs a group and a bump" -- "$rel" bump
+expect_usage "bump needs a bump" -- "$rel" bump all
+expect_usage "bump takes nothing after --beta" -- "$rel" bump all patch --beta extra
+expect_usage "bump refuses an unknown bump" -- "$rel" bump all sideways
+expect_usage "bump refuses an unknown option" -- "$rel" bump all patch --sideways
+
+echo
+echo "sdk-release.sh tag"
+
+# Two of the three components are tagged. The tags are annotated, on HEAD, with the title and the
+# version as the first paragraph and the notes as the rest, and they are not pushed.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+origin="$(mktemp -d "$WORK/origin.XXXX")"
+git init -q --bare "$origin"
+git -C "$r" remote add origin "$origin"
+head="$(git -C "$r" rev-parse HEAD)"
+run_split "$rel" tag android react-native
+expect_equal "tag android react-native succeeds" 0 "$STATUS"
+expect_equal "tag prints the tags it created, one per line, in the order the components are named" \
+    $'android-sdk-v0.1.0-beta.1\nreact-native-sdk-v0.1.0-beta.1' "$OUT"
+expect_contains "tag says on stderr that it checked the first component" \
+    "android 0.1.0-beta.1 can be released" "$ERR"
+expect_contains "tag says on stderr that it checked the second component" \
+    "react-native 0.1.0-beta.1 can be released" "$ERR"
+expect_equal "tag creates those tags and no other" \
+    $'android-sdk-v0.1.0-beta.1\nreact-native-sdk-v0.1.0-beta.1' "$(git -C "$r" tag -l)"
+for row in "android|Android SDK" "react-native|React Native SDK"; do
+    IFS='|' read -r component title <<<"$row"
+    tag="$(prefix_of "$component")0.1.0-beta.1"
+    expect_equal "tag makes $tag an annotated tag" tag "$(git -C "$r" cat-file -t "refs/tags/$tag")"
+    expect_equal "tag puts $tag on HEAD" "$head" "$(git -C "$r" rev-parse "$tag^{commit}")"
+    expect_equal "tag starts the message of $tag with the title and the version" \
+        "$title 0.1.0-beta.1" "$(git -C "$r" tag -l --format='%(contents:subject)' "$tag")"
+    expect_equal "tag gives $tag the notes of its component after the title" \
+        "$title 0.1.0-beta.1"$'\n\n'"$("$r/scripts/sdk-changelog.sh" section "$component" \
+            0.1.0-beta.1)" "$(git -C "$r" tag -l --format='%(contents)' "$tag")"
+done
+expect_equal "the tagger is whoever git is configured for" "test <test@example.invalid>" \
+    "$(git -C "$r" tag -l --format='%(taggername) %(taggeremail)' android-sdk-v0.1.0-beta.1)"
+expect_equal "tag pushes nothing" "" "$(git -C "$r" ls-remote --tags origin)"
+expect_changed "tag changes no file" "$r"
+
+# The tags come in the order the components are named, whichever it is, and the title of each is
+# its component's.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" tag react-native rust android
+expect_equal "tag lists the tags in the order the components are named" \
+    $'react-native-sdk-v0.1.0-beta.1\nrust-sdk-v0.1.0-beta.1\nandroid-sdk-v0.1.0-beta.1' "$OUT"
+expect_equal "tag gives the crate's tag the Rust SDK title" "Rust SDK 0.1.0-beta.1" \
+    "$(git -C "$r" tag -l --format='%(contents:subject)' rust-sdk-v0.1.0-beta.1)"
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" tag android android
+expect_equal "tag tags a component named twice once" "android-sdk-v0.1.0-beta.1" "$OUT"
+expect_equal "tag creates no other tag for a component named twice" "android-sdk-v0.1.0-beta.1" \
+    "$(git -C "$r" tag -l)"
+expect_unasked "tag asks neither npm nor crates.io for the Android SDK alone"
+
+# The notes are the message as they are, whatever they hold: git's own cleanup of a tag message
+# would drop a Markdown heading, and a wrapped line that starts with an issue reference.
+fresh_registries
+r="$(repo 0.2.0 < <(printf '%s\n' '# Changelog' '' '## 0.2.0' '' \
+    'Restoring a seed no longer crashes, which' '#447 reported.' '' '### Fixed' '' \
+    '- A thing that was broken.'))"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" tag rust
+message="$(git -C "$r" tag -l --format='%(contents)' rust-sdk-v0.2.0)"
+expect_equal "tag keeps the headings and the issue references of the notes" \
+    "Rust SDK 0.2.0"$'\n\n'"$("$r/scripts/sdk-changelog.sh" section rust 0.2.0)" "$message"
+expect_contains "the message of the tag has the heading of the notes" "### Fixed" "$message"
+expect_contains "the message of the tag has the line that starts with an issue reference" \
+    $'which\n#447 reported.' "$message"
+
+# One check that fails stops all of them: no tag is created, not even for a component whose check
+# passed, whichever comes first.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+draft_notes 0.1.0-beta.1 >"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "notes that are still a draft"
+draft="js/react-native/CHANGELOG.md's \`## 0.1.0-beta.1\` section is still a draft"
+for order in "android react-native" "react-native android" "rust android react-native"; do
+    # shellcheck disable=SC2086 # $order is meant to split into the component names.
+    run_split "$rel" tag $order
+    expect_equal "tag $order fails when the notes of react-native are still a draft" 1 "$STATUS"
+    expect_contains "tag $order says which notes are still a draft" "$draft" "$ERR"
+    expect_equal "tag $order prints no tag when it fails" "" "$OUT"
+    expect_equal "tag $order creates no tag at all" "" "$(git -C "$r" tag -l)"
+done
+
+# A tag that exists already is refused, and no other tag is created.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+release_tag "$r" react-native 0.1.0-beta.1
+for order in "android react-native" "react-native android"; do
+    # shellcheck disable=SC2086 # $order is meant to split into the component names.
+    run_split "$rel" tag $order
+    expect_equal "tag $order fails when react-native is tagged already" 1 "$STATUS"
+    expect_contains "tag $order says that the version is released already" \
+        "react-native tags: 0.1.0-beta.1 is already released; bump the version first" "$ERR"
+    expect_equal "tag $order creates no tag" "react-native-sdk-v0.1.0-beta.1" \
+        "$(git -C "$r" tag -l)"
+done
+
+# The version of another component that is tagged on another commit is taken.
+tagged="$(short "$r")"
+change "$r" js/web/index.ts "a commit after the tag"
+taken="react-native-sdk-v0.1.0-beta.1 (react-native) is on commit $tagged, not on this commit,"
+taken="$taken $(short "$r"): 0.1.0-beta.1 is taken by that commit, so android needs the next"
+taken="$taken version"
+run_split "$rel" tag android
+expect_equal "tag android fails when react-native tagged the version on another commit" 1 "$STATUS"
+expect_contains "tag android says which commit has the version" "$taken" "$ERR"
+expect_equal "tag android creates no tag" "react-native-sdk-v0.1.0-beta.1" "$(git -C "$r" tag -l)"
+
+# The same version that another component tagged on this commit is the release of components that
+# are tagged together.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+run_split "$rel" tag rust
+expect_equal "tag rust succeeds" "rust-sdk-v0.1.0-beta.1" "$OUT"
+run_split "$rel" tag android react-native
+expect_equal "tag tags more components of a version on the same commit" \
+    $'android-sdk-v0.1.0-beta.1\nreact-native-sdk-v0.1.0-beta.1' "$OUT"
+expect_equal "tag has put all three tags on the same commit" 1 \
+    "$(git -C "$r" for-each-ref --format='%(*objectname)' refs/tags | sort -u | wc -l | tr -d ' ')"
+
+# The registries of a component are asked, and a version that one has is refused.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+crates_has 0.1.0-beta.1
+run_split "$rel" tag android rust
+expect_equal "tag android rust fails when crates.io has the version" 1 "$STATUS"
+expect_contains "tag says that crates.io has the version" \
+    "crates.io: 0.1.0-beta.1 is already released; bump the version first" "$ERR"
+expect_equal "tag creates no tag when crates.io has the version" "" "$(git -C "$r" tag -l)"
+fresh_registries
+npm_has "$WRAPPER_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
+run_split "$rel" tag android react-native
+expect_equal "tag android react-native fails when npm has the version" 1 "$STATUS"
+expect_contains "tag says that npm has the version" \
+    "$WRAPPER_PACKAGE: 0.1.0-beta.1 is already released; bump the version first" "$ERR"
+expect_equal "tag creates no tag when npm has the version" "" "$(git -C "$r" tag -l)"
+fresh_registries
+npm_fails "$BINDINGS_PACKAGE" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
+run_split "$rel" tag android react-native
+expect_equal "tag fails when npm cannot be reached" 1 "$STATUS"
+expect_equal "tag creates no tag when npm cannot be reached" "" "$(git -C "$r" tag -l)"
+
+# A tag that cannot be created, after another one was, takes the other one back. The name of a tag
+# that exists as a directory of tags cannot be a tag, but looks free to the checks.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" tag react-native-sdk-v0.1.0-beta.1/blocker
+run_split "$rel" tag android react-native
+expect_equal "tag fails when git cannot create a tag" 1 "$STATUS"
+expect_contains "tag says which tag it could not create" \
+    "could not create react-native-sdk-v0.1.0-beta.1" "$ERR"
+expect_equal "tag prints no tag when it fails" "" "$OUT"
+expect_equal "tag deletes the tags it had created, so that no tag is left" \
+    "react-native-sdk-v0.1.0-beta.1/blocker" "$(git -C "$r" tag -l)"
+
+# What is tagged is the commit, but the checks and the notes of the tags are read from the working
+# tree. So the files that hold the version of a component, and its notes, must have no change that
+# is not committed: with one, the tag would sit on a commit that does not hold what it names.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+put "$r" android 0.1.0-beta.2
+run_split "$rel" tag android
+expect_equal "tag android fails when the catalog is bumped and not committed" 1 "$STATUS"
+expect_contains "tag android names the catalog, and says that what is tagged is the commit" \
+    "$(uncommitted android "$CATALOG")" "$ERR"
+expect_equal "tag android prints no tag when the catalog is not committed" "" "$OUT"
+expect_equal "tag android creates no tag when the catalog is not committed" "" \
+    "$(git -C "$r" tag -l)"
+expect_last "check reads the working tree, so it passes while the bump is not committed" \
+    "android 0.1.0-beta.2 can be released" -- "$rel" check android
+git -C "$r" add "$CATALOG"
+run_split "$rel" tag android
+expect_equal "tag android fails when the bump is staged and not committed" 1 "$STATUS"
+expect_contains "tag android names the catalog of a bump that is staged" \
+    "$(uncommitted android "$CATALOG")" "$ERR"
+expect_equal "tag android creates no tag when the bump is staged" "" "$(git -C "$r" tag -l)"
+commit_all "$r" "bump android"
+run_split "$rel" tag android
+expect_equal "tag android succeeds once the bump is committed" "android-sdk-v0.1.0-beta.2" "$OUT"
+expect_equal "tag puts the tag on a commit that holds the version the tag names" "0.1.0-beta.2" \
+    "$("$r/scripts/sdk-version.sh" current android --at android-sdk-v0.1.0-beta.2)"
+
+# The notes alone, finished in the working tree while the commit has them as a draft.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(draft_notes 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+finished_notes >"$r/android/CHANGELOG.md"
+run_split "$rel" tag android
+expect_equal "tag android fails when its notes are finished and not committed" 1 "$STATUS"
+expect_contains "tag android names the notes that are not committed" \
+    "$(uncommitted android android/CHANGELOG.md)" "$ERR"
+expect_equal "tag android creates no tag when its notes are not committed" "" \
+    "$(git -C "$r" tag -l)"
+commit_all "$r" "finish the notes of android"
+run_split "$rel" tag android
+expect_equal "tag android succeeds once the notes are committed" "android-sdk-v0.1.0-beta.1" "$OUT"
+
+# Notes that git does not track yet are not in the commit either.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" rm -q --cached android/CHANGELOG.md
+git -C "$r" commit -q -m "stop tracking the notes of android"
+run_split "$rel" tag android
+expect_equal "tag android fails when its notes are not tracked" 1 "$STATUS"
+expect_contains "tag android names the notes that are not tracked" \
+    "$(uncommitted android android/CHANGELOG.md)" "$ERR"
+expect_equal "tag android creates no tag when its notes are not tracked" "" \
+    "$(git -C "$r" tag -l)"
+
+# Every file that holds a version, and the notes, of every component.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    rel="$r/scripts/sdk-release.sh"
+    guarded=()
+    while IFS= read -r file; do
+        guarded+=("$file")
+    done < <(guarded_files "$component")
+    for file in "${guarded[@]}"; do
+        echo >>"$r/$file"
+        run_split "$rel" tag "$component"
+        expect_equal "tag $component fails when $file has a change that is not committed" 1 \
+            "$STATUS"
+        expect_contains "tag $component names $file" "$(uncommitted "$component" "$file")" "$ERR"
+        expect_equal "tag $component creates no tag when $file has a change that is not committed" \
+            "" "$(git -C "$r" tag -l)"
+        reset_repo "$r"
+    done
+    touch "${guarded[@]/#/$r/}"
+    run_split "$rel" tag "$component"
+    expect_equal "tag $component takes files that were only touched for unchanged ones" \
+        "$(prefix_of "$component")0.1.0-beta.1" "$OUT"
+done
+
+# The change of another component is not the concern of the components that are tagged.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust react-native; do
+    while IFS= read -r file; do
+        echo >>"$r/$file"
+    done < <(guarded_files "$component")
+done
+run_split "$rel" tag android
+expect_equal "tag android succeeds when only the files of the other components have changes" \
+    "android-sdk-v0.1.0-beta.1" "$OUT"
+run_split "$rel" tag rust
+expect_equal "tag rust fails when its own files have changes" 1 "$STATUS"
+while IFS= read -r file; do
+    expect_contains "tag rust names $file" "$file" "$ERR"
+done < <(guarded_files rust)
+expect_equal "tag rust does not name a file of another component" "" \
+    "$(grep -e android/ -e js/react-native <<<"$ERR" || true)"
+expect_equal "tag rust creates no tag, and leaves the one of android" "android-sdk-v0.1.0-beta.1" \
+    "$(git -C "$r" tag -l)"
+
+# No check runs while a named component has a change that is not committed: the checks would ask
+# a registry, and one of them would fail first.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+release_tag "$r" android 0.2.0
+echo >>"$r/$BINDINGS_MANIFEST"
+run_split "$rel" tag android react-native
+expect_equal "tag android react-native fails when react-native has a change not committed" 1 \
+    "$STATUS"
+expect_contains "tag names the change of react-native, not the check of android that fails" \
+    "$(uncommitted react-native "$BINDINGS_MANIFEST")" "$ERR"
+expect_unasked "tag runs no check while a named component has a change that is not committed"
+
+# Names that are not components, and a missing name.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+expect_usage "tag needs a component" -- "$rel" tag
+for name in sideways all bindings ""; do
+    run_split "$rel" tag android "$name"
+    expect_equal "tag android '$name' fails" 1 "$STATUS"
+    expect_contains "tag refuses '$name', which is not a component" \
+        "$name is not a component: it must be one of rust, android, react-native" "$ERR"
+    expect_equal "tag android '$name' creates no tag, not even for android" "" \
+        "$(git -C "$r" tag -l)"
+done
+
+echo
 echo "sdk-release.sh usage"
 
 fresh_registries
@@ -3172,7 +3944,10 @@ expect_equal "the usage lists every command" "$(lines \
     'usage: scripts/sdk-release.sh check-tag <tag>' \
     'usage: scripts/sdk-release.sh check-tree' \
     'usage: scripts/sdk-release.sh pending <commit>' \
-    'usage: scripts/sdk-release.sh untagged <component>...')" "$("$rel" 2>&1 || true)"
+    'usage: scripts/sdk-release.sh untagged <component>...' \
+    'usage: scripts/sdk-release.sh bump <all|bindings|component> <major|minor|patch> [--beta]' \
+    'usage: scripts/sdk-release.sh bump <all|bindings|component> <beta|release>' \
+    'usage: scripts/sdk-release.sh tag <component>...')" "$("$rel" 2>&1 || true)"
 release_tag "$r" rust 0.1.0-beta.1
 # shellcheck disable=SC2016 # The shell that runs the code expands it, not this one.
 expect_ok "the script reads the repository it is in, whatever the working directory" \

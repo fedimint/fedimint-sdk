@@ -1,0 +1,236 @@
+name: SDK Tag
+
+# Tags the releases of the SDK's components and starts the release workflow
+# of each component on its tag, so a release needs no hand-run git commands.
+# The components are the Rust crate, the Android SDK and the React Native
+# packages. A pull request from sdk-version-bump.yaml sets the new version of
+# the ones it releases, and merging it brings this workflow.
+#
+# It runs when a push to main changes a file that holds a version
+# (rust/fedimint-sdk/Cargo.toml, android/gradle/libs.versions.toml and the two
+# package.json files in js/react-native), and it tags a component only when
+# all of these hold for it:
+#
+#   * its version changed in that push, and has no release tag yet;
+#   * the version it changed from was released, that is, has a tag. That is
+#     exactly what merging a sdk-version-bump.yaml pull request looks like.
+#     Any other version change, such as the one that first set up releases,
+#     only leaves a note in the log, and nothing is released by surprise;
+#   * the release checks pass: the version is newer than every release of the
+#     component, on its tags and on the registry it is published to, its notes
+#     are finished, and no component has tagged that version on another
+#     commit (scripts/sdk-release.sh check).
+#
+# Components whose version changed together are tagged on the same commit.
+# All of them are checked before any of them is tagged, so one that fails its
+# checks holds back the others.
+#
+# Any other change to those files, such as a dependency bump, does nothing.
+#
+# A manual run (Actions → SDK Tag → Run workflow, on main) names a group of
+# components and tags those of them that have no tag for the version they have
+# now, without the first two conditions. That is how a component's first
+# release is started, and a release whose automatic run was skipped or failed.
+# The first release has to be started right after the merge, before anything
+# else is merged, because components released together are tagged on one
+# commit.
+#
+# The tags are annotated, with the version's notes as their message, so each
+# release is recorded in git itself. A tag pushed with the workflow's own
+# token does not trigger other workflows, so this starts each release with
+# `gh workflow run` on its tag instead. Starting a workflow that way is the
+# one exception GitHub makes. The release workflows then take it from there;
+# the Android SDK's still asks for the `maven-central` environment's approval
+# as usual.
+#
+# The tags are pushed together, so a check that fails, or a push that is
+# rejected, leaves nothing tagged. A manual run on main tries again, and so
+# does re-running the job after a rejected push. Once the push has succeeded
+# the tags exist and no run tags them again, so a release workflow that could
+# not be started stays unstarted when the job is re-run: the error says how to
+# start it by hand.
+#
+# The tag rulesets for the release tags (`rust-sdk-v*`, `android-sdk-v*` and
+# `react-native-sdk-v*`) restrict updates and deletions, so a release tag is
+# never moved or removed. They must not restrict creation: this workflow
+# creates tags as the GitHub Actions app, and GitHub does not accept that app
+# as a bypass actor in an organization's repository, so a creation rule would
+# block it. A release workflow refuses a tag whose version is not the one the
+# tree on main has for that component, so a tag can only release what a
+# merged pull request already set.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/fedimint-sdk/Cargo.toml'
+      - 'android/gradle/libs.versions.toml'
+      - 'js/react-native/react-native/package.json'
+      - 'js/react-native/react-native-bindings/package.json'
+  workflow_dispatch:
+    inputs:
+      components:
+        description: >-
+          What to tag, if it has no tag for its version. all: the Rust crate and every
+          binding. bindings: every binding, the Android SDK and the React Native packages.
+          Or one component.
+        type: choice
+        options:
+          - all
+          - bindings
+          - rust
+          - android
+          - react-native
+
+# Runs one at a time. `queue: max` lets up to 100 of them wait; without it
+# GitHub keeps one pending run per group and drops an older one when a newer
+# arrives, so the run for one merge could be replaced by the run for the next.
+# A run that is lost all the same is recovered by a manual run.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  # Pushes the tags.
+  contents: write
+  # Starts the release workflows.
+  actions: write
+
+defaults:
+  run:
+    # Named so that `pipefail` is on, which the default shell leaves off.
+    shell: bash
+
+jobs:
+  tag:
+    name: 'Tag the releases'
+    # Releases come from main only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # Credentials kept: this job pushes the tags. The full history and the
+      # tags are for reading the versions this push changed from, and for the
+      # release checks, which compare with the release tags.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The components to release, as one line of names. After a push, those
+      # whose version this push bumped after a release; after a manual run,
+      # those of the group that have no tag for their version. The script says
+      # on stderr why it leaves any other out.
+      - name: 'Decide what to release'
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          GROUP: ${{ inputs.components }}
+        run: |
+          # The decision rests on the release tags in the checkout.
+          if [[ -z "$(git tag -l '*-sdk-v*')" ]]; then
+            echo "::error::the checkout has no release tags; the checkout" \
+              "step must fetch them (fetch-depth: 0)"
+            exit 1
+          fi
+          cannot_decide() {
+            echo "::error::could not decide what to release, so nothing was tagged. See the" \
+              "message above. Once its cause is fixed, run the SDK Tag workflow by hand on main."
+            exit 1
+          }
+          if [[ "$EVENT" == push ]]; then
+            pending="$(scripts/sdk-release.sh pending "$BEFORE")" || cannot_decide
+          else
+            group="$(scripts/sdk-version.sh components "$GROUP")" || cannot_decide
+            mapfile -t names <<<"$group"
+            pending="$(scripts/sdk-release.sh untagged "${names[@]}")" || cannot_decide
+          fi
+          releases="${pending//$'\n'/ }"
+          if [[ -z "$releases" ]]; then
+            echo "No component has a version to tag; nothing to release."
+          else
+            echo "To tag and release: $releases"
+          fi
+          echo "components=$releases" >>"$GITHUB_OUTPUT"
+
+      # One push for all the tags, so that either all of them exist on the
+      # remote or none does. Every release is started even if one of them
+      # cannot be, since the tags are permanent and this workflow does not tag
+      # them again.
+      - name: 'Tag and start the releases'
+        if: steps.decide.outputs.components != ''
+        env:
+          RELEASES: ${{ steps.decide.outputs.components }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . scripts/sdk-components.sh
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          read -ra components <<<"$RELEASES"
+          # A failed check is typically notes merged as a draft. The pull
+          # request that fixes it does not change a version, so it does not
+          # bring this workflow back by itself.
+          if ! created="$(scripts/sdk-release.sh tag "${components[@]}")"; then
+            echo "::error::nothing was tagged. See the message above. If a check refused a" \
+              "version, fix it in a pull request. Then run the SDK Tag workflow by hand on main."
+            exit 1
+          fi
+          mapfile -t tags <<<"$created"
+          # The push is atomic: when it fails, no tag reached the remote.
+          if ! git push --atomic origin "${tags[@]/#/refs/tags/}"; then
+            echo "::error::no tag was pushed. Once the cause above is fixed, re-run this job" \
+              "to try again."
+            exit 1
+          fi
+          tagged=""
+          started=""
+          not_started=""
+          android_started=0
+          failed=0
+          for i in "${!components[@]}"; do
+            workflow="$(component_workflow "${components[i]}")"
+            # The name of a release workflow, such as Android SDK Release, is
+            # its component's title and Release.
+            name="$(component_title "${components[i]}") Release"
+            tagged="${tagged:+$tagged, }\`${tags[i]}\`"
+            if gh workflow run "$workflow" --ref "${tags[i]}" -f publish=true; then
+              started+="- \`$workflow\` on \`${tags[i]}\`"$'\n'
+              if [[ "${components[i]}" == android ]]; then
+                android_started=1
+              fi
+            else
+              echo "::error::could not start $workflow on ${tags[i]}. Start it by hand: Actions," \
+                "$name, Run workflow, choose the tag ${tags[i]} (not a branch) under Use workflow" \
+                "from, and tick publish. Re-running this job does not start it, because the tag" \
+                "exists."
+              not_started+="- \`$workflow\` ($name) on \`${tags[i]}\`"$'\n'
+              failed=1
+            fi
+          done
+          {
+            echo "Tagged $tagged on \`$(git rev-parse --short HEAD)\`."
+            if [[ -n "$started" ]]; then
+              echo
+              echo "Started the releases:"
+              echo
+              printf '%s' "$started"
+            fi
+            if [[ -n "$not_started" ]]; then
+              echo
+              echo "Not started. Start each by hand: Actions, the workflow, Run workflow, on the" \
+                "tag (not a branch), with \`publish\` ticked. Re-running this job does not start" \
+                "them, because the tags exist:"
+              echo
+              printf '%s' "$not_started"
+            fi
+            if ((android_started)); then
+              echo
+              echo "Next, for the Android SDK: approve the \`maven-central\` environment in its" \
+                "run, press Publish on central.sonatype.com once the deployment is validated," \
+                "then publish the draft GitHub Release."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$failed"

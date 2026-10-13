@@ -6,10 +6,13 @@ name: SDK Release Scripts
 #     newer than every earlier one) and scripts/sdk-changelog.sh (the release
 #     notes a release needs, and the drafts written from the commits since the
 #     last one), with the components they know, in scripts/sdk-components.sh.
-#     The Android SDK's release, tag and bump workflows use them;
+#     The release, version bump and tag workflows use them;
 #   * scripts/sdk-release.sh, which holds the rules every release of the SDK
 #     must pass: that its version is not taken, that a version is tagged on one
-#     commit only, and that the committed versions and notes are consistent;
+#     commit only, and that the committed versions and notes are consistent.
+#     It also does what sdk-version-bump.yaml does to the tree and what
+#     sdk-tag.yaml does to the repository (`bump` and `tag`), so that those
+#     workflows hold no logic of their own;
 #   * the React Native release's own: scripts/react-native-sdk-release.sh
 #     (what a valid release tag is), scripts/react-native-sdk-pack.sh (what
 #     a tarball must contain), scripts/react-native-sdk-publish.sh (what gets
@@ -59,6 +62,8 @@ on:
       - 'js/react-native/react-native/package.json'
       - 'js/react-native/CHANGELOG.md'
       - '.github/workflows/sdk-release-scripts.yaml'
+      - '.github/workflows/sdk-version-bump.yaml'
+      - '.github/workflows/sdk-tag.yaml'
       - '.github/workflows/react-native-sdk-release.yaml'
 
 concurrency:

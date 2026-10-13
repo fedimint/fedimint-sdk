@@ -1,0 +1,259 @@
+name: SDK Version Bump
+
+# Bumps the version of the SDK's components, drafts their release notes and
+# opens a pull request with both. The components are the Rust crate, the
+# Android SDK and the React Native packages, and they share one line of
+# versions: a release takes the next version of the line and gives it to the
+# components it publishes. Picking `all`, `bindings` or one binding when
+# running this decides which components get it; the others keep their version,
+# and their files are not touched.
+#
+# Run it on main, and its pull request targets main: releases are only
+# tagged from main, so it refuses to run anywhere else.
+#
+# Pick what to release:
+#
+#   all         the Rust crate and every binding.
+#   bindings    every binding: the Android SDK and the React Native packages.
+#   android, react-native
+#               that binding alone.
+#
+# and how to bump:
+#
+#   patch, minor, major   from a release, start the next version. With
+#                         `beta` ticked it starts at `-beta.1`.
+#   beta                  from a beta, the next beta.
+#   release               from a beta, release it: X.Y.Z-beta.N -> X.Y.Z.
+#
+# RELEASING.md, "Versions", says which bump a change calls for.
+#
+# scripts/sdk-release.sh bump works the new version out and refuses a bump
+# that does not fit, such as `patch` in the middle of a beta. It also checks
+# the new version against every release tag and every version on npm and
+# crates.io, so this cannot propose a version that is taken. Nothing is
+# written unless every check passed.
+#
+# The drafted notes list the commits since the last release that touched the
+# component (scripts/sdk-changelog.sh), as a section of the CHANGELOG.md of
+# each component that gets the version. Rewrite them for users in the pull
+# request and remove the draft comments; the release refuses a draft.
+#
+# Merging the pull request is the decision to release: sdk-tag.yaml then tags
+# the merge commit for each component that got the version and starts that
+# component's release workflow on it. A component that has never been
+# released is not tagged by surprise: the pull request lists it, and
+# sdk-tag.yaml is run by hand for it right after the merge, before anything
+# else is merged. What a release still needs after that is up to the
+# component, such as the `maven-central` environment approval and the Publish
+# button on central.sonatype.com for the Android SDK. RELEASING.md, at the
+# repository root, describes the whole process.
+#
+# Two repository settings apply:
+#
+#   * Settings → Actions → General → "Allow GitHub Actions to create and
+#     approve pull requests" must be on, or opening the pull request fails.
+#   * A pull request opened with the workflow's own token does not start
+#     other workflows, so the checks of the SDK, such as
+#     sdk-release-scripts.yaml and android-sdk.yaml, do not run on it by
+#     themselves. If they are required, close and reopen the pull request to
+#     start them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: >-
+          What to release. all: the Rust crate and every binding. bindings: every binding,
+          the Android SDK and the React Native packages. Or one binding.
+        type: choice
+        options:
+          - all
+          - bindings
+          - android
+          - react-native
+      bump:
+        description: >-
+          patch/minor/major: next version after a release. beta: next beta. release: finish
+          the beta.
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - beta
+          - release
+      beta:
+        description: 'For patch, minor or major: start the new version at -beta.1'
+        type: boolean
+        default: true
+
+# One bump at a time: two in flight would both start from the same version.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+defaults:
+  run:
+    # Named so that `pipefail` is on, which the default shell leaves off.
+    shell: bash
+
+jobs:
+  bump:
+    name: 'Open the version bump pull request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # Main only. The pull request goes into main, and sdk-tag.yaml only tags
+      # pushes to main, so a bump merged anywhere else would never be released
+      # even though its pull request says it would. Failing here, rather than
+      # skipping the job, says why.
+      - name: 'Require main'
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::run the SDK Version Bump on main, not $REF: releases are only tagged" \
+            "from main"
+          exit 1
+
+      # Credentials kept, unlike the other workflows: this job pushes the
+      # bump branch. The full history and tags are for the checks, which read
+      # the release tags, and for drafting the notes, which list the commits
+      # since the last release's tag.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # npm and curl, which the checks ask for the versions on the registries,
+      # are on the runner. The new version is the only line on stdout.
+      - name: 'Bump the versions and draft the notes'
+        id: bump
+        env:
+          GROUP: ${{ inputs.components }}
+          BUMP: ${{ inputs.bump }}
+          START_AS_BETA: ${{ inputs.beta }}
+        run: |
+          args=("$GROUP" "$BUMP")
+          case "$BUMP" in
+            patch | minor | major)
+              if [[ "$START_AS_BETA" == true ]]; then
+                args+=(--beta)
+              fi
+              ;;
+          esac
+          next="$(scripts/sdk-release.sh bump "${args[@]}")"
+          echo "next=$next" >>"$GITHUB_OUTPUT"
+
+      # The files are changed and not committed yet, so a component's version
+      # at HEAD is the one it was bumped from.
+      - name: 'Open the pull request'
+        env:
+          GROUP: ${{ inputs.components }}
+          NEXT: ${{ steps.bump.outputs.next }}
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . scripts/sdk-components.sh
+          branch="sdk/version-$NEXT"
+          # An earlier bump to this version that is still open, or was
+          # abandoned, has left its branch, and a push to it is rejected.
+          status=0
+          git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null || status=$?
+          case "$status" in
+            0)
+              echo "::error::the branch $branch exists already, most likely from a bump to" \
+                "$NEXT that is still open or was abandoned. Delete the branch, and close its" \
+                "pull request, before running this workflow again."
+              exit 1
+              ;;
+            2) ;;
+            *)
+              echo "::error::could not ask origin whether the branch $branch exists."
+              exit 1
+              ;;
+          esac
+          case "$GROUP" in
+            all) what='the SDK' ;;
+            bindings) what='the bindings' ;;
+            *) what="the $(component_title "$GROUP")" ;;
+          esac
+          names="$(scripts/sdk-version.sh components "$GROUP")"
+          bumped=""
+          notes=""
+          tags=""
+          unreleased=""
+          while IFS= read -r component; do
+            from="$(scripts/sdk-version.sh current "$component" --at HEAD)"
+            bumped+="- $(component_title "$component"): \`$from\` to \`$NEXT\`"$'\n'
+            notes+="- \`$(component_changelog "$component")\`"$'\n'
+            tag="\`$(component_tag_prefix "$component")$NEXT\`"
+            # The merge does not tag a component that has no release:
+            # sdk-tag.yaml leaves its first release to a run by hand.
+            latest="$(scripts/sdk-release.sh latest "$component")"
+            if [[ -n "$latest" ]]; then
+              tags="${tags:+$tags, }$tag"
+            else
+              unreleased+="- $(component_title "$component"): $tag"$'\n'
+            fi
+          done <<<"$names"
+          body="$(
+            echo "Bumps $what to \`$NEXT\` (\`$BUMP\`):"
+            echo
+            printf '%s' "$bumped"
+            echo
+            echo "**Before merging:** in each of these files, rewrite the drafted" \
+              "\`## $NEXT\` notes for users (what was added, changed or fixed, and anything that" \
+              "breaks callers) and delete the draft comment:"
+            echo
+            printf '%s' "$notes"
+            echo
+            echo "The release refuses a draft."
+            echo
+            if [[ -z "$unreleased" ]]; then
+              echo "**Merging this releases \`$NEXT\`** of those components. The SDK Tag workflow" \
+                "tags the merge commit ($tags) and starts each release. If the Android SDK is" \
+                "among them, after that approve the \`maven-central\` environment, press Publish" \
+                "on central.sonatype.com once the deployment is validated, and publish the" \
+                "draft GitHub Release."
+            else
+              if [[ -n "$tags" ]]; then
+                echo "**Merging this releases \`$NEXT\`** of the components that have a release." \
+                  "The SDK Tag workflow tags the merge commit ($tags) and starts each release."
+                echo
+              fi
+              echo "**The merge does not tag these components, because they have never been" \
+                "released:**"
+              echo
+              printf '%s' "$unreleased"
+              echo
+              echo "Run the SDK Tag workflow by hand for them right after merging, before" \
+                "anything else is merged: components released together are tagged on one" \
+                "commit."
+              echo
+              echo "If the Android SDK is among the releases, after that approve the" \
+                "\`maven-central\` environment, press Publish on central.sonatype.com once the" \
+                "deployment is validated, and publish the draft GitHub Release."
+            fi
+            echo
+            echo "Opened by the SDK Version Bump workflow, whose token does not start other" \
+              "workflows. If a required check is waiting, close and reopen this pull request to" \
+              "start it. The pull request's checks also build the native libraries that the" \
+              "release then takes from the cache, so let them finish before merging."
+          )"
+          subject="chore(release): bump $what to $NEXT"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "$subject"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "$subject" \
+            --body "$body"

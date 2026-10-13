@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Holds the rules every release of the SDK must pass, so that the workflows that release it and a
-# maintainer's shell apply the same ones.
+# maintainer's shell apply the same ones, and does what the version bump and tag workflows do to
+# the tree and the repository, so that those hold no logic of their own.
 #
 #   scripts/sdk-release.sh latest <component>
 #   scripts/sdk-release.sh check-version <version>
@@ -10,6 +11,9 @@
 #   scripts/sdk-release.sh check-tree
 #   scripts/sdk-release.sh pending <commit>
 #   scripts/sdk-release.sh untagged <component>...
+#   scripts/sdk-release.sh bump <all|bindings|component> <major|minor|patch> [--beta]
+#   scripts/sdk-release.sh bump <all|bindings|component> <beta|release>
+#   scripts/sdk-release.sh tag <component>...
 #
 # This repository releases three components, which are built from one Rust crate and defined in
 # sdk-components.sh: `rust`, the `fedimint-sdk` crate on crates.io, `android`, the Android SDK on
@@ -47,16 +51,20 @@
 # has in the tree can be released from the commit that is checked out: it is newer than the
 # component's own release tags and registry versions (rule 3), its release notes are finished (see
 # sdk-changelog.sh) and no component has tagged the same version on another commit (rule 4). It
-# ends with `<component> <version> can be released`. --except-own leaves that version itself out of
-# the comparison with the tags and the registry, so that a release which stopped half way, after a
-# tag or a registry took the version, can run again. Rule 4 applies to the component's own tag of
-# that version as well.
+# reads the working tree, so that it also tells someone about to commit a version whether it could
+# be released; `tag` and `check-tag`, which release a commit, also require that what they read is
+# committed. It ends with `<component> <version> can be released`. --except-own leaves that
+# version itself out of the comparison with the tags and the registry, so that a release which
+# stopped half way, after a tag or a registry took the version, can run again. Rule 4 applies to
+# the component's own tag of that version as well.
 #
 # `check-tag` is what a release workflow runs first, for the tag that started it. The tag must be
 # a release tag that exists here, with the commit it points at checked out, and the rest of its
-# name must be the version the component has in the tree. That commit must also be on origin/main,
-# because releases come from main. Then `check --except-own` must pass. A tag need not be
-# annotated: the release notes are in the CHANGELOG.md. It ends with `<tag> can be released`.
+# name must be the version the component has in the tree. The files that hold that version and the
+# component's CHANGELOG.md must have no change that is not committed: the checks read the working
+# tree, but what a tag releases is the commit. That commit must also be on origin/main, because
+# releases come from main. Then `check --except-own` must pass. A tag need not be annotated: the
+# release notes are in the CHANGELOG.md. It ends with `<tag> can be released`.
 #
 # `check-tree` is for the pull request check and asks no registry. It requires of every
 # component a valid version, finished release notes and rule 5: either the release tag of its
@@ -68,18 +76,53 @@
 # of the components, each one whose version in the tree differs from its version at <commit>,
 # the commit before the push, when the new version has no release tag yet and the old one has:
 # a version bump after a release. For a version that changed from one that was never released
-# this is not so, and it prints nothing but a note on stderr that the tag workflow can be run
-# by hand to release it. It also notes on stderr a new version that is tagged already, and says
-# nothing of a component that did not change.
+# this is not so, and the same holds for one that cannot be read at <commit> (it is missing there,
+# or outside the grammar, or the React Native manifests disagree): nothing is released by
+# surprise, so it prints nothing for that component but a note on stderr. The note says that the
+# tag workflow has to be run by hand for it now, before anything else is merged, because
+# components released together are tagged on one commit. It also notes on stderr a new version
+# that is tagged already, and says nothing of a component that did not change. A <commit> that
+# is not in the checkout fails, and so does a version that cannot be read in the tree.
 #
 # `untagged` is the same filter for a run of the tag workflow by hand, which names the components
 # to tag: it prints those with no release tag for their version, and says on stderr that the tag
 # exists for the others, so that running it again after it stopped half way tags what is missing.
 #
+# `bump` is what the version bump workflow does to the tree, without git. Its first argument says
+# which components get the new version: `all` of them, the `bindings` or one component, as
+# `sdk-version.sh components` knows them. The others are what `sdk-version.sh next` takes. Its
+# answer, the next version of the line, is the new version of every component named, whatever
+# version each has: one that is behind the line is brought to the line's next, not to its own.
+# `bump` refuses what `next` refuses, such as `patch` in the middle of a beta, and then runs
+# `check-version` on the new version. For each component named it looks up the latest release
+# (`latest`) and checks that its notes can take a new section. Only then does it write: the new
+# version into the files that hold it (`sdk-version.sh set`), and into the notes of each component a
+# draft of the new version's section (`sdk-changelog.sh draft`) that lists the commits since its
+# latest release, or has the form that says nothing is released yet when it has none. Nothing is
+# written unless every check before the first write passed, and the version files and notes of the
+# components that were not named are not touched. The progress goes to stderr, and the new version
+# alone to stdout.
+#
+# `tag` is what the tag workflow does to the repository, without pushing. It takes the components
+# to tag, at least one. What is tagged is the commit, but the checks and the notes of the tags are
+# read from the working tree, so for every component it first requires that the files that hold
+# its version, and its CHANGELOG.md, have no change that is not committed (`sdk-version.sh files`
+# names the first). Then it runs `check` for every one of them. Only if all pass does it create,
+# at HEAD, an annotated tag for each: `<prefix><version>`, with the component's tag prefix and the
+# version it has in the tree. The message of a tag is `<title> <version>`, such as `Android SDK
+# 0.2.0`, as its first paragraph and the notes of that version (`sdk-changelog.sh section`) as the
+# rest. The notes are kept as they are: git's default cleanup of a tag message would drop every
+# line that starts with `#`, such as a heading. If a check fails or a tag exists already, no tag is
+# created, and if git still cannot create one, the tags created before it are deleted again. The
+# checks are reported on stderr and the tags created on stdout, one per line, in the order the
+# components were named. A component named more than once counts once. The tagger is whoever git is
+# configured for. `tag` never pushes: that, and starting the releases, is up to the caller.
+#
 # The script reads only local refs: fetch the tags and origin/main first (`git fetch --tags
 # origin`, `git fetch origin main`). The versions on a registry are asked of the registry itself:
 # of npm with `npm view`, and of the sparse index of crates.io with `curl`. The Android SDK's
-# registry is not asked: its release tags are the record of its releases.
+# registry is not asked: its release tags are the record of its releases. The script writes
+# nothing but what `bump` writes to the working tree and what `tag` writes as local tags.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -331,8 +374,33 @@ need_on_main() {
             "releases come from main, so merge it there and fetch first"
 }
 
+# Fails unless the files that hold the version of the component $1, and its release notes, are in
+# the working tree as they are in the checked out commit. A release tag names the commit, but the
+# checks and the notes of the tag are read from the working tree: a change that is not committed
+# would be checked, and tagged, as if the commit had it.
+need_committed() {
+    local component="$1" names file changelog modified untracked changed=""
+    local -a files=()
+    names="$("$VERSION_SCRIPT" files "$component")" || exit 1
+    while IFS= read -r file; do
+        files+=("$file")
+    done <<<"$names"
+    changelog="$(component_changelog "$component")" || exit 1
+    files+=("$changelog")
+    modified="$(git -C "$ROOT" diff --name-only HEAD -- "${files[@]}")" || exit 1
+    untracked="$(git -C "$ROOT" ls-files --others -- "${files[@]}")" || exit 1
+    while IFS= read -r file; do
+        [[ -z "$file" ]] || changed="${changed:+$changed, }$file"
+    done <<<"$modified"$'\n'"$untracked"
+    [[ -z "$changed" ]] ||
+        die "$component has changes that are not committed, in $changed:" \
+            "what is tagged is the commit, not the working tree," \
+            "so they have to be committed first"
+}
+
 # Fails unless the release tag $1 can be released: it exists, it is on the commit that is checked
-# out and on origin/main, it names the version that its component has in the tree, and that
+# out and on origin/main, the files that hold the version and the notes of its component have no
+# change that is not committed, it names the version that its component has in the tree, and that
 # version passes `check` without counting the tag itself.
 check_tag() {
     local tag="$1" component="" other prefix prefixes="" version commit head tree_version
@@ -353,6 +421,7 @@ check_tag() {
         die "$tag points at commit $(git -C "$ROOT" rev-parse --short "$commit"), but the" \
             "checked out commit is $(git -C "$ROOT" rev-parse --short "$head"):" \
             "check the tag out first"
+    need_committed "$component"
     tree_version="$("$VERSION_SCRIPT" current "$component")" || exit 1
     [[ "$version" == "$tree_version" ]] ||
         die "$tag names version $version, but $component is at $tree_version in the tree:" \
@@ -414,26 +483,30 @@ check_tree() {
 
 # Prints the components, in the order of COMPONENTS, whose version changed since the commit $1 from
 # a released version to one that has no release tag yet. On stderr it says why it leaves out each
-# of the other components whose version changed.
+# of the other components whose version changed. A version that cannot be read at the commit is
+# taken for one that was never released.
 pending() {
-    local commit="$1" component old new prefix result=""
+    local commit="$1" component old new prefix why result=""
     git -C "$ROOT" rev-parse -q --verify "$commit^{commit}" >/dev/null ||
         die "no commit $commit in this checkout"
     for component in "${COMPONENTS[@]}"; do
         new="$("$VERSION_SCRIPT" current "$component")" || exit 1
-        old="$("$VERSION_SCRIPT" current "$component" --at "$commit")" || exit 1
-        if [[ "$new" == "$old" ]]; then
-            continue
-        fi
         prefix="$(component_tag_prefix "$component")"
+        if old="$("$VERSION_SCRIPT" current "$component" --at "$commit" 2>&1)"; then
+            [[ "$new" != "$old" ]] || continue
+            why="the version changed from $old, which was never released, to $new"
+        else
+            why="its earlier version could not be read ($old)"
+            old=""
+        fi
         if has_tag "$prefix$new"; then
             echo "$prefix$new already exists; nothing to release" >&2
-        elif has_tag "$prefix$old"; then
+        elif [[ -n "$old" ]] && has_tag "$prefix$old"; then
             result="${result:+$result$'\n'}$component"
         else
-            echo "$component: the version changed from $old, which was never released, to $new," \
-                "so this is not a version bump after a release; the tag workflow can be run by" \
-                "hand to release $new" >&2
+            echo "$component: $why, so this is not a version bump after a release; the tag" \
+                "workflow has to be run by hand for $component now, before anything else is" \
+                "merged, because components released together are tagged on one commit" >&2
         fi
     done
     [[ -z "$result" ]] || echo "$result"
@@ -459,6 +532,92 @@ untagged() {
         fi
     done
     [[ -z "$result" ]] || echo "$result"
+}
+
+# Gives the next version of the line to the components of the group $1 and drafts their notes, as
+# the header describes. $2 and $3 are what `sdk-version.sh next` takes. Prints the new version.
+bump() {
+    local group="$1" kind="$2" flag="${3:-}" names next component file release listed="" i
+    local -a components=() files=() releases=()
+    case "$kind" in
+        major | minor | patch) [[ -z "$flag" || "$flag" == --beta ]] || usage ;;
+        beta | release) ;;
+        *) usage ;;
+    esac
+    names="$("$VERSION_SCRIPT" components "$group")" || exit 1
+    while IFS= read -r component; do
+        components+=("$component")
+        listed="${listed:+$listed, }$component"
+    done <<<"$names"
+    next="$("$VERSION_SCRIPT" next "$kind" ${flag:+"$flag"})" || exit 1
+    echo "Bumping $listed to $next." >&2
+    check_version "$next" >&2
+    # Everything that can refuse the bump comes before the first write.
+    for component in "${components[@]}"; do
+        release="$(latest "$component")" || exit 1
+        releases+=("$release")
+        file="$(component_changelog "$component")" || exit 1
+        files+=("$file")
+        [[ -f "$ROOT/$file" ]] || die "no $ROOT/$file"
+        if "$CHANGELOG_SCRIPT" section "$component" "$next" >/dev/null 2>&1; then
+            die "$file already has a \`## $next\` section"
+        fi
+    done
+    "$VERSION_SCRIPT" set "$next" "${components[@]}" >&2
+    for i in "${!components[@]}"; do
+        "$CHANGELOG_SCRIPT" draft "${components[i]}" "$next" ${releases[i]:+"${releases[i]}"} >&2
+        if [[ -n "${releases[i]}" ]]; then
+            echo "${components[i]}: set to $next; ${files[i]} has a draft of the commits" \
+                "since ${releases[i]}" >&2
+        else
+            echo "${components[i]}: set to $next; ${files[i]} has a draft for the first release," \
+                "as nothing is released yet" >&2
+        fi
+    done
+    echo "$next"
+}
+
+# Creates an annotated tag at HEAD for the version that each of the components $@ has in the tree,
+# if the files that hold their versions and their notes are committed and every one of them passes
+# `check`, and prints the tags. See the header.
+tag_releases() {
+    local component version body seen=" " i
+    local -a components=() tags=() titles=() bodies=() created=()
+    for component in "$@"; do
+        is_component "$component" || exit 1
+        [[ "$seen" != *" $component "* ]] || continue
+        seen="$seen$component "
+        components+=("$component")
+    done
+    # The checks read the working tree, so what they read must be what the commit holds before
+    # the first of them runs.
+    for component in "${components[@]}"; do
+        need_committed "$component"
+    done
+    for component in "${components[@]}"; do
+        check "$component" >&2
+    done
+    # The tags and their messages are worked out before the first one is created.
+    for component in "${components[@]}"; do
+        version="$("$VERSION_SCRIPT" current "$component")" || exit 1
+        body="$("$CHANGELOG_SCRIPT" section "$component" "$version")" || exit 1
+        tags+=("$(component_tag_prefix "$component")$version")
+        titles+=("$(component_title "$component") $version")
+        bodies+=("$body")
+    done
+    for i in "${!tags[@]}"; do
+        # The notes are kept as they are: by default git drops every line that starts with `#`
+        # from a tag message, such as the headings of the notes.
+        if ! git -C "$ROOT" tag -a --cleanup=whitespace "${tags[i]}" -m "${titles[i]}" \
+            -m "${bodies[i]}"; then
+            if [[ ${#created[@]} -gt 0 ]]; then
+                git -C "$ROOT" tag -d "${created[@]}" >&2
+            fi
+            die "could not create ${tags[i]}; no tag was left behind"
+        fi
+        created+=("${tags[i]}")
+    done
+    printf '%s\n' "${tags[@]}"
 }
 
 case "${1:-}" in
@@ -490,6 +649,15 @@ case "${1:-}" in
         [[ $# -ge 2 ]] || usage
         shift
         untagged "$@"
+        ;;
+    bump)
+        [[ $# -eq 3 || $# -eq 4 ]] || usage
+        bump "${@:2}"
+        ;;
+    tag)
+        [[ $# -ge 2 ]] || usage
+        shift
+        tag_releases "$@"
         ;;
     *) usage ;;
 esac
