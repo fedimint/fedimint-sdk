@@ -45,11 +45,13 @@ test-android-e2e shape="v1": build-android-apk
 test-android-sdk-scripts:
     ./scripts/test-android-sdk-scripts.sh
 
-# Test the React Native release scripts: what a valid release tag is, how the packages are
-# packed and checked, and when they are published. Needs only bash, git and node, no build.
+# Test the React Native scripts: what a valid release tag is, how the packages are packed and
+# checked, when they are published, and how the iOS libraries are built and the xcframework is
+# assembled. Needs only bash, git and node, no build.
 test-react-native-sdk-scripts:
     ./scripts/test-react-native-sdk-scripts.sh
     ./scripts/test-assemble-rn-ios-xcframework.sh
+    ./scripts/test-build-sdk-rn-ios.sh
 
 # Assemble the release AAR. Publishing to Maven Central is .github/workflows/android-sdk-release.yaml.
 build-android-aar: build-android-sdk
