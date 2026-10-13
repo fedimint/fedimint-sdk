@@ -56,7 +56,7 @@ private const val TESTNET_FEDERATION_CODE =
  *
  * Debug builds only (src/debug), with its own launcher entry: the Appium suite
  * in js/android/integration-tests drives this screen by its view ids, while the
- * reference wallet (MainActivity) is the app; see android/app/DECISION.md. It
+ * reference wallet (WalletActivity) is the app; see android/app/DECISION.md. It
  * keeps its own data directory, so it never contends with the wallet for the
  * storage lock and never touches the wallet's seed.
  */
