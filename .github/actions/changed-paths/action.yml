@@ -1,0 +1,52 @@
+name: Changed paths
+description: |
+  Says whether a pull request changes a file that matches one of the given patterns, so that a
+  workflow can skip its jobs when it does not. The answer is `true` for any event but
+  `pull_request`, and also when the changed files cannot be listed: running a check that was not
+  needed is harmless, skipping one that was needed is not.
+
+  The patterns are checked on every event, and an empty list is an error: a workflow with one
+  should fail on its first run, whatever started it, and not on its first pull request.
+
+  The caller checks the repository out with full history (`fetch-depth: 0`) before using this
+  action. A local action is read from the checkout, so the checkout comes first anyway, and the
+  changed files are listed with git between the pull request's base and head commits, which needs
+  that history.
+
+  The first step runs test.sh, so that a matcher that does not work fails the job that uses it and
+  does not quietly answer `false`.
+inputs:
+  patterns:
+    description: |
+      One shell pattern per line. A pattern is matched against the whole path of a changed file the
+      way bash matches `[[ $path == $pattern ]]`, so `*` also matches `/` and `android/*` is
+      everything under `android/`. Blank lines, lines starting with `#` and the spaces around a
+      line are ignored. At least one pattern is required, whatever the event.
+    required: true
+outputs:
+  changed:
+    description: 'Whether a changed file matches a pattern: `true` or `false`.'
+    value: ${{ steps.changed.outputs.changed }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Test the matcher
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/test.sh"
+
+    - name: Match the changed files against the patterns
+      id: changed
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PATTERNS: ${{ inputs.patterns }}
+      run: |
+        changed=$(bash "$GITHUB_ACTION_PATH/changed-paths.sh")
+        # Anything but an answer is a failure here, never an empty output that skips every job.
+        if [[ "$changed" != true && "$changed" != false ]]; then
+          echo "::error::changed-paths.sh answered '$changed', not true or false."
+          exit 1
+        fi
+        echo "changed=$changed" >> "$GITHUB_OUTPUT"

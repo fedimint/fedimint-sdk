@@ -23,6 +23,16 @@ name: Android SDK
 # Nothing is published here. android-sdk-release.yaml and
 # android-sdk-snapshot.yaml call this whole chain and publish the AAR only after
 # every job in it has passed.
+#
+# A pull request starts this workflow whatever it changes. Its first job,
+# `changes`, decides from the changed files whether the chain runs; a manual
+# run and a call from a release workflow always run all of it. Its last job,
+# `result`, is the one check to require, "Android SDK checks". It watches every
+# other job but `e2e`: it passes when `changes` said to run and all of them
+# succeeded, or `changes` said not to and all of them were skipped. It fails
+# in every other case, a run that is cancelled before they have finished
+# included. A run that is cancelled while only `e2e` is left does not change
+# it.
 
 on:
   workflow_dispatch:
@@ -38,32 +48,11 @@ on:
         description: 'Name of the uploaded Kotlin bindings artifact'
         value: ${{ jobs.bindings.outputs.bindings-artifact }}
   # The single PR entry point for the Android chain. android-native.yaml has no
-  # PR trigger of its own precisely so that this list is the whole story: one
-  # run, one cross-compile, whatever the PR touched. That is why the Nix and
-  # flake paths are here — a change to the derivations is validated by building
-  # what they produce and then generating against it, which is a stronger check
-  # than building the `.so` alone.
+  # PR trigger of its own precisely so that the patterns of the `changes` job
+  # below are the whole story: one run, one cross-compile, whatever the PR
+  # touched. There is no `paths` filter here, because a workflow that does not
+  # start reports nothing, and a check that never reports cannot be required.
   pull_request:
-    paths:
-      - 'android/**'
-      - 'rust/fedimint-sdk/**'
-      - 'rust/uniffi-bindgen/**'
-      - 'nix/**'
-      - 'flake.nix'
-      - 'flake.lock'
-      - 'scripts/nix-build-android-so.sh'
-      - 'scripts/generate-android-bindings.sh'
-      - 'scripts/build-android-sdk.sh'
-      - 'scripts/e2e-android/**'
-      # android-e2e.yml runs the suite through this, the same entry
-      # point the browser package's tests use to stand a federation up.
-      - 'scripts/setup_test_shell.sh'
-      - 'scripts/devimint-modules.sh'
-      - 'js/android/integration-tests/**'
-      - '.github/workflows/android-sdk.yaml'
-      - '.github/workflows/android-native.yaml'
-      - '.github/workflows/android-apk.yaml'
-      - '.github/workflows/android-e2e.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -78,10 +67,59 @@ permissions:
   contents: read
 
 jobs:
+  # Whether this pull request changes what the chain builds and tests. The
+  # answer is `true` for any other event: a manual run and a call from a
+  # release workflow run the whole chain. The action tests its matcher before
+  # it answers, and a matcher that fails fails this job, and with it `result`.
+  changes:
+    name: 'Detect Android SDK changes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changed.outputs.changed }}
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Match the changed files against what this workflow checks'
+        id: changed
+        uses: ./.github/actions/changed-paths
+        with:
+          # `*` also matches `/`.
+          patterns: |
+            android/*
+            rust/fedimint-sdk/*
+            rust/uniffi-bindgen/*
+            # The Nix and flake paths: a change to the derivations is validated
+            # by building what they produce and then generating against it,
+            # which is a stronger check than building the `.so` alone.
+            nix/*
+            flake.nix
+            flake.lock
+            scripts/nix-build-android-so.sh
+            scripts/generate-android-bindings.sh
+            scripts/build-android-sdk.sh
+            scripts/e2e-android/*
+            # android-e2e.yml runs the suite through this, the same entry
+            # point the browser package's tests use to stand a federation up.
+            scripts/setup_test_shell.sh
+            scripts/devimint-modules.sh
+            js/android/integration-tests/*
+            .github/workflows/android-sdk.yaml
+            .github/workflows/android-native.yaml
+            .github/workflows/android-apk.yaml
+            .github/workflows/android-e2e.yml
+
   # The shared half. Builds nothing Kotlin-specific and uploads the `.so`
   # tree as the `jniLibs` artifact for the jobs below.
   native:
     name: 'Native library'
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/android-native.yaml
     secrets: inherit
 
@@ -205,3 +243,52 @@ jobs:
           name: fedimint-android-aar
           path: android/fedimint-sdk/build/outputs/aar/*.aar
           if-no-files-found: error
+
+  # The one check to require. It passes only if `changes` answered `true` and
+  # every other job it needs succeeded, or `changes` answered `false` (the pull
+  # request touches nothing this workflow checks) and every other job it needs
+  # was skipped. Anything else fails it.
+  #
+  # A skipped job is not accepted when `changes` answered `true`: GitHub skips
+  # a job when a job it needs did not succeed, and also shows the call of a
+  # refused reusable workflow as skipped, and branch protection counts a
+  # skipped check as passed. Every job of the chain but `e2e` is watched, so
+  # that the error names the job that broke it and not only the jobs skipped
+  # after it.
+  #
+  # `e2e` is left out on purpose. The device run needs the one self-hosted Mac,
+  # can wait hours for it and sometimes fails for reasons outside the change,
+  # so it stays visible on the pull request without deciding whether it can
+  # merge.
+  #
+  # `always()` makes the job start in a cancelled run too, where it sees the
+  # cancelled jobs and fails. Without it the check would end as whatever
+  # GitHub reports for a job that never started. That is `cancelled` today,
+  # which does not pass either, but no documentation promises it. The run of a
+  # commit that a newer commit replaced fails this way on the old commit only,
+  # where it decides nothing.
+  #
+  # What the check is worth depends on its `needs`. A job of this workflow
+  # that is not listed there decides nothing, as `e2e` does not, and one that
+  # is listed with `continue-on-error: true` reads as succeeded when it fails.
+  # A listed job with an `if:` of its own is skipped when the condition is
+  # false, and this check then fails whenever `changes` answered `true`.
+  result:
+    name: 'Android SDK checks'
+    needs: [changes, native, bindings, apk, aar]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      # The repository is only needed to read the local action below.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Check that every job ended as it has to'
+        uses: ./.github/actions/jobs-result
+        with:
+          needs: ${{ toJSON(needs) }}
+          ran: ${{ needs.changes.outputs.run }}

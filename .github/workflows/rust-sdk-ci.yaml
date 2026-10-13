@@ -2,11 +2,18 @@ name: Rust SDK Continuous Integration
 
 # Continuous integration for the fedimint-sdk crate: build, test, clippy
 # (default + `--features uniffi`), rustfmt, doc, and the wasm-target check,
-# with and without `--features uniffi`, path-filtered to rust/fedimint-sdk.
+# with and without `--features uniffi`.
 # The `--features uniffi` clippy is the cheap Android-surface gate: it
 # compiles the `#[uniffi::export]` blocks and type derives on the host, no
 # cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
 # and the `uniffi-bindgen` run over its output in android-sdk.yaml.
+#
+# A pull request starts this workflow whatever it changes. Its first job,
+# `changes`, decides from the changed files whether the jobs that do the work
+# run. Its last job, `result`, is the one check to require, "Rust SDK checks".
+# It passes when `changes` said to run and every other job succeeded, or
+# `changes` said not to and every other job was skipped. It fails in every
+# other case, a run that is cancelled before those jobs have finished included.
 
 on:
   push:
@@ -23,13 +30,11 @@ on:
       # that moved one of the three and not the others.
       - 'flake.nix'
       - 'flake.lock'
+
+  # No `paths` filter: a workflow that does not start reports nothing, and a
+  # check that never reports cannot be required. The `changes` job below
+  # filters by path instead.
   pull_request:
-    paths:
-      - 'rust/fedimint-sdk/**'
-      - 'rust/uniffi-bindgen/**'
-      - '.github/workflows/rust-sdk-ci.yaml'
-      - 'flake.nix'
-      - 'flake.lock'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -38,8 +43,47 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Whether this pull request changes what the jobs below check. The answer is
+  # `true` for any other event: a push to `main` has already passed the `paths`
+  # filter under `push`. The action tests its matcher before it answers, and a
+  # matcher that fails fails this job, and with it `result`.
+  changes:
+    name: 'Detect Rust SDK changes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changed.outputs.changed }}
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Match the changed files against what this workflow checks'
+        id: changed
+        uses: ./.github/actions/changed-paths
+        with:
+          # The comments at `on.push.paths` say why these files are listed.
+          # `*` also matches `/`.
+          patterns: |
+            rust/fedimint-sdk/*
+            rust/uniffi-bindgen/*
+            .github/workflows/rust-sdk-ci.yaml
+            flake.nix
+            flake.lock
+            # The action that reads this list and the one behind `result`. The
+            # Android and Swift workflows use them too, but only this one runs
+            # its jobs when they change: it is the cheapest of the three, and
+            # one is enough to try a changed action on jobs that really run.
+            .github/actions/changed-paths/*
+            .github/actions/jobs-result/*
+
   pins-agree:
     name: 'Check the fedimint pins agree'
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
@@ -149,6 +193,8 @@ jobs:
 
   test:
     name: 'Run tests'
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -189,6 +235,8 @@ jobs:
 
   check:
     name: 'Run clippy, fmt, docs and wasm'
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -238,3 +286,44 @@ jobs:
         # Android build of it is also what js/react-native/react-native-bindings is generated
         # from.
         run: cargo check --locked --target wasm32-unknown-unknown --features uniffi
+
+  # The one check to require. It passes only if `changes` answered `true` and
+  # every other job it needs succeeded, or `changes` answered `false` (the pull
+  # request touches nothing this workflow checks) and every other job it needs
+  # was skipped. Anything else fails it.
+  #
+  # A skipped job is not accepted when `changes` answered `true`: GitHub skips
+  # a job when a job it needs did not succeed, and branch protection counts a
+  # skipped check as passed.
+  #
+  # `always()` makes the job start in a cancelled run too, where it sees the
+  # cancelled jobs and fails. Without it the check would end as whatever
+  # GitHub reports for a job that never started. That is `cancelled` today,
+  # which does not pass either, but no documentation promises it. The run of a
+  # commit that a newer commit replaced fails this way on the old commit only,
+  # where it decides nothing.
+  #
+  # What the check is worth depends on its `needs`. A job of this workflow
+  # that is not listed there decides nothing, and one that is listed with
+  # `continue-on-error: true` reads as succeeded when it fails. A listed job
+  # with an `if:` of its own is skipped when the condition is false, and this
+  # check then fails whenever `changes` answered `true`.
+  result:
+    name: 'Rust SDK checks'
+    needs: [changes, pins-agree, test, check]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      # The repository is only needed to read the local action below.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Check that every job ended as it has to'
+        uses: ./.github/actions/jobs-result
+        with:
+          needs: ${{ toJSON(needs) }}
+          ran: ${{ needs.changes.outputs.run }}

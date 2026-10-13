@@ -1,0 +1,53 @@
+name: Jobs result
+description: |
+  Decides whether the check that stands for a whole workflow passes, from the way the jobs it
+  needs ended, and fails the step if not. It prints each job with its result, and one error line
+  that names every job that is not as it has to be. The check passes in two situations:
+
+  * the detection job (the job that decides whether the workflow has something to check) succeeded
+    and answered `true`, and every other job succeeded;
+  * the detection job succeeded and answered `false`, and every other job was skipped.
+
+  Anything else fails, a job that is skipped although the answer is `true` included. GitHub skips a
+  job when a job it needs did not succeed, and it shows the call of a reusable workflow that is
+  refused as skipped too, and branch protection counts a skipped check as passed. So a job that
+  gets an `if:` of its own, and is skipped when the condition is false, fails the check whenever the
+  answer is `true`.
+
+  The detection job must be among the jobs in `needs`. The caller checks the repository out first,
+  since a local action is read from the checkout. The action needs jq, which the hosted runners
+  have.
+
+  The first step runs test.sh, so that a check that does not work fails the job that uses it and
+  does not pass whatever happened.
+inputs:
+  needs:
+    description: |
+      The JSON that GitHub gives for `toJSON(needs)` in the job that uses this action: an object
+      with an entry for each needed job, each with its `result` (`success`, `failure`, `cancelled`
+      or `skipped`) and its `outputs`.
+    required: true
+  ran:
+    description: |
+      What the detection job answered, `needs.<detection job>.outputs.run`: `true` when the
+      workflow has something to check, `false` when it has not. It is empty when the detection job
+      did not get as far as answering, and the check fails then.
+    required: true
+  detection-job:
+    description: 'The name of the detection job, which has to be one of the jobs in `needs`.'
+    required: false
+    default: 'changes'
+runs:
+  using: 'composite'
+  steps:
+    - name: Test the check
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/test.sh"
+
+    - name: Check that every job ended as it has to
+      shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+        RAN: ${{ inputs.ran }}
+        DETECTION_JOB: ${{ inputs.detection-job }}
+      run: bash "$GITHUB_ACTION_PATH/jobs-result.sh"
