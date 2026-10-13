@@ -3,6 +3,8 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -21,8 +23,8 @@ android {
     }
 
     buildTypes {
-        // Debug only: this app exists to be run, not shipped, and an unsigned
-        // release build would need a keystore to install.
+        // Debug only: this is a reference app to read and run, not to ship, and
+        // an unsigned release build would need a keystore to install.
         release {
             isMinifyEnabled = false
         }
@@ -35,6 +37,13 @@ android {
 
     buildFeatures {
         viewBinding = false
+        compose = true
+    }
+
+    // JVM unit tests (src/test) cover the wallet's state rules without a device.
+    // android.util.Log is a stub there; let it return defaults instead of throwing.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -53,8 +62,25 @@ dependencies {
     implementation(project(":fedimint-sdk"))
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.material)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
+
+    // The reference wallet: Compose screens, one NavHost, a ViewModel per
+    // screen. See DECISION.md for why each of these and not the alternatives.
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.zxing.core)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+
+    // The SDK harness (src/debug) is AppCompat views, for the Appium suite. Debug only.
+    debugImplementation(libs.androidx.appcompat)
+    debugImplementation(libs.material)
 }

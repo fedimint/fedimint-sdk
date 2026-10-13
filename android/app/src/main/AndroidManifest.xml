@@ -5,12 +5,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".FedimintApp"
         android:allowBackup="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FedimintDemo">
+        android:theme="@style/Theme.FedimintWallet">
+
+        <!-- The reference wallet: one activity hosting every Compose screen. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".WalletActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

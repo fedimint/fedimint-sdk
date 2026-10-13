@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.FedimintWallet" parent="android:Theme.Material.NoActionBar" />
+</resources>
