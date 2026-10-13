@@ -13,7 +13,7 @@
 
         <!-- The reference wallet: one activity hosting every Compose screen. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".WalletActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -111,7 +111,7 @@ if [[ -z "$APP_ID" ]]; then
 fi
 # The SDK harness the suite drives by view id: declared, exported, only in the
 # debug build's manifest (android/app/src/debug), beside the reference wallet
-# (MainActivity), which the suite does not drive. Named once here because both
+# (WalletActivity), which the suite does not drive. Named once here because both
 # the launch below and the runner's own capabilities need it.
 APP_ACTIVITY="$APP_ID.harness.HarnessActivity"
 

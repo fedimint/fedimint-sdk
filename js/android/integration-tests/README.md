@@ -4,7 +4,7 @@ Android device-level tests for the fedimint SDK, driven via [Appium](https://app
 against the SDK harness in the debug build of [`android/app`](../../../android).
 
 **This tests the SDK, not the wallet.** `android/app` is a reference wallet (Compose screens,
-`MainActivity`), but these tests don't drive it. They drive the SDK harness,
+`WalletActivity`), but these tests don't drive it. They drive the SDK harness,
 `org.fedimint.demo.harness.HarnessActivity`: one scrolling screen, in debug builds only
 (`android/app/src/debug`), that calls every export of `rust/fedimint-sdk`'s `uniffi` feature
 through the generated Kotlin bindings. What these tests add over `android-sdk.yaml`, which

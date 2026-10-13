@@ -14,7 +14,7 @@ import org.fedimint.demo.ui.theme.FedimintTheme
  * in the application-scoped WalletSession, not here, so it survives rotation
  * and this activity being recreated.
  */
-class MainActivity : ComponentActivity() {
+class WalletActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

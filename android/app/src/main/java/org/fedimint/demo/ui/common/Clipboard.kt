@@ -21,7 +21,7 @@ import android.os.PersistableBundle
  * Android only lets the app with focus read the clipboard, and the expected
  * flow is to copy and switch to a password manager. So the check at the
  * deadline may be unable to read it; it then waits, and runs again when the
- * wallet regains focus ([onFocus], from MainActivity). The phrase can stay on
+ * wallet regains focus ([onFocus], from WalletActivity). The phrase can stay on
  * the clipboard past the deadline while the user is elsewhere, and if Android
  * ends the process in the meantime it is not cleared at all.
  */

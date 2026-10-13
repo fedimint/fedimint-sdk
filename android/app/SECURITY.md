@@ -33,7 +33,7 @@ Invite codes are shareable by design and not treated as secrets.
    after a warning, flagged `EXTRA_IS_SENSITIVE`, and cleared a minute later if it
    is still the clipboard's content. Android lets only the focused app read the
    clipboard, so if the wallet is in the background at that point the check runs
-   again when it regains focus (`MainActivity.onWindowFocusChanged`). The UI says
+   again when it regains focus (`WalletActivity.onWindowFocusChanged`). The UI says
    so rather than promising a hard 60 seconds. If Android ends the process first,
    nothing clears it.
 5. **The seed's origin is written before the seed exists,** synchronously
