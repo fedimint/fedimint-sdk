@@ -49,14 +49,14 @@
 # Then it writes <version> for each component named, and reads each back.
 #
 # `check-newer` and `latest` only read the already released versions, one per
-# line, on stdin. The Android SDK's workflows feed them the `android-sdk-v*`
-# tags; the React Native release, scripts/react-native-sdk-release.sh, feeds
-# them its tags and the versions on npm. `check-newer` fails unless <version>
-# is newer than all of them, so a release can never go out under a version
-# that is already taken or lower than the latest. --except leaves one version
-# out, which is how a tag's own run is not counted against itself. `latest`
-# prints the newest of them, or nothing when nothing is released yet. A line
-# that is not a version is ignored, with a note on stderr.
+# line, on stdin. scripts/sdk-release.sh feeds them the release tags of a
+# component and the versions on the registries it is published to.
+# `check-newer` fails unless <version> is newer than all of them, so a
+# release can never go out under a version that is already taken or lower
+# than the latest. --except leaves one version out, which is how a tag's own
+# run is not counted against itself. `latest` prints the newest of them, or
+# nothing when nothing is released yet. A line that is not a version is
+# ignored, with a note on stderr.
 #
 # --published is for a list of versions that exist on a package registry.
 # Those are all taken, whatever they look like, so a line outside the grammar

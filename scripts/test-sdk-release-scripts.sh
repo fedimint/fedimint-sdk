@@ -19,9 +19,12 @@
 # Nothing beyond bash, git, node (which reads npm's answers) and the POSIX tools
 # the scripts use is needed.
 #
-# The commands of the workflow's step that runs scripts/sdk-release.sh check-tree
-# are read from the workflow in this checkout, and run in such a repository as
-# well.
+# The commands of the workflow steps that run scripts/sdk-release.sh, which are
+# check-tree in the pull request check and the version step of each release
+# workflow, are read from the workflows in this checkout, and run in such a
+# repository as well. The conditions (`if:`) that decide whether the jobs and
+# steps that publish run in the release workflows are read from them too, as
+# text, and each has to be the one pinned here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -2351,6 +2354,21 @@ change "$r" js/web/index.ts "a commit after the tag"
 expect_last "check does not mind a tag of another component for another version" \
     "rust 0.1.0-beta.1 can be released" -- "$rel" check rust
 
+# A tag outside the grammar never released anything: check notes it and goes on, as if it were
+# not there.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.2.0 < <(notes_for 0.2.0))"
+    rel="$r/scripts/sdk-release.sh"
+    git -C "$r" tag -a -m "Never released." "$(prefix_of "$component")1.0.0-rc.1"
+    expect_prints "check $component notes a tag of its own outside the grammar" \
+        "$component tags: ignoring 1.0.0-rc.1: not a version" -- "$rel" check "$component"
+    expect_prints "check $component takes that tag for no release" \
+        "$component tags: 0.2.0: nothing is released yet" -- "$rel" check "$component"
+    expect_last "check $component passes with a tag of its own outside the grammar" \
+        "$component 0.2.0 can be released" -- "$rel" check "$component"
+done
+
 # The registries of the component: the version in the tree must be newer than the versions they
 # list, and the component's own version is left out with --except-own, so that a release that
 # stopped half way, after the registry took the version, can be run again.
@@ -2591,6 +2609,27 @@ wrong="$wrong a release tag must name the version it releases"
 expect_fail "check-tag compares a tag with the version of its own component" "$wrong" -- \
     "$rel" check-tag android-sdk-v0.1.0-beta.1
 
+# The version a release names is the one in the tree, so a version outside the grammar cannot be
+# released: check, tag and check-tag refuse it, and tag creates nothing.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    rel="$r/scripts/sdk-release.sh"
+    IFS= read -r deciding < <(files_of "$component")
+    put_file "$r" "$deciding" 0.1.0-rc.1
+    commit_all "$r" "a version outside the grammar"
+    sync_main "$r"
+    expect_fail "check $component refuses a version outside the grammar in the tree" \
+        "must be X.Y.Z-beta.N or X.Y.Z" -- "$rel" check "$component"
+    expect_fail "tag $component refuses a version outside the grammar in the tree" \
+        "must be X.Y.Z-beta.N or X.Y.Z" -- "$rel" tag "$component"
+    expect_equal "tag $component creates no tag for it" "" "$(git -C "$r" tag -l)"
+    tag="$(prefix_of "$component")0.1.0-rc.1"
+    git -C "$r" tag "$tag"
+    expect_fail "check-tag refuses $tag, which names the version outside the grammar" \
+        "must be X.Y.Z-beta.N or X.Y.Z" -- "$rel" check-tag "$tag"
+done
+
 # Releases come from main.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -2636,6 +2675,21 @@ for component in rust android react-native; do
     git -C "$r" tag -d "$tag" >/dev/null
     git -C "$r" tag "$tag"
     expect_fail "check-tag refuses $tag when the notes are still a draft" "is still a draft" -- \
+        "$rel" check-tag "$tag"
+done
+
+# The newest tag of a component passes, whatever older ones it has.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+    rel="$r/scripts/sdk-release.sh"
+    tag="$(prefix_of "$component")0.1.0-beta.2"
+    release_tag "$r" "$component" 0.1.0-beta.1
+    git -C "$r" tag "$tag"
+    expect_prints "check-tag compares $tag with the older tag of $component" \
+        "$component tags: 0.1.0-beta.2 is newer than the latest release, 0.1.0-beta.1" -- \
+        "$rel" check-tag "$tag"
+    expect_last "check-tag passes $tag, the newest tag of $component" "$tag can be released" -- \
         "$rel" check-tag "$tag"
 done
 
@@ -3047,8 +3101,9 @@ echo "sdk-release-scripts.yaml"
 # has them, in a repository.
 workflow="$ROOT/.github/workflows/sdk-release-scripts.yaml"
 
-# step_commands <name>: the commands of the step of the workflow with that name: the lines of its
-# `run: |` block without their indentation, or its one-line `run:`.
+# step_commands <name> [<workflow file>]: the commands of the step with that name of the workflow
+# (the one above when no file is given): the lines of its `run: |` block without their
+# indentation, or its one-line `run:`.
 step_commands() {
     awk -v name="- name: '$1'" '
         index($0, name) { found = 1; next }
@@ -3064,7 +3119,7 @@ step_commands() {
             if (RLENGTH < indent && RLENGTH < length($0)) { exit }
             print substr($0, indent + 1)
         }
-    ' "$workflow"
+    ' "${2:-$workflow}"
 }
 
 # in_repo <repository> <command...>: runs the command with the repository as working directory.
@@ -3113,6 +3168,252 @@ taken="android: 0.1.0-beta.1 has no release tag yet, but rust tags: 0.1.0-beta.1
 expect_contains "the step shows what check-tree found" "$taken released" "$OUT"
 expect_equal "the step does not call that a checkout without release tags" "" \
     "$(grep 'no release tags' <<<"$OUT" || true)"
+
+echo
+echo "the release workflows"
+
+# The release workflows of the Android SDK and of the React Native packages each have a step that
+# applies scripts/sdk-release.sh to the run: a tag, pushed or started by hand, is held to the
+# release rules, and a dry run on a branch checks the version in the tree and only warns about a
+# version that could not be released. The step reads the version first, so that a version that
+# cannot be read stops it before any check or warning. Another step refuses to publish from a
+# branch. The cases run the commands of those steps, as the workflows have them, in a repository,
+# the way GitHub runs them (bash -eo pipefail) and with the environment it gives them: the type
+# and the name of the ref, and the file that the outputs of the step go to.
+#
+# The conditions under which the jobs and steps that publish run are pinned after those cases.
+
+# release_step <repository> <ref type> <ref name> <step file>: runs the step in the repository,
+# and leaves its output in $OUT, its exit status in $STATUS and what it wrote to the outputs of
+# the step in $STEP_OUTPUT.
+release_step() {
+    local dir="$1" ref_type="$2" ref_name="$3" file="$4"
+    : >"$WORK/github-output"
+    run in_repo "$dir" env GITHUB_REF_TYPE="$ref_type" GITHUB_REF_NAME="$ref_name" \
+        GITHUB_OUTPUT="$WORK/github-output" bash -eo pipefail "$file"
+    STEP_OUTPUT="$(<"$WORK/github-output")"
+}
+
+# expect_unreadable_version <component> <step file> <repository> <what> <message>: the version of
+# the component cannot be read in the repository, because <what>. The version step then fails at
+# once, on a branch and on a tag, with what scripts/sdk-version.sh says about it, which holds
+# <message>, and with nothing else: no check has run, nothing says that a dry run goes on, and the
+# job gets no version.
+expect_unreadable_version() {
+    local component="$1" step="$2" dir="$3" what="$4" message="$5" tag says ref ref_type ref_name
+    local run_of
+    tag="$(prefix_of "$component")0.1.0-beta.1"
+    release_tag "$dir" "$component" 0.1.0-beta.1
+    run in_repo "$dir" scripts/sdk-version.sh current "$component"
+    says="$OUT"
+    expect_equal "the version of $component cannot be read when $what" 1 "$STATUS"
+    expect_contains "the script says why the version of $component cannot be read when $what" \
+        "$message" "$says"
+    for ref in "branch main" "tag $tag"; do
+        read -r ref_type ref_name <<<"$ref"
+        run_of="$ref_type run when $what"
+        release_step "$dir" "$ref_type" "$ref_name" "$step"
+        expect_equal "the $component workflow fails a $run_of" 1 "$STATUS"
+        expect_equal "the $component workflow says only what the script says on a $run_of" \
+            "$says" "$OUT"
+        expect_equal "the $component workflow does not warn on a $run_of" "" \
+            "$(grep '::warning::' <<<"$OUT" || true)"
+        expect_equal "the $component workflow gives its job no version on a $run_of" "" \
+            "$STEP_OUTPUT"
+    done
+}
+
+# For each workflow: its component, the tag prefix of another component, the step that refuses to
+# publish from a branch, and what the version step gives its job: nothing for the Android SDK,
+# whose later jobs read the version from the catalog, and the version for the React Native
+# packages.
+for row in "android|rust-sdk-v|Refuse to upload from a branch|" \
+    "react-native|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1"; do
+    IFS='|' read -r component other refuse output <<<"$row"
+    prefix="$(prefix_of "$component")"
+    title="$(sourced "component_title $component")"
+    workflow_file="$ROOT/.github/workflows/$(sourced "component_workflow $component")"
+    version_step="$WORK/$component-version-step.sh"
+    refuse_step="$WORK/$component-refuse-step.sh"
+    step_commands 'Check the version' "$workflow_file" >"$version_step"
+    step_commands "$refuse" "$workflow_file" >"$refuse_step"
+    # shellcheck disable=SC2016 # The step expands the variable, not this shell.
+    expect_contains "the $component workflow holds a tag to check-tag" \
+        'scripts/sdk-release.sh check-tag "$GITHUB_REF_NAME"' "$(<"$version_step")"
+    expect_contains "the $component workflow checks the version in the tree for a dry run" \
+        "scripts/sdk-release.sh check $component" "$(<"$version_step")"
+
+    # The tag of the component, on the commit that is checked out.
+    fresh_registries
+    r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    tag="${prefix}0.1.0-beta.1"
+    release_tag "$r" "$component" 0.1.0-beta.1
+    release_step "$r" tag "$tag" "$version_step"
+    expect_equal "the $component workflow passes the tag of its component" 0 "$STATUS"
+    expect_contains "the $component workflow says that the tag can be released" \
+        "$tag can be released" "$OUT"
+    expect_equal "the $component workflow gives its job the version of the tag" "$output" \
+        "$STEP_OUTPUT"
+
+    # A tag of the component that names another version than the tree has.
+    git -C "$r" tag "${prefix}0.1.0-beta.2"
+    release_step "$r" tag "${prefix}0.1.0-beta.2" "$version_step"
+    expect_equal "the $component workflow refuses a tag that is not the version in the tree" 1 \
+        "$STATUS"
+    expect_contains "the $component workflow says which version the tree has" \
+        "${prefix}0.1.0-beta.2 names version 0.1.0-beta.2, but $component is at 0.1.0-beta.1 in" \
+        "$OUT"
+    expect_equal "the $component workflow gives its job no version for that tag" "" "$STEP_OUTPUT"
+
+    # The release tag of another component passes the script, which takes any component's tag,
+    # so the workflow has to refuse it: a run on it would build and publish this component.
+    git -C "$r" tag "${other}0.1.0-beta.1"
+    release_step "$r" tag "${other}0.1.0-beta.1" "$version_step"
+    expect_equal "the $component workflow refuses the tag of another component" 1 "$STATUS"
+    expect_contains "the $component workflow says whose tags it takes" \
+        "${other}0.1.0-beta.1 is not a tag of the $title (${prefix}*)" "$OUT"
+    expect_equal "the $component workflow does not call the tag of another component releasable" \
+        "" "$(grep 'can be released' <<<"$OUT" || true)"
+    expect_equal "the $component workflow gives its job no version for the other tag" "" \
+        "$STEP_OUTPUT"
+
+    # A dry run on a branch checks the version in the tree. One that can be released passes
+    # quietly, and one that cannot, because its tag exists, passes with a warning that says why.
+    git -C "$r" tag -d "$tag" "${prefix}0.1.0-beta.2" "${other}0.1.0-beta.1" >/dev/null
+    release_step "$r" branch main "$version_step"
+    expect_equal "the $component workflow passes a dry run of a version that can be released" 0 \
+        "$STATUS"
+    expect_contains "the $component workflow says that the version can be released" \
+        "$component 0.1.0-beta.1 can be released" "$OUT"
+    expect_equal "the $component workflow does not warn about it" "" \
+        "$(grep '::warning::' <<<"$OUT" || true)"
+    expect_equal "the $component workflow gives its job the version of the dry run" "$output" \
+        "$STEP_OUTPUT"
+    release_tag "$r" "$component" 0.1.0-beta.1
+    release_step "$r" branch main "$version_step"
+    expect_equal "the $component workflow passes a dry run of a version that was released" 0 \
+        "$STATUS"
+    expect_contains "the $component workflow warns that the version could not be released" \
+        "::warning::the version in the tree could not be released as it is" "$OUT"
+    expect_contains "the $component workflow shows why above the warning" \
+        "$component tags: 0.1.0-beta.1 is already released; bump the version first" "$OUT"
+    expect_equal "the $component workflow gives its job the version in spite of the warning" \
+        "$output" "$STEP_OUTPUT"
+
+    # A version that cannot be read is neither warned about nor checked. Without it there is
+    # nothing to check, and a warning that the dry run goes on would hide the real problem.
+    case "$component" in
+        android)
+            expect_unreadable_version "$component" "$version_step" \
+                "$(broken_repo "$CATALOG" '[versions]\n')" "the catalog has no version" \
+                "no fedimintSdk version in $CATALOG"
+            ;;
+        react-native)
+            expect_unreadable_version "$component" "$version_step" \
+                "$(broken_repo "$BINDINGS_MANIFEST" '{\n  "name": "x"\n}\n')" \
+                "the bindings manifest has no version" "no \"version\" in $BINDINGS_MANIFEST"
+            b="$(repo 0.1.0-beta.1 < <(finished_notes))"
+            put_file "$b" "$WRAPPER_MANIFEST" 0.2.0
+            commit_all "$b" "the manifests of the React Native packages disagree"
+            disagreement="the React Native packages disagree: $BINDINGS_MANIFEST is 0.1.0-beta.1"
+            disagreement="$disagreement but $WRAPPER_MANIFEST is 0.2.0"
+            expect_unreadable_version "$component" "$version_step" "$b" \
+                "the two manifests disagree" "$disagreement"
+            ;;
+    esac
+
+    # Publishing from a branch is refused.
+    run in_repo "$r" env GITHUB_REF_NAME=feature bash -eo pipefail "$refuse_step"
+    expect_equal "the $component workflow refuses to publish from a branch" 1 "$STATUS"
+    expect_contains "the $component workflow says that a tag is needed, and names the branch" \
+        "${prefix}* tag; run this workflow from the tag, not from feature" "$OUT"
+done
+
+# The conditions that decide whether anything is published. The cases above run the text of the
+# `run:` blocks only, so none of them would notice a job or a step that runs when it must not: a
+# `publish` job that no longer asks for the event, a refusal that is switched off. So the `if:` of
+# each is read from the workflow as text, and has to be, to the letter, the one pinned here.
+
+# job_condition <job> <workflow file>: the `if:` of the job, as the file spells it, or nothing when
+# the job has none. Fails when the file has no such job.
+job_condition() {
+    awk -v job="$1" '
+        $0 == "jobs:" { in_jobs = 1; next }
+        in_jobs && $0 == ("  " job ":") { found = 1; next }
+        found && /^  [^ #]/ { exit }
+        found && substr($0, 1, 8) == "    if: " { print substr($0, 9); exit }
+        END { if (!found) { print "no job " job " in the workflow" > "/dev/stderr"; exit 1 } }
+    ' "$2"
+}
+
+# step_condition <step name> <workflow file>: the `if:` of the step with that name, as the file
+# spells it, or nothing when the step has none. Fails when the file has no such step.
+step_condition() {
+    awk -v step="$1" -v name="- name: '$1'" '
+        index($0, name) { match($0, /^ */); dash = RLENGTH; found = 1; next }
+        found {
+            match($0, /^ */)
+            if (RLENGTH <= dash && RLENGTH < length($0)) { exit }
+            if (RLENGTH == dash + 2 && substr($0, RLENGTH + 1, 4) == "if: ") {
+                print substr($0, RLENGTH + 5)
+                exit
+            }
+        }
+        END { if (!found) { print "no step " step " in the workflow" > "/dev/stderr"; exit 1 } }
+    ' "$2"
+}
+
+# expect_condition <name> <pinned condition> <condition in the workflow>: they are the same text.
+expect_condition() {
+    local why="This condition decides whether something is published. It has to be changed on"
+    why="$why purpose, together with this test."
+    if [[ "$3" == "$2" ]]; then
+        pass "$1"
+    else
+        fail "$1" "$why"$'\n'"pinned: ${2:-no condition}"$'\n'"found:  ${3:-no condition}"
+    fi
+}
+
+# pin_job <component> <job> <condition>: the `if:` of the job in the release workflow of the
+# component is the condition, or the job has none when the condition is empty.
+pin_job() {
+    local component="$1" job="$2" pinned="$3" has="has the pinned condition" file
+    [[ -n "$pinned" ]] || has="has no condition"
+    file="$ROOT/.github/workflows/$(sourced "component_workflow $component")"
+    expect_condition "the $component workflow's $job job $has" "$pinned" \
+        "$(job_condition "$job" "$file" 2>&1 || true)"
+}
+
+# pin_step <component> <step name> <condition>: the same for the step with that name.
+pin_step() {
+    local component="$1" step="$2" pinned="$3" has="has the pinned condition" file
+    [[ -n "$pinned" ]] || has="has no condition"
+    file="$ROOT/.github/workflows/$(sourced "component_workflow $component")"
+    expect_condition "the $component workflow's step '$step' $has" "$pinned" \
+        "$(step_condition "$step" "$file" 2>&1 || true)"
+}
+
+# A tag push, or a manual run with `publish` ticked, on a tag: a release.
+IF_RELEASE="github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)"
+# A tag push, or a manual run with `publish` ticked, on any ref: the upload of the Android SDK.
+IF_UPLOAD="github.event_name == 'push' || inputs.publish"
+# A manual run without `publish`: a dry run.
+IF_DRY_RUN="github.event_name == 'workflow_dispatch' && !inputs.publish"
+# A manual run with `publish` ticked on a ref that is not a tag: refused before anything is built.
+IF_REFUSE="github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type != 'tag'"
+
+# The `publish` job of the Android SDK runs for the dry runs as well, so it has no condition of its
+# own: the steps in it decide whether Maven Central or a local repository gets the artifacts.
+pin_job android publish ""
+pin_step android "Publish to Maven Central" "$IF_UPLOAD"
+pin_step android "Dry run: publish to a local Maven repository" "$IF_DRY_RUN"
+pin_step android "Upload the dry-run repository" "$IF_DRY_RUN"
+pin_job android github-release "$IF_RELEASE"
+pin_step android "Refuse to upload from a branch" "$IF_REFUSE"
+pin_job react-native publish "$IF_RELEASE"
+pin_job react-native dry-run "$IF_DRY_RUN"
+pin_job react-native github-release "$IF_RELEASE"
+pin_step react-native "Refuse to publish from a branch" "$IF_REFUSE"
 
 echo
 echo "sdk-release.sh pending"
@@ -3747,6 +4048,19 @@ run_split "$rel" tag android
 expect_equal "tag android fails when react-native tagged the version on another commit" 1 "$STATUS"
 expect_contains "tag android says which commit has the version" "$taken" "$ERR"
 expect_equal "tag android creates no tag" "react-native-sdk-v0.1.0-beta.1" "$(git -C "$r" tag -l)"
+
+# A tag that exists already is not replaced: an annotated one is the same object afterwards.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+git -C "$r" tag -a -m "Existing notes." react-native-sdk-v0.1.0-beta.1
+existing="$(git -C "$r" rev-parse refs/tags/react-native-sdk-v0.1.0-beta.1)"
+run_split "$rel" tag react-native
+expect_equal "tag react-native fails when its annotated tag exists already" 1 "$STATUS"
+expect_equal "tag leaves the annotated tag that exists already untouched" "$existing" \
+    "$(git -C "$r" rev-parse refs/tags/react-native-sdk-v0.1.0-beta.1)"
+expect_equal "tag leaves the message of that tag as it was" "Existing notes." \
+    "$(git -C "$r" tag -l --format='%(contents)' react-native-sdk-v0.1.0-beta.1)"
 
 # The same version that another component tagged on this commit is the release of components that
 # are tagged together.

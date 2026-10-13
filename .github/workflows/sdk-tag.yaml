@@ -40,8 +40,8 @@ name: SDK Tag
 # token does not trigger other workflows, so this starts each release with
 # `gh workflow run` on its tag instead. Starting a workflow that way is the
 # one exception GitHub makes. The release workflows then take it from there;
-# the Android SDK's still asks for the `maven-central` environment's approval
-# as usual.
+# each of them still waits for its environment's required reviewers to approve
+# before it publishes.
 #
 # The tags are pushed together, so a check that fails, or a push that is
 # rejected, leaves nothing tagged. A manual run on main tries again, and so
@@ -55,9 +55,11 @@ name: SDK Tag
 # never moved or removed. They must not restrict creation: this workflow
 # creates tags as the GitHub Actions app, and GitHub does not accept that app
 # as a bypass actor in an organization's repository, so a creation rule would
-# block it. A release workflow refuses a tag whose version is not the one the
-# tree on main has for that component, so a tag can only release what a
-# merged pull request already set.
+# block it. So everybody who can push can create a release tag, on any commit,
+# and a workflow runs as its file is in the tagged commit. What decides
+# whether a tag publishes anything is therefore not a check in a workflow but
+# the environment each release publishes in (`crates-io`, `maven-central`,
+# `npm`): its required reviewers approve every publishing job.
 
 on:
   push:
@@ -105,7 +107,7 @@ defaults:
 jobs:
   tag:
     name: 'Tag the releases'
-    # Releases come from main only.
+    # This workflow tags main only: releases come from main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -226,11 +228,16 @@ jobs:
               echo
               printf '%s' "$not_started"
             fi
+            if [[ -n "$started" ]]; then
+              echo
+              echo "Next: each started release waits for a reviewer of its environment to" \
+                "approve the job that publishes. Check that the run is on the tag above, then" \
+                "approve it."
+            fi
             if ((android_started)); then
               echo
-              echo "Next, for the Android SDK: approve the \`maven-central\` environment in its" \
-                "run, press Publish on central.sonatype.com once the deployment is validated," \
-                "then publish the draft GitHub Release."
+              echo "For the Android SDK, after that: press Publish on central.sonatype.com once" \
+                "the deployment is validated, then publish the draft GitHub Release."
             fi
           } >>"$GITHUB_STEP_SUMMARY"
           exit "$failed"
