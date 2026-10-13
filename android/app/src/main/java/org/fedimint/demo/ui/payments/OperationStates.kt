@@ -66,11 +66,10 @@ fun EcashSendState.progress(): OpProgress = when (this) {
     EcashSendState.REDEEMED -> done("Redeemed by the receiver")
 }
 
+/** A deposit is an operation only once confirmed, so there is no waiting state before Confirmed. */
 fun OnchainReceiveState.progress(): OpProgress = when (this) {
-    OnchainReceiveState.WaitingForTransaction -> OpProgress("Waiting for a deposit", "Send bitcoin to the address above.")
-    is OnchainReceiveState.WaitingForConfirmation ->
-        OpProgress("Deposit seen, waiting for confirmations", "${formatSats(grossDeposited * 1_000uL)} sats · tx $txid")
-    is OnchainReceiveState.Confirmed -> OpProgress("Confirmed, claiming…", "tx $txid")
+    is OnchainReceiveState.Confirmed ->
+        OpProgress("Deposit confirmed, claiming it…", "${formatSats(grossDeposited * 1_000uL)} sats · tx $txid")
     is OnchainReceiveState.Claimed -> done("Received", "${formatSats(netCredit)} sats credited · tx $txid")
     is OnchainReceiveState.Failed -> failed("Deposit failed", reason)
 }

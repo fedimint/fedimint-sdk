@@ -294,6 +294,13 @@ so a new payment method only adds the SDK calls.
   Each is shown as a QR code plus a copy button. The live state comes from the
   operation's `updates()`, whose first `next()` is the current state and which
   returns null once the state is final (`Payments.states`).
+- **An on-chain deposit is the exception** (since upstream #453): `receive()`
+  returns only an address, and a deposit becomes an operation only once the
+  federation finds it confirmed. The deposit screen opens `deposits()` before
+  showing the address (so one found straight away isn't missed), shows "Waiting for
+  a deposit", then follows each deposit it hands over. An address isn't a
+  submission, so this screen is a plain step: making another address is harmless,
+  and there's nothing to restore after process death.
 - **What each state means to the user is in one place** (`OperationStates.kt`):
   a label, an optional detail, whether it has settled, and whether it went well.
   Every `when` is exhaustive over the generated sealed class or enum, so a state
@@ -530,9 +537,10 @@ and sends on-chain coins.
    countdown, then Pay. The state becomes Paid.
 5. **Quote expiry:** get a review and wait for the countdown to reach zero, then
    tap Pay. You get "That quote expired. Get a new one."
-6. **On-chain receive:** Receive → On-chain shows a `tb1…` address and QR. Send
-   from the faucet. The state steps through "Deposit seen" and "Confirmed" to
-   Received, which can take several blocks.
+6. **On-chain receive:** Receive → On-chain shows a `tb1…` address and QR, and
+   "Waiting for a deposit". Send from the faucet. Once the deposit has its
+   confirmations (several blocks), the state shows "Deposit confirmed, claiming it…"
+   and then Received.
 7. **On-chain send:** Send → On-chain, with a Signet address and an amount →
    Review → Send.
 8. **Gating:** Receive and Send only list the methods the federation supports.

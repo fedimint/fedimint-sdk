@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import org.fedimint.sdk.Address
 import org.fedimint.sdk.Amount
 import org.fedimint.sdk.Ecash
 import org.fedimint.sdk.EcashQuote
@@ -19,7 +20,7 @@ import org.fedimint.sdk.LnSendOperation
 import org.fedimint.sdk.Notes
 import org.fedimint.sdk.Onchain
 import org.fedimint.sdk.OnchainQuote
-import org.fedimint.sdk.OnchainReceiveHandle
+import org.fedimint.sdk.OnchainDeposits
 import org.fedimint.sdk.OnchainSendOperation
 import org.fedimint.sdk.Sats
 
@@ -57,7 +58,19 @@ class Payments(private val session: WalletSession) {
 
     // ── On-chain ─────────────────────────────────────────────────────────
 
-    suspend fun onchainReceive(id: FederationId): OnchainReceiveHandle = onchain(id) { it.receive() }
+    /**
+     * A deposit address. Not an operation: a deposit becomes one only once the
+     * federation's wallet finds it confirmed, and arrives through [onchainDeposits].
+     */
+    suspend fun onchainReceive(id: FederationId): Address = onchain(id) { it.receive() }
+
+    /**
+     * Deposits as the federation finds them, each an operation to follow, for
+     * every address handed out (not only the last). Open it before showing an
+     * address, so a deposit found straight away isn't missed: it doesn't
+     * replay deposits found before it was opened (those are in activity).
+     */
+    suspend fun onchainDeposits(id: FederationId): OnchainDeposits = onchain(id) { it.deposits() }
 
     suspend fun onchainQuote(id: FederationId, address: String, amount: Sats): OnchainQuote =
         onchain(id) { it.quote(address.trim().removePrefix("bitcoin:"), amount) }

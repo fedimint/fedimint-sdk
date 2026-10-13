@@ -187,12 +187,12 @@ class OperationDetailViewModel(
                 _detail.value = Detail(
                     title = "On-chain deposit",
                     rows = listOfNotNull(
-                        d.grossDeposited?.let { "Deposited" to sats(it * 1_000uL) },
+                        "Deposited" to sats(d.grossDeposited * 1_000uL),
                         d.fee?.let { "Fee" to sats(it) },
                         d.netCredit?.let { "Credited" to sats(it) },
                         "Created" to absoluteTime(d.createdAt),
                     ),
-                    copyable = listOfNotNull("Address" to d.address, d.txid?.let { "Transaction" to it }),
+                    copyable = listOf("Address" to d.address, "Transaction" to d.txid),
                 )
                 follow(Payments.states(o::updates) { it.next() }) { it.progress() }
             }
