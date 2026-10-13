@@ -7,7 +7,7 @@ version's GitHub Release.
 The version bump pull request drafts the next section from the commits since the last
 release. Rewrite it there for users, grouped under Added, Changed, Fixed and Breaking as
 they apply, and remove the draft comment. The release refuses a version whose section is
-missing or still a draft.
+missing or still a draft. See "Making a release" in [RELEASING.md](../../RELEASING.md).
 
 ## 0.1.0-beta.1
 

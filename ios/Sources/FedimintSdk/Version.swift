@@ -33,6 +33,5 @@ public typealias SdkError = FedimintSdk.Error
 /// FedimintSdk should be located under ..." rather than on the missing
 /// XCFramework.
 ///
-/// Keep in step with `version` in `rust/fedimint-sdk/Cargo.toml` — the same
-/// role `fedimintSdk` plays in `android/gradle/libs.versions.toml`.
+/// Written by `scripts/sdk-version.sh set` whenever the crate's version is set.
 public let fedimintSdkVersion = "0.1.0-beta.1"

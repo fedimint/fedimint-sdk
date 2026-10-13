@@ -37,59 +37,51 @@ that bundle from the libraries the Swift SDK is built from instead (see Packing 
 
 ### Versioning
 
-The packages share one version, independent of `rust/fedimint-sdk`'s and of the other SDKs'. It
-follows [semantic versioning](https://semver.org) and describes the JavaScript API. A version is
-`X.Y.Z-beta.N` (a beta, published under the npm dist-tag `beta`) or `X.Y.Z` (a release, published
-under `latest`), and nothing else.
+The two packages share one version, which is on the SDK's shared line of versions:
+[`RELEASING.md`](../../RELEASING.md#versions) has the rules and says which bump a change calls
+for. A version is `X.Y.Z-beta.N` (a beta, published under the npm dist-tag `beta`) or `X.Y.Z` (a
+release, published under `latest`), and nothing else.
 
-The version is not in the tree. Both `package.json` files say `0.0.0` and `"private": true`, and
-stay that way: the version of a release is the name of its git tag,
-`react-native-sdk-v<version>`, and the release writes it into the packages it packs. `private`
-keeps everything else in the repository that publishes to npm away from these two packages.
+The version is in the tree, in both `package.json` files, and the SDK Version Bump workflow sets
+it. Both files stay `"private": true`, which keeps everything else in the repository that
+publishes to npm away from these two packages. The tarballs a release packs carry the version and
+no `private`.
 
 `@fedimint/react-native` names `@fedimint/react-native-bindings` as a peer dependency at exactly
 its own version. The generated API and the native library behind it only fit together when they
 come from the same build.
 
-While every release is a beta, the install commands in the two packages' READMEs name the `beta`
-tag. They lose it with the first `X.Y.Z`, which is what moves `latest`.
+While every release is a beta, the install commands in
+[`react-native/README.md`](react-native/README.md) name the `beta` tag. They lose it with the
+first `X.Y.Z`, which is what moves `latest`.
 
 ### Releases
 
 [`react-native-sdk-release.yaml`](../../.github/workflows/react-native-sdk-release.yaml) does the
-whole release when a `react-native-sdk-v*` tag is pushed. Nobody approves anything and nothing is
-published by hand. On the tagged commit it:
+whole release. How a release is started is in [`RELEASING.md`](../../RELEASING.md). Pushing a
+`react-native-sdk-v*` tag by hand starts one too, under the same checks. On the tagged commit the
+workflow:
 
-1. checks the tag (see below);
-2. builds the native libraries, the same builds the Android and Swift SDKs ship;
+1. checks the tag against the rules of [`scripts/sdk-release.sh`](../../scripts/sdk-release.sh)
+   (see below);
+2. builds the native libraries, the same builds the Android and Swift SDKs ship, and assembles the
+   Apple ones into the iOS bundle the podspec vendors;
 3. regenerates the bindings from those libraries and fails if they differ from the committed ones;
 4. packs both packages, with the native libraries inside, and checks the tarballs;
 5. installs the two tarballs into a copy of the [bare example app](../examples/react-native), the
    way an app adds them, and builds it for Android and iOS. The Android app is also run on an
    emulator, where it opens the SDK and generates a mnemonic;
-6. publishes both tarballs to npm, bindings first;
-7. creates the GitHub Release from the tag's message, with both tarballs attached.
+6. publishes both tarballs to npm, bindings first, once a reviewer of the `npm` environment has
+   approved the job;
+7. creates the GitHub Release from the version's section of [`CHANGELOG.md`](CHANGELOG.md), with
+   both tarballs and their checksums attached.
 
-The tag's message is the release notes. To release:
-
-```sh
-git fetch origin main --tags
-scripts/react-native-sdk-release.sh notes > notes.md
-# Rewrite notes.md for users: what was added, changed or fixed, and what breaks callers.
-scripts/react-native-sdk-release.sh tag 0.1.0-beta.2 notes.md
-git push origin react-native-sdk-v0.1.0-beta.2
-```
-
-`notes` lists the commits since the last release that touched what the packages are built from.
-`tag` runs the same checks the release will, then creates the annotated tag at `origin/main`
-(pass a commit as a third argument to tag an earlier one). Pushing the tag starts the release.
-To tag by hand instead, use `git tag -a --cleanup=whitespace -F notes.md <tag> <commit>`:
-without `--cleanup=whitespace`, git drops every line of the notes that starts with `#`, Markdown
-headings included.
-
-A release is refused if the tag is not annotated or has no message, if the tagged commit is not
-on `main`, if the version is not a beta or a release, or if it is not newer than every earlier
-`react-native-sdk-v*` tag and every version of either package on npm.
+A release is refused if the tag is not a `react-native-sdk-v*` tag that names the version the
+packages have in the tree, if its commit is not on `main`, if its notes are missing or still a
+draft, if another component has the same version tagged on another commit, or if the version is
+not newer than every earlier `react-native-sdk-v*` tag and every version of either package on
+npm, snapshots included. The header of [`scripts/sdk-release.sh`](../../scripts/sdk-release.sh)
+has the full rules.
 
 A tag cannot be moved or deleted, and a version on npm cannot be published again. A release that
 turns out wrong is fixed by releasing the next version.
@@ -104,9 +96,10 @@ newer version in the meantime, since finishing it would move the dist-tag back. 
 release the next version.
 
 To try the release without releasing, run the workflow by hand (Actions → React Native SDK
-Release → Run workflow) on any branch, with a version. That is a dry run: it does what a release
-does up to and including the tests of the tarballs, and then `npm publish --dry-run`. It never
-publishes, tags or creates a release.
+Release → Run workflow) on any branch, with `publish` unticked, which is the default. That is a
+dry run: it takes the version from the tree and does what a release does up to and including the
+tests of the tarballs, and then `npm publish --dry-run`. It never publishes, tags or creates a
+release, and it reaches no environment.
 
 ### Packing locally
 
@@ -120,6 +113,9 @@ just build-ios-lib-nix && just assemble-rn-ios-xcframework    # macOS with Xcode
 nix develop --accept-flake-config .#android -c \
   scripts/react-native-sdk-pack.sh 0.1.0-beta.2 /tmp/react-native-tarballs
 ```
+
+The first argument of the pack script is the version to write into the tarballs. A release passes
+the version in the tree, which `scripts/sdk-version.sh current react-native` prints.
 
 The xcframework can only be assembled on macOS. On Linux, take it from a run of the release
 workflow instead:
@@ -141,13 +137,13 @@ scripts/react-native-sdk-smoke.sh --boot \
   /tmp/react-native-app/android/app/build/outputs/apk/release/app-release.apk
 ```
 
-`scripts/test-react-native-sdk-scripts.sh` tests the release scripts themselves and needs no
-build.
+`scripts/test-react-native-sdk-scripts.sh` tests how the packages are packed and published, and
+`scripts/test-sdk-release-scripts.sh` the rules every release passes. Neither needs a build.
 
 ### What a release relies on
 
-The release holds no npm credential. Three settings outside this repository's files make it
-safe to release from a pushed tag, and all three have to be in place before the first one:
+The release holds no npm credential. Three settings outside this repository's files have to be
+in place before a release:
 
 - **npm trusted publishing.** Each of the two packages on npmjs.com (Settings → Trusted
   Publisher) names this repository, the workflow file `react-native-sdk-release.yaml` and the
@@ -157,18 +153,25 @@ safe to release from a pushed tag, and all three have to be in place before the 
   to "Require two-factor authentication and disallow tokens": no token can publish them then.
   That leaves this workflow and a maintainer who publishes by hand, signed in with two-factor
   authentication.
-- **The `npm` environment** (Settings → Environments), with no required reviewers and with
+- **The `npm` environment** (Settings → Environments), with required reviewers and with
   deployments limited to tags matching `react-native-sdk-v*`. The `publish` job is the only one
   that names it. A job that names an environment which does not exist creates it without any
   limit, so it has to exist first.
-- **Two tag rulesets** for `refs/tags/react-native-sdk-v*` (Settings → Rules → Rulesets): one
-  that restricts creations, with the maintainers on its bypass list, and one that restricts
-  updates and deletions and blocks force pushes, with nobody on its bypass list. They are
-  separate because a bypass list covers every rule of its ruleset.
+- **A tag ruleset** for `refs/tags/react-native-sdk-v*` (Settings → Rules → Rulesets) that
+  restricts updates and deletions and blocks force pushes, with nobody on its bypass list. No
+  ruleset restricts creating a release tag: the tag workflow creates the tags with the workflow's
+  own token, which GitHub does not accept on a ruleset's bypass list in an organization's
+  repository.
+
+What decides whether something is published is the `npm` environment. Its required reviewers
+approve every run of the publishing job, and they have to be configured: naming the environment
+in the workflow adds none. Everybody who can push can create a release tag on any commit, and a
+workflow runs as its file is in the tagged commit, so the workflow's own check stops mistakes, not
+misuse.
 
 Both packages also have versions on npm that this release did not make: `0.0.0` and a number of
-`0.0.0-*` snapshots of an earlier API, with `latest` on `0.0.0`. Once the first beta is out, an
-npm maintainer deprecates them, so that installing one prints where to go:
+`0.0.0-*` snapshots of an earlier API, with `latest` on `0.0.0`. An npm maintainer deprecates
+them, so that installing one prints where to go:
 
 ```sh
 npm deprecate "@fedimint/react-native@<=0.0.0" \

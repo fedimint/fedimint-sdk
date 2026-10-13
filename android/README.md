@@ -232,57 +232,30 @@ dependencies {
 }
 ```
 
-The version above is the first one this repository will release. It resolves
-only once that release has actually been published on Maven Central; until
-then, and for newer versions, check
+The version above is the first one this repository released, and it is on
+Maven Central. For newer versions, check
 [Maven Central](https://central.sonatype.com/artifact/org.fedimint/sdk) for
 what exists.
 
 ### Versioning
 
-The Android SDK has its own version, `fedimintSdk` in
-[`gradle/libs.versions.toml`](gradle/libs.versions.toml), independent of
-[`rust/fedimint-sdk/Cargo.toml`](../rust/fedimint-sdk/Cargo.toml)'s. It follows
-[semantic versioning](https://semver.org), `MAJOR.MINOR.PATCH`, and describes
-the **Kotlin API**. The Kotlin API is generated from the Rust exports, so a
-change on the Rust side counts if it changes what Kotlin callers see.
+The Android SDK shares one line of versions with the SDK's other released
+components, the Rust crate and the React Native packages.
+[`RELEASING.md`](../RELEASING.md#versions) has the rules, and says which bump
+a change calls for.
 
-| Change since the last release                                                                | Before 1.0.0 | From 1.0.0 |
-| -------------------------------------------------------------------------------------------- | ------------ | ---------- |
-| Breaks callers: removes or renames a class, function, parameter or enum case, changes a type | `minor`      | `major`    |
-| Adds to the API without breaking anything                                                    | `minor`      | `minor`    |
-| Fixes behaviour, with no change to the API                                                   | `patch`      | `patch`    |
-
-Going to 1.0.0 is a `major` bump, made on purpose once the API is stable.
-Before that, a `minor` bump is how a breaking change is signalled, as semver
-allows for 0.x.
-
-There are two kinds of release: betas, `X.Y.Z-beta.N`, for testing, then
-`X.Y.Z` itself. Nothing else (no alpha, no rc) is accepted. Both kinds are
-permanent on Central, and every release must be newer than all the ones
-before it. A version moves like this:
-
-```
-0.1.0 --minor, as beta--> 0.2.0-beta.1 --beta--> 0.2.0-beta.2 --release--> 0.2.0
-0.2.0 --patch-------------------------------------------------------------> 0.2.1
-```
-
-A beta is always either continued (`beta`) or released (`release`). There is
-no `patch`, `minor` or `major` in the middle of one.
-
-Don't edit the version by hand. Run
-[`android-sdk-version-bump.yaml`](../.github/workflows/android-sdk-version-bump.yaml)
-(Actions → Android SDK Version Bump), pick the bump and whether a new version
-starts as a beta, and it opens a pull request with the change and drafted
-release notes. It refuses a bump that doesn't fit, and a version that is
-already taken.
-[`scripts/android-sdk-version.sh`](../scripts/android-sdk-version.sh) holds
-these rules for both that workflow and the release, and works locally too:
+The version is `fedimintSdk` in
+[`gradle/libs.versions.toml`](gradle/libs.versions.toml). Don't edit it by
+hand: the SDK Version Bump workflow sets it. To read it, or to see what the
+next bump of the line would give, use
+[`scripts/sdk-version.sh`](../scripts/sdk-version.sh). While the line is at
+`0.1.0-beta.1`, for example:
 
 ```sh
-scripts/android-sdk-version.sh current          # 0.1.0-beta.1
-scripts/android-sdk-version.sh next release     # 0.1.0
-scripts/android-sdk-version.sh next minor --beta
+scripts/sdk-version.sh current android   # 0.1.0-beta.1
+scripts/sdk-version.sh current           # 0.1.0-beta.1, the line's version
+scripts/sdk-version.sh next beta         # 0.1.0-beta.2
+scripts/sdk-version.sh next release      # 0.1.0
 ```
 
 Snapshots are separate from all of this; see below.
@@ -290,7 +263,7 @@ Snapshots are separate from all of this; see below.
 ### Releases
 
 [`android-sdk-release.yaml`](../.github/workflows/android-sdk-release.yaml) does
-the release. It first runs the whole
+the release. It first checks the tag, then runs the whole
 [`android-sdk.yaml`](../.github/workflows/android-sdk.yaml) chain on the release
 commit, including the emulator run. Only if that passes does it build the AAR
 again from the native libraries and bindings that run tested, then sign and
@@ -304,45 +277,40 @@ Every release has notes in [`CHANGELOG.md`](CHANGELOG.md), one `## <version>`
 section each. They also become the version's GitHub Release, and the tag's
 message. A release is refused without them.
 
-To release:
+[`RELEASING.md`](../RELEASING.md) says how a release is started and tagged,
+and what to do when that fails. Once the release workflow has started, three
+steps are the Android SDK's own:
 
-1. Run the Android SDK Version Bump workflow (see Versioning). Its pull request
-   sets the version and drafts the version's section in `CHANGELOG.md` from
-   the commits since the last release that touched the SDK.
-2. In that pull request, rewrite the drafted notes for users and delete the
-   draft comment. Then merge it. Merging is the decision to release:
-   [`android-sdk-tag.yaml`](../.github/workflows/android-sdk-tag.yaml) tags the
-   merge commit `android-sdk-v<version>` and starts the release on it.
-3. Approve the `maven-central` environment when the release run asks.
-4. On central.sonatype.com → Publishing → Deployments, wait for the
+1. Approve the `maven-central` environment when the run asks, after checking
+   that it is on the tag of the release.
+2. On central.sonatype.com → Publishing → Deployments, wait for the
    deployment to show `VALIDATED` (a `FAILED` one lists the reason), then
    press Publish.
-5. Publish the version's draft GitHub Release, which the run created.
+3. Publish the version's draft GitHub Release, which the run created.
 
-The release is refused if the tag and the catalog disagree, if the version is
-not a beta or a release, if it is not newer than every `android-sdk-v*` tag
-already pushed, or if its notes are missing or still a draft.
+The workflow does not ask Central what it has already. A re-run of its
+`publish` job, or a run by hand on the tag with `publish` ticked, uploads the
+version again, so first look under Publishing → Deployments for what an
+earlier run left, and drop a deployment that must not be published.
 
-The Android SDK Tag workflow tags automatically only right after a version
-bump that follows a release. For anything else, run it by hand on `main`
-(Actions → Android SDK Tag → Run workflow). The same checks apply. That
-covers two cases:
-
-- **The first release.** `0.1.0-beta.1` and its notes are already in place, so
-  there is no bump pull request to merge.
-- **A release whose automatic tagging failed,** for example because its notes
-  were merged as a draft. Fix the notes in a pull request, then run it.
-
-Pushing a `android-sdk-v*` tag by hand also still releases.
+The release is refused if the tag does not name the version in the catalog, if
+its commit is not on `main`, if the version is not newer than every earlier
+`android-sdk-v*` tag, if another component has the same version tagged on
+another commit, or if the notes are missing or still a draft. The header of
+[`scripts/sdk-release.sh`](../scripts/sdk-release.sh) has the full rules.
+Pushing an `android-sdk-v*` tag by hand also starts a release, and the tag has
+to pass the same checks.
 
 The two workflows behave differently when run by hand:
 
-- **Android SDK Tag, run by hand, releases for real.** It pushes the tag and
-  starts Android SDK Release with publishing on.
-- **Android SDK Release, run by hand with "publish" unticked, is a dry run.**
+- **SDK Tag, run by hand, starts real releases.** It tags the components it is
+  run for that have no tag for their version yet, and starts each one's
+  release workflow with publishing on.
+- **Android SDK Release, run by hand with `publish` unticked, is a dry run.**
   It signs the artifacts into a local Maven repository and uploads that
-  repository as a workflow artifact to inspect. Nothing is tagged or
-  uploaded to Central.
+  repository as the `maven-central-dry-run` workflow artifact to inspect.
+  Nothing is tagged or uploaded to Central. Like a release, it waits for the
+  `maven-central` environment's approval.
 
 The POM, signing and the Central setup live in
 [`fedimint-sdk/build.gradle.kts`](fedimint-sdk/build.gradle.kts), which also

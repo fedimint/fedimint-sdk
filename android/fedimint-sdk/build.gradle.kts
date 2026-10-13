@@ -91,8 +91,9 @@ dependencies {
 // still :fedimint-sdk; only the published name differs.
 //
 // The org.fedimint namespace has to be verified on central.sonatype.com
-// before the first upload. The version is `libs.versions.fedimintSdk`, the
-// Android SDK's own, which does not follow rust/fedimint-sdk's.
+// before the first upload. The version is `libs.versions.fedimintSdk`, which
+// the SDK Version Bump workflow sets (see "Versions" in RELEASING.md, at the
+// repository root).
 //
 // `-Psnapshot=<name>` publishes `<name>-SNAPSHOT` instead, to Central's
 // snapshots repository. .github/workflows/android-sdk-snapshot.yaml passes

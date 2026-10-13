@@ -14,12 +14,9 @@ appcompat = "1.7.0"
 material = "1.12.0"
 lifecycle = "2.8.4"
 
-# The Android SDK's own version, the one published to Maven Central. It is
-# versioned independently of rust/fedimint-sdk/Cargo.toml. Releases are
-# `X.Y.Z-beta.N` betas, then `X.Y.Z` itself; android-sdk-release.yaml refuses
-# anything else. Snapshots are `<branch>-SNAPSHOT` and do not use this.
-# Change it with the SDK Version Bump workflow rather than by hand;
-# android/README.md's "Versioning" has the rules.
+# The Android SDK's version, the one published to Maven Central. The SDK
+# Version Bump workflow sets it, so don't edit it by hand. RELEASING.md,
+# "Versions", has the rules. Snapshots do not use it.
 fedimintSdk = "0.1.0-beta.1"
 
 # Publishes :fedimint-sdk to Maven Central through the Sonatype Central
