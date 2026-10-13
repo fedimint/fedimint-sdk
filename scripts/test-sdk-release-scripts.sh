@@ -2,9 +2,11 @@
 #
 # Tests the SDK release gates, scripts/sdk-version.sh, scripts/sdk-changelog.sh
 # and scripts/sdk-release.sh, and the components they share,
-# scripts/sdk-components.sh. The scripts decide whether a release can be
-# tagged and what notes it carries, so every rule they enforce has a case
-# here. .github/workflows/sdk-release-scripts.yaml runs this on pull requests.
+# scripts/sdk-components.sh, and scripts/rust-sdk-publish.sh, which decides
+# whether a release of the crate still has to publish it. The scripts decide
+# whether a release can be tagged, what notes it carries and whether it
+# publishes, so every rule they enforce has a case here.
+# .github/workflows/sdk-release-scripts.yaml runs this on pull requests.
 #
 #   scripts/test-sdk-release-scripts.sh
 #
@@ -13,18 +15,22 @@
 # release notes of every component, and the release tags and origin/main that
 # the case needs. Nothing in this checkout is touched.
 #
-# scripts/sdk-release.sh asks npm and crates.io which versions exist. A fake
-# `npm` and a fake `curl`, first on PATH, answer from files in a directory of
-# the case instead, and record their calls, so no case reaches the network.
-# Nothing beyond bash, git, node (which reads npm's answers) and the POSIX tools
-# the scripts use is needed.
+# scripts/sdk-release.sh asks npm and crates.io which versions exist, and
+# scripts/rust-sdk-publish.sh downloads the file of a version of the crate from
+# crates.io. A fake `npm` and a fake `curl`, first on PATH, answer from files
+# in a directory of the case instead, and record their calls, so no case
+# reaches the network. Nothing beyond bash, git, node (which reads npm's
+# answers), tar and the POSIX tools the scripts use is needed.
 #
-# The commands of the workflow steps that run scripts/sdk-release.sh, which are
-# check-tree in the pull request check and the version step of each release
-# workflow, are read from the workflows in this checkout, and run in such a
-# repository as well. The conditions (`if:`) that decide whether the jobs and
-# steps that publish run in the release workflows are read from them too, as
-# text, and each has to be the one pinned here.
+# The commands of the workflow steps that run these scripts, which are
+# check-tree in the pull request check, the version step of each release
+# workflow, and the steps of the crate's release that decide what to publish
+# and check what was packaged, are read from the workflows in this checkout,
+# and run in such a repository as well. The conditions (`if:`) that decide
+# whether the jobs and steps that publish run in the release workflows, what
+# starts and what cancels a release, and how the crate is packed to be
+# published are read from them too, as text, and each has to be the one pinned
+# here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -189,7 +195,8 @@ repo() {
     dir="$(mktemp -d "$WORK/repo.XXXX")"
     mkdir -p "$dir/scripts" "$dir/android" "$dir/rust/fedimint-sdk" "$dir/js/react-native"
     cp "$ROOT/scripts/sdk-components.sh" "$ROOT/scripts/sdk-version.sh" \
-        "$ROOT/scripts/sdk-changelog.sh" "$ROOT/scripts/sdk-release.sh" "$dir/scripts/"
+        "$ROOT/scripts/sdk-changelog.sh" "$ROOT/scripts/sdk-release.sh" \
+        "$ROOT/scripts/rust-sdk-publish.sh" "$dir/scripts/"
     for component in rust android react-native; do
         put "$dir" "$component" "$1"
     done
@@ -1487,11 +1494,14 @@ echo "sdk-release.sh"
 # `/` as `__`) when there is one, else it fails printing its <name>.error.json, else it answers
 # as npm does for a package that was never published. Any other call fails loudly.
 #
-# The fake curl answers the page of the crate in the sparse index of crates.io and fails loudly
-# on any other URL or option, and on a request without a User-Agent. With an `unreachable` file
-# it cannot connect: it prints 000 and exits with the status the file holds. Otherwise it answers
-# with the status of the `status` file, else 200 when there is an `index` file and 404 when there
-# is none, and writes the `index` file, else nothing, to the file --output names.
+# The fake curl answers two kinds of URL and fails loudly on any other URL or option, and on a
+# request without a User-Agent. One is the page of the crate in the sparse index of crates.io, the
+# other the file of a version of the crate on static.crates.io. With an `unreachable` file it cannot
+# connect to either host: it prints 000 and exits with the status the file holds, and a
+# `static-unreachable` file does so for the host of the files alone. Otherwise it answers with the
+# status of the `status` file, else 200 when there is an `index` file and 404 when there is none,
+# and writes the `index` file, else nothing, to the file --output names. A file of version <v> is
+# answered the same way from `crate-<v>.status` and `crate-<v>`.
 mkdir "$WORK/bin"
 cat >"$WORK/bin/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -1547,21 +1557,41 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-if [[ "$url" != https://index.crates.io/fe/di/fedimint-sdk || -z "$agent" || -z "$output" ||
-    "$format" != '%{http_code}' ]]; then
+case "$url" in
+    https://index.crates.io/fe/di/fedimint-sdk)
+        body="$FAKE_CRATES/index"
+        status_file="$FAKE_CRATES/status"
+        down="$FAKE_CRATES/unreachable"
+        ;;
+    https://static.crates.io/crates/fedimint-sdk/fedimint-sdk-*.crate)
+        version="${url##*/fedimint-sdk-}"
+        version="${version%.crate}"
+        body="$FAKE_CRATES/crate-$version"
+        status_file="$FAKE_CRATES/crate-$version.status"
+        down="$FAKE_CRATES/static-unreachable"
+        ;;
+    *)
+        echo "unexpected curl call: url=$url agent=$agent output=$output format=$format" >&2
+        exit 9
+        ;;
+esac
+if [[ -z "$agent" || -z "$output" || "$format" != '%{http_code}' ]]; then
     echo "unexpected curl call: url=$url agent=$agent output=$output format=$format" >&2
     exit 9
 fi
-if [[ -f "$FAKE_CRATES/unreachable" ]]; then
-    echo "curl: (6) Could not resolve host: index.crates.io" >&2
-    printf 000
-    exit "$(<"$FAKE_CRATES/unreachable")"
-fi
+for marker in "$FAKE_CRATES/unreachable" "$down"; do
+    if [[ -f "$marker" ]]; then
+        host="${url#https://}"
+        echo "curl: (6) Could not resolve host: ${host%%/*}" >&2
+        printf 000
+        exit "$(<"$marker")"
+    fi
+done
 status=404
-[[ ! -f "$FAKE_CRATES/index" ]] || status=200
-[[ ! -f "$FAKE_CRATES/status" ]] || status="$(<"$FAKE_CRATES/status")"
-if [[ -f "$FAKE_CRATES/index" ]]; then
-    cat "$FAKE_CRATES/index" >"$output"
+[[ ! -f "$body" ]] || status=200
+[[ ! -f "$status_file" ]] || status="$(<"$status_file")"
+if [[ -f "$body" ]]; then
+    cat "$body" >"$output"
 else
     : >"$output"
 fi
@@ -1575,6 +1605,11 @@ BINDINGS_PACKAGE=@fedimint/react-native-bindings
 WRAPPER_PACKAGE=@fedimint/react-native
 INDEX_URL=https://index.crates.io/fe/di/fedimint-sdk
 INDEX_AGENT='fedimint-sdk release check (https://github.com/fedimint/fedimint-sdk)'
+# Where static.crates.io serves the file of a version of the crate.
+CRATE_FILE_URL=https://static.crates.io/crates/fedimint-sdk
+# The commit that a release is made from, and another one that a crate can have been packaged from.
+RELEASE_COMMIT=c1ead8de47460724516ad7c95b4db11e879be459
+OTHER_COMMIT=0123456789abcdef0123456789abcdef01234567
 
 # Gives the fake npm and the fake curl fresh answers: no package on npm, no crate on crates.io,
 # and no call recorded.
@@ -1623,6 +1658,77 @@ crates_status() {
 # crates_down: curl cannot connect to crates.io, and exits with status 6.
 crates_down() {
     echo 6 >"$FAKE_CRATES/unreachable"
+}
+
+# vcs_info <commit> [<dirty>]: the .cargo_vcs_info.json that cargo writes into a crate it packages
+# from the commit, in the form of its own output. Cargo writes `"dirty": true` after the commit when
+# the tree had changes that were not committed, and no such member otherwise. With a second
+# argument the record has that member, with that value.
+vcs_info() {
+    local dirty=""
+    if [[ $# -ge 2 ]]; then
+        dirty="$(printf ',\n    "dirty": %s' "$2")"
+    fi
+    printf '{\n  "git": {\n    "sha1": "%s"%s\n  },\n  "path_in_vcs": "rust/fedimint-sdk"\n}' \
+        "$1" "$dirty"
+}
+
+# record_forms <commit> [<dirty>]: sets RECORD_NAMES and RECORDS to the record that vcs_info prints,
+# in each form it can come in. Cargo writes it indented, with the directory of the crate in its
+# repository, or with none for a crate at the root of it. The same JSON can also be on one line,
+# with no space, with a space after each colon and comma, or with spaces around the colons.
+record_forms() {
+    local indented line
+    indented="$(vcs_info "$@")"
+    line="$(tr -d '[:space:]' <<<"$indented")"
+    RECORD_NAMES=(
+        "indented, for a crate in a directory of its repository"
+        "indented, for a crate at the root of its repository"
+        "on a line"
+        "on a line with a space after each colon and comma"
+        "on a line with spaces around the colons"
+    )
+    RECORDS=(
+        "$indented"
+        "${indented/rust\/fedimint-sdk/}"
+        "$line"
+        "$(sed 's/:/: /g; s/,/, /g' <<<"$line")"
+        "${line//:/ : }"
+    )
+}
+
+# crate_file <version> [<info>]: static.crates.io serves the file of that version, a gzipped tar of
+# the directory fedimint-sdk-<version> that holds a manifest and a source file, and
+# .cargo_vcs_info.json with the text <info> when that is given.
+crate_file() {
+    local version="$1" dir
+    dir="$(mktemp -d "$WORK/crate.XXXX")"
+    mkdir -p "$dir/fedimint-sdk-$version/src"
+    printf '[package]\nname = "fedimint-sdk"\nversion = "%s"\n' "$version" \
+        >"$dir/fedimint-sdk-$version/Cargo.toml"
+    echo '// The crate.' >"$dir/fedimint-sdk-$version/src/lib.rs"
+    if [[ $# -ge 2 ]]; then
+        printf '%s' "$2" >"$dir/fedimint-sdk-$version/.cargo_vcs_info.json"
+    fi
+    tar -czf "$FAKE_CRATES/crate-$version" -C "$dir" "fedimint-sdk-$version"
+}
+
+# crate_from <version> <commit>: static.crates.io serves the file of that version, packaged from
+# that commit.
+crate_from() {
+    crate_file "$1" "$(vcs_info "$2")"
+}
+
+# download_status <version> <code>: static.crates.io answers the request for the file of that
+# version with this HTTP status, whatever it has.
+download_status() {
+    printf '%s\n' "$2" >"$FAKE_CRATES/crate-$1.status"
+}
+
+# download_down: curl cannot connect to static.crates.io, which serves the files, and exits with
+# status 6. The index is still there.
+download_down() {
+    echo 6 >"$FAKE_CRATES/static-unreachable"
 }
 
 # npm_drains_stdin: the fake npm reads its standard input to the end before it answers.
@@ -1871,6 +1977,103 @@ expect_unasked "latest asks neither npm nor crates.io"
 
 expect_usage "latest needs a component" -- "$rel" latest
 expect_usage "latest takes one component" -- "$rel" latest rust android
+
+echo
+echo "sdk-release.sh published"
+
+# The versions that the registries of a component list, for a script that has to know whether a
+# version is taken, such as rust-sdk-publish.sh, without reading a registry on its own.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    expect_ok "published $component prints nothing when no registry lists a version of it" "" -- \
+        "$rel" published "$component"
+done
+
+# The crate: the versions of the index, one per line and in its order, the yanked ones included.
+fresh_registries
+crates_has 0.1.0-beta.1 0.1.0-beta.10 0.2.0!
+expect_ok "published rust prints the versions that crates.io lists, the yanked ones included" \
+    "$(lines 0.1.0-beta.1 0.1.0-beta.10 0.2.0)" -- "$rel" published rust
+expect_contains "published rust asks crates.io for the page of the crate" "$INDEX_URL" \
+    "$(<"$FAKE_CRATES/calls")"
+expect_contains "published rust tells crates.io who is asking" "$INDEX_AGENT" \
+    "$(<"$FAKE_CRATES/calls")"
+expect_equal "published rust does not ask npm" "no" \
+    "$([[ -e "$FAKE_NPM/calls" ]] && echo yes || echo no)"
+
+# The React Native packages: the versions of both. A version that both have is printed once, and
+# the order is that of the packages, the bindings first, and within a package that of npm.
+fresh_registries
+npm_has "$BINDINGS_PACKAGE" '["0.0.0","0.1.0-beta.2"]'
+npm_has "$WRAPPER_PACKAGE" '["0.0.0","0.1.0-beta.1","0.1.0-beta.2"]'
+expect_ok "published react-native prints the versions of both packages, each once" \
+    "$(lines 0.0.0 0.1.0-beta.2 0.1.0-beta.1)" -- "$rel" published react-native
+expect_equal "published react-native asks npm for both packages" "$(lines \
+    "view $BINDINGS_PACKAGE versions --json" "view $WRAPPER_PACKAGE versions --json")" \
+    "$(<"$FAKE_NPM/calls")"
+expect_equal "published react-native does not ask crates.io" "no" \
+    "$([[ -e "$FAKE_CRATES/calls" ]] && echo yes || echo no)"
+npm_has "$WRAPPER_PACKAGE" '"0.1.0-beta.3"'
+expect_ok "published react-native reads a package with exactly one version" \
+    "$(lines 0.0.0 0.1.0-beta.2 0.1.0-beta.3)" -- "$rel" published react-native
+fresh_registries
+npm_has "$WRAPPER_PACKAGE" '["0.1.0-beta.1"]'
+expect_ok "published react-native prints the versions of the package that is on npm alone" \
+    "0.1.0-beta.1" -- "$rel" published react-native
+
+# The Android SDK has no registry: its tags are the record of its releases.
+fresh_registries
+npm_has "$BINDINGS_PACKAGE" '["0.1.0-beta.1"]'
+npm_has "$WRAPPER_PACKAGE" '["0.1.0-beta.1"]'
+crates_has 0.1.0-beta.1
+expect_ok "published android prints nothing, whatever the other registries list" "" -- \
+    "$rel" published android
+expect_unasked "published android asks neither npm nor crates.io"
+
+# A registry that cannot be asked fails the command and prints nothing: a list that stops short
+# must not look like the versions that are taken.
+fresh_registries
+crates_down
+run_split "$rel" published rust
+expect_equal "published rust fails when crates.io cannot be reached" 1 "$STATUS"
+expect_contains "published rust says why" \
+    "cannot list the versions of fedimint-sdk on crates.io: curl exited with status 6" "$ERR"
+expect_equal "published rust prints nothing then" "" "$OUT"
+fresh_registries
+crates_status 503
+run_split "$rel" published rust
+expect_equal "published rust fails when crates.io answers 503" 1 "$STATUS"
+expect_contains "published rust says which answer it got" \
+    "$INDEX_URL answered HTTP 503; retry later" "$ERR"
+expect_equal "published rust prints nothing for that answer" "" "$OUT"
+fresh_registries
+npm_has "$BINDINGS_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
+npm_fails "$WRAPPER_PACKAGE" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
+run_split "$rel" published react-native
+expect_equal "published react-native fails when npm cannot be reached for the second package" 1 \
+    "$STATUS"
+expect_contains "published react-native says which package npm failed for" \
+    "cannot list the versions of $WRAPPER_PACKAGE on npm: error code ECONNREFUSED; retry later" \
+    "$ERR"
+expect_equal "published react-native prints no versions of the first package then" "" "$OUT"
+
+# npm gets /dev/null for its standard input, so that reading it does not take the name of the
+# second package from the loop that asks them.
+fresh_registries
+npm_has "$BINDINGS_PACKAGE" '["0.0.0"]'
+npm_has "$WRAPPER_PACKAGE" '["9.9.9"]'
+npm_drains_stdin
+expect_ok "published react-native asks the second package when npm reads its standard input" \
+    "$(lines 0.0.0 9.9.9)" -- "$rel" published react-native
+
+expect_fail "published refuses an unknown component" \
+    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "$rel" published sideways
+expect_fail "published refuses a group name" "all is not a component" -- "$rel" published all
+expect_usage "published needs a component" -- "$rel" published
+expect_usage "published takes one component" -- "$rel" published rust android
 
 echo
 echo "sdk-release.sh check-version"
@@ -3092,6 +3295,321 @@ expect_contains "check-tree reports the component that is to be released as well
 expect_unasked "check-tree asks neither npm nor crates.io when it fails"
 
 echo
+echo "rust-sdk-publish.sh decide"
+
+# A release of the crate publishes it only when crates.io does not have the version, and a release
+# that stopped half way, after the upload, is run again. `decide` tells the two apart from the
+# index and from the file that crates.io serves for the version, and the fake curl answers both.
+# The workflow takes what `decide` prints for the decision, so a refusal leaves stdout empty.
+
+# expect_decision <name> <word> <version> <commit>: `decide` succeeds, prints exactly that word on
+# stdout, and explains itself on stderr.
+expect_decision() {
+    local name="$1" word="$2"
+    shift 2
+    run_split "$pub" decide "$@"
+    if [[ "$STATUS" -ne 0 ]]; then
+        fail "$name" "exited with status $STATUS: $ERR"
+    elif [[ "$OUT" != "$word" ]]; then
+        fail "$name" "expected on stdout: $word"$'\n'"got: $OUT"
+    elif [[ -z "$ERR" ]]; then
+        fail "$name" "expected an explanation on stderr"
+    else
+        pass "$name"
+    fi
+}
+
+# expect_refusal <name> <expected text in stderr> <version> <commit>: `decide` fails with status 1,
+# prints nothing on stdout, and has that text in its error. $OUT and $ERR keep what it printed.
+expect_refusal() {
+    local name="$1" mention="$2"
+    shift 2
+    run_split "$pub" decide "$@"
+    if [[ "$STATUS" -ne 1 ]]; then
+        fail "$name" "expected the exit status 1, got $STATUS"$'\n'"stdout: $OUT"$'\n'"stderr: $ERR"
+    elif [[ -n "$OUT" ]]; then
+        fail "$name" "expected nothing on stdout, got: $OUT"
+    elif [[ "$ERR" != *"$mention"* ]]; then
+        fail "$name" "expected the error to mention: $mention"$'\n'"got: $ERR"
+    else
+        pass "$name"
+    fi
+}
+
+# expect_not_downloaded <name>: since the registries were made fresh, curl was not asked for the
+# file of any version.
+expect_not_downloaded() {
+    if [[ -e "$FAKE_CRATES/calls" ]] && grep -q "$CRATE_FILE_URL" "$FAKE_CRATES/calls"; then
+        fail "$1" "curl was asked for a file:"$'\n'"$(<"$FAKE_CRATES/calls")"
+    else
+        pass "$1"
+    fi
+}
+
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+pub="$r/scripts/rust-sdk-publish.sh"
+crate_version=0.1.0-beta.1
+
+# crates.io does not list the version: it is to be published, and no file is downloaded. The crate
+# may be unknown to crates.io, or have other versions.
+expect_decision "decide publishes a version of a crate that crates.io has never seen" publish \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads nothing when crates.io has never seen the crate"
+fresh_registries
+crates_has 0.1.0-beta.0 0.2.0
+crate_from 0.1.0-beta.0 "$RELEASE_COMMIT"
+crate_from 0.2.0 "$RELEASE_COMMIT"
+expect_decision "decide publishes a version that crates.io lists others beside" publish \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads nothing for a version that is not listed"
+
+# A version is listed as a whole. One that starts a listed version is not that version, a listed
+# one that starts this version is not this one, and a dot is not any character.
+fresh_registries
+crates_has 0.1.0-beta.10
+crate_from 0.1.0-beta.10 "$OTHER_COMMIT"
+expect_decision "decide does not take 0.1.0-beta.1 for the listed 0.1.0-beta.10" publish \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads no file of 0.1.0-beta.10 for 0.1.0-beta.1"
+fresh_registries
+crates_has 0.1.0-beta.1
+crate_from 0.1.0-beta.1 "$OTHER_COMMIT"
+expect_decision "decide does not take the listed 0.1.0-beta.1 for 0.1.0-beta.10" publish \
+    0.1.0-beta.10 "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads no file of 0.1.0-beta.1 for 0.1.0-beta.10"
+fresh_registries
+crates_has 0x1x0-beta.1
+expect_decision "decide does not take a dot of the version for any character" publish \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads no file for a version that only looks like the listed one"
+
+# The version is listed, and its file was packaged from the commit of the release: there is nothing
+# to publish. Who published it is not known: the crate's first version is published by hand. The
+# standard input of the script is a pipe in this call: that of the suite is /dev/null in CI, which
+# curl would have even if the script did not give it.
+fresh_registries
+crates_has "$crate_version"
+crate_from "$crate_version" "$RELEASE_COMMIT"
+expect_decision "decide skips a version that crates.io lists from the same commit" skip \
+    "$crate_version" "$RELEASE_COMMIT" < <(echo input)
+skipped="crates.io lists fedimint-sdk $crate_version, packaged from commit $RELEASE_COMMIT, the"
+expect_contains "decide says that crates.io lists the version, from the commit of the release" \
+    "$skipped commit of this release, so there is nothing to publish." "$ERR"
+expect_equal "decide does not say who published the crate it skips" "" \
+    "$(grep -i 'earlier run\|published the\|published it' <<<"$ERR" || true)"
+expect_contains "decide asks for the file of the version where crates.io serves it" \
+    "$CRATE_FILE_URL/fedimint-sdk-$crate_version.crate" "$(<"$FAKE_CRATES/calls")"
+expect_contains "decide tells crates.io who is asking when it downloads the file" "$INDEX_AGENT" \
+    "$(grep "$CRATE_FILE_URL" "$FAKE_CRATES/calls")"
+expect_equal "decide gives curl /dev/null for its standard input" null \
+    "$(sort -u "$FAKE_CRATES/stdin")"
+expect_equal "decide tells crates.io who is asking in the words of sdk-release.sh" \
+    "$(grep '^USER_AGENT=' "$ROOT/scripts/sdk-release.sh")" \
+    "$(grep '^USER_AGENT=' "$ROOT/scripts/rust-sdk-publish.sh")"
+crate_file "$crate_version" \
+    "{\"git\":{\"sha1\":\"$RELEASE_COMMIT\"},\"path_in_vcs\":\"rust/fedimint-sdk\"}"
+expect_decision "decide reads a record that is on one line" skip "$crate_version" "$RELEASE_COMMIT"
+fresh_registries
+crates_has "$crate_version!"
+crate_from "$crate_version" "$RELEASE_COMMIT"
+expect_decision "decide skips a yanked version that crates.io lists from the same commit" skip \
+    "$crate_version" "$RELEASE_COMMIT"
+fresh_registries
+crates_has 0.1.0-beta.1 0.1.0-beta.10 0.1.0-beta.2
+crate_from 0.1.0-beta.1 "$RELEASE_COMMIT"
+crate_from 0.1.0-beta.10 "$OTHER_COMMIT"
+crate_from 0.1.0-beta.2 "$OTHER_COMMIT"
+expect_decision "decide reads the file of the version and of no other" skip "$crate_version" \
+    "$RELEASE_COMMIT"
+expect_equal "decide asks for one file" 1 "$(grep -c "$CRATE_FILE_URL" "$FAKE_CRATES/calls")"
+
+# The record comes in every form of record_forms. A tree without changes that were not committed has
+# no `dirty` member, and `"dirty": false` says the same.
+fresh_registries
+crates_has "$crate_version"
+record_forms "$RELEASE_COMMIT"
+for i in "${!RECORDS[@]}"; do
+    crate_file "$crate_version" "${RECORDS[$i]}"
+    expect_decision "decide skips a version from the same commit, its record ${RECORD_NAMES[$i]}" \
+        skip "$crate_version" "$RELEASE_COMMIT"
+done
+record_forms "$RELEASE_COMMIT" false
+for i in "${!RECORDS[@]}"; do
+    crate_file "$crate_version" "${RECORDS[$i]}"
+    expect_decision "decide skips a version from a clean tree, its record ${RECORD_NAMES[$i]}" \
+        skip "$crate_version" "$RELEASE_COMMIT"
+done
+
+# The commit is read from the `git` object of the record, wherever that is among the members of the
+# record, and in whichever order cargo's own members are.
+for info in "{\"path_in_vcs\":\"\",\"git\":{\"sha1\":\"$RELEASE_COMMIT\"}}" \
+    "{\"other\": {\"a\": [1, 2]}, \"git\": {\"sha1\": \"$RELEASE_COMMIT\"}, \"b\": \"c\"}" \
+    "{\"git\":{\"dirty\":false,\"sha1\":\"$RELEASE_COMMIT\"}}"; do
+    crate_file "$crate_version" "$info"
+    expect_decision "decide skips a version from the same commit, its record is '$info'" skip \
+        "$crate_version" "$RELEASE_COMMIT"
+done
+
+# The version is listed, but another commit published it. A version cannot be published twice, so
+# the release cannot go on, and it must not be taken for the release that published the crate.
+fresh_registries
+crates_has "$crate_version"
+crate_from "$crate_version" "$OTHER_COMMIT"
+expect_refusal "decide refuses a version that crates.io lists from another commit" \
+    "crates.io lists fedimint-sdk $crate_version, packaged from commit $OTHER_COMMIT" \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_contains "decide names the commit of the release as well" \
+    "this release is of commit $RELEASE_COMMIT" "$ERR"
+expect_contains "decide says that a version cannot be published twice" \
+    "A version cannot be published twice" "$ERR"
+expect_contains "decide says that the next version has to be released instead" \
+    "release the next version instead" "$ERR"
+
+# The version is listed, and its file was packaged from the commit of the release, but from a tree
+# that had changes that were not committed (cargo package --allow-dirty). Cargo records that as
+# `"dirty": true` in the record. Such a crate does not hold the code of the commit, so it is not
+# what the release tested, and the release cannot go on with it, as with one from another commit.
+modified="crates.io lists fedimint-sdk $crate_version, packaged from a modified tree at commit"
+fresh_registries
+crates_has "$crate_version"
+record_forms "$RELEASE_COMMIT" true
+for i in "${!RECORDS[@]}"; do
+    crate_file "$crate_version" "${RECORDS[$i]}"
+    expect_refusal "decide refuses a version from a modified tree, its record ${RECORD_NAMES[$i]}" \
+        "$modified $RELEASE_COMMIT," "$crate_version" "$RELEASE_COMMIT"
+done
+expect_contains "decide says that a crate from a modified tree is not the release's" \
+    "so it does not hold the code of that commit and is not this release's crate" "$ERR"
+expect_contains "decide says that a version cannot be published twice for a modified tree" \
+    "A version cannot be published twice" "$ERR"
+expect_contains "decide says that the next version has to be released instead for a modified tree" \
+    "release the next version instead" "$ERR"
+crate_file "$crate_version" "{\"git\": {\"dirty\": true, \"sha1\": \"$RELEASE_COMMIT\"}}"
+expect_refusal "decide refuses a modified tree whose record has dirty before the commit" \
+    "$modified $RELEASE_COMMIT," "$crate_version" "$RELEASE_COMMIT"
+crate_file "$crate_version" "$(vcs_info "$OTHER_COMMIT" true)"
+expect_refusal "decide refuses a modified tree at another commit as one from another commit" \
+    "crates.io lists fedimint-sdk $crate_version, packaged from commit $OTHER_COMMIT, but this" \
+    "$crate_version" "$RELEASE_COMMIT"
+
+# Its file does not say which commit it was packaged from: that is not the release's crate either.
+fresh_registries
+crates_has "$crate_version"
+crate_file "$crate_version"
+expect_refusal "decide refuses a listed version whose file has no .cargo_vcs_info.json" \
+    "crates.io lists fedimint-sdk $crate_version, but its file does not say which commit" \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_contains "decide names the commit of the release when the file has no record" \
+    "$RELEASE_COMMIT" "$ERR"
+expect_contains "decide says that a version cannot be published twice then too" \
+    "A version cannot be published twice" "$ERR"
+expect_contains "decide says that the next version has to be released instead then too" \
+    "release the next version instead" "$ERR"
+for info in '' '{}' '{"git":{}}' 'no json' "{\"git\":{\"sha1\":\"${RELEASE_COMMIT:0:7}\"}}" \
+    "{\"git\":{\"sha1\":\"${RELEASE_COMMIT}0\"}}" "{\"git\":{\"sha1\":\"${RELEASE_COMMIT%?}\"}}" \
+    "{\"git\":{\"sha\":\"$RELEASE_COMMIT\"}}" \
+    "{\"git\":{\"sha1\":\"$RELEASE_COMMIT\"},\"other\":{\"sha1\":\"$OTHER_COMMIT\"}}"; do
+    crate_file "$crate_version" "$info"
+    expect_refusal "decide refuses a record that reads '$info', which names no one commit" \
+        "its file does not say which commit" "$crate_version" "$RELEASE_COMMIT"
+done
+# The commit is the one in the `git` object that is a member of the record. A `sha1` anywhere else
+# is no commit of the record: not one of another object, nor one of the record itself. Nor is that
+# of a `git` that is deeper in the record, or is a list, or of a record that is itself a list. Each
+# of these has the commit of the release in such a place.
+for info in "{\"other\": {\"sha1\": \"$RELEASE_COMMIT\"}, \"git\": {}}" \
+    "{\"other\":{\"sha1\":\"$RELEASE_COMMIT\"},\"git\":{}}" "{\"sha1\": \"$RELEASE_COMMIT\"}" \
+    "{\"sha1\":\"$RELEASE_COMMIT\",\"git\":{}}" \
+    "{\"other\":{\"git\":{\"sha1\":\"$RELEASE_COMMIT\"}}}" \
+    "{\"git\":[{\"sha1\":\"$RELEASE_COMMIT\"}]}" "[{\"git\":{\"sha1\":\"$RELEASE_COMMIT\"}}]"; do
+    crate_file "$crate_version" "$info"
+    expect_refusal "decide refuses a record that reads '$info', with no commit in its git object" \
+        "its file does not say which commit" "$crate_version" "$RELEASE_COMMIT"
+done
+crate_file 0.1.0-beta.2 "$(vcs_info "$RELEASE_COMMIT")"
+mv "$FAKE_CRATES/crate-0.1.0-beta.2" "$FAKE_CRATES/crate-$crate_version"
+expect_refusal "decide does not take the record in the directory of another version" \
+    "its file does not say which commit" "$crate_version" "$RELEASE_COMMIT"
+
+# The file cannot be downloaded or read. That is no answer, so nothing is decided.
+cannot="cannot download fedimint-sdk $crate_version from crates.io:"
+fresh_registries
+crates_has "$crate_version"
+expect_refusal "decide stops when crates.io has no file for a listed version, and says so" \
+    "$cannot $CRATE_FILE_URL/fedimint-sdk-$crate_version.crate answered HTTP 404; retry later" \
+    "$crate_version" "$RELEASE_COMMIT"
+for code in 500 503; do
+    crate_from "$crate_version" "$RELEASE_COMMIT"
+    download_status "$crate_version" "$code"
+    expect_refusal "decide stops when the file is answered with HTTP $code, and says so" \
+        "$cannot $CRATE_FILE_URL/fedimint-sdk-$crate_version.crate answered HTTP $code;" \
+        "$crate_version" "$RELEASE_COMMIT"
+done
+fresh_registries
+crates_has "$crate_version"
+crate_from "$crate_version" "$RELEASE_COMMIT"
+download_down
+expect_refusal "decide stops when crates.io cannot be reached for the file, and says so" \
+    "$cannot curl exited with status 6; check that curl works and that the network is reachable" \
+    "$crate_version" "$RELEASE_COMMIT"
+fresh_registries
+crates_has "$crate_version"
+printf 'this is not an archive' >"$FAKE_CRATES/crate-$crate_version"
+expect_refusal "decide stops when the file is not an archive, and says so" \
+    "the file of fedimint-sdk $crate_version from crates.io is not a gzipped tar archive" \
+    "$crate_version" "$RELEASE_COMMIT"
+: >"$FAKE_CRATES/crate-$crate_version"
+expect_refusal "decide stops when the file is empty" \
+    "the file of fedimint-sdk $crate_version from crates.io is not a gzipped tar archive" \
+    "$crate_version" "$RELEASE_COMMIT"
+
+# The index cannot be read. A crate that crates.io cannot be asked about must not look like one that
+# it does not list, or the decision would be to publish.
+fresh_registries
+crates_down
+expect_refusal "decide stops when crates.io cannot be reached for the index, and says so" \
+    "cannot list the versions of fedimint-sdk on crates.io: curl exited with status 6" \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_contains "decide says that it decided nothing then" "nothing is decided" "$ERR"
+expect_not_downloaded "decide downloads nothing when the index cannot be reached"
+fresh_registries
+crates_status 500
+crates_body 'internal error'
+expect_refusal "decide stops when the index answers 500, and says so" \
+    "cannot list the versions of fedimint-sdk on crates.io: $INDEX_URL answered HTTP 500" \
+    "$crate_version" "$RELEASE_COMMIT"
+fresh_registries
+crates_body 'this is not an index'
+expect_refusal "decide stops on an answer from the index that is not an index" \
+    "the answer of $INDEX_URL has no versions, or a line without \"vers\"" \
+    "$crate_version" "$RELEASE_COMMIT"
+expect_not_downloaded "decide downloads nothing when the index is not readable"
+
+# What is not a version, or not a full hash of a commit, is a mistake in the call, and must not
+# be taken for a version that crates.io does not list.
+fresh_registries
+for commit in "${RELEASE_COMMIT:0:7}" "${RELEASE_COMMIT}0" "${RELEASE_COMMIT:1}" \
+    "$(tr a-f A-F <<<"$RELEASE_COMMIT")" "${RELEASE_COMMIT%?}g" HEAD ""; do
+    expect_usage "decide refuses '$commit', which is not a full commit hash" -- \
+        "$pub" decide "$crate_version" "$commit"
+done
+for bad in "" v0.1.0-beta.1 rust-sdk-v0.1.0-beta.1 0.1 0.1.0-rc.1 0.1.0-beta 01.0.0 \
+    "0.1.0-beta.1 "; do
+    expect_usage "decide refuses '$bad', which is not a version" -- \
+        "$pub" decide "$bad" "$RELEASE_COMMIT"
+done
+expect_usage "decide needs a version and a commit" -- "$pub" decide
+expect_usage "decide needs a commit" -- "$pub" decide "$crate_version"
+expect_usage "decide takes a version and a commit" -- \
+    "$pub" decide "$crate_version" "$RELEASE_COMMIT" extra
+expect_usage "a command is needed" -- "$pub"
+expect_usage "an unknown command is refused" -- "$pub" sideways
+expect_unasked "a call that is refused asks neither npm nor crates.io"
+expect_equal "the usage lists decide" \
+    "usage: scripts/rust-sdk-publish.sh decide <version> <commit>" "$("$pub" 2>&1 || true)"
+
+echo
 echo "sdk-release-scripts.yaml"
 
 # The workflow runs check-tree on the checkout of a pull request. A checkout that came without the
@@ -3172,16 +3690,18 @@ expect_equal "the step does not call that a checkout without release tags" "" \
 echo
 echo "the release workflows"
 
-# The release workflows of the Android SDK and of the React Native packages each have a step that
-# applies scripts/sdk-release.sh to the run: a tag, pushed or started by hand, is held to the
-# release rules, and a dry run on a branch checks the version in the tree and only warns about a
-# version that could not be released. The step reads the version first, so that a version that
-# cannot be read stops it before any check or warning. Another step refuses to publish from a
-# branch. The cases run the commands of those steps, as the workflows have them, in a repository,
-# the way GitHub runs them (bash -eo pipefail) and with the environment it gives them: the type
-# and the name of the ref, and the file that the outputs of the step go to.
+# The release workflows of the Rust crate, of the Android SDK and of the React Native packages
+# each have a step that applies scripts/sdk-release.sh to the run: a tag, pushed or started by
+# hand, is held to the release rules, and a dry run on a branch checks the version in the tree and
+# only warns about a version that could not be released. The step reads the version first, so that
+# a version that cannot be read stops it before any check or warning. Another step refuses to
+# publish from a branch. The cases run the commands of those steps, as the workflows have them, in
+# a repository, the way GitHub runs them (bash -eo pipefail) and with the environment it gives
+# them: the type and the name of the ref, and the file that the outputs of the step go to.
 #
-# The conditions under which the jobs and steps that publish run are pinned after those cases.
+# The steps of the crate's workflow that decide what to publish and check what was packaged are
+# run in the same way after those cases, and the conditions under which the jobs and steps that
+# publish run are pinned after them.
 
 # release_step <repository> <ref type> <ref name> <step file>: runs the step in the repository,
 # and leaves its output in $OUT, its exit status in $STATUS and what it wrote to the outputs of
@@ -3225,9 +3745,10 @@ expect_unreadable_version() {
 
 # For each workflow: its component, the tag prefix of another component, the step that refuses to
 # publish from a branch, and what the version step gives its job: nothing for the Android SDK,
-# whose later jobs read the version from the catalog, and the version for the React Native
-# packages.
-for row in "android|rust-sdk-v|Refuse to upload from a branch|" \
+# whose later jobs read the version from the catalog, and the version for the Rust crate and the
+# React Native packages.
+for row in "rust|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1" \
+    "android|rust-sdk-v|Refuse to upload from a branch|" \
     "react-native|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1"; do
     IFS='|' read -r component other refuse output <<<"$row"
     prefix="$(prefix_of "$component")"
@@ -3303,6 +3824,11 @@ for row in "android|rust-sdk-v|Refuse to upload from a branch|" \
     # A version that cannot be read is neither warned about nor checked. Without it there is
     # nothing to check, and a warning that the dry run goes on would hide the real problem.
     case "$component" in
+        rust)
+            expect_unreadable_version "$component" "$version_step" \
+                "$(broken_repo "$CARGO_TOML" '[package]\nname = "fedimint-sdk"\n')" \
+                "the manifest has no version" "no [package] version in $CARGO_TOML"
+            ;;
         android)
             expect_unreadable_version "$component" "$version_step" \
                 "$(broken_repo "$CATALOG" '[versions]\n')" "the catalog has no version" \
@@ -3328,6 +3854,121 @@ for row in "android|rust-sdk-v|Refuse to upload from a branch|" \
     expect_contains "the $component workflow says that a tag is needed, and names the branch" \
         "${prefix}* tag; run this workflow from the tag, not from feature" "$OUT"
 done
+
+rust_workflow="$ROOT/.github/workflows/$(sourced "component_workflow rust")"
+
+# The `publish` job of the crate asks scripts/rust-sdk-publish.sh what to do, for the version that
+# `check` put out and the commit that is checked out, and its other steps act on the word it
+# prints. A decision that fails leaves no word behind: no step would act on it, and the job would
+# end as if there were nothing to do.
+decide_step="$WORK/rust-decide-step.sh"
+step_commands 'Decide whether to publish' "$rust_workflow" >"$decide_step"
+
+# decide_in <repository> <version>: runs the step in the repository with that version from `check`
+# in its environment. $OUT, $STATUS and $STEP_OUTPUT are as release_step leaves them.
+decide_in() {
+    : >"$WORK/github-output"
+    run in_repo "$1" env VERSION="$2" GITHUB_OUTPUT="$WORK/github-output" \
+        bash -eo pipefail "$decide_step"
+    STEP_OUTPUT="$(<"$WORK/github-output")"
+}
+
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+head_commit="$(git -C "$r" rev-parse HEAD)"
+decide_in "$r" 0.1.0-beta.1
+expect_equal "the crate's publish job passes a version that crates.io does not list" 0 "$STATUS"
+expect_equal "the crate's publish job decides to publish it" "decision=publish" "$STEP_OUTPUT"
+crates_has 0.1.0-beta.1
+crate_from 0.1.0-beta.1 "$head_commit"
+decide_in "$r" 0.1.0-beta.1
+expect_equal "the crate's publish job passes a version that crates.io has from this commit" 0 \
+    "$STATUS"
+expect_equal "the crate's publish job decides to skip it" "decision=skip" "$STEP_OUTPUT"
+crate_from 0.1.0-beta.1 "$OTHER_COMMIT"
+decide_in "$r" 0.1.0-beta.1
+expect_equal "the crate's publish job fails on a version that crates.io has from another commit" \
+    1 "$STATUS"
+expect_contains "the crate's publish job names the commit that is checked out then" \
+    "this release is of commit $head_commit" "$OUT"
+expect_equal "the crate's publish job leaves no decision behind then" "" "$STEP_OUTPUT"
+decide_in "$r" ""
+expect_equal "the crate's publish job fails without a version" 1 "$((STATUS != 0))"
+expect_equal "the crate's publish job leaves no decision behind without a version" "" \
+    "$STEP_OUTPUT"
+fresh_registries
+crates_down
+decide_in "$r" 0.1.0-beta.1
+expect_equal "the crate's publish job fails when crates.io cannot be asked" 1 "$STATUS"
+expect_equal "the crate's publish job leaves no decision behind then either" "" "$STEP_OUTPUT"
+# Whatever else the script says is no decision. The steps after it act on publish and skip alone,
+# so any other word, or none, would end the job as if there were nothing to do, and the GitHub
+# Release would be made for a crate that was not published.
+for said in maybe publishing; do
+    printf '#!/usr/bin/env bash\necho %s\n' "$said" >"$r/scripts/rust-sdk-publish.sh"
+    decide_in "$r" 0.1.0-beta.1
+    expect_equal "the crate's publish job fails when the script says '$said'" 1 "$STATUS"
+    expect_contains "the crate's publish job says that the script said '$said'" "'$said'" "$OUT"
+    expect_equal "the crate's publish job leaves no decision behind for '$said'" "" "$STEP_OUTPUT"
+done
+printf '#!/usr/bin/env bash\ntrue\n' >"$r/scripts/rust-sdk-publish.sh"
+decide_in "$r" 0.1.0-beta.1
+expect_equal "the crate's publish job fails when the script says nothing" 1 "$STATUS"
+expect_equal "the crate's publish job leaves no decision behind for nothing" "" "$STEP_OUTPUT"
+git -C "$r" checkout -q -- scripts/rust-sdk-publish.sh
+
+# When crates.io has the version from this commit already, the job says so instead of publishing. It
+# says only what is known: who published the version is not, as the crate's first version is
+# published by hand. What it says is also the summary of the step.
+note_step="$WORK/rust-note-step.sh"
+step_commands 'Note that crates.io has the version' "$rust_workflow" >"$note_step"
+: >"$WORK/step-summary"
+run in_repo "$r" env VERSION=0.1.0-beta.1 GITHUB_STEP_SUMMARY="$WORK/step-summary" \
+    bash -eo pipefail "$note_step"
+noted="crates.io already has fedimint-sdk 0.1.0-beta.1, packaged from this commit, so there is"
+expect_equal "the crate's publish job notes that crates.io has the version" 0 "$STATUS"
+expect_equal "the crate's publish job says that crates.io has the version from this commit" \
+    "$noted nothing to publish." "$OUT"
+expect_equal "the crate's publish job does not say who published the version" "" \
+    "$(grep -i 'earlier run\|published the\|published it' <<<"$OUT" || true)"
+expect_equal "the crate's publish job puts what it says in the summary of the step" "$OUT" \
+    "$(<"$WORK/step-summary")"
+
+# The `package` job checks that the file cargo packaged is for the version that `check` put out,
+# the one that was checked against the tags, crates.io and the notes. It looks where cargo leaves
+# the file of a crate that is not in a workspace, in the crate's own target directory, next to the
+# copy and the directory that cargo makes on the way.
+packaged_step="$WORK/rust-packaged-step.sh"
+step_commands 'Check the packaged version' "$rust_workflow" >"$packaged_step"
+
+# packaged_in <directory> <version>: runs the step in the directory, which stands for the crate's,
+# with the name of the file that the job derives from that version in its environment.
+packaged_in() {
+    run in_repo "$1" env CRATE_FILE="fedimint-sdk-$2.crate" bash -eo pipefail "$packaged_step"
+}
+
+crate_dir="$(mktemp -d "$WORK/crate-dir.XXXX")"
+mkdir -p "$crate_dir/target/package/tmp-crate"
+mkdir -p "$crate_dir/target/package/fedimint-sdk-0.1.0-beta.1"
+: >"$crate_dir/target/package/fedimint-sdk-0.1.0-beta.1.crate"
+: >"$crate_dir/target/package/tmp-crate/fedimint-sdk-0.1.0-beta.1.crate"
+packaged_in "$crate_dir" 0.1.0-beta.1
+expect_equal "the crate's package job accepts the file of the version that check put out" 0 \
+    "$STATUS"
+packaged_in "$crate_dir" 0.1.0-beta.2
+expect_equal "the crate's package job refuses a file of another version" 1 "$STATUS"
+expect_contains "the crate's package job names the file that was made" \
+    "cargo packaged target/package/fedimint-sdk-0.1.0-beta.1.crate, not" "$OUT"
+expect_contains "the crate's package job names the file it expected" \
+    "not target/package/fedimint-sdk-0.1.0-beta.2.crate" "$OUT"
+: >"$crate_dir/target/package/fedimint-sdk-0.1.0-beta.2.crate"
+packaged_in "$crate_dir" 0.1.0-beta.2
+expect_equal "the crate's package job refuses two files, one of which is the right one" 1 \
+    "$STATUS"
+rm "$crate_dir"/target/package/*.crate
+packaged_in "$crate_dir" 0.1.0-beta.1
+expect_equal "the crate's package job refuses a target directory with no file" 1 "$STATUS"
+expect_contains "the crate's package job says that there is none" "cargo packaged no crate" "$OUT"
 
 # The conditions that decide whether anything is published. The cases above run the text of the
 # `run:` blocks only, so none of them would notice a job or a step that runs when it must not: a
@@ -3401,6 +4042,10 @@ IF_UPLOAD="github.event_name == 'push' || inputs.publish"
 IF_DRY_RUN="github.event_name == 'workflow_dispatch' && !inputs.publish"
 # A manual run with `publish` ticked on a ref that is not a tag: refused before anything is built.
 IF_REFUSE="github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type != 'tag'"
+# What the steps that follow the decision of the crate's `publish` job act on: the word that
+# scripts/rust-sdk-publish.sh printed.
+IF_DECIDED_PUBLISH="steps.decide.outputs.decision == 'publish'"
+IF_DECIDED_SKIP="steps.decide.outputs.decision == 'skip'"
 
 # The `publish` job of the Android SDK runs for the dry runs as well, so it has no condition of its
 # own: the steps in it decide whether Maven Central or a local repository gets the artifacts.
@@ -3414,6 +4059,157 @@ pin_job react-native publish "$IF_RELEASE"
 pin_job react-native dry-run "$IF_DRY_RUN"
 pin_job react-native github-release "$IF_RELEASE"
 pin_step react-native "Refuse to publish from a branch" "$IF_REFUSE"
+# The crate has no dry-run job: a dry run is a run in which `publish` and `github-release` do not
+# run. In `publish` the decision always runs, and the steps that follow it act on its word.
+pin_job rust publish "$IF_RELEASE"
+pin_step rust "Decide whether to publish" ""
+pin_step rust "Authenticate with crates.io" "$IF_DECIDED_PUBLISH"
+pin_step rust "Publish the crate" "$IF_DECIDED_PUBLISH"
+pin_step rust "Note that crates.io has the version" "$IF_DECIDED_SKIP"
+pin_job rust github-release "$IF_RELEASE"
+pin_step rust "Refuse to publish from a branch" "$IF_REFUSE"
+
+# What reaches crates.io, and what writes to the repository, is the job that is meant to. Only the
+# `publish` job has the permission to ask GitHub for an identity token, which crates.io exchanges
+# for a publish token, and only it hands that token to cargo, in the environment whose required
+# reviewers approve it. Only `github-release` can write to the repository. The comments are left
+# out: the header of the workflow names these too.
+
+# job_text <job> <file>: the lines of the job in the workflow file, as the file spells them.
+job_text() {
+    awk -v job="$1" '
+        $0 == "jobs:" { in_jobs = 1; next }
+        in_jobs && $0 == ("  " job ":") { found = 1; print; next }
+        found && /^  [^ #]/ { exit }
+        found { print }
+    ' "$2"
+}
+
+# without_comments <workflow file>: the lines of the file that are not comments.
+without_comments() {
+    grep -v '^ *#' "$1" || true
+}
+
+rust_code="$WORK/rust-workflow-without-comments.yaml"
+without_comments "$rust_workflow" >"$rust_code"
+for row in "id-token|publish" "CARGO_REGISTRY_TOKEN|publish" "crates-io-auth-action|publish" \
+    "environment: crates-io|publish" "contents: write|github-release"; do
+    IFS='|' read -r text job <<<"$row"
+    expect_equal "the crate's workflow mentions '$text' once" 1 \
+        "$(grep -cF "$text" "$rust_code" || true)"
+    expect_equal "the crate's workflow mentions '$text' in its $job job" 1 \
+        "$(job_text "$job" "$rust_code" | grep -cF "$text" || true)"
+done
+# What is published is what was tested and packaged: `publish` waits for the tests and for the
+# packaging, and the release waits for `publish`.
+for row in "publish|    needs: [check, test, package]" \
+    "github-release|    needs: [check, publish]"; do
+    IFS='|' read -r job line <<<"$row"
+    expect_equal "the crate's $job job has '${line#    }'" 1 \
+        "$(job_text "$job" "$rust_code" | grep -cxF "$line" || true)"
+done
+
+# What starts a release, what can stop one, and how `publish` packs the crate are pinned as text
+# too, each to the lines that the workflows spell. Were one of them changed by mistake, a push that
+# is not of a release tag could start a release, a release could be cancelled half way through an
+# upload or go on after a step failed, and `cargo publish` could pack files that are not the
+# commit's. Like the conditions above, each has to be changed on purpose, together with these cases.
+
+# expect_pinned <name> <pinned text> <text in the workflow>: they are the same text.
+expect_pinned() {
+    local why="This line decides what is published. It has to be changed on purpose, together with"
+    why="$why this test."
+    if [[ "$3" == "$2" ]]; then
+        pass "$1"
+    else
+        fail "$1" "$why"$'\n'"pinned: ${2:-nothing}"$'\n'"found:  ${3:-nothing}"
+    fi
+}
+
+# concurrency_setting <setting> <workflow file>: the value of the setting in the `concurrency` of
+# the workflow, as the file spells it, or nothing when the concurrency has none.
+concurrency_setting() {
+    awk -v key="$1" '
+        $0 == "concurrency:" { in_block = 1; next }
+        in_block && /^[^ #]/ { exit }
+        in_block && index($0, "  " key ": ") == 1 { print substr($0, length(key) + 5); exit }
+    ' "$2"
+}
+
+# triggers <workflow file>: the events that start the workflow, one per line, in the order of the
+# file.
+triggers() {
+    awk '
+        $0 == "on:" { in_on = 1; next }
+        in_on && /^[^ #]/ { exit }
+        in_on && /^  [^ #]/ { sub(/^  /, ""); sub(/:.*/, ""); print }
+    ' "$1"
+}
+
+# trigger_filters <event> <workflow file>: the lines under the event among the triggers of the
+# workflow, as the file spells them without the indentation of the event's entry. Nothing when the
+# workflow has no such entry.
+trigger_filters() {
+    awk -v event="$1" '
+        $0 == "on:" { in_on = 1; next }
+        in_on && /^[^ #]/ { exit }
+        in_on && $0 == ("  " event ":") { found = 1; next }
+        found && /^  [^ #]/ { exit }
+        found && /^ *#/ { next }
+        found && $0 != "" { print substr($0, 5) }
+    ' "$2"
+}
+
+# step_input <step name> <input> <workflow file>: the value of the input of the step with that name,
+# as the file spells it, or nothing when the step has no such input. Fails when the file has no such
+# step.
+step_input() {
+    awk -v step="$1" -v input="$2" -v name="- name: '$1'" '
+        index($0, name) { match($0, /^ */); dash = RLENGTH; found = 1; next }
+        found {
+            match($0, /^ */)
+            if (RLENGTH <= dash && RLENGTH < length($0)) { exit }
+            if (substr($0, RLENGTH + 1, 1) == "#") { next }
+            if (RLENGTH == dash + 2) { in_with = (substr($0, RLENGTH + 1) == "with:") }
+            if (in_with && RLENGTH == dash + 4 && index($0, input ": ") == RLENGTH + 1) {
+                print substr($0, RLENGTH + length(input) + 3)
+                exit
+            }
+        }
+        END { if (!found) { print "no step " step " in the workflow" > "/dev/stderr"; exit 1 } }
+    ' "$3"
+}
+
+# --locked fails when the lockfile would have to change, so the lockfile that is packed is the
+# committed one. Without --allow-dirty, cargo refuses to pack changes that were not committed, so
+# the crate holds what the commit has. --no-verify only skips the build that `package` has done on
+# this commit already.
+expect_pinned "the crate's step 'Publish the crate' runs cargo publish --locked --no-verify" \
+    "cargo publish --locked --no-verify" "$(step_commands 'Publish the crate' "$rust_workflow")"
+# `publish` is the job that has the identity token and the publish token, so its checkout leaves no
+# GitHub token in the git configuration for the steps that follow.
+rust_publish_job="$WORK/rust-publish-job.yaml"
+job_text publish "$rust_workflow" >"$rust_publish_job"
+expect_pinned "the crate's publish job checks out with persist-credentials: false" false \
+    "$(step_input Checkout persist-credentials "$rust_publish_job" 2>&1 || true)"
+
+# The three release workflows start on a push of a tag of their component, or by hand, and on no
+# other event. A release is never cancelled once it runs, and no step or job of the workflow goes on
+# after it failed. The workflows that these call are not read here: android-native.yaml and
+# ios-native.yaml go on after a failed push to Cachix, on purpose.
+for component in rust android react-native; do
+    workflow_file="$ROOT/.github/workflows/$(sourced "component_workflow $component")"
+    prefix="$(prefix_of "$component")"
+    expect_pinned "the $component workflow does not cancel a release that is running" false \
+        "$(concurrency_setting cancel-in-progress "$workflow_file")"
+    expect_pinned "the $component workflow starts on a push and on a manual run, and no other" \
+        "$(lines push workflow_dispatch)" "$(triggers "$workflow_file")"
+    expect_pinned "the $component workflow starts on the push of a tag ${prefix}*, and no other" \
+        "$(lines tags: "  - '${prefix}*'")" "$(trigger_filters push "$workflow_file")"
+    expect_pinned "the $component workflow has no continue-on-error" "" \
+        "$(without_comments "$workflow_file" | grep continue-on-error || true)"
+    pin_step "$component" "Check the version" ""
+done
 
 echo
 echo "sdk-release.sh pending"
@@ -4253,6 +5049,7 @@ expect_usage "a command is needed" -- "$rel"
 expect_usage "an unknown command is refused" -- "$rel" sideways
 expect_equal "the usage lists every command" "$(lines \
     'usage: scripts/sdk-release.sh latest <component>' \
+    'usage: scripts/sdk-release.sh published <component>' \
     'usage: scripts/sdk-release.sh check-version <version>' \
     'usage: scripts/sdk-release.sh check <component> [--except-own]' \
     'usage: scripts/sdk-release.sh check-tag <tag>' \

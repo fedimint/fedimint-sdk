@@ -17,15 +17,20 @@ name: SDK Release Scripts
 #     a tarball must contain), scripts/react-native-sdk-publish.sh (what gets
 #     published, and when not), scripts/react-native-sdk-example.sh and
 #     scripts/react-native-sdk-smoke.sh (how the tarballs are tested), and
-#     scripts/assemble-rn-ios-xcframework.sh.
+#     scripts/assemble-rn-ios-xcframework.sh;
+#   * the Rust crate's release: scripts/rust-sdk-publish.sh, which decides
+#     whether a release still has to publish the crate, and stops one whose
+#     version another commit published.
 #
 # The release workflows only run these scripts once something is being
 # released, so this is what checks them on a pull request. It needs no build
-# and runs in seconds. It also runs the step of android-sdk-release.yaml and of
-# react-native-sdk-release.yaml that applies scripts/sdk-release.sh to the tag
-# or the dry run that started the release, so that what the workflows add
-# around the script, such as refusing the tag of another component, cannot be
-# dropped unnoticed.
+# and runs in seconds. It also runs the step of android-sdk-release.yaml, of
+# react-native-sdk-release.yaml and of rust-sdk-release.yaml that applies
+# scripts/sdk-release.sh to the tag or the dry run that started the release,
+# so that what the workflows add around the script, such as refusing the tag
+# of another component, cannot be dropped unnoticed. Of rust-sdk-release.yaml
+# it runs the steps that decide what to publish and that check what was
+# packaged as well.
 #
 # It also checks the committed state the way a release will, with
 # `scripts/sdk-release.sh check-tree`: the version of every component (the
@@ -47,6 +52,7 @@ on:
       - 'scripts/sdk-release.sh'
       - 'scripts/test-sdk-release-scripts.sh'
       - 'scripts/react-native-sdk-*'
+      - 'scripts/rust-sdk-publish.sh'
       - 'scripts/test-react-native-sdk-scripts.sh'
       - 'scripts/assemble-rn-ios-xcframework.sh'
       - 'scripts/test-assemble-rn-ios-xcframework.sh'
@@ -69,6 +75,7 @@ on:
       - '.github/workflows/sdk-tag.yaml'
       - '.github/workflows/android-sdk-release.yaml'
       - '.github/workflows/react-native-sdk-release.yaml'
+      - '.github/workflows/rust-sdk-release.yaml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

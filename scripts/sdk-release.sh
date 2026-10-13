@@ -5,6 +5,7 @@
 # the tree and the repository, so that those hold no logic of their own.
 #
 #   scripts/sdk-release.sh latest <component>
+#   scripts/sdk-release.sh published <component>
 #   scripts/sdk-release.sh check-version <version>
 #   scripts/sdk-release.sh check <component> [--except-own]
 #   scripts/sdk-release.sh check-tag <tag>
@@ -41,6 +42,14 @@
 # `latest` prints the newest released version of a component, taken from its release tags, or
 # nothing when it has none. The version bump uses it to find the release that the draft of the
 # next release notes starts from.
+#
+# `published` prints the versions that the registries of a component list, one per line: those of
+# the crate on crates.io for `rust`, the yanked ones included, and those of both npm packages for
+# `react-native`, the bindings first and each version once. It prints nothing for `android`, which
+# has no registry, and for a package that was never published. These are the versions that
+# `check` and `check-version` compare with, for a script that has to know whether one is taken,
+# such as rust-sdk-publish.sh. A registry that cannot be asked fails the command, and nothing is
+# printed, so that a list which stops short is not taken for the whole.
 #
 # `check-version` is rule 3 for a version that is only proposed: it fails unless the version is
 # newer than every release tag of every component and than every version on a registry. A version
@@ -298,6 +307,20 @@ check_registries() {
         versions="$(registry_versions "$registry")" || exit 1
         check_list "$registry" "$versions" "$2" "${3:-}" --published || return 1
     done < <(registries_of "$1")
+}
+
+# Prints every version that the registries of the component $1 list, one per line, each once: the
+# versions of the registries in the order registries_of gives them, and those of a registry in the
+# order it lists them. Every list is read before anything is printed, so that a registry that
+# cannot be asked stops the script with nothing printed, rather than with the lists before it.
+published() {
+    local registry versions all=""
+    is_component "$1" || exit 1
+    while IFS= read -r registry; do
+        versions="$(registry_versions "$registry")" || exit 1
+        [[ -z "$versions" ]] || all="${all:+$all$'\n'}$versions"
+    done < <(registries_of "$1")
+    [[ -z "$all" ]] || awk '!seen[$0]++' <<<"$all"
 }
 
 # Prints the newest released version of the component $1, or nothing when it has none.
@@ -624,6 +647,10 @@ case "${1:-}" in
     latest)
         [[ $# -eq 2 ]] || usage
         latest "$2"
+        ;;
+    published)
+        [[ $# -eq 2 ]] || usage
+        published "$2"
         ;;
     check-version)
         [[ $# -eq 2 ]] || usage
