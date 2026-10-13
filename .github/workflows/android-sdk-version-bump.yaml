@@ -35,8 +35,8 @@ name: Android SDK Version Bump
 #   * Settings → Actions → General → "Allow GitHub Actions to create and
 #     approve pull requests" must be on, or opening the pull request fails.
 #   * A pull request opened with the workflow's own token does not start
-#     other workflows, so android-sdk.yaml does not run on it by itself. If
-#     that check is required, close and reopen the pull request to start it.
+#     other workflows, so no check runs on it by itself. Close and reopen the
+#     pull request to start them.
 
 on:
   workflow_dispatch:

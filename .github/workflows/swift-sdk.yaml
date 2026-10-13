@@ -18,25 +18,21 @@ name: Swift SDK
 # half: bindings, XCFramework, tests, demo. A cold cache degrades to "build it"
 # rather than failing, because this calls that workflow rather than depending on
 # an artifact having survived.
+#
+# A pull request starts this workflow whatever it changes. Its first job,
+# `changes`, decides from the changed files whether the jobs that build and test
+# run. Its last job, `result`, is the one check to require, "Swift SDK checks".
+# It passes when `changes` said to run and every other job succeeded, or
+# `changes` said not to and every other job was skipped. It fails in every
+# other case, a run that is cancelled before those jobs have finished included.
 
 on:
   workflow_dispatch:
 
+  # No `paths` filter: a workflow that does not start reports nothing, and a
+  # check that never reports cannot be required. The `changes` job below
+  # filters by path instead.
   pull_request:
-    paths:
-      - 'ios/**'
-      - 'rust/fedimint-sdk/**'
-      - 'rust/uniffi-bindgen/**'
-      - 'scripts/build-ios-lib.sh'
-      - 'scripts/nix-build-ios-lib.sh'
-      - 'scripts/generate-swift-bindings.sh'
-      - 'scripts/assemble-ios-xcframework.sh'
-      - 'scripts/build-ios-sdk.sh'
-      - 'nix/**'
-      - 'flake.nix'
-      - 'flake.lock'
-      - '.github/workflows/swift-sdk.yaml'
-      - '.github/workflows/ios-native.yaml'
 
   # On `main`, build the full four-target set so a complete XCFramework is
   # always available as an artifact, and so the two targets pull requests skip
@@ -69,10 +65,51 @@ permissions:
   contents: read
 
 jobs:
+  # Whether this pull request changes what the jobs below build and test. The
+  # answer is `true` for any other event: a manual run, and a push to `main`
+  # that has already passed the `paths` filter under `push`. The action tests
+  # its matcher before it answers, and a matcher that fails fails this job, and
+  # with it `result`.
+  changes:
+    name: 'Detect Swift SDK changes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changed.outputs.changed }}
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Match the changed files against what this workflow checks'
+        id: changed
+        uses: ./.github/actions/changed-paths
+        with:
+          # `*` also matches `/`.
+          patterns: |
+            ios/*
+            rust/fedimint-sdk/*
+            rust/uniffi-bindgen/*
+            scripts/build-ios-lib.sh
+            scripts/nix-build-ios-lib.sh
+            scripts/generate-swift-bindings.sh
+            scripts/assemble-ios-xcframework.sh
+            scripts/build-ios-sdk.sh
+            nix/*
+            flake.nix
+            flake.lock
+            .github/workflows/swift-sdk.yaml
+            .github/workflows/ios-native.yaml
+
   # The shared, expensive half. Builds nothing Swift-specific and uploads the
   # per-triple archives for the job below.
   native:
     name: 'Native libraries'
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/ios-native.yaml
     secrets: inherit
 
@@ -157,3 +194,46 @@ jobs:
           name: FedimintSdkFFI.xcframework
           path: ios/Frameworks/FedimintSdkFFI.xcframework/
           if-no-files-found: error
+
+  # The one check to require. It passes only if `changes` answered `true` and
+  # every other job it needs succeeded, or `changes` answered `false` (the pull
+  # request touches nothing this workflow checks) and every other job it needs
+  # was skipped. Anything else fails it.
+  #
+  # A skipped job is not accepted when `changes` answered `true`: GitHub skips
+  # a job when a job it needs did not succeed, and also shows the call of a
+  # refused reusable workflow as skipped, and branch protection counts a
+  # skipped check as passed. Both jobs are watched, so that the error names the
+  # one that broke it, `native` when it is the reason `swift` was skipped.
+  #
+  # `always()` makes the job start in a cancelled run too, where it sees the
+  # cancelled jobs and fails. Without it the check would end as whatever
+  # GitHub reports for a job that never started. That is `cancelled` today,
+  # which does not pass either, but no documentation promises it. The run of a
+  # commit that a newer commit replaced fails this way on the old commit only,
+  # where it decides nothing.
+  #
+  # What the check is worth depends on its `needs`. A job of this workflow
+  # that is not listed there decides nothing, and one that is listed with
+  # `continue-on-error: true` reads as succeeded when it fails. A listed job
+  # with an `if:` of its own is skipped when the condition is false, and this
+  # check then fails whenever `changes` answered `true`.
+  result:
+    name: 'Swift SDK checks'
+    needs: [changes, native, swift]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      # The repository is only needed to read the local action below.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Check that every job ended as it has to'
+        uses: ./.github/actions/jobs-result
+        with:
+          needs: ${{ toJSON(needs) }}
+          ran: ${{ needs.changes.outputs.run }}
