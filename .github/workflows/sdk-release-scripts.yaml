@@ -1,6 +1,6 @@
 name: SDK Release Scripts
 
-# Tests the scripts that gate the SDK releases:
+# Tests the scripts that check the SDK releases:
 #
 #   * scripts/sdk-version.sh (what a valid version is, and that a release is
 #     newer than every earlier one) and scripts/sdk-changelog.sh (the release
@@ -24,13 +24,15 @@ name: SDK Release Scripts
 #
 # The release workflows only run these scripts once something is being
 # released, so this is what checks them on a pull request. It needs no build
-# and runs in seconds. It also runs the step of android-sdk-release.yaml, of
-# react-native-sdk-release.yaml and of rust-sdk-release.yaml that applies
+# and takes a few minutes. It also runs the step of android-sdk-release.yaml,
+# of react-native-sdk-release.yaml and of rust-sdk-release.yaml that applies
 # scripts/sdk-release.sh to the tag or the dry run that started the release,
 # so that what the workflows add around the script, such as refusing the tag
 # of another component, cannot be dropped unnoticed. Of rust-sdk-release.yaml
 # it runs the steps that decide what to publish and that check what was
-# packaged as well.
+# packaged as well. It runs the two steps of sdk-tag.yaml too, on a repository
+# with a remote of its own and a fake `gh`, so that what is tagged, pushed and
+# started cannot change unnoticed.
 #
 # It also checks the committed state the way a release will, with
 # `scripts/sdk-release.sh check-tree`: the version of every component (the
@@ -88,7 +90,7 @@ jobs:
   test:
     name: 'Test the release scripts'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
 
     steps:
       - name: 'Checkout'

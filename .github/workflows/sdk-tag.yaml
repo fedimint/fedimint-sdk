@@ -16,10 +16,10 @@ name: SDK Tag
 #     exactly what merging a sdk-version-bump.yaml pull request looks like.
 #     Any other version change, such as the one that first set up releases,
 #     only leaves a note in the log, and nothing is released by surprise;
-#   * the release checks pass: the version is newer than every release of the
-#     component, on its tags and on the registry it is published to, its notes
-#     are finished, and no component has tagged that version on another
-#     commit (scripts/sdk-release.sh check).
+#   * the release checks pass: the version is newer than every release tag of
+#     every component and every version on the registry the component is
+#     published to, its notes are finished, and no component has tagged that
+#     version on another commit (scripts/sdk-release.sh check).
 #
 # Components whose version changed together are tagged on the same commit.
 # All of them are checked before any of them is tagged, so one that fails its

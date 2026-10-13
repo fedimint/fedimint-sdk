@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Tests the SDK release gates, scripts/sdk-version.sh, scripts/sdk-changelog.sh
-# and scripts/sdk-release.sh, and the components they share,
-# scripts/sdk-components.sh, and scripts/rust-sdk-publish.sh, which decides
-# whether a release of the crate still has to publish it. The scripts decide
-# whether a release can be tagged, what notes it carries and whether it
+# Tests the scripts that check the SDK releases, scripts/sdk-version.sh,
+# scripts/sdk-changelog.sh and scripts/sdk-release.sh, and the components they
+# share, scripts/sdk-components.sh, and scripts/rust-sdk-publish.sh, which
+# decides whether a release of the crate still has to publish it. The scripts
+# decide whether a release can be tagged, what notes it carries and whether it
 # publishes, so every rule they enforce has a case here.
 # .github/workflows/sdk-release-scripts.yaml runs this on pull requests.
 #
@@ -24,13 +24,15 @@
 #
 # The commands of the workflow steps that run these scripts, which are
 # check-tree in the pull request check, the version step of each release
-# workflow, and the steps of the crate's release that decide what to publish
-# and check what was packaged, are read from the workflows in this checkout,
-# and run in such a repository as well. The conditions (`if:`) that decide
-# whether the jobs and steps that publish run in the release workflows, what
-# starts and what cancels a release, and how the crate is packed to be
-# published are read from them too, as text, and each has to be the one pinned
-# here.
+# workflow, the steps of the crate's release that decide what to publish and
+# check what was packaged, and the two steps of the SDK Tag workflow, are read
+# from the workflows in this checkout, and run in such a repository as well.
+# The steps of the SDK Tag workflow push tags to a bare repository on disk and
+# start releases with a fake `gh` that records its calls. The conditions
+# (`if:`) that decide whether the jobs and steps that publish run in the
+# release workflows, the jobs they wait for, what starts and what cancels a
+# release, and how the crate is packed to be published are read from them too,
+# as text, and each has to be the one pinned here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -2394,21 +2396,123 @@ for component in rust android react-native; do
         "$rel" check "$component" --except-own
 done
 
-# A point release of another component does not stand in the way of this one's next version, as
-# long as it is newer than its own tags.
+# The tags of the other components count too: a release never goes out below one that is out
+# already. The first of the other components, in the order of the components, that has a higher
+# tag is named. --except-own leaves out the version of the component itself and nothing else, so
+# it changes nothing here. Once the tags have refused, no registry is asked.
 for component in rust android react-native; do
     fresh_registries
     r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
     release_tag "$r" "$component" 0.1.0-beta.1
+    first=""
     for other in rust android react-native; do
         if [[ "$other" != "$component" ]]; then
             release_tag "$r" "$other" 0.3.0
+            first="${first:-$other}"
         fi
     done
-    expect_last "check $component passes when the other components have higher tags" \
-        "$component 0.1.0-beta.2 can be released" -- "$rel" check "$component"
+    lower="$first tags: 0.1.0-beta.2 is lower than 0.3.0, which is already released"
+    expect_fail "check $component refuses a version below the tags of the other components" \
+        "$lower" -- "$rel" check "$component"
+    expect_unasked "check $component asks neither npm nor crates.io once the tags have refused"
+    release_tag "$r" "$component" 0.1.0-beta.2
+    expect_fail "check $component --except-own refuses it too, with its own tag of the version" \
+        "$lower" -- "$rel" check "$component" --except-own
 done
+
+# Tags of the other components that are all lower do not stand in the way, and say nothing: what
+# the check prints is what it prints without them.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+    rel="$r/scripts/sdk-release.sh"
+    for other in rust android react-native; do
+        release_tag "$r" "$other" 0.0.9
+        release_tag "$r" "$other" 0.1.0-beta.1
+    done
+    case "$component" in
+        rust) registries="crates.io: 0.1.0-beta.2: nothing is released yet" ;;
+        android) registries="" ;;
+        react-native)
+            registries="$BINDINGS_PACKAGE: 0.1.0-beta.2: nothing is released yet"
+            registries="$registries"$'\n'"$WRAPPER_PACKAGE: 0.1.0-beta.2: nothing is released yet"
+            ;;
+    esac
+    passes="$(lines "$component tags: 0.1.0-beta.2 is newer than the latest release, 0.1.0-beta.1" \
+        ${registries:+"$registries"} "$(changelog_of "$component") has notes for 0.1.0-beta.2" \
+        "$component 0.1.0-beta.2 can be released")"
+    expect_ok "check $component passes when the other components have only lower tags" \
+        "$passes" -- "$rel" check "$component"
+    expect_ok "check $component --except-own passes and prints the same" "$passes" -- \
+        "$rel" check "$component" --except-own
+done
+
+# A joint release: the components carry the same version and are tagged on the same commit, so the
+# tags of the other components for that version are the release's own, whichever component is
+# checked. Their earlier releases are lower.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.2.0 < <(notes_for 0.2.0 0.1.0-beta.1))"
+    rel="$r/scripts/sdk-release.sh"
+    tag="$(prefix_of "$component")0.2.0"
+    for other in rust android react-native; do
+        release_tag "$r" "$other" 0.1.0-beta.1
+        if [[ "$other" != "$component" ]]; then
+            release_tag "$r" "$other" 0.2.0
+        fi
+    done
+    expect_last "check $component passes when the other components tagged the release here" \
+        "$component 0.2.0 can be released" -- "$rel" check "$component"
+    release_tag "$r" "$component" 0.2.0
+    expect_last "check $component --except-own passes with its own tag there too" \
+        "$component 0.2.0 can be released" -- "$rel" check "$component" --except-own
+    expect_last "check-tag passes for $tag, the last of the three tags of the release" \
+        "$tag can be released" -- "$rel" check-tag "$tag"
+done
+
+# Why the tags of the other components count. Two version bump pull requests are opened from the
+# same version: the line is at 0.1.0-beta.1 and everything is released. A sets android to
+# 0.1.0-beta.2, B sets react-native to 0.1.0. B is merged and its release tagged, then A is merged.
+# A's version is now below a release that is out, so no release may start from A's merge.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" react-native 0.1.0
+notes_for 0.1.0 0.1.0-beta.1 >"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "B: bump react-native to 0.1.0"
+sync_main "$r"
+release_tag "$r" react-native 0.1.0
+before_a="$(git -C "$r" rev-parse HEAD)"
+put "$r" android 0.1.0-beta.2
+notes_for 0.1.0-beta.2 0.1.0-beta.1 >"$r/android/CHANGELOG.md"
+commit_all "$r" "A: bump android to 0.1.0-beta.2"
+sync_main "$r"
+tags="$(git -C "$r" tag -l)"
+below="react-native tags: 0.1.0-beta.2 is lower than 0.1.0, which is already released"
+expect_split "pending names android, which A bumped from a release" android "" -- \
+    "$rel" pending "$before_a"
+for invocation in "check android" "check android --except-own"; do
+    # shellcheck disable=SC2086 # $invocation is meant to split into the words of the command.
+    run_split "$rel" $invocation
+    expect_equal "$invocation fails" 1 "$STATUS"
+    expect_equal "$invocation names the tags of react-native on stderr, and says nothing more" \
+        "$below" "$ERR"
+    expect_equal "$invocation does not say that android can be released" "" \
+        "$(grep 'can be released' <<<"$OUT" || true)"
+    # shellcheck disable=SC2086 # $invocation is meant to split into the words of the command.
+    run "$rel" $invocation
+    expect_equal "$invocation ends with that refusal, and nothing follows it" "$below" \
+        "${OUT##*$'\n'}"
+done
+run_split "$rel" tag android
+expect_equal "tag android fails" 1 "$STATUS"
+expect_equal "tag android prints no tag" "" "$OUT"
+expect_contains "tag android names the tags of react-native" "$below" "$ERR"
+expect_equal "tag android creates no tag" "$tags" "$(git -C "$r" tag -l)"
 
 # The notes of the component must be finished. Those of the other components do not matter.
 for component in rust android react-native; do
@@ -2878,6 +2982,25 @@ for component in rust android react-native; do
     git -C "$r" tag -d "$tag" >/dev/null
     git -C "$r" tag "$tag"
     expect_fail "check-tag refuses $tag when the notes are still a draft" "is still a draft" -- \
+        "$rel" check-tag "$tag"
+done
+
+# The version of the tag is newer than the tags of the other components too.
+for component in rust android react-native; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    rel="$r/scripts/sdk-release.sh"
+    tag="$(prefix_of "$component")0.1.0-beta.1"
+    git -C "$r" tag "$tag"
+    first=""
+    for other in rust android react-native; do
+        if [[ "$other" != "$component" ]]; then
+            release_tag "$r" "$other" 0.1.0-beta.2
+            first="${first:-$other}"
+        fi
+    done
+    expect_fail "check-tag refuses $tag while $first has a higher tag" \
+        "$first tags: 0.1.0-beta.1 is lower than 0.1.0-beta.2, which is already released" -- \
         "$rel" check-tag "$tag"
 done
 
@@ -4006,8 +4129,8 @@ step_condition() {
 
 # expect_condition <name> <pinned condition> <condition in the workflow>: they are the same text.
 expect_condition() {
-    local why="This condition decides whether something is published. It has to be changed on"
-    why="$why purpose, together with this test."
+    local why="This condition decides whether something is tagged or published. It has to be"
+    why="$why changed on purpose, together with this test."
     if [[ "$3" == "$2" ]]; then
         pass "$1"
     else
@@ -4107,6 +4230,31 @@ for row in "publish|    needs: [check, test, package]" \
     IFS='|' read -r job line <<<"$row"
     expect_equal "the crate's $job job has '${line#    }'" 1 \
         "$(job_text "$job" "$rust_code" | grep -cxF "$line" || true)"
+done
+
+# The same for the Android SDK and the React Native packages, every job of the chain from the check
+# of the version to the job that publishes and to the release: a job that stops waiting for the
+# one before it would publish what was not checked, built or tested. `dry-run` of the React Native
+# workflow is not on that chain: it is the end of a dry run and reaches no environment.
+android_code="$WORK/android-workflow-without-comments.yaml"
+without_comments "$ROOT/.github/workflows/$(sourced "component_workflow android")" >"$android_code"
+for row in "chain|    needs: version" "publish|    needs: chain" \
+    "github-release|    needs: publish"; do
+    IFS='|' read -r job line <<<"$row"
+    expect_equal "the Android workflow's $job job has '${line#    }'" 1 \
+        "$(job_text "$job" "$android_code" | grep -cxF "$line" || true)"
+done
+react_native_code="$WORK/react-native-workflow-without-comments.yaml"
+without_comments "$ROOT/.github/workflows/$(sourced "component_workflow react-native")" \
+    >"$react_native_code"
+for row in "android-native|    needs: check" "ios-native|    needs: check" \
+    "xcframework|    needs: ios-native" "pack|    needs: [check, android-native, xcframework]" \
+    "test-android|    needs: pack" "test-ios|    needs: pack" \
+    "publish|    needs: [pack, test-android, test-ios]" \
+    "github-release|    needs: [check, publish]"; do
+    IFS='|' read -r job line <<<"$row"
+    expect_equal "the React Native workflow's $job job has '${line#    }'" 1 \
+        "$(job_text "$job" "$react_native_code" | grep -cxF "$line" || true)"
 done
 
 # What starts a release, what can stop one, and how `publish` packs the crate are pinned as text
@@ -4210,6 +4358,440 @@ for component in rust android react-native; do
         "$(without_comments "$workflow_file" | grep continue-on-error || true)"
     pin_step "$component" "Check the version" ""
 done
+
+# The job of sdk-tag.yaml tags the releases after a version bump is merged to main, pushes the tags,
+# and starts the release workflow of each on its tag. Its two steps are read from the file and run
+# here, the way GitHub runs them (bash -eo pipefail), in a repository that has a bare remote called
+# origin. A fake gh comes first on PATH, and the env of each step is the one the file spells, with
+# its expressions worked out as GitHub works them out. The conditions that decide whether the job
+# and the second step run are pinned first, as those of the release workflows are above.
+tag_workflow="$ROOT/.github/workflows/sdk-tag.yaml"
+expect_condition "the tag job of sdk-tag.yaml runs on main only" \
+    "github.ref == 'refs/heads/main'" "$(job_condition tag "$tag_workflow" 2>&1 || true)"
+expect_condition "the step 'Decide what to release' always runs" "" \
+    "$(step_condition 'Decide what to release' "$tag_workflow" 2>&1 || true)"
+expect_condition "the step 'Tag and start the releases' runs when something was decided" \
+    "steps.decide.outputs.components != ''" \
+    "$(step_condition 'Tag and start the releases' "$tag_workflow" 2>&1 || true)"
+
+decide_commands="$WORK/tag-decide-step.sh"
+tag_commands="$WORK/tag-tag-step.sh"
+step_commands 'Decide what to release' "$tag_workflow" >"$decide_commands"
+step_commands 'Tag and start the releases' "$tag_workflow" >"$tag_commands"
+# shellcheck disable=SC2016 # The step expands the variables, not this shell.
+expect_contains "the first step asks pending, after a push, what a version bump changed" \
+    'scripts/sdk-release.sh pending "$BEFORE"' "$(<"$decide_commands")"
+# shellcheck disable=SC2016 # The step expands the variable, not this shell.
+expect_contains "the second step runs the tag command of scripts/sdk-release.sh" \
+    'scripts/sdk-release.sh tag "${components[@]}"' "$(<"$tag_commands")"
+
+# step_env <step name> <workflow file>: the entries of the `env:` of the step with that name, as
+# NAME=value lines with the value as the file spells it. Fails when the file has no such step.
+step_env() {
+    awk -v step="$1" -v name="- name: '$1'" '
+        index($0, name) { match($0, /^ */); dash = RLENGTH; found = 1; next }
+        found {
+            match($0, /^ */)
+            if (RLENGTH <= dash && RLENGTH < length($0)) { exit }
+            if (substr($0, RLENGTH + 1, 1) == "#") { next }
+            if (RLENGTH == dash + 2) { in_env = (substr($0, RLENGTH + 1) == "env:"); next }
+            if (in_env && RLENGTH == dash + 4) {
+                entry = substr($0, RLENGTH + 1)
+                colon = index(entry, ": ")
+                print substr(entry, 1, colon - 1) "=" substr(entry, colon + 2)
+            }
+        }
+        END { if (!found) { print "no step " step " in the workflow" > "/dev/stderr"; exit 1 } }
+    ' "$2"
+}
+
+# step_environment <step name> <event> <before> <group> <decided>: what GitHub puts in the
+# environment of the step with that name of sdk-tag.yaml, as NAME=value lines: its `env:`, with
+# each expression worked out from the event, the commit before the push, the group chosen in a
+# manual run, the components that the first step output, and a token. Fails, saying which, on an
+# expression it does not know.
+step_environment() {
+    local entries line name value expression expression_re='^\$\{\{ (.+) \}\}$'
+    entries="$(step_env "$1" "$tag_workflow")" || return 1
+    while IFS= read -r line; do
+        name="${line%%=*}"
+        value="${line#*=}"
+        if [[ "$value" =~ $expression_re ]]; then
+            expression="${BASH_REMATCH[1]}"
+            case "$expression" in
+                github.event_name) value="$2" ;;
+                github.event.before) value="$3" ;;
+                inputs.components) value="$4" ;;
+                steps.decide.outputs.components) value="$5" ;;
+                github.token) value=ghs_not_a_token ;;
+                *)
+                    echo "the test does not know the expression \${{ $expression }} of $name" >&2
+                    return 1
+                    ;;
+            esac
+        fi
+        printf '%s=%s\n' "$name" "$value"
+    done <<<"$entries"
+}
+
+# The fake gh that the job starts the releases with. It records every call, as one line of
+# arguments, in the `calls` file of the directory FAKE_GH names, which fresh_gh makes anew. It
+# starts nothing. It fails when a line of the `fail` file of that directory is in its arguments,
+# and, as gh does, when GH_TOKEN is not set. Any call but `workflow run` fails loudly.
+cat >"$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_GH/calls"
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    echo "gh: GH_TOKEN is not set" >&2
+    exit 4
+fi
+if [[ "${1:-} ${2:-}" != "workflow run" ]]; then
+    echo "unexpected gh call: $*" >&2
+    exit 9
+fi
+if [[ -e "$FAKE_GH/fail" ]] && grep -qF -f "$FAKE_GH/fail" <<<"$*"; then
+    echo "could not create a workflow dispatch event: HTTP 500" >&2
+    exit 1
+fi
+EOF
+chmod +x "$WORK/bin/gh"
+export FAKE_GH
+
+# Gives the fake gh a fresh directory: no call recorded and none to fail.
+fresh_gh() {
+    FAKE_GH="$(mktemp -d "$WORK/gh.XXXX")"
+}
+
+# What the fake gh was called with, one call per line, or `never called` when it was not.
+gh_calls() {
+    if [[ -e "$FAKE_GH/calls" ]]; then cat "$FAKE_GH/calls"; else echo "never called"; fi
+}
+
+# The bare repository $1 takes its hooks from its own directory, whatever the git configuration of
+# whoever runs the cases says. record_pushes has it note every push it receives, as one line in its
+# `pushes` file that holds the refs the push updates, sorted. refuse_pushes has it refuse every
+# push, and refuse_ref, with a ref, only the update of that ref.
+record_pushes() {
+    git -C "$1" config core.hooksPath "$1/hooks"
+    cat >"$1/hooks/pre-receive" <<EOF
+#!/bin/sh
+refs="\$(awk '{ print \$3 }' | LC_ALL=C sort | tr '\n' ' ')"
+echo "\${refs% }" >>"$1/pushes"
+EOF
+    chmod +x "$1/hooks/pre-receive"
+}
+
+refuse_pushes() {
+    git -C "$1" config core.hooksPath "$1/hooks"
+    printf '#!/bin/sh\necho "refused by the test" >&2\nexit 1\n' >"$1/hooks/pre-receive"
+    chmod +x "$1/hooks/pre-receive"
+}
+
+refuse_ref() {
+    git -C "$1" config core.hooksPath "$1/hooks"
+    # shellcheck disable=SC2016 # The hook expands its own argument, not this shell.
+    printf '#!/bin/sh\n[ "$1" = "%s" ] || exit 0\necho "refused by the test" >&2\nexit 1\n' "$2" \
+        >"$1/hooks/update"
+    chmod +x "$1/hooks/update"
+}
+
+# The pushes that the bare repository $1 received, one per line, each as the refs it updated.
+pushes_of() {
+    if [[ -e "$1/pushes" ]]; then cat "$1/pushes"; fi
+}
+
+# tag_repo <component>...: a repository for the job, with a bare remote called origin. Every
+# component was released at 0.1.0-beta.1, and the remote has main and those tags. The components
+# named are then bumped to 0.1.0-beta.2, which the notes of every component have a section for, in
+# one commit that is pushed to main as the merge of a version bump would be. Without a component,
+# that commit changes no version. Leaves the repository in `r`, the remote in `origin`, and the
+# commit before the merge in `before`. The registries and the fake gh are fresh.
+tag_repo() {
+    local component
+    fresh_registries
+    fresh_gh
+    r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+    for component in rust android react-native; do
+        release_tag "$r" "$component" 0.1.0-beta.1
+    done
+    origin="$(mktemp -d "$WORK/origin.XXXX")"
+    git init -q --bare "$origin"
+    git -C "$r" remote add origin "$origin"
+    git -C "$r" push -q origin main --tags
+    before="$(git -C "$r" rev-parse HEAD)"
+    if [[ $# -eq 0 ]]; then
+        change "$r" js/web/index.ts "a commit that changes no version"
+    else
+        for component in "$@"; do
+            put "$r" "$component" 0.1.0-beta.2
+        done
+        commit_all "$r" "bump $*"
+    fi
+    git -C "$r" push -q origin main
+}
+
+# tag_job <repository> <event> <before> <group>: runs the job in the repository. <event> is the
+# event that started it (push or workflow_dispatch), <before> the commit before the push, and
+# <group> what was chosen in a manual run: what the expressions github.event_name,
+# github.event.before and inputs.components are in the first step. The second step runs only when
+# the first succeeded and output components, which is the condition pinned above. Leaves
+#   DECIDE_STATUS and DECIDE_OUT   the exit status and the output of the first step,
+#   DECIDED                        the components it output,
+#   TAG_STATUS and TAG_OUT         the same for the second step; TAG_STATUS is `skipped` when it
+#                                  did not run,
+#   SUMMARY                        what the second step wrote to the summary of the job.
+tag_job() {
+    local dir="$1" event="$2" before="$3" group="$4" entries
+    local first_step='Decide what to release' second_step='Tag and start the releases'
+    local -a environment
+    DECIDE_STATUS="" DECIDE_OUT="" DECIDED="" TAG_STATUS=skipped TAG_OUT="" SUMMARY=""
+    if ! entries="$(step_environment "$first_step" "$event" "$before" "$group" "" 2>&1)"; then
+        fail "the environment of the first step of sdk-tag.yaml can be worked out" "$entries"
+        return 0
+    fi
+    mapfile -t environment <<<"$entries"
+    : >"$WORK/github-output"
+    run in_repo "$dir" env "${environment[@]}" GITHUB_OUTPUT="$WORK/github-output" \
+        bash -eo pipefail "$decide_commands"
+    DECIDE_STATUS="$STATUS"
+    DECIDE_OUT="$OUT"
+    DECIDED="$(sed -n 's/^components=//p' "$WORK/github-output")"
+    if [[ "$DECIDE_STATUS" -ne 0 || -z "$DECIDED" ]]; then
+        return 0
+    fi
+    if ! entries="$(step_environment "$second_step" "$event" "$before" "$group" "$DECIDED" 2>&1)"
+    then
+        fail "the environment of the second step of sdk-tag.yaml can be worked out" "$entries"
+        return 0
+    fi
+    mapfile -t environment <<<"$entries"
+    : >"$WORK/step-summary"
+    run in_repo "$dir" env "${environment[@]}" GITHUB_STEP_SUMMARY="$WORK/step-summary" \
+        bash -eo pipefail "$tag_commands"
+    TAG_STATUS="$STATUS"
+    TAG_OUT="$OUT"
+    SUMMARY="$(<"$WORK/step-summary")"
+}
+
+earlier_tags="$(lines android-sdk-v0.1.0-beta.1 react-native-sdk-v0.1.0-beta.1 \
+    rust-sdk-v0.1.0-beta.1)"
+new_android="android-sdk-v0.1.0-beta.2"
+new_react_native="react-native-sdk-v0.1.0-beta.2"
+new_rust="rust-sdk-v0.1.0-beta.2"
+# What the second step runs gh with to start the release of each component on its new tag.
+start_android="workflow run android-sdk-release.yaml --ref $new_android -f publish=true"
+start_react_native="workflow run react-native-sdk-release.yaml --ref $new_react_native"
+start_react_native="$start_react_native -f publish=true"
+start_rust="workflow run rust-sdk-release.yaml --ref $new_rust -f publish=true"
+# The refs of the one push that sends the new tags of the two bindings.
+bindings_push="refs/tags/$new_android refs/tags/$new_react_native"
+nothing_to_release="No component has a version to tag; nothing to release."
+
+# A push that bumped two components that were released before: both are tagged on the commit of
+# the push, the tags reach the remote in one push, and the release workflow of each is started on
+# its tag, with publishing on and nothing else.
+tag_repo android react-native
+record_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "after a push that bumped two components the first step succeeds" 0 "$DECIDE_STATUS"
+expect_contains "the first step says what it will tag and release" \
+    "To tag and release: android react-native" "$DECIDE_OUT"
+expect_equal "the first step outputs the two components" "android react-native" "$DECIDED"
+expect_equal "the second step succeeds" 0 "$TAG_STATUS"
+expect_equal "the remote has the two new tags besides those of the earlier release" \
+    "$(lines "$new_android" "$new_react_native" "$earlier_tags" | LC_ALL=C sort)" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "the two tags reached the remote in one push" "$bindings_push" "$(pushes_of "$origin")"
+for tag in "$new_android" "$new_react_native"; do
+    expect_equal "$tag on the remote is on the commit of the push" "$(git -C "$r" rev-parse HEAD)" \
+        "$(git -C "$origin" rev-parse "refs/tags/$tag^{commit}")"
+    expect_equal "$tag on the remote is an annotated tag made by the bot of GitHub Actions" \
+        "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" \
+        "$(git -C "$origin" tag -l --format='%(taggername) %(taggeremail)' "$tag")"
+done
+expect_equal "gh started each release once, on its tag, with publishing on, and did nothing else" \
+    "$(lines "$start_android" "$start_react_native")" "$(gh_calls)"
+expect_contains "the summary names the tags and the commit" \
+    "Tagged \`$new_android\`, \`$new_react_native\` on \`$(short "$r")\`." "$SUMMARY"
+started=$'Started the releases:\n\n'"- \`android-sdk-release.yaml\` on \`$new_android\`"
+started="$started"$'\n'"- \`react-native-sdk-release.yaml\` on \`$new_react_native\`"
+expect_contains "the summary lists the releases that were started" "$started" "$SUMMARY"
+expect_equal "the summary has no release that was not started" "" \
+    "$(grep 'Not started' <<<"$SUMMARY" || true)"
+next="Next: each started release waits for a reviewer of its environment to approve the job"
+expect_contains "the summary says that each release waits for a reviewer" "$next" "$SUMMARY"
+expect_contains "the summary says what is left to do for the Android SDK" \
+    "For the Android SDK, after that: press Publish on central.sonatype.com" "$SUMMARY"
+
+# All three components: the crate's release is started by its own workflow.
+tag_repo rust android react-native
+tag_job "$r" push "$before" ""
+expect_equal "after a push that bumped all three components the second step succeeds" 0 \
+    "$TAG_STATUS"
+expect_equal "the remote has the three new tags after a push that bumped all three" \
+    "$(lines "$new_android" "$new_react_native" "$new_rust" "$earlier_tags" | LC_ALL=C sort)" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "gh started the release of each component, in the order of the components" \
+    "$(lines "$start_rust" "$start_android" "$start_react_native")" "$(gh_calls)"
+
+# A push that bumped no version: no tag, no call of gh, and the first step succeeds. The second
+# step is skipped by its condition.
+tag_repo
+record_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "after a push that bumped no version the first step succeeds" 0 "$DECIDE_STATUS"
+expect_contains "the first step says that there is nothing to release" "$nothing_to_release" \
+    "$DECIDE_OUT"
+expect_equal "the first step outputs no component after a push that bumped no version" "" \
+    "$DECIDED"
+expect_equal "the second step does not run after a push that bumped no version" skipped \
+    "$TAG_STATUS"
+expect_equal "no tag is created after a push that bumped no version" "$earlier_tags" \
+    "$(git -C "$r" tag -l)"
+expect_equal "nothing reaches the remote after a push that bumped no version" "" \
+    "$(pushes_of "$origin")"
+expect_equal "gh is not called after a push that bumped no version" "never called" "$(gh_calls)"
+
+# A manual run names a group and tags those of its components that have no tag for their version,
+# on the commit that is checked out. The crate is tagged already here, so only the bindings are.
+tag_repo rust android react-native
+release_tag "$r" rust 0.1.0-beta.2
+git -C "$r" push -q origin "refs/tags/$new_rust"
+record_pushes "$origin"
+tag_job "$r" workflow_dispatch "" all
+expect_equal "both steps succeed in a manual run for all components" "0 0" \
+    "$DECIDE_STATUS $TAG_STATUS"
+expect_contains "the first step says why it leaves the crate out" \
+    "$new_rust already exists; nothing to release" "$DECIDE_OUT"
+expect_equal "the first step outputs the components without a tag for their version" \
+    "android react-native" "$DECIDED"
+expect_equal "only the tags of those two are pushed, in one push" "$bindings_push" \
+    "$(pushes_of "$origin")"
+expect_equal "the remote has the three new tags after a manual run for all components" \
+    "$(lines "$new_android" "$new_react_native" "$new_rust" "$earlier_tags" | LC_ALL=C sort)" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "gh started the release of those two only" \
+    "$(lines "$start_android" "$start_react_native")" "$(gh_calls)"
+fresh_gh
+tag_job "$r" workflow_dispatch "" all
+expect_equal "a manual run for all components succeeds when each has its tag" 0 "$DECIDE_STATUS"
+expect_contains "the first step then says that there is nothing to release" \
+    "$nothing_to_release" "$DECIDE_OUT"
+expect_equal "the second step does not run then" skipped "$TAG_STATUS"
+expect_equal "gh is not called then" "never called" "$(gh_calls)"
+
+# A group of one component tags that one, and none of the others that have no tag either.
+tag_repo rust android react-native
+tag_job "$r" workflow_dispatch "" android
+expect_equal "both steps succeed in a manual run for android" "0 0" "$DECIDE_STATUS $TAG_STATUS"
+expect_equal "the first step outputs android alone" android "$DECIDED"
+expect_equal "the remote has the tag of android and no other new one" \
+    "$(lines "$new_android" "$earlier_tags" | LC_ALL=C sort)" "$(git -C "$origin" tag -l)"
+expect_equal "gh started the release of android only" "$start_android" "$(gh_calls)"
+
+# A component whose check fails holds back the others: no tag reaches the remote, for any
+# component, and gh is not called.
+tag_repo android react-native
+draft_notes 0.1.0-beta.2 >"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "notes that are still a draft"
+git -C "$r" push -q origin main
+record_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "the first step decides on both components" "android react-native" "$DECIDED"
+expect_equal "the second step fails when the check of a component does" 1 "$TAG_STATUS"
+expect_contains "the log shows which check failed" \
+    "js/react-native/CHANGELOG.md's \`## 0.1.0-beta.2\` section is still a draft" "$TAG_OUT"
+nothing_tagged="::error::nothing was tagged. See the message above. If a check refused a"
+nothing_tagged="$nothing_tagged version, fix it in a pull request. Then run the SDK Tag workflow by"
+nothing_tagged="$nothing_tagged hand on main."
+expect_contains "the log says that nothing was tagged, and what to do" "$nothing_tagged" "$TAG_OUT"
+expect_equal "no tag is created, not even for the component whose check passed" \
+    "$earlier_tags" "$(git -C "$r" tag -l)"
+expect_equal "no tag reaches the remote when a check fails" "$earlier_tags" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "nothing is pushed when a check fails" "" "$(pushes_of "$origin")"
+expect_equal "gh is not called when a check fails" "never called" "$(gh_calls)"
+expect_equal "the step writes no summary when a check fails" "" "$SUMMARY"
+
+# A push that the remote refuses leaves nothing tagged on the remote and starts no release, and the
+# log says that the job can be run again.
+tag_repo android react-native
+refuse_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "the second step fails when the remote refuses the push" 1 "$TAG_STATUS"
+push_failed="::error::no tag was pushed. Once the cause above is fixed, re-run this job to try"
+push_failed="$push_failed again."
+expect_contains "the log says that no tag was pushed, and what to do" "$push_failed" "$TAG_OUT"
+expect_contains "the log shows why the push failed" "refused by the test" "$TAG_OUT"
+expect_equal "no tag reaches the remote when it refuses the push" "$earlier_tags" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "gh is not called when the push fails" "never called" "$(gh_calls)"
+expect_equal "the step writes no summary when the push fails" "" "$SUMMARY"
+
+# The push is atomic: when the remote refuses one of the two tags, it has neither. The remote
+# refuses only that one, as it accepts the other when that is pushed alone.
+tag_repo android react-native
+refuse_ref "$origin" "refs/tags/$new_android"
+tag_job "$r" push "$before" ""
+expect_equal "the second step fails when the remote refuses one of the two tags" 1 "$TAG_STATUS"
+expect_contains "the log says that no tag was pushed" "::error::no tag was pushed." "$TAG_OUT"
+expect_equal "the remote has neither of the two tags" "$earlier_tags" "$(git -C "$origin" tag -l)"
+expect_equal "gh is not called when the remote refuses one tag" "never called" "$(gh_calls)"
+run git -C "$r" push -q origin "refs/tags/$new_react_native"
+expect_equal "the remote accepts the other tag when it is pushed alone" "$new_react_native" \
+    "$(git -C "$origin" tag -l "$new_react_native")"
+
+# A release that gh cannot start does not stop the others from being started, and the tags are on
+# the remote. The log and the summary of the job name the workflow and say how to start it by hand.
+tag_repo android react-native
+printf '%s\n' android-sdk-release.yaml >"$FAKE_GH/fail"
+tag_job "$r" push "$before" ""
+expect_equal "the second step fails when gh cannot start a release" 1 "$TAG_STATUS"
+expect_equal "both tags are on the remote" \
+    "$(lines "$new_android" "$new_react_native" "$earlier_tags" | LC_ALL=C sort)" \
+    "$(git -C "$origin" tag -l)"
+expect_equal "gh was asked to start both releases, the first of which failed" \
+    "$(lines "$start_android" "$start_react_native")" "$(gh_calls)"
+how="Start it by hand: Actions, Android SDK Release, Run workflow, choose the tag $new_android"
+how="$how (not a branch) under Use workflow from, and tick publish. Re-running this job does not"
+how="$how start it, because the tag exists."
+expect_contains "the log says which workflow was not started, and how to start it" \
+    "::error::could not start android-sdk-release.yaml on $new_android. $how" "$TAG_OUT"
+expect_contains "the summary names the workflow that was not started" \
+    "- \`android-sdk-release.yaml\` (Android SDK Release) on \`$new_android\`" "$SUMMARY"
+hand="Not started. Start each by hand: Actions, the workflow, Run workflow, on the tag (not a"
+hand="$hand branch), with \`publish\` ticked. Re-running this job does not start them, because the"
+hand="$hand tags exist:"
+expect_contains "the summary says how to start it by hand" "$hand" "$SUMMARY"
+started=$'Started the releases:\n\n'"- \`react-native-sdk-release.yaml\` on \`$new_react_native\`"
+expect_contains "the summary lists the release that was started" "$started" "$SUMMARY"
+expect_equal "the summary does not send anyone to Central for the release that was not started" "" \
+    "$(grep 'central.sonatype.com' <<<"$SUMMARY" || true)"
+
+# The first step stops, and nothing is tagged, in a checkout without release tags and when the
+# commit before the push is not in the checkout.
+fresh_registries
+fresh_gh
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+tag_job "$r" push "$(git -C "$r" rev-parse HEAD)" ""
+expect_equal "the first step fails in a checkout without release tags" 1 "$DECIDE_STATUS"
+no_tags="::error::the checkout has no release tags; the checkout step must fetch them"
+expect_contains "it says as an error that the checkout must fetch them" \
+    "$no_tags (fetch-depth: 0)" "$DECIDE_OUT"
+expect_equal "the second step does not run in a checkout without release tags" skipped "$TAG_STATUS"
+tag_repo android react-native
+tag_job "$r" push 0000000000000000000000000000000000000000 ""
+expect_equal "the first step fails when the commit before the push is not in the checkout" 1 \
+    "$DECIDE_STATUS"
+expect_contains "it names that commit" \
+    "no commit 0000000000000000000000000000000000000000 in this checkout" "$DECIDE_OUT"
+cannot_decide="::error::could not decide what to release, so nothing was tagged. See the message"
+cannot_decide="$cannot_decide above. Once its cause is fixed, run the SDK Tag workflow by hand on"
+cannot_decide="$cannot_decide main."
+expect_contains "it says that nothing was tagged, and what to do" "$cannot_decide" "$DECIDE_OUT"
+expect_equal "the second step does not run when the first cannot decide" skipped "$TAG_STATUS"
+expect_equal "no tag is created when the first step cannot decide" "$earlier_tags" \
+    "$(git -C "$r" tag -l)"
 
 echo
 echo "sdk-release.sh pending"
@@ -4844,6 +5426,27 @@ run_split "$rel" tag android
 expect_equal "tag android fails when react-native tagged the version on another commit" 1 "$STATUS"
 expect_contains "tag android says which commit has the version" "$taken" "$ERR"
 expect_equal "tag android creates no tag" "react-native-sdk-v0.1.0-beta.1" "$(git -C "$r" tag -l)"
+
+# A version below a tag of another component is refused like any other failed check: no tag is
+# created, not even for the component whose version passes. Android is at 0.4.0 and passes, while
+# react-native is at 0.1.0-beta.2, below the tag that rust has.
+for order in "android react-native" "react-native android"; do
+    fresh_registries
+    r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+    rel="$r/scripts/sdk-release.sh"
+    put "$r" android 0.4.0
+    notes_for 0.4.0 0.1.0-beta.2 0.1.0-beta.1 >"$r/android/CHANGELOG.md"
+    commit_all "$r" "bump android"
+    release_tag "$r" rust 0.3.0
+    # shellcheck disable=SC2086 # $order is meant to split into the component names.
+    run_split "$rel" tag $order
+    expect_equal "tag $order fails when react-native is below a tag of rust" 1 "$STATUS"
+    expect_contains "tag $order says that rust has a higher tag" \
+        "rust tags: 0.1.0-beta.2 is lower than 0.3.0, which is already released" "$ERR"
+    expect_equal "tag $order prints no tag when it fails" "" "$OUT"
+    expect_equal "tag $order creates no tag, not even for android" "rust-sdk-v0.3.0" \
+        "$(git -C "$r" tag -l)"
+done
 
 # A tag that exists already is not replaced: an annotated one is the same object afterwards.
 fresh_registries

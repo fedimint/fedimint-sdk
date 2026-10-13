@@ -295,8 +295,9 @@ earlier run left, and drop a deployment that must not be published.
 
 The release is refused if the tag does not name the version in the catalog, if
 its commit is not on `main`, if the version is not newer than every earlier
-`android-sdk-v*` tag, if another component has the same version tagged on
-another commit, or if the notes are missing or still a draft. The header of
+release tag, of the Android SDK or of another component, if another component
+has the same version tagged on another commit, or if the notes are missing or
+still a draft. The header of
 [`scripts/sdk-release.sh`](../scripts/sdk-release.sh) has the full rules.
 Pushing an `android-sdk-v*` tag by hand also starts a release, and the tag has
 to pass the same checks.

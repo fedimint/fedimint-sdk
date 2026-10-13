@@ -156,15 +156,35 @@ components. The release rules would refuse it, and the component would need the 
   the next point). The Android release does not look at Maven Central, so re-running its
   `publish` job uploads again: read "Releases" in [`android/README.md`](android/README.md)
   first. [`js/react-native/README.md`](js/react-native/README.md) says why re-running all jobs is
-  wrong for the npm packages.
+  wrong for the npm packages. Finish a release before the next one goes out: once any component
+  has a newer release, the first job refuses the older tag, so that release can then only be
+  finished by re-running its failed jobs, which leaves the first job out.
 - **A release workflow refuses its tag,** or a release turns out bad. The first job of a release
   holds the tag to the release rules, which the header of
   [`scripts/sdk-release.sh`](scripts/sdk-release.sh) lists. The tag must be one of the
   component's own, name the version in the tree and be on `main`. The version must be newer than
-  the component's earlier releases and not tagged on another commit by another component, and
-  its notes must be finished. A tag pushed by hand starts a release too, under the same rules. A
-  tag cannot be moved or deleted and no registry takes a version twice, so the fix is the next
-  version: bump again, for the components concerned.
+  the earlier releases of every component, not only this one's, and than the versions on the
+  registry this component is published to, if it has one. It must not be tagged on another commit
+  by another component, and its notes must be finished. A tag pushed by hand starts a release
+  too, under the same rules. A tag cannot be moved or deleted and no registry takes a version
+  twice, so the fix is the next version: bump again, for the components concerned.
+- **A version bump pull request is merged after another one.** Keep one version bump pull
+  request open at a time. One that was opened from the same version is no longer the next version
+  of the line once the first is merged: after `react-native` went from `0.1.0-beta.1` to `0.1.0`,
+  the pull request that takes `android` to `0.1.0-beta.2` is behind the line. If it is merged all
+  the same, the tag workflow refuses to tag a version that is lower than a release that is out,
+  and nothing is released. Bump again for those components, which gives them the next version of
+  the line, and move the notes of the version that was not released into the section of the new
+  one: the bump drafts that section above the old one and leaves the old one in place. The merge
+  of this second bump changes a version that was never released, so run SDK Tag by hand for the
+  components right after it (see "The first release of a component").
+- **A version bump whose release went out was reverted.** Do not revert such a bump: the tree
+  then says an older version than the release tags. The pull request check accepts that, as the
+  older version has its tag, but the next bump of the same kind is refused because its version is
+  already released: with the bump to `0.1.0-beta.2` reverted, `bump all beta` stops with "rust
+  tags: 0.1.0-beta.2 is already released; bump the version first", and `check` refuses the
+  version in the tree as lower than the latest release. Restore the versions and the notes in a
+  pull request, that is, revert the revert.
 - **One component's release fails for good while the others went out.** The others stay
   released. Fix the cause and make a point release of the failed binding, or of `bindings` if both
   failed: it gets the next version of the line. The crate has no point release of its own, so a
@@ -233,9 +253,12 @@ Settings outside this repository's files. All of them have to be in place before
   limited to tags matching `rust-sdk-v*`; `npm`, limited to tags matching
   `react-native-sdk-v*`; and `maven-central`, which is not limited to tags because the Android
   dry run and the Android SDK Snapshot workflow use it from branches. Each release publishes in
-  its environment, and the environment's required reviewers approve that job before it starts. A
-  job that names an environment which does not exist creates it without any rule, so they have
-  to exist first.
+  its environment, and the environment's required reviewers approve that job before it starts.
+  Each has "Prevent self-review" on, so that whoever started a release run, for example by
+  pushing a tag by hand, cannot approve it, and more than one reviewer for that reason. A run
+  that the SDK Tag workflow started was started by GitHub Actions, so every reviewer can approve
+  it. A job that names an environment which does not exist creates it without any rule, so they
+  have to exist first.
 - **Tag rulesets** (Settings → Rules → Rulesets) for `rust-sdk-v*`, `android-sdk-v*` and
   `react-native-sdk-v*`, which restrict updates and deletions and block force pushes, so that a
   release tag never moves. None may restrict creating a tag: the tag workflow creates the tags

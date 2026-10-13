@@ -57,23 +57,29 @@
 #
 # `check` is what the tag workflow runs for a component before it tags it, and what a release
 # workflow runs in its dry run, which publishes nothing. It fails unless the version the component
-# has in the tree can be released from the commit that is checked out: it is newer than the
-# component's own release tags and registry versions (rule 3), its release notes are finished (see
-# sdk-changelog.sh) and no component has tagged the same version on another commit (rule 4). It
-# reads the working tree, so that it also tells someone about to commit a version whether it could
-# be released; `tag` and `check-tag`, which release a commit, also require that what they read is
-# committed. It ends with `<component> <version> can be released`. --except-own leaves that
-# version itself out of the comparison with the tags and the registry, so that a release which
-# stopped half way, after a tag or a registry took the version, can run again. Rule 4 applies to
-# the component's own tag of that version as well.
+# has in the tree can be released from the commit that is checked out: it is newer than the release
+# tags of every component and than the versions on the registries the component is published to
+# (rule 3), its release notes are finished (see sdk-changelog.sh) and no component has tagged the
+# same version on another commit (rule 4). So a version below the release tag of another component
+# is refused, whichever component it is for. The registries of the other components are not asked,
+# as their release tags are the record of their releases, and a tag of another component for this
+# very version is no obstacle: rule 4 holds it to the checked out commit, which is how components
+# released together are tagged. It reads the working tree, so that it also tells someone about to
+# commit a version whether it could be released; `tag` and `check-tag`, which release a commit,
+# also require that what they read is committed. It ends with `<component> <version> can be
+# released`. --except-own leaves that version itself out of the comparison with the component's own
+# tags and registry versions, so that a release which stopped half way, after a tag or a registry
+# took the version, can run again. The tags of the other components are compared the same way with
+# and without it. Rule 4 applies to the component's own tag of that version as well.
 #
 # `check-tag` is what a release workflow runs first, for the tag that started it. The tag must be
 # a release tag that exists here, with the commit it points at checked out, and the rest of its
 # name must be the version the component has in the tree. The files that hold that version and the
 # component's CHANGELOG.md must have no change that is not committed: the checks read the working
 # tree, but what a tag releases is the commit. That commit must also be on origin/main, because
-# releases come from main. Then `check --except-own` must pass. A tag need not be annotated: the
-# release notes are in the CHANGELOG.md. It ends with `<tag> can be released`.
+# releases come from main. Then `check --except-own` must pass: the tag itself does not stand in
+# the way of its version, but a higher release tag of any component does. A tag need not be
+# annotated: the release notes are in the CHANGELOG.md. It ends with `<tag> can be released`.
 #
 # `check-tree` is for the pull request check and asks no registry. It requires of every
 # component a valid version, finished release notes and rule 5: either the release tag of its
@@ -366,11 +372,20 @@ need_same_commit() {
     done
 }
 
-# Fails unless the version $2 of the component $1 can be released from the checked out commit,
-# leaving out the version $3 (none when empty) from the versions it must be newer than.
+# Fails unless the version $2 of the component $1 can be released from the checked out commit. It
+# must be newer than the release tags of every component, so that a release never goes out below
+# one that is out already, and than the versions on the registries of $1. The version $3 (none
+# when empty) is left out of the comparison with the tags and the registries of $1. A tag of
+# another component for the version $2 itself is always left out, as need_same_commit holds it to
+# this commit, and the registries of the other components are not asked: their tags are the record
+# of their releases. Only a refusal is printed for the other components.
 check_release() {
-    local component="$1" version="$2" except="${3:-}"
+    local component="$1" version="$2" except="${3:-}" other
     check_tags "$component" "$version" "$except" || exit 1
+    for other in "${COMPONENTS[@]}"; do
+        [[ "$other" != "$component" ]] || continue
+        check_tags "$other" "$version" "$version" >/dev/null || exit 1
+    done
     check_registries "$component" "$version" "$except" || exit 1
     "$CHANGELOG_SCRIPT" check "$component" "$version" || exit 1
     need_same_commit "$component" "$version"

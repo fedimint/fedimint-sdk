@@ -110,9 +110,9 @@ jobs:
 
     steps:
       # Main only. The pull request goes into main, and sdk-tag.yaml only tags
-      # pushes to main, so a bump merged anywhere else would never be released
-      # even though its pull request says it would. Failing here, rather than
-      # skipping the job, says why.
+      # pushes to main, so a bump merged anywhere else would never start a
+      # release even though its pull request says that merging does. Failing
+      # here, rather than skipping the job, says why.
       - name: 'Require main'
         if: github.ref != 'refs/heads/main'
         env:
@@ -217,17 +217,18 @@ jobs:
             echo "The release refuses a draft."
             echo
             if [[ -z "$unreleased" ]]; then
-              echo "**Merging this releases \`$NEXT\`** of those components. The SDK Tag workflow" \
-                "tags the merge commit ($tags) and starts each release. Each release then waits" \
-                "for a reviewer of its environment to approve the job that publishes. For the" \
-                "Android SDK, after that press Publish on central.sonatype.com once the" \
-                "deployment is validated, and publish the draft GitHub Release."
+              echo "**Merging this starts the release of \`$NEXT\`** of those components. The SDK" \
+                "Tag workflow tags the merge commit ($tags) and starts each component's release" \
+                "workflow on its tag. Each release then waits for a reviewer of its environment" \
+                "to approve the job that publishes. For the Android SDK, after that press" \
+                "Publish on central.sonatype.com once the deployment is validated, and publish" \
+                "the draft GitHub Release."
             else
               if [[ -n "$tags" ]]; then
-                echo "**Merging this releases \`$NEXT\`** of the components that have a release." \
-                  "The SDK Tag workflow tags the merge commit ($tags) and starts each release." \
-                  "Each release then waits for a reviewer of its environment to approve the" \
-                  "job that publishes."
+                echo "**Merging this starts the release of \`$NEXT\`** of the components that" \
+                  "were released before. The SDK Tag workflow tags the merge commit ($tags) and" \
+                  "starts each component's release workflow on its tag. Each release then waits" \
+                  "for a reviewer of its environment to approve the job that publishes."
                 echo
               fi
               echo "**The merge does not tag these components, because they have never been" \

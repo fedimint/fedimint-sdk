@@ -634,8 +634,10 @@ expect_usage "verify without a directory" -- "$pack" verify 0.1.0-beta.1
 expect_usage "verify with four arguments" -- "$pack" verify 0.1.0-beta.1 "$WORK/out" extra
 
 # A throwaway tree laid out like this repository, holding a copy of the pack script, everything
-# a pack needs on disk, and the manifests as they are in the tree: private, at 0.0.0, with a
-# workspace range for the bindings. Prints its path.
+# a pack needs on disk, and manifests like the ones in the tree: private, at the version of their
+# last or next release, with a workspace range for the bindings. That version is 0.0.0 here, which
+# no pack in these cases writes, so that manifests that are put back can be told from ones that
+# are not. Prints its path.
 pack_tree() {
     local dir bindings native
     dir="$(mktemp -d "$WORK/tree.XXXX")"

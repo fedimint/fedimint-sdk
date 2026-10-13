@@ -40,7 +40,7 @@ build-android-apk:
 test-android-e2e shape="v1": build-android-apk
     FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
-# Test the release gates: the component, version and changelog scripts the
+# Test the release checks: the component, version and changelog scripts the
 # release, tag and bump workflows rely on. Needs only bash and git, no build.
 test-sdk-release-scripts:
     ./scripts/test-sdk-release-scripts.sh

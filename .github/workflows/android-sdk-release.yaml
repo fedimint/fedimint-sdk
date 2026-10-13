@@ -105,9 +105,9 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      # The whole history and every tag: the checks compare with the earlier
-      # release tags and need origin/main to tell whether the tagged commit
-      # is on it.
+      # The whole history and every tag: the checks compare with the release
+      # tags of every component and need origin/main to tell whether the
+      # tagged commit is on it.
       - name: 'Checkout'
         uses: actions/checkout@v7
         with:

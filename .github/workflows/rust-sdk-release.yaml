@@ -20,8 +20,8 @@ name: Rust SDK Release
 #   check           the tag: a Rust SDK one, whose version is the one the
 #                   crate has in the tree, whose commit is on main and whose
 #                   notes are finished, and which is newer than every earlier
-#                   tag and every version of the crate on crates.io
-#                   (scripts/sdk-release.sh)
+#                   release tag of any component and every version of the
+#                   crate on crates.io (scripts/sdk-release.sh)
 #   test            all of rust-sdk-ci.yaml, on the release commit
 #   package         `cargo package`, which builds the packaged crate too, so
 #                   that a file missing from the package fails here, and
@@ -142,9 +142,9 @@ jobs:
       version: ${{ steps.check.outputs.version }}
 
     steps:
-      # The whole history and every tag: the checks compare with the earlier
-      # release tags and need origin/main to tell whether the tagged commit
-      # is on it.
+      # The whole history and every tag: the checks compare with the release
+      # tags of every component and need origin/main to tell whether the
+      # tagged commit is on it.
       - name: 'Checkout'
         uses: actions/checkout@v7
         with:

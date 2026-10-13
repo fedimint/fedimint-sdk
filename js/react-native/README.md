@@ -79,9 +79,9 @@ workflow:
 A release is refused if the tag is not a `react-native-sdk-v*` tag that names the version the
 packages have in the tree, if its commit is not on `main`, if its notes are missing or still a
 draft, if another component has the same version tagged on another commit, or if the version is
-not newer than every earlier `react-native-sdk-v*` tag and every version of either package on
-npm, snapshots included. The header of [`scripts/sdk-release.sh`](../../scripts/sdk-release.sh)
-has the full rules.
+not newer than every earlier release tag, of the React Native SDK or of another component, and
+every version of either package on npm, snapshots included. The header of
+[`scripts/sdk-release.sh`](../../scripts/sdk-release.sh) has the full rules.
 
 A tag cannot be moved or deleted, and a version on npm cannot be published again. A release that
 turns out wrong is fixed by releasing the next version.
@@ -154,9 +154,12 @@ in place before a release:
   That leaves this workflow and a maintainer who publishes by hand, signed in with two-factor
   authentication.
 - **The `npm` environment** (Settings → Environments), with required reviewers and with
-  deployments limited to tags matching `react-native-sdk-v*`. The `publish` job is the only one
-  that names it. A job that names an environment which does not exist creates it without any
-  limit, so it has to exist first.
+  deployments limited to tags matching `react-native-sdk-v*`. It has "Prevent self-review" on, so
+  that whoever started a release run, for example by pushing a tag by hand, cannot approve it,
+  and more than one reviewer for that reason. A run that the SDK Tag workflow started was started
+  by GitHub Actions, so every reviewer can approve it. The `publish` job is the only one that
+  names the environment. A job that names an environment which does not exist creates it without
+  any limit, so it has to exist first.
 - **A tag ruleset** for `refs/tags/react-native-sdk-v*` (Settings → Rules → Rulesets) that
   restricts updates and deletions and blocks force pushes, with nobody on its bypass list. No
   ruleset restricts creating a release tag: the tag workflow creates the tags with the workflow's

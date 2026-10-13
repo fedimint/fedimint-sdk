@@ -28,8 +28,8 @@ name: React Native SDK Release
 #   check           the tag: a React Native one, whose version is the one the
 #                   packages have in the tree, whose commit is on main and
 #                   whose notes are finished, and which is newer than every
-#                   earlier tag and every version of either package on npm
-#                   (scripts/sdk-release.sh)
+#                   earlier release tag of any component and every version of
+#                   either package on npm (scripts/sdk-release.sh)
 #   android-native  the Android libraries, the build the Android SDK ships
 #   ios-native      the Apple libraries, the build the Swift SDK ships
 #   xcframework     the Apple libraries as the bundle the podspec vendors
@@ -149,9 +149,9 @@ jobs:
       version: ${{ steps.check.outputs.version }}
 
     steps:
-      # The whole history and every tag: the checks compare with the earlier
-      # release tags and need origin/main to tell whether the tagged commit
-      # is on it.
+      # The whole history and every tag: the checks compare with the release
+      # tags of every component and need origin/main to tell whether the
+      # tagged commit is on it.
       - name: 'Checkout'
         uses: actions/checkout@v7
         with:
