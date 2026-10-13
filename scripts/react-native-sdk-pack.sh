@@ -6,13 +6,13 @@
 #   scripts/react-native-sdk-pack.sh <version> <out dir>
 #   scripts/react-native-sdk-pack.sh verify <version> <dir>
 #
-# In the tree both packages are private and at version 0.0.0: the version only exists in a
-# release tag, and `private` keeps every other way of publishing away from them. A pack writes
-# <version> into both manifests, drops `private`, runs `pnpm pack` on both packages into
-# <out dir> and checks the result with `verify`. `pnpm pack` is what rewrites the wrapper's
-# `workspace:*` range on the bindings to the bindings' exact version, and it reads that version
-# from the workspace, which is why the manifests are changed in place. They are put back as
-# they were when the script exits, however it exits.
+# In the tree both packages are private, which keeps every other way of publishing away from
+# them, and carry the version of their last or next release. A pack writes <version> into both
+# manifests, drops `private`, runs `pnpm pack` on both packages into <out dir> and checks the
+# result with `verify`. `pnpm pack` is what rewrites the wrapper's `workspace:*` range on the
+# bindings to the bindings' exact version, and it reads that version from the workspace, which
+# is why the manifests are changed in place. They are put back as they were when the script
+# exits, however it exits.
 #
 # A pack builds nothing. Everything the tarballs consist of must already be on disk, and the
 # script lists all that is missing, with the command that produces it. It needs `pnpm`, `node`
