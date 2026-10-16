@@ -4,9 +4,9 @@
  * enums, `bigint`s, strings and byte arrays cross by value.
  */
 export type Proxied<T> = {
-  [K in keyof T as T[K] extends (...args: never[]) => unknown
-    ? K
-    : never]: T[K] extends (...args: infer A) => infer R
+  [
+    K in keyof T as T[K] extends (...args: never[]) => unknown ? K : never
+  ]: T[K] extends (...args: infer A) => infer R
     ? (...args: ProxiedArgs<A>) => Promise<ProxiedValue<Awaited<R>>>
     : never
 }
@@ -24,11 +24,13 @@ type HasMethod<T> = {
  * skips symbols), so that property never reaches the wire and is excluded here too.
  */
 type Fields<V> = {
-  [K in keyof V as K extends string
-    ? V[K] extends (...args: never[]) => unknown
-      ? never
-      : K
-    : never]: ProxiedValue<V[K]>
+  [
+    K in keyof V as K extends string
+      ? V[K] extends (...args: never[]) => unknown
+        ? never
+        : K
+      : never
+  ]: ProxiedValue<V[K]>
 }
 
 /**
@@ -36,12 +38,7 @@ type Fields<V> = {
  * keep their data fields; everything else is mapped structurally.
  */
 export type ProxiedValue<V> = V extends
-  | bigint
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
+  bigint | string | number | boolean | null | undefined
   ? V
   : // An `AbortSignal` is a local main-thread object; `splitSignal` strips it out of the call
     // before it crosses to the worker, so it never needs a handle and keeps its own type.

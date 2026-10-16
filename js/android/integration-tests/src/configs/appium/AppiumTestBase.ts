@@ -1,7 +1,6 @@
 /* eslint-disable no-console */
 import fs from 'fs'
 import path from 'path'
-import { ChainablePromiseArray, ChainablePromiseElement } from 'webdriverio'
 
 import AppiumManager from './AppiumManager'
 import {
@@ -103,7 +102,7 @@ export class AppiumTestBase {
     ]
   }
 
-  async findElementByKey(key: string): Promise<ChainablePromiseElement | null> {
+  async findElementByKey(key: string): Promise<WebdriverIO.Element | null> {
     const strategies = this.getElementLocatorStrategies(key).sort(
       (a, b) => a.priority - b.priority,
     )
@@ -172,7 +171,7 @@ export class AppiumTestBase {
     text: string,
     exactMatch = false,
     timeout = DEFAULT_TIMEOUT,
-  ): Promise<ChainablePromiseArray> {
+  ): Promise<WebdriverIO.ElementArray> {
     const startTime = Date.now()
     const strategies = this.getTextLocatorStrategies(text, exactMatch).sort(
       (a, b) => a.priority - b.priority,
@@ -206,7 +205,7 @@ export class AppiumTestBase {
     instanceNum: number,
     exactMatch = false,
     timeout = DEFAULT_TIMEOUT,
-  ): Promise<ChainablePromiseElement | null> {
+  ): Promise<WebdriverIO.Element | null> {
     const elements = await this.findElementsByText(text, exactMatch, timeout)
     const count = await elements.length
     if (count === 0) return null
@@ -232,7 +231,7 @@ export class AppiumTestBase {
     instanceNum: number,
     exactMatch = false,
     timeout = DEFAULT_TIMEOUT,
-  ): Promise<ChainablePromiseElement> {
+  ): Promise<WebdriverIO.Element> {
     const element = await this.findElementByText(
       text,
       instanceNum,
@@ -263,7 +262,7 @@ export class AppiumTestBase {
   }
 
   private async isElementVisible(
-    element: ChainablePromiseElement | null,
+    element: WebdriverIO.Element | null,
   ): Promise<boolean> {
     return element !== null && (await element.isDisplayed())
   }
@@ -271,15 +270,15 @@ export class AppiumTestBase {
   async waitForElementDisplayed(
     key: string,
     timeout = DEFAULT_TIMEOUT,
-  ): Promise<ChainablePromiseElement> {
+  ): Promise<WebdriverIO.Element> {
     const startTime = Date.now()
     const errors: Error[] = []
 
     while (Date.now() - startTime < timeout) {
       try {
         const element = await this.findElementByKey(key)
-        if (await this.isElementVisible(element)) {
-          return element as ChainablePromiseElement
+        if (element !== null && (await this.isElementVisible(element))) {
+          return element
         }
       } catch (error) {
         errors.push(error as Error)
@@ -346,7 +345,7 @@ export class AppiumTestBase {
   private async bringIntoView(
     key: string,
     timeout: number,
-  ): Promise<ChainablePromiseElement> {
+  ): Promise<WebdriverIO.Element> {
     const element = await this.findElementByKey(key)
     if (!element || !(await this.isElementVisible(element))) {
       await this.scrollToElement(key)
@@ -355,7 +354,7 @@ export class AppiumTestBase {
   }
 
   private async isElementClickable(
-    element: ChainablePromiseElement,
+    element: WebdriverIO.Element,
   ): Promise<boolean> {
     const attr = await element.getAttribute('clickable')
     return attr === 'true'
@@ -531,10 +530,10 @@ export class AppiumTestBase {
   }
 
   private async scrollUntilFound(
-    findElementFn: () => Promise<ChainablePromiseElement | null>,
+    findElementFn: () => Promise<WebdriverIO.Element | null>,
     elementDescription: string,
     options: ScrollOptions = {},
-  ): Promise<ChainablePromiseElement | null> {
+  ): Promise<WebdriverIO.Element | null> {
     const config = { ...DEFAULT_SCROLL_OPTIONS, ...options }
     const { maxScrolls, scrollDirection, scrollDuration, scrollPercentage } =
       config
@@ -583,7 +582,7 @@ export class AppiumTestBase {
   async scrollToElement(
     key: string,
     scrollOptions: ScrollOptions = {},
-  ): Promise<ChainablePromiseElement | null> {
+  ): Promise<WebdriverIO.Element | null> {
     return this.scrollUntilFound(
       () => this.findElementByKey(key),
       `with key "${key}"`,
@@ -597,7 +596,7 @@ export class AppiumTestBase {
     exactMatch = false,
     timeout?: number,
     scrollOptions: ScrollOptions = {},
-  ): Promise<ChainablePromiseElement | null> {
+  ): Promise<WebdriverIO.Element | null> {
     return this.scrollUntilFound(
       () => this.findElementByText(text, instanceNum, exactMatch, timeout),
       `with text "${text}"`,
