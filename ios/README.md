@@ -425,8 +425,23 @@ ios/
 ├── Tests/FedimintSdkTests/           offline tests: no federation, no network
 └── Demo/
     ├── project.yml                   XcodeGen spec (committed)
+    ├── Info.plist
     ├── FedimintDemoApp.swift
-    ├── ContentView.swift             every facade, one screen
+    ├── ContentView.swift             picks onboarding, reopen or the wallet
+    ├── DemoModel.swift               every SDK call the screens make
+    ├── Views/
+    │   ├── Theme/                    colours, type, spacing
+    │   ├── Components/               buttons, cards, rows, seed grid, QR
+    │   ├── Onboarding/               welcome, back up, verify, restore
+    │   ├── Home/
+    │   ├── Activity/                 history and operation detail
+    │   ├── Send/                     quote, review, result
+    │   ├── Receive/
+    │   ├── Federations/              join, detail, recovery
+    │   └── MainView.swift            the three tabs
+    ├── Resources/
+    │   ├── Fonts/                    Geist and Geist Mono, OFL.txt
+    │   └── Assets.xcassets/          Fedimint logo and mark
     └── FedimintDemo.xcodeproj/       generated, gitignored
 ```
 

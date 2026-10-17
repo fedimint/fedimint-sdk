@@ -12,19 +12,24 @@ let testnetFederationCode =
 
 /// Names a result line, so each section can render its own outcome.
 enum Section: String {
-    case wallet, join, lnReceive, ecashReceive, ecashSend, lnPay, parseInvite
+    case wallet, join, lnReceive, ecashReceive, ecashSend, lnPay
     case deposit, onchainSend, activity
+    /// Reclaiming the last ecash send, kept apart from `ecashSend` so asking
+    /// for it never overwrites the send's own line.
+    case ecashReclaim
+    /// Following, or resuming, the attached federation's seed recovery.
+    case recovery
 }
 
 extension Section {
     /// Sections whose contents belong to one federation, and are therefore
     /// meaningless the moment another one is attached.
     ///
-    /// `wallet` is SDK-scoped and `parseInvite` is a pure function of its input,
-    /// so both survive a switch; `join` is written by the caller of `attach`
-    /// immediately afterwards.
+    /// `wallet` is SDK-scoped, so it survives a switch; `join` is written by
+    /// the caller of `attach` immediately afterwards.
     static let federationScoped: Set<Section> = [
         .lnReceive, .ecashReceive, .ecashSend, .lnPay, .deposit, .onchainSend, .activity,
+        .ecashReclaim, .recovery,
     ]
 }
 
@@ -40,40 +45,104 @@ final class DemoModel: ObservableObject {
 
     // Rendered output, one entry per section.
     @Published var results: [Section: String] = [:]
-    @Published var balance = "Balance: —"
-    @Published var walletStatus = "No wallet open"
+    /// Why each section's last action failed, if it did: the same text `run`
+    /// renders into `results`, kept apart so a screen can tell a failure from
+    /// an action's progress without reading its line.
+    @Published private(set) var failures: [Section: String] = [:]
+    /// Why following a section's operation stopped before its state was final:
+    /// the subscription failed, not the call that started the operation. The
+    /// operation may still have completed; this says only that its state can
+    /// no longer be read.
+    @Published private(set) var watchFailures: [Section: String] = [:]
     @Published var seed: String?
+
+    /// The same phrase as `seed`, as words, for a screen that lays them out and
+    /// checks them itself. Set and cleared with `seed`, under the same
+    /// authentication.
+    @Published private(set) var seedWords: [String] = []
+
+    // What the screens that lay values out themselves need, rather than the
+    // sentences in `results`. All of it belongs to the attached federation and
+    // is reset by `attach`.
+
+    /// `nil` while there is none to show: no federation, or one whose first
+    /// `balance()` has not landed.
+    @Published private(set) var balanceMsats: UInt64?
+    /// Why the balance subscription stopped, which leaves `balanceMsats` where
+    /// it was.
+    @Published private(set) var balanceFailure: String?
+    @Published private(set) var federationName: String?
+    @Published private(set) var federationId: FederationId?
+    /// The attached federation's invite code, for inviting someone else into
+    /// it. A credential that admits whoever holds it, so it is shown only on
+    /// request.
+    @Published private(set) var federationInvite: String?
+    @Published private(set) var federationNetwork: Network?
+    /// Which rails the federation has. Screens show only these: the design's
+    /// rule is to hide a rail the federation cannot use, never to disable it.
+    @Published private(set) var capabilities: Capabilities?
+    /// As `Sdk.federationStatus` reported it when the federation was attached.
+    @Published private(set) var federationStatus: FederationStatus?
+    /// The attached federation's seed recovery, while one is being followed.
+    @Published private(set) var recoveryState: RecoveryState?
+    @Published private(set) var activityItems: [ActivityItem] = []
+    /// Where the next page of history starts, or `nil` at its end.
+    @Published private(set) var activityNext: Cursor?
 
     // Inputs.
     @Published var restoreWords = ""
-    @Published var invite = testnetFederationCode
+    /// Editing the code drops the preview taken of the previous one, so a
+    /// preview on screen always describes the code in the field.
+    @Published var invite = testnetFederationCode {
+        didSet { if invite != oldValue, invitePreview != nil { invitePreview = nil } }
+    }
+    /// The last preview of `invite`: what joining it would mean, before it
+    /// is joined.
+    @Published private(set) var invitePreview: FederationPreview?
     @Published var lnReceiveAmount = "5000"
     @Published var lnReceiveDescription = "Coffee"
     @Published var ecashNotes = ""
-    @Published var ecashSendAmount = "1000"
+    /// Same invalidation as `lnInvoice`: a quote is for the amount it was
+    /// taken for.
+    @Published var ecashSendAmount = "1000" {
+        didSet { if ecashSendAmount != oldValue, ecashQuote != nil { ecashQuote = nil } }
+    }
     /// Editing the invoice invalidates any quote taken against the previous one.
     /// Without this, Pay stays enabled (it is gated on `lnQuote != nil`) and
     /// would send the invoice the user has just replaced. The `!= nil` guard
     /// keeps a keystroke from publishing a change when there is no quote to
-    /// invalidate.
+    /// invalidate. The `!= oldValue` one is because a text field losing focus,
+    /// as it does when Review is pushed, writes its unchanged text back.
     @Published var lnInvoice = "" {
-        didSet { if lnQuote != nil { lnQuote = nil } }
+        didSet { if lnInvoice != oldValue, lnQuote != nil { lnQuote = nil } }
     }
-    @Published var parseInviteText = testnetFederationCode
     /// Same invalidation as `lnInvoice`, for the same reason: Send is gated on
     /// `onchainQuote != nil`, and a quote carries the destination and amount it
     /// was taken for.
     @Published var onchainAmount = "10000" {
-        didSet { if onchainQuote != nil { onchainQuote = nil } }
+        didSet { if onchainAmount != oldValue, onchainQuote != nil { onchainQuote = nil } }
     }
     @Published var onchainAddress = "" {
-        didSet { if onchainQuote != nil { onchainQuote = nil } }
+        didSet { if onchainAddress != oldValue, onchainQuote != nil { onchainQuote = nil } }
     }
 
     // Copyable results of the last run of each flow.
     @Published var lastInvoice: String?
     @Published var lastNotes: Notes?
     @Published var lastAddress: String?
+
+    // The live state of the last receive, for screens that render it as a
+    // status rather than as the section's text.
+    @Published private(set) var lnReceiveState: LnReceiveState?
+    @Published private(set) var lnReceiveExpiresAt: Timestamp?
+    /// What `lastInvoice` actually asks for, as the SDK reports it. A screen
+    /// shows this next to the invoice, never the amount field it was typed
+    /// into, which may have been edited since.
+    @Published private(set) var lnReceiveInvoiceMsats: UInt64?
+    /// Whether the wallet has found a payment to `lastAddress` yet. Until it
+    /// has, a deposit is not an operation and has no state.
+    @Published private(set) var depositFound = false
+    @Published private(set) var depositState: OnchainReceiveState?
 
     /// True while an ecash send is committing.
     ///
@@ -101,6 +170,13 @@ final class DemoModel: ObservableObject {
 
     @Published private(set) var hasSdk = false
     @Published private(set) var hasFederation = false
+
+    /// How the open wallet came about: onboarding shows the backup step right
+    /// after a wallet is created, and Join recovers for a restored one. Kept in
+    /// memory only, so a restored wallet reopened before joining reads as
+    /// `.reopened`.
+    enum WalletOrigin { case created, restored, reopened }
+    @Published private(set) var walletOrigin: WalletOrigin?
 
     private var sdk: Sdk?
     private var federation: Federation?
@@ -137,6 +213,15 @@ final class DemoModel: ObservableObject {
     /// `.quoteExpired` — so clearing them here is courtesy, not the guarantee.
     @Published private(set) var lnQuote: LnQuote?
     @Published private(set) var onchainQuote: OnchainQuote?
+    @Published private(set) var ecashQuote: EcashQuote?
+
+    // The live state of the last send on each rail, for screens that render
+    // it as a status. `nil` until a send has been submitted.
+    @Published private(set) var lnSendState: LnSendState?
+    @Published private(set) var onchainSendState: OnchainSendState?
+    @Published private(set) var ecashSendState: EcashSendState?
+    /// The last ecash send, kept so it can be reclaimed while unredeemed.
+    private var lastEcashSend: EcashSendOperation?
 
     // MARK: - Wallet
 
@@ -153,12 +238,18 @@ final class DemoModel: ObservableObject {
             // `nil` loads the seed the directory already holds, or generates one
             // over an empty directory. A non-empty word list restores instead.
             let mnemonic = words.isEmpty ? nil : try Mnemonic.fromWords(words: words)
+            // Read before the open, which is what fills an empty directory.
+            let origin: WalletOrigin =
+                !words.isEmpty ? .restored : (Self.hasStoredWallet() ? .reopened : .created)
             let dataDir = try Self.dataDirectory()
             let sdk = try await createFedimintSdk(dataDir: dataDir.path, mnemonic: mnemonic)
             guard !self.isSuperseded else { return "superseded by a newer open" }
             self.sdk = sdk
             self.hasSdk = true
-            self.walletStatus = "Wallet open at \(dataDir.lastPathComponent)"
+            self.walletOrigin = origin
+            // The words are the seed. Once the SDK holds it there is no reason
+            // for a copy to stay in an input field for the life of the screen.
+            self.restoreWords = ""
 
             // Reattach to whatever this storage already joined, so a second
             // launch comes back with a federation rather than a blank screen.
@@ -179,6 +270,7 @@ final class DemoModel: ObservableObject {
     func toggleSeed() {
         guard seed == nil else {
             seed = nil
+            seedWords = []
             return
         }
         guard sdk != nil else { return }
@@ -202,7 +294,9 @@ final class DemoModel: ObservableObject {
             // that lands while it is up replaces the instance, and the phrase
             // shown has to be the open wallet's.
             guard let sdk = self.sdk else { return }
-            seed = sdk.exportMnemonic().words()
+            let words = sdk.exportMnemonic().words()
+            seedWords = words
+            seed = words
                 .enumerated()
                 .map { "\($0.offset + 1). \($0.element)" }
                 .joined(separator: "\n")
@@ -222,7 +316,7 @@ final class DemoModel: ObservableObject {
             guard !self.isSuperseded, self.federation === federation else {
                 return "federation changed — refresh again"
             }
-            self.balance = "Balance: " + formatMsats(amount)
+            self.balanceMsats = amount
             return "balance refreshed"
         }
     }
@@ -233,7 +327,11 @@ final class DemoModel: ObservableObject {
         guard !isSendingEcash else { return }
         run(.join) {
             guard let sdk = self.sdk else { return "open the wallet first" }
-            let preview = try await sdk.preview(invite: InviteCode.parse(code: self.trimmedInvite))
+            let invite = self.trimmedInvite
+            let preview = try await sdk.preview(invite: InviteCode.parse(code: invite))
+            // The code may have been edited while this was in flight.
+            guard !self.isSuperseded, invite == self.trimmedInvite else { return "superseded by a newer preview" }
+            self.invitePreview = preview
             var lines = [
                 "Federation ID  \(preview.id)",
                 "Name           \(preview.name ?? "(unnamed)")",
@@ -291,8 +389,12 @@ final class DemoModel: ObservableObject {
 
             let header = "Recovering \(recovery.federation.id())"
             let progress = recovery.progress.updates()
-            self.watch(.join, header: header) { try await progress.next() }
+            self.watch(.join, header: header, onState: { [weak self] in self?.recoveryProgressed($0) }) {
+                try await progress.next()
+            }
             let state = try await recovery.progress.state()
+            guard !self.isSuperseded else { return "superseded by a newer join" }
+            self.recoveryState = state
             return "\(header)\n\nstate: \(state)"
         }
     }
@@ -314,10 +416,22 @@ final class DemoModel: ObservableObject {
             )
             guard !self.isSuperseded else { return "superseded by a newer request" }
             self.lastInvoice = receive.invoice
+            self.lnReceiveState = nil
+            self.lnReceiveInvoiceMsats = nil
+            self.lnReceiveExpiresAt = nil
+
+            // `try?`: the invoice is already usable without these, which only
+            // describe it.
+            let details = try? await receive.operation.details()
+            guard !self.isSuperseded else { return "superseded by a newer request" }
+            self.lnReceiveExpiresAt = details?.expiresAt
+            self.lnReceiveInvoiceMsats = details?.invoiceAmount
 
             let header = "Invoice:\n\(receive.invoice)\n\noperation \(receive.operation.id())"
             let updates = receive.operation.updates()
-            self.watch(.lnReceive, header: header) { try await updates.next() }
+            self.watch(.lnReceive, header: header, onState: { [weak self] in self?.lnReceiveState = $0 }) {
+                try await updates.next()
+            }
             return header
         }
     }
@@ -351,9 +465,43 @@ final class DemoModel: ObservableObject {
         }
     }
 
-    /// Ecash out: quote the amount, then send it. The notes are a bearer
-    /// instrument — hand them to a receiver out of band — and the operation
-    /// keeps tracking whether they were redeemed or reclaimed.
+    /// Quotes an ecash send of `ecashSendAmount`, so the fee is on screen
+    /// before anything is spent. `ecashSend` then executes it.
+    func ecashQuoteAmount() {
+        // Both share `.ecashSend`, and `run` cancels the section's previous
+        // run: quoting during a send would cancel that send mid-commit.
+        guard !isSendingEcash else { return }
+        // Disarmed before the call, like the other quotes: a failed re-quote
+        // must not leave the previous one live behind the error.
+        ecashQuote = nil
+        run(.ecashSend) {
+            guard let ecash = self.federation?.ecash() else {
+                return "this federation has no mint module"
+            }
+            guard let msats = UInt64(self.ecashSendAmount.trimmed) else {
+                return "enter an amount in msats"
+            }
+            let quote = try await ecash.quote(amount: msats)
+            // The same two races the lightning quote guards against: a newer
+            // quote, and the amount edited while this one was in flight.
+            guard !self.isSuperseded else { return "superseded by a newer quote" }
+            guard msats == UInt64(self.ecashSendAmount.trimmed) else {
+                return "the amount changed while quoting — quote again"
+            }
+            self.ecashQuote = quote
+            return """
+                Notes    \(formatMsats(quote.notesValue()))
+                Fee      \(formatMsats(quote.fee()))
+                Total    \(formatMsats(quote.total()))
+                Expires  \(formatTimestamp(quote.expiresAt()))
+                """
+        }
+    }
+
+    /// Ecash out: sends the quote `ecashQuoteAmount` took, or quotes and sends
+    /// in one go when there is none. The notes are a bearer instrument — hand
+    /// them to a receiver out of band — and the operation keeps tracking
+    /// whether they were redeemed or reclaimed.
     func ecashSend() {
         // Refused here, not only by the disabled button: the button's state is a
         // frame behind, so a fast double tap would otherwise still start a
@@ -362,6 +510,12 @@ final class DemoModel: ObservableObject {
         // notes when it lands, even if the send has finished by then.
         guard !isSendingEcash, !isAttaching else { return }
         isSendingEcash = true
+        // Single use, like the other quotes: dropped before the send so a
+        // second tap has nothing to execute.
+        let held = ecashQuote
+        ecashQuote = nil
+        ecashSendState = nil
+        lastEcashSend = nil
 
         run(.ecashSend) {
             defer { self.isSendingEcash = false }
@@ -373,7 +527,12 @@ final class DemoModel: ObservableObject {
                 return "enter an amount in msats"
             }
 
-            let quote = try await ecash.quote(amount: msats)
+            let quote: EcashQuote
+            if let held {
+                quote = held
+            } else {
+                quote = try await ecash.quote(amount: msats)
+            }
 
             // Checked before anything commits. `ecash` was captured from the
             // federation attached when this started, so without this a switch
@@ -410,6 +569,7 @@ final class DemoModel: ObservableObject {
             // this summary together, so leaving the token out of it loses
             // nothing.
             self.lastNotes = sent.notes
+            self.lastEcashSend = sent.operation
 
             let summary = """
                 notes \(formatMsats(quote.notesValue())) + fee \(formatMsats(quote.fee()))
@@ -425,7 +585,22 @@ final class DemoModel: ObservableObject {
             // the operation id is ever shown. On the happy path `run` then
             // assigns the identical string, so this costs nothing.
             self.results[.ecashSend] = summary
+            let updates = sent.operation.updates()
+            self.watch(.ecashSend, header: summary, onState: { [weak self] in self?.ecashSendState = $0 }) {
+                try await updates.next()
+            }
             return summary
+        }
+    }
+
+    /// Asks to take the last ecash send back. A request, not a guarantee: if
+    /// the receiver redeems first, the send ends `redeemed`, and
+    /// `ecashSendState` says which way it went.
+    func reclaimEcash() {
+        guard let operation = lastEcashSend else { return }
+        run(.ecashReclaim) {
+            try await operation.requestCancel()
+            return "reclaim requested"
         }
     }
 
@@ -474,19 +649,16 @@ final class DemoModel: ObservableObject {
     func lnPay() {
         guard let quote = lnQuote, let lightning = federation?.lightning() else { return }
         lnQuote = nil
+        lnSendState = nil
         run(.lnPay) {
             let operation = try await lightning.send(quote: quote)
-            let state = try await operation.awaitFinal()
-            return "operation \(operation.id())\nstate: \(state)"
-        }
-    }
-
-    // MARK: - Parse invite code
-
-    func parseInvite() {
-        run(.parseInvite) {
-            let code = try InviteCode.parse(code: self.parseInviteText.trimmed)
-            return "Fed Id: \(code.federationId())"
+            guard !self.isSuperseded else { return "operation \(operation.id()) — superseded" }
+            let header = "operation \(operation.id())"
+            let updates = operation.updates()
+            self.watch(.lnPay, header: header, onState: { [weak self] in self?.lnSendState = $0 }) {
+                try await updates.next()
+            }
+            return header
         }
     }
 
@@ -518,6 +690,8 @@ final class DemoModel: ObservableObject {
             let address = try await onchain.receive()
             guard !self.isSuperseded else { return "superseded by a newer request" }
             self.lastAddress = address
+            self.depositFound = false
+            self.depositState = nil
 
             let header = "Send bitcoin to:\n\(address)"
             self.watchNextDeposit(deposits, header: header)
@@ -570,23 +744,89 @@ final class DemoModel: ObservableObject {
     func onchainSend() {
         guard let quote = onchainQuote, let onchain = federation?.onchain() else { return }
         onchainQuote = nil
+        onchainSendState = nil
         run(.onchainSend) {
             let operation = try await onchain.send(quote: quote)
             guard !self.isSuperseded else { return "operation \(operation.id()) — superseded" }
             let header = "operation \(operation.id())"
             let updates = operation.updates()
-            self.watch(.onchainSend, header: header) { try await updates.next() }
+            self.watch(.onchainSend, header: header, onState: { [weak self] in self?.onchainSendState = $0 }) {
+                try await updates.next()
+            }
             let state = try await operation.state()
             return "\(header)\nstate: \(state)"
         }
     }
 
+    /// Follows the attached federation's recovery again: the attempt that is
+    /// running, or a new one if the last attempt stopped. Because of the second
+    /// case, the recovery screen opens with `followRecovery` and leaves this to
+    /// the user's tap.
+    func resumeRecovery() {
+        guard let sdk, let id = federationId else { return }
+        run(.recovery) {
+            let handle = try await sdk.resumeRecovery(id: id)
+            guard !self.isSuperseded else { return "superseded by a newer resume" }
+            let updates = handle.progress.updates()
+            self.watch(.recovery, header: "recovery \(handle.progress.id())",
+                       onState: { [weak self] in self?.recoveryProgressed($0) }) {
+                try await updates.next()
+            }
+            let state = try await handle.progress.state()
+            guard !self.isSuperseded else { return "superseded by a newer resume" }
+            self.recoveryProgressed(state)
+            return "state: \(state)"
+        }
+    }
+
+    /// A recovery that completed also changed the federation's status, from
+    /// `recovering`, so that is read again with it.
+    /// Reads where the recovery stands without starting anything, and follows
+    /// it only if it is running. A stopped attempt is left stopped: resuming
+    /// it starts a new attempt, which is the user's call, not the screen's.
+    func followRecovery() {
+        guard let sdk, let id = federationId else { return }
+        Task {
+            guard let state = try? await sdk.recoveryStatus(id: id) else { return }
+            self.recoveryProgressed(state)
+            // Running: resuming reattaches to the attempt under way.
+            if case .running = state, !self.isWorking(.recovery) { self.resumeRecovery() }
+        }
+    }
+
+    private func recoveryProgressed(_ state: RecoveryState) {
+        recoveryState = state
+        if case .done = state { refreshFederationStatus() }
+    }
+
+    /// One operation of the attached federation, by id, for a screen that
+    /// follows it. `nil` for an id this federation has no record of.
+    func operation(id: OperationId) async throws -> AnyOperation? {
+        try await federation?.operation(id: id)
+    }
+
+    /// Reads the attached federation's status again: it moves on its own, for
+    /// example from `recovering` to `running` when a rescan completes.
+    func refreshFederationStatus() {
+        guard let sdk, let id = federationId else { return }
+        federationStatus = try? sdk.federationStatus(id: id)
+    }
+
     // MARK: - Activity
+
+    /// How many rows one page of history asks for.
+    private static let activityPageSize: UInt16 = 20
 
     func activity() {
         run(.activity) {
             guard let federation = self.federation else { return "join a federation first" }
-            let page = try await federation.activity(cursor: nil, limit: 20)
+            let page = try await federation.activity(cursor: nil, limit: Self.activityPageSize)
+            // `.activity` is federation-scoped, so `attach` cancels this run;
+            // rows from the federation being replaced must not land under its
+            // successor.
+            guard !self.isSuperseded else { return "superseded by a newer load" }
+            self.activityItems = page.items
+            self.activityNext = page.next
             if page.items.isEmpty { return "no activity yet" }
             return page.items.map { item in
                 var line = "\(formatTimestamp(item.time))\n\(item.kind)"
@@ -597,6 +837,21 @@ final class DemoModel: ObservableObject {
                 return line
             }
             .joined(separator: "\n\n")
+        }
+    }
+
+    /// The next page after `activityItems`, appended to it. `activityNext` is
+    /// `nil` once the history is exhausted.
+    func moreActivity() {
+        guard let cursor = activityNext else { return }
+        run(.activity) {
+            guard let federation = self.federation else { return "join a federation first" }
+            let page = try await federation.activity(cursor: cursor, limit: Self.activityPageSize)
+            // A reload that started meanwhile owns the list now.
+            guard !self.isSuperseded, cursor == self.activityNext else { return "superseded by a newer load" }
+            self.activityItems += page.items
+            self.activityNext = page.next
+            return "loaded \(page.items.count) more"
         }
     }
 
@@ -626,8 +881,7 @@ final class DemoModel: ObservableObject {
     /// computer backups, which may not be encrypted. The seed phrase the user
     /// writes down is the backup.
     private static func dataDirectory() throws -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        var dir = base.appendingPathComponent("fedimint", isDirectory: true)
+        var dir = dataDirectoryURL
         let protection: [FileAttributeKey: Any] = [
             .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication,
         ]
@@ -644,6 +898,21 @@ final class DemoModel: ObservableObject {
         return dir
     }
 
+    private static var dataDirectoryURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("fedimint", isDirectory: true)
+    }
+
+    /// Whether an earlier launch left a wallet in the data directory.
+    ///
+    /// Only a hint for which screen to start on, read without creating the
+    /// directory. Whether that storage really opens, and with which seed, is
+    /// still the SDK's answer in `openWallet`.
+    static func hasStoredWallet() -> Bool {
+        let contents = try? FileManager.default.contentsOfDirectory(atPath: dataDirectoryURL.path)
+        return !(contents ?? []).isEmpty
+    }
+
     /// Makes `joined` the current federation and keeps the balance line live
     /// from its `balanceUpdates()` subscription.
     private func attach(_ joined: Federation) {
@@ -655,7 +924,25 @@ final class DemoModel: ObservableObject {
         cancelWatchers()
         lnQuote = nil
         onchainQuote = nil
-        balance = "Balance: …"
+        ecashQuote = nil
+        lnSendState = nil
+        onchainSendState = nil
+        ecashSendState = nil
+        lastEcashSend = nil
+        recoveryState = nil
+        balanceMsats = nil
+        balanceFailure = nil
+
+        // Read synchronously, before any await, so these always describe the
+        // federation this call attached rather than one that replaced it.
+        federationName = joined.name()
+        federationId = joined.id()
+        federationInvite = joined.inviteCode().display()
+        federationNetwork = joined.network()
+        capabilities = joined.capabilities()
+        federationStatus = try? sdk?.federationStatus(id: joined.id())
+        activityItems = []
+        activityNext = nil
 
         // All of this names values from the federation being replaced, and the
         // copy buttons are gated on it being non-nil — so leaving it in place
@@ -666,6 +953,11 @@ final class DemoModel: ObservableObject {
         lastInvoice = nil
         lastNotes = nil
         lastAddress = nil
+        lnReceiveState = nil
+        lnReceiveExpiresAt = nil
+        lnReceiveInvoiceMsats = nil
+        depositFound = false
+        depositState = nil
 
         // Clearing the values is not enough on its own: an action still in
         // flight against the federation being replaced would repopulate them on
@@ -697,7 +989,7 @@ final class DemoModel: ObservableObject {
                 // the model for the life of an endless subscription and makes
                 // the `[weak self]` above do nothing.
                 if !Task.isCancelled, let self {
-                    self.balance = "Balance: " + formatMsats(initial)
+                    self.balanceMsats = initial
                 }
 
                 let updates = joined.balanceUpdates()
@@ -708,16 +1000,14 @@ final class DemoModel: ObservableObject {
                     // the await above. `break` rather than skipping: with the
                     // model gone there is nobody left to render into.
                     guard let self else { break }
-                    self.balance = "Balance: " + formatMsats(next)
+                    self.balanceMsats = next
                 }
             } catch let error as SdkError {
                 // A cancelled subscription failing on its way out must not
                 // stamp an error over the federation that replaced it.
-                if !Task.isCancelled {
-                    self?.balance = "Balance: unavailable (\(error.code()))"
-                }
+                if !Task.isCancelled { self?.balanceFailure = error.reason() }
             } catch {
-                if !Task.isCancelled { self?.balance = "Balance: unavailable" }
+                if !Task.isCancelled { self?.balanceFailure = "\(error)" }
             }
         }
     }
@@ -734,9 +1024,30 @@ final class DemoModel: ObservableObject {
     /// `attach` runs inside a run task itself, so cancelling them there would
     /// suppress the very result its caller is about to write. Cross-federation
     /// staleness is handled by clearing the section instead.
+    private func fail(_ section: Section, _ reason: String) {
+        results[section] = reason
+        failures[section] = reason
+    }
+
+    /// Drops every held quote: the user declined it, so nothing may execute it.
+    func discardQuotes() {
+        lnQuote = nil
+        onchainQuote = nil
+        ecashQuote = nil
+    }
+
+    /// What a section's line reads while its action runs.
+    private static let workingText = "working…"
+
+    /// Whether `section`'s action is running, for a screen that shows progress.
+    func isWorking(_ section: Section) -> Bool {
+        results[section] == Self.workingText
+    }
+
     private func run(_ section: Section, _ block: @MainActor @escaping () async throws -> String) {
         runTasks[section]?.cancel()
-        results[section] = "working…"
+        results[section] = Self.workingText
+        failures[section] = nil
         runTasks[section] = Task {
             do {
                 let output = try await block()
@@ -746,9 +1057,9 @@ final class DemoModel: ObservableObject {
                 // an await guards itself with `isSuperseded`; see that property.
                 if !Task.isCancelled { self.results[section] = output }
             } catch let error as SdkError {
-                if !Task.isCancelled { self.results[section] = self.describe(error) }
+                if !Task.isCancelled { self.fail(section, self.describe(error)) }
             } catch {
-                if !Task.isCancelled { self.results[section] = "\(error)" }
+                if !Task.isCancelled { self.fail(section, "\(error)") }
             }
         }
     }
@@ -763,12 +1074,18 @@ final class DemoModel: ObservableObject {
     /// them. A closure is the one thing that unifies them without inventing a
     /// Swift-only protocol layer the Android SDK does not have. See
     /// `ios/README.md`, "What's not here yet".
+    ///
+    /// `onState`, when given, also receives each state, for a screen that
+    /// renders it itself rather than as this section's text. It runs under the
+    /// same cancellation guard as the text write.
     private func watch<State>(
         _ section: Section,
         header: String,
+        onState: (@MainActor (State) -> Void)? = nil,
         next: @MainActor @escaping () async throws -> State?
     ) {
         watchTasks[section]?.cancel()
+        watchFailures[section] = nil
         // `[weak self]` for the same reason `balanceTask` uses it: the model
         // owns the task and the task would otherwise own the model, and a
         // watcher can stay open for as long as an invoice goes unpaid.
@@ -787,6 +1104,7 @@ final class DemoModel: ObservableObject {
                     // Also stop if the screen is gone: `self?.` alone would
                     // keep pulling a cursor nothing can render.
                     guard let self else { break }
+                    onState?(state)
                     self.results[section] = "\(header)\n\nstate: \(state)"
                 }
                 // A `nil` means the state is final, not that anything went
@@ -794,10 +1112,12 @@ final class DemoModel: ObservableObject {
             } catch let error as SdkError {
                 if !Task.isCancelled {
                     self?.results[section] = "\(header)\n\nstopped watching: \(error.reason())"
+                    self?.watchFailures[section] = error.reason()
                 }
             } catch {
                 if !Task.isCancelled {
                     self?.results[section] = "\(header)\n\nstopped watching: \(error)"
+                    self?.watchFailures[section] = "\(error)"
                 }
             }
         }
@@ -842,7 +1162,10 @@ final class DemoModel: ObservableObject {
             let updates = operation.updates()
             // `watch` cancels the watcher this section has, which is this task.
             // That is the hand-over: nothing follows it here.
-            self.watch(.deposit, header: found) { try await updates.next() }
+            self.depositFound = true
+            self.watch(.deposit, header: found, onState: { [weak self] in self?.depositState = $0 }) {
+                try await updates.next()
+            }
         }
     }
 
