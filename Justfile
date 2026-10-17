@@ -51,6 +51,11 @@ test-react-native-sdk-scripts:
     ./scripts/test-react-native-sdk-scripts.sh
     ./scripts/test-assemble-rn-ios-xcframework.sh
 
+# Test the script behind the wasm module size check of a pull request. Needs only bash, gzip and
+# the usual POSIX tools, no build.
+test-sdk-web-scripts:
+    ./scripts/test-sdk-web-wasm-size.sh
+
 # Assemble the release AAR. Publishing to Maven Central is .github/workflows/android-sdk-release.yaml.
 build-android-aar: build-android-sdk
     cd android && ./gradlew :fedimint-sdk:assembleRelease

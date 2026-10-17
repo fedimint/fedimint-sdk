@@ -88,11 +88,23 @@ jobs:
     name: Test
     if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_web != false }}
     runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 45
+    # 15 of the minutes are for the three steps of the size check: the sum of their own limits.
+    timeout-minutes: 60
+    outputs:
+      # For the `wasm-size` job: the sizes of the two modules, as
+      # `scripts/sdk-web-wasm-size.sh measure` prints them, and how measuring the pull request's
+      # module went.
+      wasm-size-head: ${{ steps.head-size.outputs.sizes }}
+      wasm-size-base: ${{ steps.base-size.outputs.sizes }}
+      wasm-size-head-outcome: ${{ steps.head-size.outcome }}
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v7
+        with:
+          # On a pull request the checkout is the merge of the pull request into its base branch.
+          # The size check also needs the commit it is merged into, the first parent of the merge.
+          fetch-depth: 2
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -105,8 +117,95 @@ jobs:
         shell: bash
         run: nix develop --accept-flake-config --command pnpm --dir js install
 
+      # On a pull request three steps measure the wasm module that the browser package ships, and
+      # the base commit's: the two below and `Measure the wasm module for the size check`, after
+      # the build. The `wasm-size` job takes the sizes from the outputs of this job, reports them
+      # and fails when the module grew too much. Whether the tests pass is for this job alone to
+      # say, so none of the three steps may fail it, or hold it up for longer than its time limit:
+      # each has `continue-on-error` and `timeout-minutes`.
+      #
+      # What takes time in them also runs under `timeout`, with a little less time than the step
+      # has. The limit of a step stops the shell of the step but not the programs that the shell
+      # started, and a generator left running would write into the directory that the build
+      # generates into. `timeout` stops them all.
+      #
+      # The base commit's module is never compiled for the check, because how long that takes
+      # depends on what the store of the runner holds. It is taken as it is from that store or
+      # from a binary cache. A run of this job on `main` builds the module and pushes it to the
+      # cache, so for a pull request against `main` it is normally there. It can be missing all
+      # the same: for another base branch, for a commit of `main` whose own run has not finished,
+      # or when the cache has dropped it. The check then has the sizes of the pull request alone,
+      # and passes with a warning.
+      - name: Get the base commit's wasm module for the size check
+        id: base-module
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          base="$(git rev-parse 'HEAD^1')"
+          # The store path of the module is asked for, not the flake output, and that is what
+          # rules a compilation out: nix can copy a store path from a cache, but it has nothing to
+          # build one from. The repository is shallow, hence `shallow=1`.
+          out="$(timeout -k 10 90 nix eval --accept-flake-config --raw \
+            "git+file://$PWD?rev=$base&shallow=1#fedimint-sdk-wasm.outPath")"
+          # The link keeps the module from being garbage-collected before it is measured.
+          link="$RUNNER_TEMP/sdk-web-wasm-base"
+          # Where the store of the runner lacks the module, nix copies it from fedimint.cachix.org,
+          # which the Setup Nix step adds to the nix configuration of the runner's user. The
+          # flake's `nixConfig` names that cache too, but it does not apply to a store path.
+          if ! timeout -k 10 120 nix build --out-link "$link" "$out"; then
+            echo "The wasm module of the base commit $base could not be fetched, see the error" \
+              "above, so the size check has no base."
+            exit 0
+          fi
+          echo "module=$out/lib/fedimint_sdk.wasm" >>"$GITHUB_OUTPUT"
+
+      - name: Measure the base commit's wasm module for the size check
+        # Generates from the base commit's module with the tools of the pull request, as the
+        # build below does for the pull request's own module, and measures what comes out. It can
+        # fail for a good reason: a pull request that changes the wasm-bindgen version makes the
+        # tool refuse a module built against the other version.
+        #
+        # The generated files of the base commit replace the committed ones while this runs. The
+        # tracked ones are put back when the shell ends, and the build below deletes the whole
+        # directory before it generates anything, so no later step sees them.
+        id: base-size
+        if: ${{ steps.base-module.outputs.module != '' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: bash
+        env:
+          BASE_MODULE: ${{ steps.base-module.outputs.module }}
+        run: |
+          timeout -k 10 450 nix develop --accept-flake-config .#wasm --command bash << 'EOF'
+            set -euo pipefail
+            trap 'git checkout --quiet -- js/web/sdk-web/src/generated' EXIT
+            scripts/generate-sdk-web-bindings.sh "$BASE_MODULE"
+            scripts/sdk-web-wasm-size.sh measure js/web/sdk-web/src/generated/fedimint_sdk.wasm \
+              >"$RUNNER_TEMP/sdk-web-wasm-size-base.txt"
+          EOF
+          echo "sizes=$(<"$RUNNER_TEMP/sdk-web-wasm-size-base.txt")" >>"$GITHUB_OUTPUT"
+
       - name: Build SDK web bindings
         uses: ./.github/actions/build-sdk-web
+
+      - name: Measure the wasm module for the size check
+        # Measures the module that the build left in src/generated, in the same shell as the base
+        # commit's so that both sizes come from the same gzip. The `wasm-size` job fails when this
+        # step fails, and does not run when an earlier step fails, since this job ends there.
+        id: head-size
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          timeout -k 10 150 nix develop --accept-flake-config .#wasm --command bash << 'EOF'
+            set -euo pipefail
+            scripts/sdk-web-wasm-size.sh measure js/web/sdk-web/src/generated/fedimint_sdk.wasm \
+              >"$RUNNER_TEMP/sdk-web-wasm-size-head.txt"
+          EOF
+          echo "sizes=$(<"$RUNNER_TEMP/sdk-web-wasm-size-head.txt")" >>"$GITHUB_OUTPUT"
 
       - name: Run pnpm tests
         shell: bash
@@ -116,3 +215,57 @@ jobs:
             pnpm --dir js build
             pnpm --dir js test
           EOF
+
+  # Fails a pull request that makes the wasm module of the browser package, or the module after
+  # `gzip -9`, grow by more than 5% of the base commit's (MAX_GROWTH_PERCENT in
+  # scripts/sdk-web-wasm-size.sh), and writes a table of the sizes into its summary. The `test`
+  # job measures both modules, since only it has them. This job starts when that job has ended,
+  # whatever its tests did, but only if it got as far as measuring the pull request's module, and
+  # it fails when that module could not be measured. Without the base commit's sizes it passes
+  # with a warning, and the log of the `test` job says why they are missing.
+  wasm-size:
+    name: Check Wasm Size
+    needs: test
+    # `!cancelled()` keeps a failure of the tests from skipping this job. The outcome of the step
+    # that measures is `success` or `failure` once it has run, and `skipped` when an earlier step
+    # of the `test` job failed.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request' &&
+      (needs.test.outputs.wasm-size-head-outcome == 'success' ||
+      needs.test.outputs.wasm-size-head-outcome == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check the size of the wasm module
+        shell: bash
+        env:
+          HEAD_SIZES: ${{ needs.test.outputs.wasm-size-head }}
+          BASE_SIZES: ${{ needs.test.outputs.wasm-size-base }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$HEAD_SIZES" ]]; then
+            echo "::error::The wasm module of the pull request could not be measured." \
+              "The log of the Test job says why, and re-running that job measures it again."
+            exit 1
+          fi
+          printf '%s\n' "$HEAD_SIZES" >"$RUNNER_TEMP/head-sizes.txt"
+          printf '%s\n' "$BASE_SIZES" >"$RUNNER_TEMP/base-sizes.txt"
+          scripts/sdk-web-wasm-size.sh report "$RUNNER_TEMP/head-sizes.txt" \
+            "$RUNNER_TEMP/base-sizes.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The sizes come from the outputs of the `test` job: empty, or a line that `measure`
+          # printed. So an empty one is the only way for the base to be missing.
+          if [[ -z "$BASE_SIZES" ]]; then
+            echo "::warning::There is no size of the base commit's wasm module to compare with," \
+              "so its growth was not checked. The log of the Test job says why."
+            exit 0
+          fi
+          # Each line that `check` prints becomes an error annotation, with its `%` escaped as a
+          # workflow command needs. With `pipefail`, set above, the step fails when `check` does.
+          scripts/sdk-web-wasm-size.sh check "$RUNNER_TEMP/head-sizes.txt" \
+            "$RUNNER_TEMP/base-sizes.txt" | sed -e 's/%/%25/g' -e 's/^/::error::/'

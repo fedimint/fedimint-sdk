@@ -24,6 +24,12 @@ name: SDK Release Scripts
 # whose drafted notes were never rewritten fails here, before merging it
 # would start a release that the tag workflow then refuses. The React Native
 # packages have no committed version to check: theirs is the release tag.
+#
+# One more script is tested here although it gates no release:
+# scripts/sdk-web-wasm-size.sh, which measures the browser SDK's wasm module
+# and fails a pull request that makes it grow too much. The jobs that use it
+# need the module built first and only ever see real sizes, so its
+# arithmetic and its errors are tested here, in seconds.
 
 on:
   workflow_dispatch:
@@ -37,6 +43,8 @@ on:
       - 'scripts/assemble-rn-ios-xcframework.sh'
       - 'scripts/test-assemble-rn-ios-xcframework.sh'
       - 'scripts/rn-android-emulator.sh'
+      - 'scripts/sdk-web-wasm-size.sh'
+      - 'scripts/test-sdk-web-wasm-size.sh'
       # scripts/react-native-sdk-example.sh stages the example and pins its
       # dependencies from the lockfile; its tests run against both.
       - 'js/examples/react-native/**'
@@ -72,6 +80,9 @@ jobs:
         run: |
           scripts/test-react-native-sdk-scripts.sh
           scripts/test-assemble-rn-ios-xcframework.sh
+
+      - name: 'Run the browser SDK size check tests'
+        run: scripts/test-sdk-web-wasm-size.sh
 
       - name: 'Check the committed Android SDK version and its notes'
         run: |

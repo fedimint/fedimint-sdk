@@ -106,3 +106,24 @@ just test
 ```
 
 from the repository root.
+
+## Size of the wasm module
+
+A browser downloads the module this package ships, `src/generated/fedimint_sdk.wasm`, before the
+SDK can do anything. On a pull request, the `Verify / Check Wasm Size` check compares the size of
+that module, and its size after `gzip -9`, with those of the commit of the base branch it is
+merged into. It fails when the pull request makes either size grow by more than 5%, and its
+summary has a table of the sizes and their differences. When the base commit's module cannot be
+fetched or generated from, the check shows the sizes of the pull request alone and passes with a
+warning. It does not run when the `Verify / Test` job fails before it has built the module.
+
+To get the numbers for a module of your own, generate the bindings and measure the module from the
+repository root:
+
+```sh
+just generate-sdk-web-bindings
+scripts/sdk-web-wasm-size.sh measure js/web/sdk-web/src/generated/fedimint_sdk.wasm
+```
+
+It prints the size of the module and its size after `gzip -9`, both in bytes. The second moves by a
+hundred bytes or so between two runs of the generator, even on the same crate.
