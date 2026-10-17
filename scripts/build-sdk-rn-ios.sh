@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Cross-compiles rust/fedimint-sdk for iOS, assembles the xcframework and regenerates
-# js/react-native/react-native-bindings from the result. macOS with Xcode only; run inside the
-# `.#ios` shell (`just build-rn-ios`), which provides the iOS Rust targets and the nix-packaged
-# `ubrn`.
+# Builds rust/fedimint-sdk as a static library for each iOS target, then has ubrn assemble the
+# xcframework from those libraries and regenerate js/react-native/react-native-bindings. macOS
+# with Xcode only; run inside the `.#ios` shell (`just build-rn-ios`), which provides the iOS
+# Rust targets and the nix-packaged `ubrn`.
 #
 #   UBRN_IOS_TARGETS=aarch64-apple-ios scripts/build-sdk-rn-ios.sh
 #
@@ -11,11 +11,17 @@
 # (device, arm64 simulator, x86_64 simulator) are built. CI passes the device slice alone on pull
 # requests, which roughly halves the cross-compile time.
 #
+# The libraries are built here and not by ubrn, which is run with `--no-cargo` to read them: the
+# manifest lists no `staticlib` (rust/fedimint-sdk/Cargo.toml says why), and ubrn cannot be told to
+# ask cargo for one. `--no-cargo` makes ubrn use the libraries it finds at
+# <target dir>/<triple>/release/libfedimint_sdk.a, which is where cargo leaves them.
+#
 # See scripts/generate-sdk-rn-bindings.sh for why a `ubrn` from node_modules is refused.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="$ROOT/js/react-native/react-native-bindings"
+MANIFEST="$ROOT/rust/fedimint-sdk/Cargo.toml"
 
 for tool in ubrn cargo xcodebuild; do
   command -v "$tool" >/dev/null ||
@@ -33,14 +39,53 @@ esac
 # Without this, rustc defaults to iOS 10 while C/C++ builds can use the SDK's version.
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 
-targets=()
+# The targets to build: those of UBRN_IOS_TARGETS, else the three that ubrn.config.yaml lists
+# under `ios.targets`. ubrn is given the same list with `--targets` below, so it assembles
+# exactly the libraries built here and never one that another build left in the target
+# directory.
+triples=(aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios)
 if [[ -n "${UBRN_IOS_TARGETS:-}" ]]; then
-  targets=(--targets "$UBRN_IOS_TARGETS")
+  IFS=, read -r -a triples <<<"$UBRN_IOS_TARGETS"
 fi
+((${#triples[@]})) || { echo "UBRN_IOS_TARGETS names no target" >&2; exit 1; }
+for triple in "${triples[@]}"; do
+  [[ "$triple" =~ ^[a-z0-9_-]+$ ]] || {
+    echo "UBRN_IOS_TARGETS is '${UBRN_IOS_TARGETS:-}': it must be target triples separated by" \
+      "commas, without spaces" >&2
+    exit 1
+  }
+done
+
+# Where cargo puts what it builds for this manifest, which is where ubrn looks for it.
+target_dir="$(cd "$ROOT/rust" && cargo metadata --manifest-path "$MANIFEST" --format-version 1 \
+  --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+[[ -n "$target_dir" ]] || { echo "cargo metadata named no target directory" >&2; exit 1; }
+
+# Run from rust/, the directory ubrn.config.yaml names as the crate's.
+for triple in "${triples[@]}"; do
+  echo "==> cargo rustc --locked --lib --release --features uniffi --target $triple" \
+    "--crate-type lib --crate-type staticlib"
+  (cd "$ROOT/rust" && cargo rustc \
+    --manifest-path "$MANIFEST" \
+    --locked \
+    --lib \
+    --release \
+    --features uniffi \
+    --target "$triple" \
+    --crate-type lib \
+    --crate-type staticlib)
+
+  # Without the library, ubrn would start a build of its own, which cannot produce one.
+  [[ -f "$target_dir/$triple/release/libfedimint_sdk.a" ]] || {
+    echo "no libfedimint_sdk.a at $target_dir/$triple/release after building $triple" >&2
+    exit 1
+  }
+done
 
 cd "$PKG"
-echo "==> Building rust/fedimint-sdk for iOS and generating $PKG"
-ubrn build ios --config ubrn.config.yaml --release --and-generate "${targets[@]}"
+echo "==> ubrn build ios --no-cargo: assembling the xcframework and generating $PKG"
+ubrn build ios --config ubrn.config.yaml --release --no-cargo --and-generate \
+  --targets "$(IFS=,; echo "${triples[*]}")"
 
 # ubrn's podspec template declares no system frameworks; the Rust library needs three. Skip
 # the patch when a kept podspec already carries them: `patch --forward` on an applied hunk exits 1.

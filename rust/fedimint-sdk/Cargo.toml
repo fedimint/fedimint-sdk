@@ -12,15 +12,16 @@ categories = ["cryptography::cryptocurrencies"]
 # What a build of the published crate does not need.
 exclude = ["/AGENTS.md"]
 
-[lib]
-# `cdylib` is the shared library a mobile host loads, and the file
-# uniffi-bindgen reads its metadata back out of to generate Kotlin/Swift;
-# `staticlib` is the iOS/XCFramework form; `lib` is the ordinary Rust rlib.
+# No `[lib] crate-type` on purpose, which leaves the library a plain Rust `lib`. The shared
+# library a mobile or browser host loads (`cdylib`) and the static one the Apple XCFramework
+# holds (`staticlib`) are asked for on the command line by the builds that need them, with
+# `cargo rustc --crate-type` (nix/ffi.nix, scripts/build-android-sdk.sh,
+# scripts/build-ios-lib.sh, scripts/build-sdk-rn-ios.sh). Listed here, cargo would build and
+# link both for every crate that depends on this one.
 #
-# Cargo has no per-target crate-type, so these are built on every target. Only
-# `cargo build` pays for the extra links — `check`, `clippy`, `test` and `doc`
-# do not — which is where nearly all of this crate's CI time goes.
-crate-type = ["lib", "cdylib", "staticlib"]
+# Those builds ask for `lib` along with the type they need, so that rustc compiles the crate
+# the way it does for every other build of it, with every public item kept. A `cdylib` asked
+# for alone is compiled from its exported symbols only.
 
 [features]
 # The UniFFI surface: `#[uniffi::export]` on the real methods plus the adapters in
@@ -228,11 +229,14 @@ cc = "1"
 # ignores it for the test and bench profiles, so `cargo test --release` is
 # unaffected.
 #
+# There is no `lto` here: cargo does not run it for a build that also produces
+# an rlib, which every build of this crate does, so the setting would only make
+# every object carry LLVM bitcode that nothing reads.
+#
 # Profiles only apply when a package is the build root, so nothing here reaches
 # a crate that depends on fedimint-sdk.
 [profile.release]
 opt-level = 'z'     # Optimize for size.
-lto = true
 codegen-units = 1
 panic = "abort"
 strip = "debuginfo"

@@ -450,8 +450,9 @@
           rn-android-emulator = mkAndroidShell rnAndroidEmulatorSdk;
 
           # macOS only. Cargo cross-compiles rust/fedimint-sdk for the three iOS slices with
-          # Xcode's toolchain; ubrn assembles the xcframework and regenerates the bindings
-          # (just build-rn-ios).
+          # Xcode's toolchain; ubrn then assembles the xcframework from those libraries and
+          # regenerates the bindings, building nothing itself (just build-rn-ios, which runs
+          # scripts/build-sdk-rn-ios.sh).
           ios = pkgs.mkShellNoCC {
             # Set as derivation env var so it can't be overridden by user shell profiles
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
@@ -596,9 +597,10 @@
             # See nix/web-bindgen.nix.
             ubrn = webBindgen.ubrn;
             wasm-bindgen-cli = webBindgen.wasm-bindgen-cli;
-            # Removes the LLVM bitcode rustc embeds in every object of an Apple static library;
-            # scripts/assemble-rn-ios-xcframework.sh runs it. Only this one tool is exposed: all
-            # of LLVM on PATH would put its dsymutil ahead of Xcode's.
+            # Removes the LLVM bitcode from an Apple static library, where the prebuilt objects
+            # of Rust's standard library carry it; scripts/assemble-rn-ios-xcframework.sh runs
+            # it. Only this one tool is exposed: all of LLVM on PATH would put its dsymutil
+            # ahead of Xcode's.
             llvm-bitcode-strip = pkgs.runCommand "llvm-bitcode-strip" { } ''
               mkdir -p $out/bin
               ln -s ${pkgs.llvm}/bin/llvm-bitcode-strip $out/bin/llvm-bitcode-strip
