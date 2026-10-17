@@ -86,10 +86,12 @@ Treat their public API surface with the same care as a wire format.
 
 - **React Native packages**: the two packages under `js/react-native/` are
   released from `react-native-sdk-v*` tags by
-  `.github/workflows/react-native-sdk-release.yaml`. Their version is the
-  release tag: both `package.json` files stay `"private": true` at `0.0.0`.
-  Flag a PR that changes either field: it would let other publishing paths
-  reach them.
+  `.github/workflows/react-native-sdk-release.yaml`. Both `package.json` files
+  stay `"private": true` and carry the same version, which only a version bump
+  pull request changes (`chore(release): ...`, opened by
+  `.github/workflows/sdk-version-bump.yaml`). Flag a PR that drops `private`,
+  which would let other publishing paths reach them, and any other PR that
+  changes their `version`.
 - **Don't break examples silently.** The example apps are the de-facto
   integration tests for the public API; API changes should update them in
   the same PR.

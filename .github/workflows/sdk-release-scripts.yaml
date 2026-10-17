@@ -1,0 +1,118 @@
+name: SDK Release Scripts
+
+# Tests the scripts that check the SDK releases:
+#
+#   * scripts/sdk-version.sh (what a valid version is, and that a release is
+#     newer than every earlier one) and scripts/sdk-changelog.sh (the release
+#     notes a release needs, and the drafts written from the commits since the
+#     last one), with the components they know, in scripts/sdk-components.sh.
+#     The release, version bump and tag workflows use them;
+#   * scripts/sdk-release.sh, which holds the rules every release of the SDK
+#     must pass: that its version is not taken, that a version is tagged on one
+#     commit only, and that the committed versions and notes are consistent.
+#     It also does what sdk-version-bump.yaml does to the tree and what
+#     sdk-tag.yaml does to the repository (`bump` and `tag`), so that those
+#     workflows hold no logic of their own;
+#   * the React Native release's own: scripts/react-native-sdk-pack.sh (what
+#     a tarball must contain), scripts/react-native-sdk-publish.sh (what gets
+#     published, and when not), scripts/react-native-sdk-example.sh and
+#     scripts/react-native-sdk-smoke.sh (how the tarballs are tested), and
+#     scripts/assemble-rn-ios-xcframework.sh;
+#   * the Rust crate's release: scripts/rust-sdk-publish.sh, which decides
+#     whether a release still has to publish the crate, and stops one whose
+#     version another commit published.
+#
+# The release workflows only run these scripts once something is being
+# released, so this is what checks them on a pull request. It needs no build
+# and takes a few minutes. It also runs the step of android-sdk-release.yaml,
+# of react-native-sdk-release.yaml and of rust-sdk-release.yaml that applies
+# scripts/sdk-release.sh to the tag or the dry run that started the release,
+# so that what the workflows add around the script, such as refusing the tag
+# of another component, cannot be dropped unnoticed. Of rust-sdk-release.yaml
+# it runs the steps that decide what to publish and that check what was
+# packaged as well. It runs the two steps of sdk-tag.yaml too, on a repository
+# with a remote of its own and a fake `gh`, so that what is tagged, pushed and
+# started cannot change unnoticed.
+#
+# It also checks the committed state the way a release will, with
+# `scripts/sdk-release.sh check-tree`: the version of every component (the
+# Rust crate, the Android SDK and the React Native packages) is valid and its
+# release notes are finished, and each component is at a version it has
+# released, which has a release tag, or at the version of the line, the next
+# to be released. A version bump pull request whose drafted notes were never
+# rewritten fails here, before merging it would start a release that the tag
+# workflow then refuses. The check reads the release tags, so the checkout
+# fetches the whole history, and the step fails first if it came without any.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/sdk-components.sh'
+      - 'scripts/sdk-version.sh'
+      - 'scripts/sdk-changelog.sh'
+      - 'scripts/sdk-release.sh'
+      - 'scripts/test-sdk-release-scripts.sh'
+      - 'scripts/react-native-sdk-*'
+      - 'scripts/rust-sdk-publish.sh'
+      - 'scripts/test-react-native-sdk-scripts.sh'
+      - 'scripts/assemble-rn-ios-xcframework.sh'
+      - 'scripts/test-assemble-rn-ios-xcframework.sh'
+      - 'scripts/rn-android-emulator.sh'
+      # scripts/react-native-sdk-example.sh stages the example and pins its
+      # dependencies from the lockfile; its tests run against both.
+      - 'js/examples/react-native/**'
+      - 'js/pnpm-lock.yaml'
+      # The version and the release notes of each component, which the last
+      # step checks.
+      - 'rust/fedimint-sdk/Cargo.toml'
+      - 'rust/fedimint-sdk/CHANGELOG.md'
+      - 'android/gradle/libs.versions.toml'
+      - 'android/CHANGELOG.md'
+      - 'js/react-native/react-native-bindings/package.json'
+      - 'js/react-native/react-native/package.json'
+      - 'js/react-native/CHANGELOG.md'
+      - '.github/workflows/sdk-release-scripts.yaml'
+      - '.github/workflows/sdk-version-bump.yaml'
+      - '.github/workflows/sdk-tag.yaml'
+      - '.github/workflows/android-sdk-release.yaml'
+      - '.github/workflows/react-native-sdk-release.yaml'
+      - '.github/workflows/rust-sdk-release.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 'Test the release scripts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Run the SDK release script tests'
+        run: scripts/test-sdk-release-scripts.sh
+
+      - name: 'Run the React Native tests'
+        run: |
+          scripts/test-react-native-sdk-scripts.sh
+          scripts/test-assemble-rn-ios-xcframework.sh
+
+      - name: 'Check the committed versions and their notes'
+        run: |
+          # check-tree compares nothing in a checkout that has no release tags.
+          if [[ -z "$(git tag -l '*-sdk-v*')" ]]; then
+            echo "::error::the checkout has no release tags; the checkout" \
+              "step must fetch them (fetch-depth: 0)"
+            exit 1
+          fi
+          scripts/sdk-release.sh check-tree

@@ -171,12 +171,14 @@ Baseline investigation:
   match.
 
 Common failure categories in this repository:
-- The "React Native SDK Release" workflow publishes the two React Native
-  packages from a pushed `react-native-sdk-v*` tag, without an npm token (npm
-  trusted publishing). A tag and an npm version are permanent, so never
-  propose moving or deleting a tag: a release that failed halfway is re-run
-  (it skips what is already on npm), and a bad one is fixed by the next
-  version. js/react-native/README.md describes the release.
+- The "Rust SDK Release", "Android SDK Release" and "React Native SDK Release"
+  workflows publish to crates.io, Maven Central and npm. The "SDK Tag" workflow
+  starts each on its new tag when a version bump pull request is merged, and a
+  pushed `*-sdk-v*` tag starts one too. crates.io and npm use trusted
+  publishing, without a token. A tag and a published version are permanent, so
+  never propose moving or deleting a tag: a release that failed halfway is
+  re-run from its failed jobs, and a bad one is fixed by the next version.
+  RELEASING.md describes the releases.
 - Integration tests run vitest against a real devimint federation and can be
   flaky for timing reasons; a flaky failure still needs to be debugged and
   fixed when there is a high-confidence cause.

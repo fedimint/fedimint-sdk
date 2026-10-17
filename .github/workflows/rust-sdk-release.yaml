@@ -1,0 +1,399 @@
+name: Rust SDK Release
+
+# This workflow tests, packages and publishes the Rust crate, fedimint-sdk,
+# to crates.io. RELEASING.md, at the repository root, describes the whole
+# process of a release.
+#
+# To release, run sdk-version-bump.yaml (Actions → SDK Version Bump) for
+# `all`, which releases the crate together with every binding. It opens a
+# pull request that sets the version of the crate and drafts the version's
+# section in rust/fedimint-sdk/CHANGELOG.md. Rewrite the notes for users in
+# that pull request, and merge it: sdk-tag.yaml then tags the merge commit
+# `rust-sdk-v<version>` and starts this workflow on the tag. Pushing such a
+# tag by hand starts a release too, and the checks are the same either way.
+#
+# The version is in the tree: `version` in the [package] table of
+# rust/fedimint-sdk/Cargo.toml, which scripts/sdk-version.sh reads.
+#
+# The jobs, in order:
+#
+#   check           the tag: a Rust SDK one, whose version is the one the
+#                   crate has in the tree, whose commit is on main and whose
+#                   notes are finished, and which is newer than every earlier
+#                   release tag of any component and every version of the
+#                   crate on crates.io (scripts/sdk-release.sh)
+#   test            all of rust-sdk-ci.yaml, on the release commit
+#   package         `cargo package`, which builds the packaged crate too, so
+#                   that a file missing from the package fails here, and
+#                   keeps the .crate file as an artifact
+#   publish         to crates.io; a version already there from this commit is
+#                   skipped, so the failed jobs of a half-finished release can
+#                   be run again, and one there from another commit, or from
+#                   a tree with changes that were not committed, stops the
+#                   release (scripts/rust-sdk-publish.sh)
+#   github-release  the GitHub Release: the version's notes from
+#                   rust/fedimint-sdk/CHANGELOG.md
+#
+# What is published is the commit that was tested and packaged: every job
+# checks out the commit the run is on, and `publish` packs the crate from it
+# once more. `cargo publish` always packs the crate itself, so the .crate file
+# that `package` keeps is for looking at, and `publish` does not build the
+# crate again, as `package` has built it from this commit already.
+#
+# A manual run (workflow_dispatch) with `publish` unticked, the default, is a
+# dry run. It does what a release does up to and including `package`. It
+# publishes nothing, tags nothing and creates no release. It may run on a
+# branch, such as the one of a version bump pull request: the version in the
+# tree is then checked as a release would, and a version that could not be
+# released only warns. On a tag, whether or not `publish` is ticked, the tag
+# is held to the release rules.
+#
+# A manual run with `publish` ticked publishes like a tag push, and only on a
+# `rust-sdk-v*` tag: on any other ref it is refused. That is how sdk-tag.yaml
+# starts a release.
+#
+# Nothing here holds a credential for crates.io. `publish` uses crates.io
+# trusted publishing: the trusted publisher set up on crates.io for the crate
+# accepts an upload from this workflow file in this repository, running in the
+# `crates-io` environment, and from no other workflow. crates.io matches the
+# name of the file, so it must not change, and `publish` stays in this file
+# rather than in a workflow it calls.
+#
+# So what decides whether something is published is the `crates-io`
+# environment:
+#
+#   * its required reviewers approve every run of `publish` before it starts.
+#     They are the gate, and they have to be configured (Settings →
+#     Environments → crates-io): naming the environment here does not add any.
+#     Whoever approves checks that the run is the release that was merged:
+#     its tag, and that the tagged commit is on main;
+#   * it accepts only `rust-sdk-v*` tags, and has to exist before the first
+#     release: a job that names a missing environment creates it, without any
+#     rule.
+#
+# A tag ruleset could not be that gate, and `check` is not. A ruleset for
+# `rust-sdk-v*` forbids updating and deleting a release tag, so a tag never
+# moves, but none restricts creating one: sdk-tag.yaml creates the tags with
+# the workflow's own token, which GitHub does not accept on a ruleset's bypass
+# list in an organization's repository. So everybody who can push can create
+# such a tag, on any commit, and a workflow runs as its file is in the tagged
+# commit. `check` therefore stops mistakes, not misuse: a version that is not
+# the one in the tree, a commit that is not on main, a version that is taken,
+# notes that are missing.
+#
+# `id-token: write` exists on `publish` alone, `contents: write` on
+# `github-release` alone.
+#
+# crates.io only lets an existing crate set up trusted publishing, so the
+# crate's first version, 0.1.0-beta.1, was published by hand and not by this
+# workflow.
+#
+# A release that is run again after it published the crate finds the version
+# on crates.io. `publish` then uploads nothing if the crate there was packaged
+# from the tagged commit, and stops the release if it was packaged from
+# another commit, or from a tree with changes that were not committed.
+#
+# A tag and a crates.io version are both permanent. A release that turns out
+# bad is fixed by the next one.
+
+on:
+  push:
+    tags:
+      - 'rust-sdk-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to crates.io (unticked: dry run, nothing is published)'
+        type: boolean
+        default: false
+
+# A release is a tag push or a manual run with `publish`, and releases run
+# one at a time. `queue: max` lets up to 100 of them wait; without it a third
+# release would cancel the second. They start in the order they began to
+# wait, which GitHub does not promise to be the order the tags were pushed
+# in. Whatever the order, a release never goes out below a newer one: `check`
+# refuses a release that starts when a newer tag exists, or crates.io has a
+# newer version.
+# Dry runs publish nothing, so each gets a group of its own and neither waits
+# for a release nor holds one up.
+concurrency:
+  group: >-
+    ${{ (github.event_name == 'push' || inputs.publish) && 'rust-sdk-release'
+    || format('rust-sdk-dry-run-{0}', github.run_id) }}
+  cancel-in-progress: false
+  queue: max
+
+# The least any job needs, and what the called workflow is given. The two
+# jobs that need more say so themselves.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Named so that `pipefail` is on, which the default shell leaves off.
+    shell: bash
+
+jobs:
+  check:
+    name: 'Check the version'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+
+    steps:
+      # The whole history and every tag: the checks compare with the release
+      # tags of every component and need origin/main to tell whether the
+      # tagged commit is on it.
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # scripts/sdk-release.sh holds the rules a release must pass, the same
+      # ones sdk-tag.yaml applies before it tags; its header lists them. It
+      # asks crates.io for the versions of the crate, and curl is on the
+      # runner. The version is the one the crate has in the tree, which on a
+      # tag is the tag's. It is read first: a version that cannot be read
+      # fails the step at once, with the message of scripts/sdk-version.sh and
+      # nothing else, before any check or warning.
+      #
+      # On a tag, pushed or started by hand, `check-tag` holds the tag to the
+      # rules, so that a release does not go out by mistake under a version
+      # nobody tagged, nor from a commit that is not on main. It accepts the
+      # release tag of any component, so the tag has to be a Rust SDK one
+      # first, or a run on the tag of another component would publish the
+      # crate under it.
+      #
+      # A manual run on a branch is a dry run: `check` applies the rules to
+      # the version in the tree. The dry run publishes nothing, so a version
+      # that could not be released only warns. The pull request check,
+      # `scripts/sdk-release.sh check-tree`, is what stops a bad version
+      # before it is merged, and a dry run on the branch of a version bump
+      # shows whether its release would go through.
+      - name: 'Check the version'
+        id: check
+        run: |
+          version="$(scripts/sdk-version.sh current rust)"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$GITHUB_REF_NAME" != rust-sdk-v* ]]; then
+              echo "::error::$GITHUB_REF_NAME is not a tag of the Rust SDK (rust-sdk-v*);" \
+                "run this workflow from one of its tags"
+              exit 1
+            fi
+            scripts/sdk-release.sh check-tag "$GITHUB_REF_NAME"
+          elif ! scripts/sdk-release.sh check rust; then
+            echo "::warning::the version in the tree could not be released as it is; see the" \
+              "checks above. This dry run goes on because it publishes nothing. The pull" \
+              "request check, scripts/sdk-release.sh check-tree, is what stops a bad version" \
+              "before it is merged."
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      # A release has to come from a tag, so that the check above has a tag to
+      # hold the version to. A tag push always does. A manual run may not.
+      - name: 'Refuse to publish from a branch'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type != 'tag'
+        run: |
+          echo "::error::publishing to crates.io needs a rust-sdk-v* tag; run this workflow" \
+            "from the tag, not from $GITHUB_REF_NAME"
+          exit 1
+
+  # The crate's whole continuous integration, on the release commit: the
+  # fedimint pins check, the tests, clippy, rustfmt, the docs and the wasm
+  # check.
+  test:
+    name: 'Test'
+    needs: check
+    uses: ./.github/workflows/rust-sdk-ci.yaml
+
+  # What would be published, packed and built the way crates.io users get it.
+  # A dry run ends here.
+  package:
+    name: 'Package the crate'
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # The file `cargo package` makes for the version that `check` put out.
+      CRATE_FILE: fedimint-sdk-${{ needs.check.outputs.version }}.crate
+    defaults:
+      run:
+        working-directory: rust/fedimint-sdk
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # fedimint-connectors builds aws-lc-sys and fedimint-rocksdb builds
+      # librocksdb-sys; both run bindgen, which needs libclang.so, and
+      # aws-lc-sys wants cmake. A stock ubuntu-24.04 runner has neither
+      # libclang.so nor libclang-dev, and without them the build dies with
+      # "Unable to find libclang".
+      - name: 'Install native build dependencies'
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
+
+      - name: 'Set up Rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # The crate is not at the repo root, and `defaults.run` does not
+          # reach inside a composite action, so the build cache would key off
+          # a non-existent root workspace and silently cache nothing.
+          cache-workspaces: rust/fedimint-sdk
+
+      # Packs the crate, then unpacks the .crate file and builds that, as a
+      # user of the crate gets it: a file the package leaves out fails here.
+      # --locked, so that the lockfile in the package is the one that is
+      # built. A dry run has nothing more to do than this.
+      - name: 'Package the crate'
+        run: cargo package --locked
+
+      # The version that `check` read from the tree is the one it checked
+      # against the release tags, crates.io and the notes, and the one
+      # `publish` decides about. Cargo names the file after the version in the
+      # manifest, so a manifest that says another one leaves a file of another
+      # name. The crate is not in a workspace, so cargo leaves the file in
+      # target/package of the crate's own directory.
+      - name: 'Check the packaged version'
+        run: |
+          shopt -s nullglob
+          packaged=(target/package/*.crate)
+          if [[ "${packaged[*]}" != "target/package/$CRATE_FILE" ]]; then
+            echo "::error::cargo packaged ${packaged[*]:-no crate}, not" \
+              "target/package/$CRATE_FILE: the manifest has another version than the one that" \
+              "was checked against the release tags, crates.io and the notes"
+            exit 1
+          fi
+
+      - name: 'Upload the crate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-sdk-crate
+          path: rust/fedimint-sdk/target/package/${{ env.CRATE_FILE }}
+          if-no-files-found: error
+          # It is compressed already.
+          compression-level: 0
+
+  publish:
+    name: 'Publish to crates.io'
+    needs: [check, test, package]
+    # A tag push and a manual run with `publish` on a tag both publish: the
+    # second is how sdk-tag.yaml starts a release. The `crates-io` environment
+    # refuses every ref that is not a `rust-sdk-v*` tag as well.
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: crates-io
+    permissions:
+      contents: read
+      # What crates.io exchanges for a short-lived publish token.
+      id-token: write
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Cargo packs the crate and uploads it, and compiles nothing. So no
+      # build cache is read, and none is written for another run to pick up.
+      - name: 'Set up Rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      # Whether the crate still has to be published, or crates.io has it from
+      # this commit already: see scripts/rust-sdk-publish.sh. The commit is
+      # the one that is checked out, which is the one `cargo publish` records
+      # in the crate. The script runs on a line of its own, so that a failure
+      # of it fails the step: inside an `echo` it would be lost. The steps
+      # below act on publish and skip alone, so any other answer fails the
+      # step as well, rather than ending the job as if there were nothing to
+      # do.
+      - name: 'Decide whether to publish'
+        id: decide
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          decision="$(scripts/rust-sdk-publish.sh decide "$VERSION" "$(git rev-parse HEAD)")"
+          if [[ "$decision" != publish && "$decision" != skip ]]; then
+            echo "::error::scripts/rust-sdk-publish.sh decided '$decision', not publish or skip"
+            exit 1
+          fi
+          echo "decision=$decision" >>"$GITHUB_OUTPUT"
+
+      # Exchanges GitHub's identity token for a publish token that crates.io
+      # accepts from this workflow file in this environment. The token lasts
+      # 30 minutes.
+      - name: 'Authenticate with crates.io'
+        id: auth
+        if: steps.decide.outputs.decision == 'publish'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # --no-verify: `package` has built the packed crate from this commit
+      # already, and cargo packs the very same files here.
+      - name: 'Publish the crate'
+        if: steps.decide.outputs.decision == 'publish'
+        working-directory: rust/fedimint-sdk
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --no-verify
+
+      - name: 'Note that crates.io has the version'
+        if: steps.decide.outputs.decision == 'skip'
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          message="crates.io already has fedimint-sdk $VERSION, packaged from this commit,"
+          message="$message so there is nothing to publish."
+          echo "$message"
+          echo "$message" >>"$GITHUB_STEP_SUMMARY"
+
+  # The tag's page: the version's section of rust/fedimint-sdk/CHANGELOG.md as
+  # the notes, and how to add the crate. A beta is marked as a pre-release.
+  # Running a release again updates the release instead of failing on it.
+  github-release:
+    name: 'Create the GitHub Release'
+    needs: [check, publish]
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Create or update the release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            # Each paragraph and list item on one line: a GitHub Release
+            # shows every line break of its text, so the file's wrapping
+            # would show.
+            scripts/sdk-changelog.sh release-notes rust "$VERSION"
+            # The backticks are a Markdown code fence, not an expansion.
+            # shellcheck disable=SC2016
+            printf '\n```sh\ncargo add fedimint-sdk@%s\n```\n' "$VERSION"
+          } >"$notes"
+          prerelease=()
+          if [[ "$VERSION" == *-beta.* ]]; then
+            prerelease=(--prerelease)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Rust SDK $VERSION" --notes-file "$notes" \
+              "${prerelease[@]}"
+          else
+            gh release create "$TAG" --verify-tag "${prerelease[@]}" \
+              --title "Rust SDK $VERSION" --notes-file "$notes"
+          fi

@@ -445,5 +445,6 @@ Not wired up yet. [`swift-sdk.yaml`](../.github/workflows/swift-sdk.yaml) builds
 the XCFramework, runs the tests and compiles the demo — it does not publish.
 Shipping this as a versioned SPM package means hosting the XCFramework as a
 release asset and switching `Package.swift`'s `binaryTarget` from `path:` to
-`url:`/`checksum:`; `Version.swift`'s `fedimintSdkVersion` names the version for
-whenever that happens.
+`url:`/`checksum:`; `Version.swift`'s `fedimintSdkVersion`, which
+`scripts/sdk-version.sh set` writes together with the crate's version, names the
+version for whenever that happens.

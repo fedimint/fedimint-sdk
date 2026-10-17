@@ -9,6 +9,8 @@ name: Rust SDK Continuous Integration
 # and the `uniffi-bindgen` run over its output in android-sdk.yaml.
 
 on:
+  # For rust-sdk-release.yaml, which runs all of this on the release commit.
+  workflow_call:
   push:
     branches: [main]
     paths:

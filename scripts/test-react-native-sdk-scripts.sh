@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Tests the React Native release scripts. They decide what a valid release tag is, and a wrong
-# tag or a wrong npm version can never be taken back, so every rule they enforce has a case here.
+# Tests the scripts that pack, publish and try out the React Native packages. A wrong npm version
+# can never be taken back, so every rule they enforce has a case here. The rules a release has to
+# pass before it starts are scripts/sdk-release.sh's, and have their cases in
+# scripts/test-sdk-release-scripts.sh.
 #
 #   scripts/test-react-native-sdk-scripts.sh
 #
-# Each case runs the real scripts against a throwaway git repository holding only a copy of
-# them, so nothing in this checkout is touched. The scripts ask npm which versions of the
-# packages exist; a fake `npm`, first on PATH, answers from files in the directory named by
-# FAKE_NPM instead, so no case reaches the network.
+# The publish script asks npm which versions of the packages exist and publishes to it; a fake
+# `npm`, first on PATH, answers from files in the directory named by FAKE_NPM instead, so no case
+# reaches the network.
 #
 # The pack and publish scripts are run from this checkout: `verify` and publish only read the
 # directory of tarballs they are given, and the cases for a whole pack run a copy of the pack
@@ -35,62 +36,9 @@ fail() {
     [[ -z "${2:-}" ]] || printf '        %s\n' "${2//$'\n'/$'\n'        }"
 }
 
-# A fresh repository holding a copy of the scripts and a base commit on main, with origin/main
-# at that commit as a fetch would leave it. Prints its path.
-repo() {
-    local dir
-    dir="$(mktemp -d "$WORK/repo.XXXX")"
-    mkdir -p "$dir/scripts"
-    cp "$ROOT/scripts/android-sdk-version.sh" "$ROOT/scripts/android-sdk-changelog.sh" \
-        "$ROOT/scripts/react-native-sdk-release.sh" "$dir/scripts/"
-    git -C "$dir" init -q -b main
-    git -C "$dir" config user.name test
-    git -C "$dir" config user.email test@example.invalid
-    git -C "$dir" config commit.gpgSign false
-    git -C "$dir" config tag.gpgSign false
-    git -C "$dir" add -A
-    git -C "$dir" commit -q -m base
-    git -C "$dir" update-ref refs/remotes/origin/main HEAD
-    echo "$dir"
-}
-
-# Commits a change to $2 (a path inside the repository) with subject $3.
-change() {
-    local dir="$1" path="$2" subject="$3"
-    mkdir -p "$(dirname "$dir/$path")"
-    echo "$subject" >>"$dir/$path"
-    git -C "$dir" add -A
-    git -C "$dir" commit -q -m "$subject"
-}
-
-# Moves origin/main to HEAD, as fetching after a merge to main would.
-sync_main() {
-    git -C "$1" update-ref refs/remotes/origin/main HEAD
-}
-
-# Creates the annotated tag $2 with message $3 on HEAD.
-annotate() {
-    git -C "$1" tag -a -m "$3" "$2"
-}
-
-# The abbreviated hash of $2 in the repository $1.
-short() {
-    git -C "$1" rev-parse --short "${2:-HEAD}"
-}
-
 # A fresh, empty registry for the fake npm. Prints its path.
 npm_dir() {
     mktemp -d "$WORK/npm.XXXX"
-}
-
-# npm_has <package> <json>: the fake registry lists <json> as the package's versions.
-npm_has() {
-    printf '%s\n' "$2" >"$FAKE_NPM/${1//\//__}.json"
-}
-
-# npm_fails <package> <output>: npm exits non-zero and prints <output>.
-npm_fails() {
-    printf '%s\n' "$2" >"$FAKE_NPM/${1//\//__}.error.json"
 }
 
 BINDINGS=@fedimint/react-native-bindings
@@ -98,10 +46,6 @@ WRAPPER=@fedimint/react-native
 
 # The fake npm answers from files in $FAKE_NPM and records every call in its `calls` file:
 #   npm --version                    $FAKE_NPM/npm-version, else 11.19.0
-#   npm view <package> versions --json
-#                                    the package's <name>.json (with `/` as `__`) when there is
-#                                    one, else its <name>.error.json with a failing status, else
-#                                    npm's own answer for a package that was never published
 #   npm view <name>@<version> version --json
 #                                    $FAKE_NPM/view-error.json with a failing status when it
 #                                    exists, else the version if the registry holds it, else the
@@ -138,19 +82,6 @@ if [[ $# -eq 1 && "$1" == --version ]]; then
         echo 11.19.0
     fi
     exit 0
-fi
-if [[ $# -eq 4 && "$1" == view && "$3" == versions && "$4" == --json ]]; then
-    name="${2//\//__}"
-    if [[ -f "$FAKE_NPM/$name.json" ]]; then
-        cat "$FAKE_NPM/$name.json"
-        exit 0
-    fi
-    if [[ -f "$FAKE_NPM/$name.error.json" ]]; then
-        cat "$FAKE_NPM/$name.error.json"
-        exit 1
-    fi
-    echo '{"error":{"code":"E404","summary":"Not Found"}}'
-    exit 1
 fi
 if [[ $# -eq 4 && "${1:-}" == view && "$3" == dist-tags && "$4" == --json ]]; then
     name="${2//\//__}"
@@ -249,37 +180,6 @@ expect_ok() {
     fi
 }
 
-# expect_stdout <name> <expected stdout> -- <command...>: succeeds and prints exactly that on
-# stdout, whatever it says on stderr.
-expect_stdout() {
-    local name="$1" want="$2" out
-    shift 3
-    if out="$("$@" 2>/dev/null)"; then
-        if [[ "$out" == "$want" ]]; then
-            pass "$name"
-        else
-            fail "$name" "expected: $want"$'\n'"got: $out"
-        fi
-    else
-        fail "$name" "exited non-zero"
-    fi
-}
-
-# expect_pass <name> <expected text in output> -- <command...>
-expect_pass() {
-    local name="$1" want="$2" out
-    shift 3
-    if out="$("$@" 2>&1)"; then
-        if [[ "$out" == *"$want"* ]]; then
-            pass "$name"
-        else
-            fail "$name" "expected the output to mention: $want"$'\n'"got: $out"
-        fi
-    else
-        fail "$name" "exited non-zero: $out"
-    fi
-}
-
 # expect_last <name> <expected last line> -- <command...>
 expect_last() {
     local name="$1" want="$2" out
@@ -345,382 +245,6 @@ run() {
     OUT="$("$@" 2>&1)" || STATUS=$?
 }
 
-echo "react-native-sdk-release.sh"
-echo "check"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-
-expect_pass "nothing on npm and no tags: any version passes" "0.1.0-beta.1" -- \
-    "$rn" check 0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" '["0.0.0","0.0.0-canary-0123abc","0.0.0-om-rn1-4567def"]'
-npm_has "$WRAPPER" '["0.0.0","0.0.0-canary-0123abc","0.0.0-om-rn1-4567def"]'
-expect_pass "the placeholder and snapshot versions on npm do not block a beta" \
-    "is newer than the latest release" -- "$rn" check 0.1.0-beta.1
-expect_fail "0.0.0 is already on npm" "already released" -- "$rn" check 0.0.0
-expect_fail "a beta of 0.0.0 is lower than 0.0.0 on npm" "is lower than" -- \
-    "$rn" check 0.0.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" '"0.0.0"'
-expect_pass "a package with exactly one version is read (bare JSON string)" \
-    "is newer than the latest release" -- "$rn" check 0.1.0-beta.1
-expect_fail "its only version is taken" "already released" -- "$rn" check 0.0.0
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$WRAPPER" '["0.2.0"]'
-expect_fail "the second package is checked too" "$WRAPPER: 0.1.0 is lower than 0.2.0" -- \
-    "$rn" check 0.1.0
-
-FAKE_NPM="$(npm_dir)"
-npm_fails "$WRAPPER" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
-expect_fail "a registry error is not mistaken for no versions" "ECONNREFUSED" -- \
-    "$rn" check 0.1.0-beta.1
-expect_fail "the registry error names the package" "$WRAPPER" -- "$rn" check 0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_fails "$BINDINGS" 'npm is broken'
-expect_fail "npm output that is not JSON is an error" "npm is broken" -- \
-    "$rn" check 0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" 'not json'
-expect_fail "a success that is not a JSON list is an error" "$BINDINGS" -- \
-    "$rn" check 0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" '{"unexpected":true}'
-expect_fail "a success that is neither a list nor a string is an error" "$BINDINGS" -- \
-    "$rn" check 0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-expect_fail "a tagged version is already released" "already released" -- \
-    "$rn" check 0.1.0-beta.1
-expect_pass "the next beta passes" "tags: 0.1.0-beta.2 is newer than" -- \
-    "$rn" check 0.1.0-beta.2
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.2.0 "Release."
-expect_fail "a version below the latest tag is refused" "is lower than 0.2.0" -- \
-    "$rn" check 0.1.0
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v1.0.0-rc.1 "Never released."
-expect_pass "a tag outside the grammar blocks nothing" "tags: 0.2.0: nothing is released yet" -- \
-    "$rn" check 0.2.0
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" android-sdk-v9.9.9 "Another SDK."
-expect_pass "tags with another prefix are not read" "tags: 0.1.0-beta.1" -- \
-    "$rn" check 0.1.0-beta.1
-
-expect_fail "a version outside the grammar is refused" "must be X.Y.Z-beta.N or X.Y.Z" -- \
-    "$rn" check 0.1.0-rc.1
-
-echo
-echo "check-tag"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-expect_last "an annotated tag on main with a message can be released" \
-    "react-native-sdk-v0.1.0-beta.1 can be released" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" '["0.0.0","0.1.0-beta.1"]'
-expect_last "a re-run passes when a package already has this very version" \
-    "react-native-sdk-v0.1.0-beta.1 can be released" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-FAKE_NPM="$(npm_dir)"
-npm_has "$BINDINGS" '["0.0.0","0.1.0-beta.2"]'
-expect_fail "a package holding a higher version still refuses the tag" "is lower than" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-FAKE_NPM="$(npm_dir)"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-git -C "$r" tag react-native-sdk-v0.1.0-beta.1
-expect_fail "a lightweight tag is refused" "annotated" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-git -C "$r" checkout -q -b side
-change "$r" side.txt "side work"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "On a side branch."
-git -C "$r" checkout -q main
-expect_fail "a tag on a commit that is not on origin/main is refused" "main" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-expect_fail "the refusal names the tag and the commit" \
-    "react-native-sdk-v0.1.0-beta.1 (commit $(short "$r" side))" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-change "$r" later.txt "merged to main, not fetched"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "Ahead of origin/main."
-expect_fail "a commit ahead of a stale origin/main is refused" "main" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-sync_main "$r"
-expect_last "the same tag passes once origin/main has it" \
-    "react-native-sdk-v0.1.0-beta.1 can be released" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-expect_fail "another SDK's tag is refused" "is not a react-native-sdk-v* tag" -- \
-    "$rn" check-tag android-sdk-v0.1.0
-expect_fail "a tag that does not exist is refused" "no tag react-native-sdk-v0.9.9" -- \
-    "$rn" check-tag react-native-sdk-v0.9.9
-
-annotate "$r" react-native-sdk-v0.1.0-rc.1 "Outside the grammar."
-expect_fail "an annotated tag outside the grammar is refused" \
-    "must be X.Y.Z-beta.N or X.Y.Z" -- "$rn" check-tag react-native-sdk-v0.1.0-rc.1
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-annotate "$r" react-native-sdk-v0.1.0-beta.2 "Second beta."
-expect_fail "a tag below a higher release is refused" "is lower than 0.1.0-beta.2" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-expect_pass "the highest tag passes" "can be released" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.2
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-git -C "$r" tag -a -F - react-native-sdk-v0.1.0-beta.1 <<'EOF'
-Release 0.1.0-beta.1
-
-# Added
-
-- Something.
-
-Signed-off-by: A Maintainer <maintainer@example.invalid>
-EOF
-expect_pass "a multi-paragraph message with headings is fine" "can be released" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-if git -C "$r" tag -a --cleanup=verbatim -m ' ' react-native-sdk-v0.1.0-beta.2 2>/dev/null; then
-    expect_fail "a blank message is refused" "no release notes" -- \
-        "$rn" check-tag react-native-sdk-v0.1.0-beta.2
-else
-    fail "a blank message is refused" "git refused to create a tag with a blank message"
-fi
-blank_lines=$'\n\n  \n'
-if git -C "$r" tag -a --cleanup=verbatim -m "$blank_lines" react-native-sdk-v0.1.0-beta.3 \
-    2>/dev/null; then
-    expect_fail "a message of only blank lines is refused" "no release notes" -- \
-        "$rn" check-tag react-native-sdk-v0.1.0-beta.3
-else
-    fail "a message of only blank lines is refused" "git refused to create the tag"
-fi
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-git -C "$r" update-ref -d refs/remotes/origin/main
-expect_fail "a checkout without origin/main is refused" "no origin/main" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.1
-
-echo
-echo "message"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-# A first paragraph of several lines, a Markdown heading and a line starting with `#`: what
-# reading the message as subject and body, or git's default cleanup, would each damage.
-# The backticks are Markdown, not an expansion.
-# shellcheck disable=SC2016
-printf '%s\n' '- One fix.' '- Another fix,' '  on two lines.' '' '## Breaking' '' \
-    '#42 changed `openSdk`.' >"$WORK/notes.md"
-git -C "$r" tag -a --cleanup=whitespace -F "$WORK/notes.md" react-native-sdk-v0.1.0-beta.1
-expect_stdout "message prints the notes as they were written" "$(cat "$WORK/notes.md")" -- \
-    "$rn" message react-native-sdk-v0.1.0-beta.1
-git -C "$r" tag react-native-sdk-v0.1.0-beta.2
-expect_fail "message refuses a lightweight tag" "annotated" -- \
-    "$rn" message react-native-sdk-v0.1.0-beta.2
-expect_fail "message refuses another SDK's tag" "is not a react-native-sdk-v* tag" -- \
-    "$rn" message android-sdk-v0.1.0
-expect_fail "message refuses a tag that does not exist" "no tag react-native-sdk-v0.9.9" -- \
-    "$rn" message react-native-sdk-v0.9.9
-expect_usage "message without a tag" -- "$rn" message
-
-echo
-echo "notes"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-status=0
-out="$("$rn" notes 2>"$WORK/err")" || status=$?
-if [[ "$status" -eq 0 && -z "$out" && "$(<"$WORK/err")" == *"nothing is released yet"* ]]; then
-    pass "no earlier release: no notes on stdout, a note on stderr"
-else
-    fail "no earlier release: no notes on stdout, a note on stderr" \
-        "status $status, stdout: $out"$'\n'"stderr: $(<"$WORK/err")"
-fi
-
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-change "$r" js/react-native/react-native/src/index.ts "feat(rn): change the API"
-c1="$(short "$r")"
-change "$r" rust/fedimint-sdk/src/lib.rs "fix(sdk): fix the core"
-c2="$(short "$r")"
-change "$r" flake.lock "chore(nix): bump the lock"
-c3="$(short "$r")"
-change "$r" scripts/generate-sdk-rn-bindings.sh "build(rn): change the generator"
-c4="$(short "$r")"
-change "$r" android/fedimint-sdk/x.kt "feat(android): not for React Native"
-change "$r" js/web/index.ts "feat(web): not for React Native"
-expect_stdout "notes list the commits that touch the packages, newest first" \
-    "- build(rn): change the generator ($c4)
-- chore(nix): bump the lock ($c3)
-- fix(sdk): fix the core ($c2)
-- feat(rn): change the API ($c1)" -- "$rn" notes
-expect_stdout "notes up to a commit stop there" "- feat(rn): change the API ($c1)" -- \
-    "$rn" notes "$c1"
-expect_pass "notes say what they are on stderr" "since react-native-sdk-v0.1.0-beta.1" -- \
-    "$rn" notes
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-change "$r" js/web/index.ts "feat(web): not for React Native"
-expect_stdout "no commit touching the packages: a line saying so" \
-    "- No changes to the React Native packages since 0.1.0-beta.1." -- "$rn" notes
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "First beta."
-change "$r" js/react-native/react-native/src/old.ts "feat(rn): in the first beta"
-annotate "$r" react-native-sdk-v0.1.0-beta.2 "Second beta."
-change "$r" js/react-native/react-native/src/new.ts "feat(rn): after the second beta"
-expect_stdout "the range starts at the latest release" \
-    "- feat(rn): after the second beta ($(short "$r"))" -- "$rn" notes
-
-echo
-echo "tag"
-
-FAKE_NPM="$(npm_dir)"
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-printf 'Beta one.\n' >"$WORK/notes.md"
-expect_pass "tag creates the tag" "react-native-sdk-v0.1.0-beta.1" -- \
-    "$rn" tag 0.1.0-beta.1 "$WORK/notes.md"
-expect_ok "the tag is annotated" "tag" -- \
-    git -C "$r" cat-file -t refs/tags/react-native-sdk-v0.1.0-beta.1
-expect_ok "the tag is on origin/main" "$(git -C "$r" rev-parse origin/main)" -- \
-    git -C "$r" rev-parse "refs/tags/react-native-sdk-v0.1.0-beta.1^{commit}"
-expect_ok "the tag message is the notes file" "Beta one." -- \
-    git -C "$r" for-each-ref --format='%(contents)' refs/tags/react-native-sdk-v0.1.0-beta.1
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-printf '# Heading\n\nFixes:\n#123 fixed\n' >"$WORK/headings.md"
-"$rn" tag 0.1.0-beta.1 "$WORK/headings.md" >/dev/null
-message="$(git -C "$r" for-each-ref --format='%(contents)' \
-    refs/tags/react-native-sdk-v0.1.0-beta.1)"
-if [[ "$message" == *"# Heading"* && "$message" == *"#123 fixed"* ]]; then
-    pass "lines starting with # survive in the tag message"
-else
-    fail "lines starting with # survive in the tag message" "got: $message"
-fi
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-printf 'Relative notes.\n' >"$r/notes.md"
-(cd "$r" && ./scripts/react-native-sdk-release.sh tag 0.1.0-beta.1 notes.md >/dev/null)
-expect_ok "a notes file given by a relative path is read" "Relative notes." -- \
-    git -C "$r" for-each-ref --format='%(contents)' refs/tags/react-native-sdk-v0.1.0-beta.1
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-change "$r" later.txt "a second commit"
-sync_main "$r"
-second="$(git -C "$r" rev-parse HEAD)"
-change "$r" later.txt "a third commit, not on origin/main"
-"$rn" tag 0.1.0-beta.2 "$WORK/notes.md" "$second" >/dev/null
-expect_ok "a given commit is the one tagged" "$second" -- \
-    git -C "$r" rev-parse "refs/tags/react-native-sdk-v0.1.0-beta.2^{commit}"
-expect_fail "a commit that is not on origin/main is refused" "not on origin/main" -- \
-    "$rn" tag 0.1.0-beta.3 "$WORK/notes.md" HEAD
-expect_fail "a commit that does not exist is refused" "no commit nonexistent" -- \
-    "$rn" tag 0.1.0-beta.3 "$WORK/notes.md" nonexistent
-expect_fail "no tag was made for the refused commit" "no tag" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.3
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-annotate "$r" react-native-sdk-v0.1.0-beta.1 "Existing notes."
-before="$(git -C "$r" rev-parse refs/tags/react-native-sdk-v0.1.0-beta.1)"
-expect_fail "an existing tag is never replaced" "release tags are never moved" -- \
-    "$rn" tag 0.1.0-beta.1 "$WORK/notes.md"
-expect_ok "the existing tag is untouched" "$before" -- \
-    git -C "$r" rev-parse refs/tags/react-native-sdk-v0.1.0-beta.1
-
-expect_fail "a missing notes file is refused" "$WORK/missing.md" -- \
-    "$rn" tag 0.1.0-beta.2 "$WORK/missing.md"
-printf ' \n\n\t\n' >"$WORK/blank.md"
-expect_fail "a notes file of only whitespace is refused" "no release notes" -- \
-    "$rn" tag 0.1.0-beta.2 "$WORK/blank.md"
-expect_fail "no tag was made for the missing or blank notes" "no tag" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.2
-
-FAKE_NPM="$(npm_dir)"
-npm_has "$WRAPPER" '["0.1.0-beta.2"]'
-expect_fail "a version that fails the checks is refused" "already released" -- \
-    "$rn" tag 0.1.0-beta.2 "$WORK/notes.md"
-expect_fail "no tag was made for the refused version" "no tag" -- \
-    "$rn" check-tag react-native-sdk-v0.1.0-beta.2
-FAKE_NPM="$(npm_dir)"
-expect_fail "a version outside the grammar is refused" "must be X.Y.Z-beta.N or X.Y.Z" -- \
-    "$rn" tag 0.1.0-rc.1 "$WORK/notes.md"
-
-expect_pass "tag prints the command that releases it" \
-    "git push origin react-native-sdk-v0.1.0-beta.2" -- \
-    "$rn" tag 0.1.0-beta.2 "$WORK/notes.md"
-
-echo
-echo "usage"
-
-r="$(repo)"
-rn="$r/scripts/react-native-sdk-release.sh"
-expect_usage "no arguments" -- "$rn"
-expect_usage "an unknown subcommand" -- "$rn" release
-expect_usage "notes takes at most a commit" -- "$rn" notes HEAD HEAD
-expect_usage "tag needs a version and a notes file" -- "$rn" tag 0.1.0-beta.1
-expect_usage "tag takes at most a commit" -- "$rn" tag 0.1.0-beta.1 "$WORK/notes.md" HEAD HEAD
-expect_usage "check needs a version" -- "$rn" check
-expect_usage "check takes one version" -- "$rn" check 0.1.0-beta.1 0.1.0-beta.2
-expect_usage "check-tag needs a tag" -- "$rn" check-tag
-expect_usage "check-tag takes one tag" -- "$rn" check-tag react-native-sdk-v0.1.0 x
-
-echo
-echo "paths"
-
-# The packages' source paths are read out of the script, so this checks the list the script uses.
-paths=()
-while IFS= read -r path; do
-    paths+=("$path")
-done < <(sed -n '/^PATHS=(/,/^)/p' "$ROOT/scripts/react-native-sdk-release.sh" |
-    sed -e '1d' -e '$d' -e 's/^ *//')
-if [[ ${#paths[@]} -eq 0 ]]; then
-    fail "PATHS is read from the script" "found no entries"
-fi
-for path in ${paths[@]+"${paths[@]}"}; do
-    if [[ -n "$(git -C "$ROOT" ls-files -- "$path")" ]]; then
-        pass "PATHS entry $path exists in this checkout"
-    else
-        fail "PATHS entry $path exists in this checkout" "git ls-files lists nothing there"
-    fi
-done
-
-echo
 echo "react-native-sdk-pack.sh"
 
 # The tarballs the pack and publish scripts handle are built here from small dummy files, with the
@@ -1110,16 +634,18 @@ expect_usage "verify without a directory" -- "$pack" verify 0.1.0-beta.1
 expect_usage "verify with four arguments" -- "$pack" verify 0.1.0-beta.1 "$WORK/out" extra
 
 # A throwaway tree laid out like this repository, holding a copy of the pack script, everything
-# a pack needs on disk, and the manifests as they are in the tree: private, at 0.0.0, with a
-# workspace range for the bindings. Prints its path.
+# a pack needs on disk, and manifests like the ones in the tree: private, at the version of their
+# last or next release, with a workspace range for the bindings. That version is 0.0.0 here, which
+# no pack in these cases writes, so that manifests that are put back can be told from ones that
+# are not. Prints its path.
 pack_tree() {
     local dir bindings native
     dir="$(mktemp -d "$WORK/tree.XXXX")"
     bindings="$dir/js/react-native/react-native-bindings"
     native="$dir/js/react-native/react-native"
     mkdir -p "$dir/scripts" "$dir/js/node_modules"
-    cp "$ROOT/scripts/android-sdk-version.sh" "$ROOT/scripts/react-native-sdk-pack.sh" \
-        "$dir/scripts/"
+    cp "$ROOT/scripts/sdk-components.sh" "$ROOT/scripts/sdk-version.sh" \
+        "$ROOT/scripts/react-native-sdk-pack.sh" "$dir/scripts/"
     fill bindings 0.0.0 "$bindings"
     fill native 0.0.0 "$native"
     edit_manifest 'm.private = true' "$bindings"

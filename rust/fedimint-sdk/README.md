@@ -33,6 +33,13 @@ The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the
 RFC this crate implements.
 
+## Releases
+
+The crate is published as `fedimint-sdk` on crates.io, and its release notes
+are in [`CHANGELOG.md`](CHANGELOG.md). It is released together with the
+Android SDK and the React Native packages, and
+[`RELEASING.md`](../../RELEASING.md) at the repository root says how.
+
 ## Building
 
 The crate's dependencies compile RocksDB and AWS-LC from source and generate
