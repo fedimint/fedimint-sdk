@@ -29,6 +29,9 @@ struct ContentView: View {
         // SwiftUI draws the back chevron and other bar controls in the tint,
         // not in the UIKit appearance's tint colour.
         .tint(Palette.ink)
+        // The design defines light colours only. In Dark Mode, text without an
+        // explicit colour would turn light on its fixed light backgrounds.
+        .preferredColorScheme(.light)
         .task {
             if reopening { model.openWallet() }
         }
