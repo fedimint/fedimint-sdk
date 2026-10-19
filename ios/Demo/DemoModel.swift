@@ -176,13 +176,13 @@ final class DemoModel: ObservableObject {
     enum WalletOrigin { case created, restored, reopened }
     @Published private(set) var walletOrigin: WalletOrigin?
 
-    /// Whether the open wallet's seed came from a recovery phrase, on this
-    /// launch or an earlier one. Join recovers for such a wallet: a phrase may
-    /// already hold funds in the federation, which a plain join would never
-    /// look for, and the SDK will not recover a federation joined plainly.
-    /// Unlike `walletOrigin` it survives a relaunch, through
-    /// `restoredMarkerURL`.
-    @Published private(set) var restoredSeed = false
+    /// Whether Join recovers rather than joins plainly. It does unless the seed
+    /// is known to have been created on this device: any other seed may already
+    /// hold funds in the federation, which a plain join would never look for,
+    /// and the SDK will not recover a federation joined plainly. Recovering a
+    /// seed that holds nothing only costs the rescan, so an unknown origin,
+    /// such as a wallet from before `createdMarkerURL` existed, recovers too.
+    @Published private(set) var recoversOnJoin = true
 
     private var sdk: Sdk?
     private var federation: Federation?
@@ -253,7 +253,7 @@ final class DemoModel: ObservableObject {
             self.sdk = sdk
             self.hasSdk = true
             self.walletOrigin = origin
-            self.restoredSeed = Self.recordRestore(origin)
+            self.recoversOnJoin = Self.recoversOnJoin(after: origin)
             // The words are the seed. Once the SDK holds it there is no reason
             // for a copy to stay in an input field for the life of the screen.
             self.restoreWords = ""
@@ -938,28 +938,26 @@ final class DemoModel: ObservableObject {
     }
 
     /// An empty file beside the data directory, present while the wallet in it
-    /// was restored from a phrase. Beside it rather than inside, so the SDK's
+    /// was created on this device. Beside it rather than inside, so the SDK's
     /// directory holds only what the SDK put there.
-    private static var restoredMarkerURL: URL {
-        dataDirectoryURL.deletingLastPathComponent().appendingPathComponent("fedimint-restored")
+    private static var createdMarkerURL: URL {
+        dataDirectoryURL.deletingLastPathComponent().appendingPathComponent("fedimint-created")
     }
 
-    /// Records how the wallet just opened came about and answers whether its
-    /// seed was restored. A restore sets the marker and a newly created wallet
-    /// clears it; a reopen leaves it as an earlier launch set it.
-    private static func recordRestore(_ origin: WalletOrigin) -> Bool {
-        let marker = restoredMarkerURL
+    /// Records how the wallet just opened came about, and answers
+    /// `recoversOnJoin` for it. Creating a wallet sets the marker and restoring
+    /// one clears it; a reopen reads what an earlier launch left.
+    private static func recoversOnJoin(after origin: WalletOrigin) -> Bool {
+        let marker = createdMarkerURL
         switch origin {
-        case .restored:
-            // Best effort: if the write fails, this launch still knows, and only
-            // a later one would offer a plain join.
-            try? Data().write(to: marker)
-            return true
         case .created:
-            try? FileManager.default.removeItem(at: marker)
+            try? Data().write(to: marker)
             return false
+        case .restored:
+            try? FileManager.default.removeItem(at: marker)
+            return true
         case .reopened:
-            return FileManager.default.fileExists(atPath: marker.path)
+            return !FileManager.default.fileExists(atPath: marker.path)
         }
     }
 
