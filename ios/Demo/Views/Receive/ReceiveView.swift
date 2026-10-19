@@ -62,6 +62,7 @@ struct ReceiveView: View {
                         TextField("0", text: $sats)
                             .keyboardType(.numberPad)
                             .font(Typeface.amount)
+                            .foregroundStyle(Palette.ink)
                             .multilineTextAlignment(.trailing)
                             .fixedSize()
                         Text("sats").font(Typeface.amountUnit).foregroundStyle(Palette.muted)

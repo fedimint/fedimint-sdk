@@ -44,7 +44,7 @@ struct SendView: View {
                     case .onchain: onchain
                     }
                     if let balance = model.balanceMsats {
-                        Text("Available: \(SatsFormat.grouped(balance)) sats")
+                        Text("\(model.balanceFailure == nil ? "Available" : "Last known"): \(SatsFormat.grouped(balance)) sats")
                             .font(Typeface.mono(.regular, 13, relativeTo: .footnote))
                             .foregroundStyle(Palette.muted)
                             .frame(maxWidth: .infinity)

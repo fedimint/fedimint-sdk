@@ -12,7 +12,7 @@ struct JoinView: View {
     @ObservedObject var model: DemoModel
     @Environment(\.dismiss) private var dismiss
 
-    private var restoring: Bool { model.walletOrigin == .restored }
+    private var restoring: Bool { model.restoredSeed }
 
     /// Set by Join, so the screen can tell its own join finishing apart from a
     /// preview finishing: both report on the same line.

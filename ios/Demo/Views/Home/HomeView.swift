@@ -73,6 +73,14 @@ struct HomeView: View {
             Caption("Total balance")
             if let msats = model.balanceMsats {
                 AmountView(msats: msats)
+                // The amount is the last one that arrived; nothing updates it
+                // until a refresh follows the balance again.
+                if let failure = model.balanceFailure {
+                    Text("May be out of date: \(failure). Pull down to refresh.")
+                        .font(Typeface.footnote)
+                        .foregroundStyle(Palette.warning)
+                        .textSelection(.enabled)
+                }
             } else if let failure = model.balanceFailure {
                 Text("Balance unavailable: \(failure)")
                     .font(Typeface.footnote)

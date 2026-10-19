@@ -171,12 +171,18 @@ final class DemoModel: ObservableObject {
     @Published private(set) var hasSdk = false
     @Published private(set) var hasFederation = false
 
-    /// How the open wallet came about: onboarding shows the backup step right
-    /// after a wallet is created, and Join recovers for a restored one. Kept in
-    /// memory only, so a restored wallet reopened before joining reads as
-    /// `.reopened`.
+    /// How the open wallet came about this launch, so onboarding shows the
+    /// backup step right after a wallet is created, and only then.
     enum WalletOrigin { case created, restored, reopened }
     @Published private(set) var walletOrigin: WalletOrigin?
+
+    /// Whether the open wallet's seed came from a recovery phrase, on this
+    /// launch or an earlier one. Join recovers for such a wallet: a phrase may
+    /// already hold funds in the federation, which a plain join would never
+    /// look for, and the SDK will not recover a federation joined plainly.
+    /// Unlike `walletOrigin` it survives a relaunch, through
+    /// `restoredMarkerURL`.
+    @Published private(set) var restoredSeed = false
 
     private var sdk: Sdk?
     private var federation: Federation?
@@ -247,6 +253,7 @@ final class DemoModel: ObservableObject {
             self.sdk = sdk
             self.hasSdk = true
             self.walletOrigin = origin
+            self.restoredSeed = Self.recordRestore(origin)
             // The words are the seed. Once the SDK holds it there is no reason
             // for a copy to stay in an input field for the life of the screen.
             self.restoreWords = ""
@@ -269,12 +276,12 @@ final class DemoModel: ObservableObject {
     /// never shows the phrase.
     func toggleSeed() {
         guard seed == nil else {
-            seed = nil
-            seedWords = []
+            hideSeed()
             return
         }
         guard sdk != nil else { return }
 
+        let generation = revealGeneration
         Task {
             let context = LAContext()
             var unavailable: NSError?
@@ -290,6 +297,9 @@ final class DemoModel: ObservableObject {
                 results[.wallet] = "seed stays hidden: \(error.localizedDescription)"
                 return
             }
+            // Hidden while the prompt was up, such as the sheet showing it
+            // being dismissed: the phrase must not appear behind that.
+            guard generation == revealGeneration else { return }
             // Read the handle after the prompt, not before: an Open Wallet
             // that lands while it is up replaces the instance, and the phrase
             // shown has to be the open wallet's.
@@ -302,6 +312,17 @@ final class DemoModel: ObservableObject {
                 .joined(separator: "\n")
         }
     }
+
+    /// Hides the phrase, and drops a reveal still waiting on authentication so
+    /// it cannot show the phrase after whatever displayed it has gone. Every way
+    /// off a screen that shows the phrase calls this, swiping a sheet away
+    /// included.
+    func hideSeed() {
+        revealGeneration += 1
+        seed = nil
+        seedWords = []
+    }
+    private var revealGeneration = 0
 
     func refreshBalance() {
         run(.wallet) {
@@ -317,6 +338,9 @@ final class DemoModel: ObservableObject {
                 return "federation changed — refresh again"
             }
             self.balanceMsats = amount
+            // The live updates stopped earlier: start them again, which is
+            // what clears the warning that the amount may be out of date.
+            if self.balanceFailure != nil { self.followBalance(of: federation) }
             return "balance refreshed"
         }
     }
@@ -514,8 +538,13 @@ final class DemoModel: ObservableObject {
         // second tap has nothing to execute.
         let held = ecashQuote
         ecashQuote = nil
+        stopWatching(.ecashSend)
         ecashSendState = nil
         lastEcashSend = nil
+        // The previous send's notes would otherwise stand in for this one's
+        // until it succeeds, and hide its failure. They are not lost: that
+        // send's operation detail still offers them, and can reclaim it.
+        lastNotes = nil
 
         run(.ecashSend) {
             defer { self.isSendingEcash = false }
@@ -649,6 +678,10 @@ final class DemoModel: ObservableObject {
     func lnPay() {
         guard let quote = lnQuote, let lightning = federation?.lightning() else { return }
         lnQuote = nil
+        // An invoice is paid once, so the next send starts from an empty field
+        // rather than one a paste would add to.
+        lnInvoice = ""
+        stopWatching(.lnPay)
         lnSendState = nil
         run(.lnPay) {
             let operation = try await lightning.send(quote: quote)
@@ -744,6 +777,7 @@ final class DemoModel: ObservableObject {
     func onchainSend() {
         guard let quote = onchainQuote, let onchain = federation?.onchain() else { return }
         onchainQuote = nil
+        stopWatching(.onchainSend)
         onchainSendState = nil
         run(.onchainSend) {
             let operation = try await onchain.send(quote: quote)
@@ -903,6 +937,32 @@ final class DemoModel: ObservableObject {
             .appendingPathComponent("fedimint", isDirectory: true)
     }
 
+    /// An empty file beside the data directory, present while the wallet in it
+    /// was restored from a phrase. Beside it rather than inside, so the SDK's
+    /// directory holds only what the SDK put there.
+    private static var restoredMarkerURL: URL {
+        dataDirectoryURL.deletingLastPathComponent().appendingPathComponent("fedimint-restored")
+    }
+
+    /// Records how the wallet just opened came about and answers whether its
+    /// seed was restored. A restore sets the marker and a newly created wallet
+    /// clears it; a reopen leaves it as an earlier launch set it.
+    private static func recordRestore(_ origin: WalletOrigin) -> Bool {
+        let marker = restoredMarkerURL
+        switch origin {
+        case .restored:
+            // Best effort: if the write fails, this launch still knows, and only
+            // a later one would offer a plain join.
+            try? Data().write(to: marker)
+            return true
+        case .created:
+            try? FileManager.default.removeItem(at: marker)
+            return false
+        case .reopened:
+            return FileManager.default.fileExists(atPath: marker.path)
+        }
+    }
+
     /// Whether an earlier launch left a wallet in the data directory.
     ///
     /// Only a hint for which screen to start on, read without creating the
@@ -974,6 +1034,15 @@ final class DemoModel: ObservableObject {
             results[section] = nil
         }
 
+        followBalance(of: joined)
+    }
+
+    /// Keeps `balanceMsats` live from `joined`'s `balanceUpdates()`, replacing
+    /// whatever followed it before. A failure leaves the last amount in place and
+    /// says so in `balanceFailure`; following again clears it once an amount
+    /// lands.
+    private func followBalance(of joined: Federation) {
+        balanceTask?.cancel()
         balanceTask = Task { [weak self] in
             do {
                 let initial = try await joined.balance()
@@ -990,6 +1059,7 @@ final class DemoModel: ObservableObject {
                 // the `[weak self]` above do nothing.
                 if !Task.isCancelled, let self {
                     self.balanceMsats = initial
+                    self.balanceFailure = nil
                 }
 
                 let updates = joined.balanceUpdates()
@@ -1062,6 +1132,16 @@ final class DemoModel: ObservableObject {
                 if !Task.isCancelled { self.fail(section, "\(error)") }
             }
         }
+    }
+
+    /// Stops following `section`'s previous operation, without cancelling the
+    /// operation itself. A send calls this before its first `await`: `watch`
+    /// only replaces the old watcher once the new operation exists, and until
+    /// then a state the old one delivers would land on the new send's screen.
+    private func stopWatching(_ section: Section) {
+        watchTasks[section]?.cancel()
+        watchTasks[section] = nil
+        watchFailures[section] = nil
     }
 
     /// Follows an operation's state changes into `section` under `header`, until

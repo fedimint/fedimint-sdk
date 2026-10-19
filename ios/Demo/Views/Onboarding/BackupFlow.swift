@@ -23,7 +23,7 @@ struct BackupFlow: View {
     /// Hides the phrase on the way out, so the words do not stay in memory
     /// behind the wallet once this flow is gone.
     private func finish() {
-        if model.seed != nil { model.toggleSeed() }
+        model.hideSeed()
         done()
     }
 }
@@ -36,19 +36,16 @@ struct RecoveryPhraseSheet: View {
 
     var body: some View {
         NavigationStack {
-            BackupView(model: model, next: close, later: close, step: nil)
+            BackupView(model: model, next: { dismiss() }, later: { dismiss() }, step: nil)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Close", action: close)
+                        Button("Close") { dismiss() }
                     }
                 }
         }
         .onAppear { model.results[.wallet] = nil }
-    }
-
-    /// Hides the phrase on the way out, as the backup flow does.
-    private func close() {
-        if model.seed != nil { model.toggleSeed() }
-        dismiss()
+        // Every way off the sheet, Close and swiping it away alike, so the
+        // phrase is never still revealed the next time it opens.
+        .onDisappear { model.hideSeed() }
     }
 }

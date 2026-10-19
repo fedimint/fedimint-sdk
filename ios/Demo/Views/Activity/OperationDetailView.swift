@@ -19,6 +19,7 @@ struct OperationDetailView: View {
                 header
                 if let facts = follower.facts { factsCard(facts) }
                 if let stage = follower.stage, !stage.steps.isEmpty { progress(stage) }
+                if follower.stage?.canCancel == true, let notes = follower.notes { notesCard(notes) }
                 if let lost = follower.lost {
                     // Reading the state failed; how the operation ended is
                     // not known from here.
@@ -78,6 +79,26 @@ struct OperationDetailView: View {
         .card(padding: 0)
     }
 
+    /// An unredeemed send's notes, so they can still be handed over after the
+    /// ready screen has moved on to a newer send. Bearer value: copied the
+    /// local-only, expiring way, and never shown in full.
+    private func notesCard(_ notes: Notes) -> some View {
+        let token = notes.display()
+        return VStack(alignment: .leading, spacing: Metrics.gap) {
+            Caption("Notes")
+            HStack {
+                Text(middleTruncated(token, keep: 10))
+                    .font(Typeface.mono(.regular, 13, relativeTo: .footnote))
+                    .foregroundStyle(Palette.ink)
+                Spacer()
+                CopyIconButton(value: token, bearer: true)
+                ShareLink(item: token) { Image(systemName: "square.and.arrow.up") }
+                    .foregroundStyle(Palette.ink)
+            }
+            .card()
+        }
+    }
+
     private func progress(_ stage: OperationFollower.Stage) -> some View {
         VStack(alignment: .leading, spacing: Metrics.gap) {
             Caption("Progress")
@@ -119,6 +140,8 @@ final class OperationFollower: ObservableObject {
     @Published private(set) var facts: Facts?
     @Published private(set) var stage: Stage?
     @Published private(set) var lost: String?
+    /// An ecash send's notes, for handing over while they are unredeemed.
+    @Published private(set) var notes: Notes?
 
     /// Kept only to cancel it: the one kind of operation that can be.
     private var ecashSend: EcashSendOperation?
@@ -146,6 +169,7 @@ final class OperationFollower: ObservableObject {
             } else if let op = operation.asEcashSend() {
                 ecashSend = op
                 let d = try await op.details()
+                notes = d.notes
                 facts = Facts(rows: [("Notes worth", formatMsats(d.notesValue), true), ("Fee", formatMsats(d.fee), true),
                                      ("Debited", formatMsats(d.totalDebited), true),
                                      ("Reclaimed after", ActivityTime.date(d.reclaimAt).formatted(date: .abbreviated, time: .shortened), false)],
