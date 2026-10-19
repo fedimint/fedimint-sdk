@@ -6,13 +6,14 @@ import FedimintSdk
 /// 12 Join: an invite code, a preview of the federation it names, then join.
 ///
 /// A wallet restored from a recovery phrase may already hold funds in the
-/// federation it joins, which a plain join would not look for. So for a
-/// restored wallet the action is the SDK's `recover`, which joins and rescans.
+/// federation it joins, which a plain join would not look for. So unless the
+/// wallet is known to have been created on this device, the action is the
+/// SDK's `recover`, which joins and rescans (see `DemoModel.recoversOnJoin`).
 struct JoinView: View {
     @ObservedObject var model: DemoModel
     @Environment(\.dismiss) private var dismiss
 
-    private var restoring: Bool { model.restoredSeed }
+    private var recovering: Bool { model.recoversOnJoin }
 
     /// Set by Join, so the screen can tell its own join finishing apart from a
     /// preview finishing: both report on the same line.
@@ -52,8 +53,8 @@ struct JoinView: View {
                     PreviewCard(preview: preview).padding(.top, Metrics.gap)
                 }
 
-                if restoring {
-                    Text("This wallet was restored from a recovery phrase, so joining also rescans the federation for what the phrase already holds there.")
+                if recovering {
+                    Text("Joining also rescans the federation for funds this wallet's recovery phrase may already hold there.")
                         .font(Typeface.footnote)
                         .foregroundStyle(Palette.muted)
                         .padding(.top, 4)
@@ -72,9 +73,9 @@ struct JoinView: View {
         .safeAreaInset(edge: .bottom) {
             Button {
                 joining = true
-                restoring ? model.recover() : model.join()
+                recovering ? model.recover() : model.join()
             } label: {
-                BusyLabel(title: restoring ? "Join and recover" : "Join", busy: model.isWorking(.join))
+                BusyLabel(title: recovering ? "Join and recover" : "Join", busy: model.isWorking(.join))
             }
             .buttonStyle(.primary)
             .disabled(model.invite.trimmed.isEmpty || model.isWorking(.join) || model.isSendingEcash)
