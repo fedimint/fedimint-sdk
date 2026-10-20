@@ -17,14 +17,6 @@ enum NavigationAppearance {
                 .foregroundColor: UIColor(Palette.ink),
             ]
         }
-        // The tab roots (Activity, Federations) use large titles. Without these
-        // attributes the large title keeps the system's.
-        if let font = UIFont(name: "Geist-Bold", size: 30) {
-            appearance.largeTitleTextAttributes = [
-                .font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: font),
-                .foregroundColor: UIColor(Palette.ink),
-            ]
-        }
         // The design's back control is the chevron alone, without the
         // previous screen's title beside it.
         let back = UIBarButtonItemAppearance()

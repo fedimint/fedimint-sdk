@@ -65,7 +65,6 @@ targets:
           - GeistMono-Regular.ttf
           - GeistMono-Medium.ttf
           - GeistMono-SemiBold.ttf
-          - GeistMono-Bold.ttf
         # The SDK talks to federations and gateways over the network. iOS
         # allows outbound TLS by default, so nothing else is needed here; this
         # key documents that the omission is deliberate.
