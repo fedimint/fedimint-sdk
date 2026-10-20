@@ -16,6 +16,8 @@ struct OnboardingView: View {
                     }
                 }
         }
+        // Welcome is navy and Restore cream; see ContentView.
+        .preferredColorScheme(path.isEmpty ? .dark : .light)
         .onChange(of: path) { _, newPath in
             // A failure from the screen just left is about that screen, not the
             // one returned to.

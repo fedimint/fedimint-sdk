@@ -38,6 +38,7 @@ struct FederationsView: View {
             }
             .screenBackground()
             .navigationTitle("Federations")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { path.append(.join) } label: { Image(systemName: "plus") }

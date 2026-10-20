@@ -100,10 +100,11 @@ enum Typeface {
         .custom("GeistMono-\(weight.rawValue)", size: size, relativeTo: style)
     }
 
-    /// Every PostScript name the styles above ask for.
-    static let postScriptNames = ["Geist", "GeistMono"].flatMap { family in
-        [Weight.regular, .medium, .semibold, .bold].map { "\(family)-\($0.rawValue)" }
-    }
+    /// Every PostScript name the styles above ask for. Nothing is set in bold
+    /// mono, so that weight is not bundled.
+    static let postScriptNames =
+        [Weight.regular, .medium, .semibold, .bold].map { "Geist-\($0.rawValue)" }
+        + [Weight.regular, .medium, .semibold].map { "GeistMono-\($0.rawValue)" }
 
     /// Crashes a debug build whose bundle is missing one of the fonts.
     ///

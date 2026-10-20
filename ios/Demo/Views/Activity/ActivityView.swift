@@ -65,6 +65,7 @@ struct ActivityView: View {
         .refreshable { model.activity() }
         .screenBackground()
         .navigationTitle("Activity")
+        .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: ActivityItem.self) { OperationDetailView(model: model, item: $0) }
         .task { if model.hasFederation, model.activityItems.isEmpty { model.activity() } }
     }

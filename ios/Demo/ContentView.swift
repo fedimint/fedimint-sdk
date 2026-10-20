@@ -18,20 +18,21 @@ struct ContentView: View {
         Group {
             if model.hasSdk, model.walletOrigin == .created, !backedUp {
                 BackupFlow(model: model) { backedUp = true }
+                    .preferredColorScheme(.light)
             } else if model.hasSdk {
                 MainView(model: model)
+                    .preferredColorScheme(.light)
             } else if reopening {
                 LaunchView()
+                    .preferredColorScheme(.dark)
             } else {
+                // Sets its own: Welcome is navy, Restore is cream.
                 OnboardingView(model: model)
             }
         }
         // SwiftUI draws the back chevron and other bar controls in the tint,
         // not in the UIKit appearance's tint colour.
         .tint(Palette.ink)
-        // The design defines light colours only. In Dark Mode, text without an
-        // explicit colour would turn light on its fixed light backgrounds.
-        .preferredColorScheme(.light)
         .task {
             if reopening { model.openWallet() }
         }
