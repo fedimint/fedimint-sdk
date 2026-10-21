@@ -85,6 +85,7 @@ struct ReceiveView: View {
                         CopyIconButton(value: invoice)
                     }
                     lightningStatus
+                    if let lost = model.watchFailures[.lnReceive] { TrackingStopped(reason: lost) }
                 }
                 .frame(maxWidth: .infinity)
                 .card(padding: 20)
@@ -163,7 +164,7 @@ struct ReceiveView: View {
                 VStack(alignment: .leading, spacing: Metrics.gap) {
                     Caption("Preview")
                     VStack(spacing: 0) {
-                        ReviewRow("Amount", "\(SatsFormat.grouped(value)) sats", monospaced: true)
+                        ReviewRow("Amount", SatsFormat.text(value), monospaced: true)
                         RowDivider()
                         ReviewRow("Unspent", "Checked when you redeem")
                     }
@@ -203,6 +204,7 @@ struct ReceiveView: View {
                         CopyIconButton(value: address)
                     }
                     depositStatus
+                    if let lost = model.watchFailures[.deposit] { TrackingStopped(reason: lost) }
                 }
                 .frame(maxWidth: .infinity)
                 .card(padding: 20)
@@ -214,6 +216,13 @@ struct ReceiveView: View {
 
                 ShareLink(item: address) { Label("Share address", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.primary)
+                // One payment per address: a second one to the same address may
+                // go unnoticed for a long time on the v1 wallet module.
+                Button { model.deposit() } label: {
+                    BusyLabel(title: "New address", busy: model.isWorking(.deposit))
+                }
+                .buttonStyle(.secondary)
+                .disabled(model.isWorking(.deposit))
             } else {
                 Text("Get an address this federation watches, then send \(networkName) bitcoin to it.")
                     .font(Typeface.callout)

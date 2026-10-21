@@ -67,6 +67,7 @@ struct EcashReadyView: View {
                     CopyIconButton(value: token, bearer: true)
                 }
                 status
+                if let lost = model.watchFailures[.ecashSend] { TrackingStopped(reason: lost) }
             }
             .frame(maxWidth: .infinity)
             .card(padding: 20)

@@ -407,7 +407,20 @@ final class DemoModel: ObservableObject {
             defer { self.attachesInFlight -= 1 }
 
             guard let sdk = self.sdk else { return "open the wallet first" }
-            let recovery = try await sdk.recover(invite: InviteCode.parse(code: self.trimmedInvite))
+            let code = try InviteCode.parse(code: self.trimmedInvite)
+            let recovery: RecoveryHandle
+            do {
+                recovery = try await sdk.recover(invite: code)
+            } catch let error as SdkError where error.code() == .alreadyJoined {
+                // Joined already, such as one recovered earlier that another
+                // federation has since replaced on screen: switch back to it, as
+                // `join` does, and follow whatever recovery it has.
+                guard let existing = try sdk.federation(id: code.federationId()) else { throw error }
+                guard !self.isSuperseded else { return "superseded by a newer join" }
+                self.attach(existing)
+                self.followRecovery()
+                return "Already joined — reattached to \(existing.id())"
+            }
             guard !self.isSuperseded else { return "superseded by a newer join" }
             self.attach(recovery.federation)
 
@@ -426,6 +439,11 @@ final class DemoModel: ObservableObject {
     // MARK: - Lightning in
 
     func lnReceive() {
+        // Before anything is awaited: the previous invoice's watcher would
+        // otherwise go on writing into the state this invoice is about to show.
+        // The previous invoice can still be paid; it is only no longer followed
+        // here.
+        stopWatching(.lnReceive)
         run(.lnReceive) {
             guard let lightning = self.federation?.lightning() else {
                 return "this federation has no lightning module"
@@ -712,7 +730,7 @@ final class DemoModel: ObservableObject {
         // may still be waiting for a payment to that request's address. It is
         // stopped here, or its next update would overwrite this request's
         // address.
-        watchTasks[.deposit]?.cancel()
+        stopWatching(.deposit)
 
         run(.deposit) {
             guard let onchain = self.federation?.onchain() else {
@@ -822,6 +840,9 @@ final class DemoModel: ObservableObject {
         guard let sdk, let id = federationId else { return }
         Task {
             guard let state = try? await sdk.recoveryStatus(id: id) else { return }
+            // Another federation attached while this was read: the answer, and
+            // any resume it would lead to, are not about the one on screen.
+            guard self.federationId == id else { return }
             self.recoveryProgressed(state)
             // Running: resuming reattaches to the attempt under way.
             if case .running = state, !self.isWorking(.recovery) { self.resumeRecovery() }
@@ -888,6 +909,31 @@ final class DemoModel: ObservableObject {
             return "loaded \(page.items.count) more"
         }
     }
+
+    /// Brings the newest page of history up to date without the user asking.
+    /// The SDK offers no stream of activity, so a balance update is the signal
+    /// that something settled. Merged rather than replacing the list, so rows
+    /// loaded with `moreActivity` stay, and kept apart from `run(.activity)` so
+    /// it never cancels a load the user started.
+    private func refreshRecentActivity() {
+        guard let federation else { return }
+        activityRefreshTask?.cancel()
+        activityRefreshTask = Task { [weak self] in
+            guard let page = try? await federation.activity(cursor: nil, limit: Self.activityPageSize),
+                  !Task.isCancelled, let self, self.federation === federation
+            else { return }
+            if self.activityItems.isEmpty {
+                self.activityItems = page.items
+                self.activityNext = page.next
+                return
+            }
+            // A row missing from the newest page is older than all of it, so the
+            // order holds, and the cursor still points past the last loaded row.
+            let fresh = Set(page.items.map(\.operationId))
+            self.activityItems = page.items + self.activityItems.filter { !fresh.contains($0.operationId) }
+        }
+    }
+    private var activityRefreshTask: Task<Void, Never>?
 
     // MARK: - Helpers
 
@@ -971,8 +1017,8 @@ final class DemoModel: ObservableObject {
         return !(contents ?? []).isEmpty
     }
 
-    /// Makes `joined` the current federation and keeps the balance line live
-    /// from its `balanceUpdates()` subscription.
+    /// Makes `joined` the current federation and follows its balance (see
+    /// `followBalance`).
     private func attach(_ joined: Federation) {
         federation = joined
         hasFederation = true
@@ -999,6 +1045,7 @@ final class DemoModel: ObservableObject {
         federationNetwork = joined.network()
         capabilities = joined.capabilities()
         federationStatus = try? sdk?.federationStatus(id: joined.id())
+        activityRefreshTask?.cancel()
         activityItems = []
         activityNext = nil
 
@@ -1069,6 +1116,7 @@ final class DemoModel: ObservableObject {
                     // model gone there is nobody left to render into.
                     guard let self else { break }
                     self.balanceMsats = next
+                    self.refreshRecentActivity()
                 }
             } catch let error as SdkError {
                 // A cancelled subscription failing on its way out must not
@@ -1223,10 +1271,14 @@ final class DemoModel: ObservableObject {
                 // have been shown to a payer.
                 if !Task.isCancelled, let self {
                     self.results[.deposit] = "\(header)\n\n\(self.describe(error))"
+                    self.watchFailures[.deposit] = error.reason()
                 }
                 return
             } catch {
-                if !Task.isCancelled { self?.results[.deposit] = "\(header)\n\n\(error)" }
+                if !Task.isCancelled {
+                    self?.results[.deposit] = "\(header)\n\n\(error)"
+                    self?.watchFailures[.deposit] = "\(error)"
+                }
                 return
             }
             // A cancelled watcher gets here once a deposit is found, since the
