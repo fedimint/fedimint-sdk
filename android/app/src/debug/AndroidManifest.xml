@@ -1,7 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Debug builds load the SDK before the Application is in place; see DebugApplication. -->
-    <application android:name=".DebugApplication" />
+    <!-- Debug builds load the SDK before the Application is in place; see DebugApplication.
+         It extends FedimintApp, so replacing main's application class keeps the wallet working. -->
+    <application
+        android:name=".DebugApplication"
+        tools:replace="android:name">
+
+        <!-- The SDK harness: every call on one screen, driven by the Appium suite
+             (js/android/integration-tests) by its view ids. Debug builds only, with
+             its own launcher entry; exported so `am start` can open it. -->
+        <activity
+            android:name=".harness.HarnessActivity"
+            android:exported="true"
+            android:label="SDK harness"
+            android:theme="@style/Theme.FedimintHarness">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
 
 </manifest>
