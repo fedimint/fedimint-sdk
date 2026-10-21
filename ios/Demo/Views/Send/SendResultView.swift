@@ -56,7 +56,7 @@ struct SendResultView: View {
         case nil, .created, .funded:
             Outcome(icon: "bolt", tone: .warning, title: "Sending", detail: "Waiting for the payment to settle.", busy: true)
         case let .success(preimage, fee, route):
-            Outcome(icon: "checkmark", tone: .success, title: "Sent", detail: "Fee \(formatMsats(fee)) · \(route.label)") {
+            Outcome(icon: "checkmark", tone: .success, title: "Sent", detail: "Fee \(SatsFormat.text(fee)) · \(route.label)") {
                 Receipt(label: "Receipt (preimage)", value: preimage)
             }
         case .refunded:

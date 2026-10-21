@@ -22,6 +22,7 @@ struct HomeView: View {
                     balance
                     if recovering { recoveryCard }
                     actions
+                    federationDetails
                     recent
                 } else {
                     joinPrompt
@@ -151,6 +152,15 @@ struct HomeView: View {
             .buttonStyle(.secondary)
         }
         .disabled(recovering)
+    }
+
+    private var federationDetails: some View {
+        NavigationLink {
+            FederationDetailView(model: model)
+        } label: {
+            Label("Federation details", systemImage: "building.columns")
+        }
+        .buttonStyle(.secondary)
     }
 
     private var recent: some View {

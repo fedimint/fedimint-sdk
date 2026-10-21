@@ -117,14 +117,14 @@ struct ReviewView: View {
             }
             if let notesValue = terms.notesValue {
                 RowDivider()
-                ReviewRow("Notes worth", "\(SatsFormat.grouped(notesValue)) sats", monospaced: true)
+                ReviewRow("Notes worth", SatsFormat.text(notesValue), monospaced: true)
             }
             RowDivider()
             // "Fee", not "network fee": it is every cost of the payment, the
             // gateway's and the federation's included.
-            ReviewRow("Fee", formatMsats(terms.fee), monospaced: true)
+            ReviewRow("Fee", SatsFormat.text(terms.fee), monospaced: true)
             RowDivider()
-            ReviewRow("Total", formatMsats(terms.total), monospaced: true, emphasised: true)
+            ReviewRow("Total", SatsFormat.text(terms.total), monospaced: true, emphasised: true)
         }
         .card(padding: 0)
     }

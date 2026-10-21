@@ -63,7 +63,7 @@ struct FederationsView: View {
                     .font(Typeface.headline)
                     .foregroundStyle(Palette.ink)
                 if let msats = model.balanceMsats {
-                    Text("\(SatsFormat.grouped(msats)) sats")
+                    Text(SatsFormat.text(msats))
                         .font(Typeface.footnote)
                         .foregroundStyle(Palette.muted)
                 }

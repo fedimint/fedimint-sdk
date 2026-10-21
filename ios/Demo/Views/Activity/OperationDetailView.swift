@@ -156,43 +156,43 @@ final class OperationFollower: ObservableObject {
             }
             if let op = operation.asLnSend() {
                 let d = try await op.details()
-                facts = Facts(rows: [("Amount", formatMsats(d.invoiceAmount), true), ("Fee", formatMsats(d.fee), true),
-                                     ("Total", formatMsats(d.total), true), ("Route", d.route.label, true)],
+                facts = Facts(rows: [("Amount", SatsFormat.text(d.invoiceAmount), true), ("Fee", SatsFormat.text(d.fee), true),
+                                     ("Total", SatsFormat.text(d.total), true), ("Route", d.route.label, true)],
                               createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else if let op = operation.asLnReceive() {
                 let d = try await op.details()
-                facts = Facts(rows: [("Invoice amount", formatMsats(d.invoiceAmount), true), ("Fee", formatMsats(d.fee), true),
-                                     ("Credited", formatMsats(d.netCredit), true)],
+                facts = Facts(rows: [("Invoice amount", SatsFormat.text(d.invoiceAmount), true), ("Fee", SatsFormat.text(d.fee), true),
+                                     ("Credited", SatsFormat.text(d.netCredit), true)],
                               createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else if let op = operation.asEcashSend() {
                 ecashSend = op
                 let d = try await op.details()
                 notes = d.notes
-                facts = Facts(rows: [("Notes worth", formatMsats(d.notesValue), true), ("Fee", formatMsats(d.fee), true),
-                                     ("Debited", formatMsats(d.totalDebited), true),
+                facts = Facts(rows: [("Notes worth", SatsFormat.text(d.notesValue), true), ("Fee", SatsFormat.text(d.fee), true),
+                                     ("Debited", SatsFormat.text(d.totalDebited), true),
                                      ("Reclaimed after", ActivityTime.date(d.reclaimAt).formatted(date: .abbreviated, time: .shortened), false)],
                               createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else if let op = operation.asEcashReceive() {
                 let d = try await op.details()
-                facts = Facts(rows: [("Notes worth", formatMsats(d.notesValue), true), ("Fee", formatMsats(d.fee), true),
-                                     ("Credited", formatMsats(d.netCredit), true)],
+                facts = Facts(rows: [("Notes worth", SatsFormat.text(d.notesValue), true), ("Fee", SatsFormat.text(d.fee), true),
+                                     ("Credited", SatsFormat.text(d.netCredit), true)],
                               createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else if let op = operation.asOnchainSend() {
                 let d = try await op.details()
-                facts = Facts(rows: [("To", middleTruncated(d.address, keep: 8), true), ("Amount", "\(d.amount) sat", true),
-                                     ("Fee", formatMsats(d.fee), true), ("Total", formatMsats(d.total), true)],
+                facts = Facts(rows: [("To", middleTruncated(d.address, keep: 8), true), ("Amount", SatsFormat.text(sats: d.amount), true),
+                                     ("Fee", SatsFormat.text(d.fee), true), ("Total", SatsFormat.text(d.total), true)],
                               createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else if let op = operation.asOnchainReceive() {
                 let d = try await op.details()
-                var rows: [Facts.Row] = [("Deposited", "\(d.grossDeposited) sat", true),
+                var rows: [Facts.Row] = [("Deposited", SatsFormat.text(sats: d.grossDeposited), true),
                                          ("Transaction", middleTruncated(d.txid, keep: 8), true)]
-                if let fee = d.fee { rows.append(("Fee", formatMsats(fee), true)) }
-                if let net = d.netCredit { rows.append(("Credited", formatMsats(net), true)) }
+                if let fee = d.fee { rows.append(("Fee", SatsFormat.text(fee), true)) }
+                if let net = d.netCredit { rows.append(("Credited", SatsFormat.text(net), true)) }
                 facts = Facts(rows: rows, createdAt: d.createdAt)
                 try await track(op.updates().next, stage: Self.stage)
             } else {

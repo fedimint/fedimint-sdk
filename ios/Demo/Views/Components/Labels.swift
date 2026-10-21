@@ -102,4 +102,31 @@ enum SatsFormat {
         let rest = msats % 1_000
         return rest == 0 ? nil : "+\(rest) msat"
     }
+
+    /// An amount in running text, the way `AmountView` sets one: "1,012 sats",
+    /// or "1,012 sats +250 msat" when there is a remainder.
+    static func text(_ msats: UInt64) -> String {
+        [grouped(msats) + " sats", remainder(msats)].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// The same for a figure the SDK reports in whole sats, such as an
+    /// on-chain amount.
+    static func text(sats: UInt64) -> String {
+        sats.formatted(.number.grouping(.automatic)) + " sats"
+    }
+}
+
+/// Said once the SDK has stopped reporting an operation's state. The payment
+/// itself may still complete, so this says only that the screen can no longer
+/// tell, and where to look instead: an operation's detail follows it afresh.
+struct TrackingStopped: View {
+    let reason: String
+
+    var body: some View {
+        Text("Stopped following this payment: \(reason). Activity shows how it stands.")
+            .font(Typeface.footnote)
+            .foregroundStyle(Palette.warning)
+            .multilineTextAlignment(.center)
+            .textSelection(.enabled)
+    }
 }
