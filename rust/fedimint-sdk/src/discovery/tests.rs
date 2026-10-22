@@ -406,18 +406,24 @@ async fn test_query_single_relay_completion_at_event_cap_without_eose() {
 #[cfg(not(target_family = "wasm"))]
 async fn test_query_single_relay_stalled_deadline() {
     use futures::StreamExt;
+    use tokio::sync::oneshot;
 
+    let (req_tx, req_rx) = oneshot::channel();
     let (url, server) = spawn_mock_relay(|mut ws| async move {
-        let _ = ws.next().await;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let req = ws.next().await.unwrap().unwrap();
+        assert!(req.to_text().unwrap().contains("REQ"));
+        let _ = req_tx.send(());
+        // Server stalls without sending EOSE or events until client disconnects
+        while let Some(_) = ws.next().await {}
     })
     .await;
 
-    let err = query_single_relay_with_timeout(url, std::time::Duration::from_millis(100))
+    let err = query_single_relay_with_timeout(url, std::time::Duration::from_millis(500))
         .await
         .expect_err("stalled relay must hit query timeout deadline");
     assert_eq!(err.code, ErrorCode::FederationUnreachable);
     assert!(err.message.contains("timed out"));
+    assert!(req_rx.await.is_ok(), "query handshake must complete before timeout");
     server.await.unwrap();
 }
 
