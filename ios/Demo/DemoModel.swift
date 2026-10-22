@@ -152,6 +152,19 @@ final class DemoModel: ObservableObject {
     /// in a single block. Two taps would be two real spends.
     @Published private(set) var isSendingEcash = false
 
+    /// Counts attaches, so a screen about the attached federation can tell it
+    /// was replaced, by another one or by a new handle under the same id.
+    @Published private(set) var attachments = 0
+
+    /// Whether a send on any rail is starting. Joining or reopening waits for
+    /// it: `attach` stops the federation's runs, which would drop the
+    /// operation a send has just submitted along with its result.
+    var isSending: Bool { isSendingEcash || isPayingLightning || isSendingOnchain }
+    /// Set around the payment itself, not the section: quoting runs in the
+    /// same sections, and a quote spends nothing.
+    @Published private(set) var isPayingLightning = false
+    @Published private(set) var isSendingOnchain = false
+
     /// Open Wallet, Join and Recover runs in flight — everything that may end in
     /// `attach`.
     ///
@@ -232,7 +245,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Wallet
 
     func openWallet() {
-        guard !isSendingEcash else { return }
+        guard !isSending else { return }
         attachesInFlight += 1
         run(.wallet) {
             defer { self.attachesInFlight -= 1 }
@@ -375,7 +388,7 @@ final class DemoModel: ObservableObject {
     /// it: `.alreadyJoined` is the cue to look the running federation up by the
     /// id the invite code carries.
     func join() {
-        guard !isSendingEcash else { return }
+        guard !isSending else { return }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -405,7 +418,7 @@ final class DemoModel: ObservableObject {
     /// restored seed that already holds funds here. Spends and receives are
     /// refused until the rescan completes.
     func recover() {
-        guard !isSendingEcash else { return }
+        guard !isSending else { return }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -428,17 +441,14 @@ final class DemoModel: ObservableObject {
             guard !self.isSuperseded else { return "superseded by a newer join" }
             self.attach(recovery.federation)
 
+            // The watcher's first update is the current state, so no separate
+            // read: one landing after a newer update would set it back.
             let header = "Recovering \(recovery.federation.id())"
             let progress = recovery.progress.updates()
-            self.watch(.join, header: header, onState: { [weak self] in self?.recoveryProgressed($0) }) {
+            self.watch(.recovery, header: header, onState: { [weak self] in self?.recoveryProgressed($0) }) {
                 try await progress.next()
             }
-            // `try?`: the federation is joined and attached by now, and the
-            // watcher above follows the recovery.
-            let state = try? await recovery.progress.state()
-            guard !self.isSuperseded else { return "superseded by a newer join" }
-            if let state { self.recoveryState = state }
-            return "\(header)\n\nstate: \(state.map { "\($0)" } ?? "unavailable")"
+            return header
         }
     }
 
@@ -665,6 +675,9 @@ final class DemoModel: ObservableObject {
     /// Quotes a pasted invoice: amount, fee, route and expiry, before anything
     /// is paid.
     func lnQuoteInvoice() {
+        // Shares `.lnPay` with the payment, and `run` cancels the section's
+        // previous run: quoting mid-payment would drop the payment's result.
+        guard !isPayingLightning else { return }
         // Disarmed synchronously, before the call: if this quote fails, the
         // previous one must not stay live behind the error message.
         lnQuote = nil
@@ -704,14 +717,18 @@ final class DemoModel: ObservableObject {
 
     @discardableResult
     func lnPay() -> Bool {
-        guard let quote = lnQuote, let lightning = federation?.lightning() else { return false }
+        // `isAttaching` as in `ecashSend`: the button's state lags a frame, and
+        // an attach landing mid-send would cancel the run following it.
+        guard !isAttaching, let quote = lnQuote, let lightning = federation?.lightning() else { return false }
         lnQuote = nil
+        isPayingLightning = true
         // An invoice is paid once, so the next send starts from an empty field
         // rather than one a paste would add to.
         lnInvoice = ""
         stopWatching(.lnPay)
         lnSendState = nil
         run(.lnPay) {
+            defer { self.isPayingLightning = false }
             let operation = try await lightning.send(quote: quote)
             guard !self.isSuperseded else { return "operation \(operation.id()) — superseded" }
             let header = "operation \(operation.id())"
@@ -762,6 +779,7 @@ final class DemoModel: ObservableObject {
     }
 
     func onchainQuoteAddress() {
+        guard !isSendingOnchain else { return }
         // Same as `lnQuoteInvoice`: a failed re-quote must not leave the
         // previous destination armed.
         onchainQuote = nil
@@ -805,11 +823,14 @@ final class DemoModel: ObservableObject {
 
     @discardableResult
     func onchainSend() -> Bool {
-        guard let quote = onchainQuote, let onchain = federation?.onchain() else { return false }
+        // `isAttaching`: see `lnPay`.
+        guard !isAttaching, let quote = onchainQuote, let onchain = federation?.onchain() else { return false }
         onchainQuote = nil
+        isSendingOnchain = true
         stopWatching(.onchainSend)
         onchainSendState = nil
         run(.onchainSend) {
+            defer { self.isSendingOnchain = false }
             let operation = try await onchain.send(quote: quote)
             guard !self.isSuperseded else { return "operation \(operation.id()) — superseded" }
             let header = "operation \(operation.id())"
@@ -817,11 +838,7 @@ final class DemoModel: ObservableObject {
             self.watch(.onchainSend, header: header, onState: { [weak self] in self?.onchainSendState = $0 }) {
                 try await updates.next()
             }
-            // `try?`: the withdrawal has been submitted, and the watcher above
-            // reports its state; a failed read here must not report the send
-            // itself as failed.
-            let state = try? await operation.state()
-            return "\(header)\nstate: \(state.map { "\($0)" } ?? "unavailable")"
+            return header
         }
         return true
     }
@@ -835,15 +852,13 @@ final class DemoModel: ObservableObject {
         run(.recovery) {
             let handle = try await sdk.resumeRecovery(id: id)
             guard !self.isSuperseded else { return "superseded by a newer resume" }
+            // As in `recover`: the watcher's first update is the current state.
+            let header = "recovery \(handle.progress.id())"
             let updates = handle.progress.updates()
-            self.watch(.recovery, header: "recovery \(handle.progress.id())",
-                       onState: { [weak self] in self?.recoveryProgressed($0) }) {
+            self.watch(.recovery, header: header, onState: { [weak self] in self?.recoveryProgressed($0) }) {
                 try await updates.next()
             }
-            let state = try await handle.progress.state()
-            guard !self.isSuperseded else { return "superseded by a newer resume" }
-            self.recoveryProgressed(state)
-            return "state: \(state)"
+            return header
         }
     }
 
@@ -855,13 +870,36 @@ final class DemoModel: ObservableObject {
     func followRecovery() {
         guard let sdk, let id = federationId else { return }
         Task {
-            guard let state = try? await sdk.recoveryStatus(id: id) else { return }
+            let read: RecoveryState?
+            do {
+                read = try await sdk.recoveryStatus(id: id)
+            } catch let error as SdkError {
+                if self.federationId == id { self.fail(.recovery, "couldn't read the recovery: \(error.reason())") }
+                return
+            } catch {
+                if self.federationId == id { self.fail(.recovery, "couldn't read the recovery: \(error)") }
+                return
+            }
             // Another federation attached while this was read: the answer, and
             // any resume it would lead to, are not about the one on screen.
-            guard self.federationId == id else { return }
+            guard self.federationId == id, let state = read else { return }
+            // Followed already: the watcher's updates are newer than this read,
+            // and its pending `next()` cannot be stopped to make way for another.
+            guard !self.followingRecovery else { return }
             self.recoveryProgressed(state)
             // Running: resuming reattaches to the attempt under way.
-            if case .running = state, !self.isWorking(.recovery) { self.resumeRecovery() }
+            if case .running = state { self.resumeRecovery() }
+        }
+    }
+
+    /// Whether the recovery has a resume under way, or a watcher that is still
+    /// live: installed, not failed, and not yet at a final state.
+    private var followingRecovery: Bool {
+        if isWorking(.recovery) { return true }
+        guard watchTasks[.recovery] != nil, watchFailures[.recovery] == nil else { return false }
+        switch recoveryState {
+        case nil, .running: return true
+        case .done, .failed: return false
         }
     }
 
@@ -872,7 +910,8 @@ final class DemoModel: ObservableObject {
 
     /// The follower of one operation's detail, shared by every visit to it: its
     /// subscription cannot be interrupted, so reusing it is what stops each
-    /// visit from leaving another one waiting. Dropped with the federation.
+    /// visit from leaving another one waiting. Dropped with every attach, since a
+    /// reopened federation is a new handle even under the same id.
     func follower(for id: OperationId) -> OperationFollower {
         if let existing = followers[id] { return existing }
         let follower = OperationFollower()
@@ -1054,6 +1093,7 @@ final class DemoModel: ObservableObject {
     /// Makes `joined` the current federation and follows its balance (see
     /// `followBalance`).
     private func attach(_ joined: Federation) {
+        attachments += 1
         federation = joined
         hasFederation = true
         balanceTask?.cancel()
