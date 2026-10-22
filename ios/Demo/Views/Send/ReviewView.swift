@@ -88,7 +88,7 @@ struct ReviewView: View {
                     if secondsLeft > 0 {
                         Button("Approve & send", action: approve)
                             .buttonStyle(.primary)
-                            .disabled(model.isAttaching || model.isSendingEcash)
+                            .disabled(model.isAttaching || (rail == .ecash && model.isSendingEcash))
                     } else {
                         Button("Get a new quote", action: requote)
                             .buttonStyle(.primary)

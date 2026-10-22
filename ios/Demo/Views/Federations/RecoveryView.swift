@@ -28,6 +28,12 @@ struct RecoveryView: View {
 
                 progressCard.padding(.top, Metrics.gap)
 
+                if let lost = model.watchFailures[.recovery] {
+                    Text("Stopped following the recovery: \(lost). Open this screen again to follow it.")
+                        .font(Typeface.footnote)
+                        .foregroundStyle(Palette.warning)
+                        .textSelection(.enabled)
+                }
                 if let failure = model.failures[.recovery] {
                     Text(failure)
                         .font(Typeface.footnote)

@@ -78,7 +78,7 @@ struct JoinView: View {
                 BusyLabel(title: recovering ? "Join and recover" : "Join", busy: model.isWorking(.join))
             }
             .buttonStyle(.primary)
-            .disabled(model.invite.trimmed.isEmpty || model.isWorking(.join) || model.isSendingEcash)
+            .disabled(model.invite.trimmed.isEmpty || model.isWorking(.join) || model.isSending)
             .padding(Metrics.screenPadding)
             .background(Palette.background)
         }

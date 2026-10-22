@@ -10,12 +10,18 @@ import FedimintSdk
 struct OperationDetailView: View {
     @ObservedObject var model: DemoModel
     let item: ActivityItem
-    @ObservedObject private var follower: OperationFollower
+    // Both taken when the screen first appears and kept from then on: SwiftUI
+    // runs `init` again whenever the parent redraws, as an attach makes it do.
+    @StateObject private var follower: OperationFollower
+    /// `DemoModel.attachments` when the screen appeared.
+    @State private var attachment: Int
+    @Environment(\.dismiss) private var dismiss
 
     init(model: DemoModel, item: ActivityItem) {
         self.model = model
         self.item = item
-        follower = model.follower(for: item.operationId)
+        _follower = StateObject(wrappedValue: model.follower(for: item.operationId))
+        _attachment = State(initialValue: model.attachments)
     }
 
     var body: some View {
@@ -24,8 +30,11 @@ struct OperationDetailView: View {
                 header
                 if let facts = follower.facts { factsCard(facts) }
                 if let stage = follower.stage, !stage.steps.isEmpty { progress(stage) }
+                // Kept while tracking is lost: they may still need handing over.
                 if follower.stage?.canCancel == true, let notes = follower.notes { notesCard(notes) }
-                if let failure = follower.cancelFailure {
+                // Only while a cancel is still possible: once the send has ended
+                // either way, a refused request no longer matters.
+                if follower.canCancel, let failure = follower.cancelFailure {
                     Text("Couldn't request a cancel: \(failure)")
                         .font(Typeface.footnote)
                         .foregroundStyle(Palette.danger)
@@ -38,13 +47,16 @@ struct OperationDetailView: View {
                         .font(Typeface.footnote)
                         .foregroundStyle(Palette.muted)
                         .textSelection(.enabled)
+                    Button("Try again") { follower.start(model: model, item: item) }
+                        .buttonStyle(.secondary)
                 }
             }
             .padding(Metrics.screenPadding)
         }
         .safeAreaInset(edge: .bottom) {
-            if follower.stage?.canCancel == true {
+            if follower.canCancel {
                 Button("Request cancel") { follower.requestCancel() }
+                    .disabled(follower.cancelling)
                     .buttonStyle(.destructive)
                     .padding(Metrics.screenPadding)
                     .background(Palette.background)
@@ -54,6 +66,9 @@ struct OperationDetailView: View {
         .navigationTitle(ActivityRow.rail(item.kind))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { follower.start(model: model, item: item) }
+        // Any attach replaces the handle this was read through, even under the
+        // same id, so the screen closes rather than follow a stale one.
+        .onChange(of: model.attachments) { _, count in if count != attachment { dismiss() } }
     }
 
     private var header: some View {
@@ -152,6 +167,11 @@ final class OperationFollower: ObservableObject {
     @Published private(set) var stage: Stage?
     @Published private(set) var lost: String?
     @Published private(set) var cancelFailure: String?
+    @Published private(set) var cancelling = false
+
+    /// Whether the send can still be taken back. Not while the state is lost:
+    /// it may have been redeemed or reclaimed since the last one read.
+    var canCancel: Bool { lost == nil && stage?.canCancel == true }
     /// An ecash send's notes, for handing over while they are unredeemed.
     @Published private(set) var notes: Notes?
 
@@ -172,6 +192,7 @@ final class OperationFollower: ObservableObject {
         }
         phase = .following
         lost = nil
+        cancelFailure = nil
         Task { await follow(model: model, item: item) }
     }
 
@@ -243,15 +264,20 @@ final class OperationFollower: ObservableObject {
     /// A refused request is its own message, not `lost`: the operation is still
     /// followed, and it can still end either way.
     func requestCancel() {
-        guard let ecashSend else { return }
+        guard let ecashSend, !cancelling else { return }
+        cancelling = true
         cancelFailure = nil
+        // Left set after a request that went through, until the next state:
+        // re-enabling the button before then would invite a second request.
         Task {
             do {
                 try await ecashSend.requestCancel()
             } catch let error as SdkError {
                 cancelFailure = error.reason()
+                cancelling = false
             } catch {
                 cancelFailure = "\(error)"
+                cancelling = false
             }
         }
     }
@@ -260,6 +286,8 @@ final class OperationFollower: ObservableObject {
     private func track<State>(_ next: () async throws -> State?, stage: (State) -> Stage) async throws {
         while let state = try await next() {
             self.stage = stage(state)
+            // A state read after a cancel request reflects it, whichever way.
+            cancelling = false
         }
     }
 
