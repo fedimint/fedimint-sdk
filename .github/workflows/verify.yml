@@ -224,6 +224,17 @@ jobs:
             pnpm --dir js test
           EOF
 
+      # The example that uses the package: type-checked against the built package and bundled by
+      # Vite with the module the build above staged, which the hosted jobs do not have.
+      - name: Build the Vite example
+        shell: bash
+        run: |
+          nix develop --accept-flake-config --command bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js --filter vite-app-example typecheck
+            pnpm --dir js --filter vite-app-example build
+          EOF
+
       - name: Push the test shell to Cachix
         # cachix-action pushes only what this job built, so a shell that the runner's store already
         # held is never pushed again once Cachix has dropped it. This pushes what is missing of its
