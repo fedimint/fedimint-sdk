@@ -423,7 +423,10 @@ async fn test_query_single_relay_stalled_deadline() {
         .expect_err("stalled relay must hit query timeout deadline");
     assert_eq!(err.code, ErrorCode::FederationUnreachable);
     assert!(err.message.contains("timed out"));
-    assert!(req_rx.await.is_ok(), "query handshake must complete before timeout");
+    assert!(
+        req_rx.await.is_ok(),
+        "query handshake must complete before timeout"
+    );
     server.await.unwrap();
 }
 
