@@ -25,6 +25,12 @@ struct OperationDetailView: View {
                 if let facts = follower.facts { factsCard(facts) }
                 if let stage = follower.stage, !stage.steps.isEmpty { progress(stage) }
                 if follower.stage?.canCancel == true, let notes = follower.notes { notesCard(notes) }
+                if let failure = follower.cancelFailure {
+                    Text("Couldn't request a cancel: \(failure)")
+                        .font(Typeface.footnote)
+                        .foregroundStyle(Palette.danger)
+                        .textSelection(.enabled)
+                }
                 if let lost = follower.lost {
                     // Reading the state failed; how the operation ended is
                     // not known from here.
@@ -145,27 +151,38 @@ final class OperationFollower: ObservableObject {
     @Published private(set) var facts: Facts?
     @Published private(set) var stage: Stage?
     @Published private(set) var lost: String?
+    @Published private(set) var cancelFailure: String?
     /// An ecash send's notes, for handing over while they are unredeemed.
     @Published private(set) var notes: Notes?
 
     /// Kept only to cancel it: the one kind of operation that can be.
     private var ecashSend: EcashSendOperation?
 
-    /// Starts following once, and keeps going when the screen closes, until the
+    /// Starts following, and keeps going when the screen closes, until the
     /// state is final. A pending `next()` cannot be interrupted, so stopping on
     /// the way out would only leave it waiting, and following afresh on every
     /// visit would leave one more each time. The model keeps one follower per
-    /// operation for this (`DemoModel.follower(for:)`).
+    /// operation for this (`DemoModel.follower(for:)`). An attempt that ended
+    /// in an error is the exception: the next visit starts another, since the
+    /// SDK allows reading the operation again.
     func start(model: DemoModel, item: ActivityItem) {
-        guard started == nil else { return }
-        started = Task { await follow(model: model, item: item) }
+        switch phase {
+        case .following, .finished: return
+        case .idle, .failed: break
+        }
+        phase = .following
+        lost = nil
+        Task { await follow(model: model, item: item) }
     }
-    private var started: Task<Void, Never>?
+
+    private enum Phase { case idle, following, finished, failed }
+    private var phase = Phase.idle
 
     private func follow(model: DemoModel, item: ActivityItem) async {
         do {
             guard let operation = try await model.operation(id: item.operationId) else {
                 lost = "this federation has no record of the operation"
+                phase = .failed
                 return
             }
             if let op = operation.asLnSend() {
@@ -213,24 +230,35 @@ final class OperationFollower: ObservableObject {
                 // Recovery, or a kind this build of the SDK does not know.
                 facts = Facts(rows: [], createdAt: item.time)
             }
+            phase = .finished
         } catch let error as SdkError {
-            if !Task.isCancelled { lost = error.reason() }
+            lost = error.reason()
+            phase = .failed
         } catch {
-            if !Task.isCancelled { lost = "\(error)" }
+            lost = "\(error)"
+            phase = .failed
         }
     }
 
+    /// A refused request is its own message, not `lost`: the operation is still
+    /// followed, and it can still end either way.
     func requestCancel() {
         guard let ecashSend else { return }
+        cancelFailure = nil
         Task {
-            do { try await ecashSend.requestCancel() } catch let error as SdkError { lost = error.reason() } catch {}
+            do {
+                try await ecashSend.requestCancel()
+            } catch let error as SdkError {
+                cancelFailure = error.reason()
+            } catch {
+                cancelFailure = "\(error)"
+            }
         }
     }
 
     /// Pulls states until the final one, which `next()` follows with `nil`.
     private func track<State>(_ next: () async throws -> State?, stage: (State) -> Stage) async throws {
         while let state = try await next() {
-            if Task.isCancelled { return }
             self.stage = stage(state)
         }
     }
