@@ -10,8 +10,13 @@ import FedimintSdk
 struct OperationDetailView: View {
     @ObservedObject var model: DemoModel
     let item: ActivityItem
+    @ObservedObject private var follower: OperationFollower
 
-    @StateObject private var follower = OperationFollower()
+    init(model: DemoModel, item: ActivityItem) {
+        self.model = model
+        self.item = item
+        follower = model.follower(for: item.operationId)
+    }
 
     var body: some View {
         ScrollView {
@@ -42,7 +47,7 @@ struct OperationDetailView: View {
         .screenBackground()
         .navigationTitle(ActivityRow.rail(item.kind))
         .navigationBarTitleDisplayMode(.inline)
-        .task { await follower.follow(model: model, item: item) }
+        .onAppear { follower.start(model: model, item: item) }
     }
 
     private var header: some View {
@@ -52,7 +57,7 @@ struct OperationDetailView: View {
                 .font(Typeface.footnote)
                 .foregroundStyle(Palette.muted)
             if let amount = item.amount {
-                AmountView(msats: amount, sign: ActivityRow.sign(item.direction))
+                AmountView(msats: amount, sign: ActivityRow.sign(item))
             }
             if let stage = follower.stage {
                 StatusPill(text: stage.label, tone: stage.tone)
@@ -146,9 +151,18 @@ final class OperationFollower: ObservableObject {
     /// Kept only to cancel it: the one kind of operation that can be.
     private var ecashSend: EcashSendOperation?
 
-    /// Runs for the life of the screen's `.task`, which cancels it on the way
-    /// out; a `next()` already in flight then returns and the loop stops.
-    func follow(model: DemoModel, item: ActivityItem) async {
+    /// Starts following once, and keeps going when the screen closes, until the
+    /// state is final. A pending `next()` cannot be interrupted, so stopping on
+    /// the way out would only leave it waiting, and following afresh on every
+    /// visit would leave one more each time. The model keeps one follower per
+    /// operation for this (`DemoModel.follower(for:)`).
+    func start(model: DemoModel, item: ActivityItem) {
+        guard started == nil else { return }
+        started = Task { await follow(model: model, item: item) }
+    }
+    private var started: Task<Void, Never>?
+
+    private func follow(model: DemoModel, item: ActivityItem) async {
         do {
             guard let operation = try await model.operation(id: item.operationId) else {
                 lost = "this federation has no record of the operation"

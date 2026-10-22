@@ -6,6 +6,7 @@ import FedimintSdk
 struct FederationDetailView: View {
     @ObservedObject var model: DemoModel
     @State private var showingInvite = false
+    @State private var showingRecovery = false
 
     var body: some View {
         ScrollView {
@@ -26,7 +27,7 @@ struct FederationDetailView: View {
                 }
 
                 if case .recovering = model.federationStatus {
-                    NavigationLink("View recovery progress") { RecoveryView(model: model) }
+                    Button("View recovery progress") { showingRecovery = true }
                         .buttonStyle(.secondary)
                 }
 
@@ -54,6 +55,7 @@ struct FederationDetailView: View {
         }
         .screenBackground()
         .navigationTitle("Federation")
+        .navigationDestination(isPresented: $showingRecovery) { RecoveryView(model: model) }
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.refreshFederationStatus() }
     }

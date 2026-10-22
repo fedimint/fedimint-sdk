@@ -262,6 +262,9 @@ final class DemoModel: ObservableObject {
             // launch comes back with a federation rather than a blank screen.
             if let existing = sdk.federations().first {
                 self.attach(existing)
+                // A recovery interrupted by the last quit carries on in the
+                // SDK; follow it, or Home stays locked with nothing moving.
+                if case .recovering = self.federationStatus { self.followRecovery() }
             }
             return words.isEmpty ? "wallet opened" : "wallet restored from \(words.count) words"
         }
@@ -386,8 +389,9 @@ final class DemoModel: ObservableObject {
                 joined = try await sdk.join(invite: code)
                 verb = "Joined"
             } catch let error as SdkError where error.code() == .alreadyJoined {
-                guard let existing = try sdk.federation(id: code.federationId()) else { throw error }
-                joined = existing
+                // `reopenFederation` returns the live handle of an open
+                // federation, and brings back a quarantined or closed one.
+                joined = try await sdk.reopenFederation(id: code.federationId())
                 verb = "Already joined — reattached to"
             }
 
@@ -415,7 +419,7 @@ final class DemoModel: ObservableObject {
                 // Joined already, such as one recovered earlier that another
                 // federation has since replaced on screen: switch back to it, as
                 // `join` does, and follow whatever recovery it has.
-                guard let existing = try sdk.federation(id: code.federationId()) else { throw error }
+                let existing = try await sdk.reopenFederation(id: code.federationId())
                 guard !self.isSuperseded else { return "superseded by a newer join" }
                 self.attach(existing)
                 self.followRecovery()
@@ -429,10 +433,12 @@ final class DemoModel: ObservableObject {
             self.watch(.join, header: header, onState: { [weak self] in self?.recoveryProgressed($0) }) {
                 try await progress.next()
             }
-            let state = try await recovery.progress.state()
+            // `try?`: the federation is joined and attached by now, and the
+            // watcher above follows the recovery.
+            let state = try? await recovery.progress.state()
             guard !self.isSuperseded else { return "superseded by a newer join" }
-            self.recoveryState = state
-            return "\(header)\n\nstate: \(state)"
+            if let state { self.recoveryState = state }
+            return "\(header)\n\nstate: \(state.map { "\($0)" } ?? "unavailable")"
         }
     }
 
@@ -544,13 +550,15 @@ final class DemoModel: ObservableObject {
     /// in one go when there is none. The notes are a bearer instrument — hand
     /// them to a receiver out of band — and the operation keeps tracking
     /// whether they were redeemed or reclaimed.
-    func ecashSend() {
+    /// Whether the send started; Review moves on to its result only if it did.
+    @discardableResult
+    func ecashSend() -> Bool {
         // Refused here, not only by the disabled button: the button's state is a
         // frame behind, so a fast double tap would otherwise still start a
         // second spend and `run` would cancel the first one mid-commit. Same lag
         // for `isAttaching`: a join already in flight would clear this send's
         // notes when it lands, even if the send has finished by then.
-        guard !isSendingEcash, !isAttaching else { return }
+        guard !isSendingEcash, !isAttaching else { return false }
         isSendingEcash = true
         // Single use, like the other quotes: dropped before the send so a
         // second tap has nothing to execute.
@@ -638,6 +646,7 @@ final class DemoModel: ObservableObject {
             }
             return summary
         }
+        return true
     }
 
     /// Asks to take the last ecash send back. A request, not a guarantee: if
@@ -693,8 +702,9 @@ final class DemoModel: ObservableObject {
         }
     }
 
-    func lnPay() {
-        guard let quote = lnQuote, let lightning = federation?.lightning() else { return }
+    @discardableResult
+    func lnPay() -> Bool {
+        guard let quote = lnQuote, let lightning = federation?.lightning() else { return false }
         lnQuote = nil
         // An invoice is paid once, so the next send starts from an empty field
         // rather than one a paste would add to.
@@ -711,6 +721,7 @@ final class DemoModel: ObservableObject {
             }
             return header
         }
+        return true
     }
 
     // MARK: - On-chain
@@ -792,8 +803,9 @@ final class DemoModel: ObservableObject {
         }
     }
 
-    func onchainSend() {
-        guard let quote = onchainQuote, let onchain = federation?.onchain() else { return }
+    @discardableResult
+    func onchainSend() -> Bool {
+        guard let quote = onchainQuote, let onchain = federation?.onchain() else { return false }
         onchainQuote = nil
         stopWatching(.onchainSend)
         onchainSendState = nil
@@ -805,9 +817,13 @@ final class DemoModel: ObservableObject {
             self.watch(.onchainSend, header: header, onState: { [weak self] in self?.onchainSendState = $0 }) {
                 try await updates.next()
             }
-            let state = try await operation.state()
-            return "\(header)\nstate: \(state)"
+            // `try?`: the withdrawal has been submitted, and the watcher above
+            // reports its state; a failed read here must not report the send
+            // itself as failed.
+            let state = try? await operation.state()
+            return "\(header)\nstate: \(state.map { "\($0)" } ?? "unavailable")"
         }
+        return true
     }
 
     /// Follows the attached federation's recovery again: the attempt that is
@@ -853,6 +869,17 @@ final class DemoModel: ObservableObject {
         recoveryState = state
         if case .done = state { refreshFederationStatus() }
     }
+
+    /// The follower of one operation's detail, shared by every visit to it: its
+    /// subscription cannot be interrupted, so reusing it is what stops each
+    /// visit from leaving another one waiting. Dropped with the federation.
+    func follower(for id: OperationId) -> OperationFollower {
+        if let existing = followers[id] { return existing }
+        let follower = OperationFollower()
+        followers[id] = follower
+        return follower
+    }
+    private var followers: [OperationId: OperationFollower] = [:]
 
     /// One operation of the attached federation, by id, for a screen that
     /// follows it. `nil` for an id this federation has no record of.
@@ -912,9 +939,9 @@ final class DemoModel: ObservableObject {
 
     /// Brings the newest page of history up to date without the user asking.
     /// The SDK offers no stream of activity, so a balance update is the signal
-    /// that something settled. Merged rather than replacing the list, so rows
-    /// loaded with `moreActivity` stay, and kept apart from `run(.activity)` so
-    /// it never cancels a load the user started.
+    /// that something settled. Merged into the list where the two join up, so
+    /// rows loaded with `moreActivity` stay, and kept apart from `run(.activity)`
+    /// so it never cancels a load the user started.
     private func refreshRecentActivity() {
         guard let federation else { return }
         activityRefreshTask?.cancel()
@@ -922,15 +949,22 @@ final class DemoModel: ObservableObject {
             guard let page = try? await federation.activity(cursor: nil, limit: Self.activityPageSize),
                   !Task.isCancelled, let self, self.federation === federation
             else { return }
-            if self.activityItems.isEmpty {
+            // The newest page has no gaps down to its last row. If it reaches the
+            // end of history it is the whole of it. If it reaches a row already
+            // loaded, the two join up, and the old cursor still points past the
+            // last loaded row. Otherwise more than a page has been created since
+            // the last load and the loaded rows no longer join it: start again
+            // from this page and its own cursor, and Load more fetches the rest.
+            let fresh = Set(page.items.map(\.operationId))
+            if page.next == nil {
+                self.activityItems = page.items
+                self.activityNext = nil
+            } else if self.activityItems.contains(where: { fresh.contains($0.operationId) }) {
+                self.activityItems = page.items + self.activityItems.filter { !fresh.contains($0.operationId) }
+            } else {
                 self.activityItems = page.items
                 self.activityNext = page.next
-                return
             }
-            // A row missing from the newest page is older than all of it, so the
-            // order holds, and the cursor still points past the last loaded row.
-            let fresh = Set(page.items.map(\.operationId))
-            self.activityItems = page.items + self.activityItems.filter { !fresh.contains($0.operationId) }
         }
     }
     private var activityRefreshTask: Task<Void, Never>?
@@ -1046,6 +1080,7 @@ final class DemoModel: ObservableObject {
         capabilities = joined.capabilities()
         federationStatus = try? sdk?.federationStatus(id: joined.id())
         activityRefreshTask?.cancel()
+        followers = [:]
         activityItems = []
         activityNext = nil
 
@@ -1074,8 +1109,7 @@ final class DemoModel: ObservableObject {
         // `attach` runs inside one of those, so cancelling the whole set would
         // cancel its own caller and suppress the result it is about to return.
         for section in Section.federationScoped {
-            runTasks[section]?.cancel()
-            runTasks[section] = nil
+            stopRun(section)
             results[section] = nil
         }
 
@@ -1156,15 +1190,31 @@ final class DemoModel: ObservableObject {
     private static let workingText = "working…"
 
     /// Whether `section`'s action is running, for a screen that shows progress.
+    /// Tracked apart from `results`: a watcher writes that line too, while the
+    /// action that started it may still be running.
     func isWorking(_ section: Section) -> Bool {
-        results[section] == Self.workingText
+        working.contains(section)
+    }
+    @Published private var working: Set<Section> = []
+    /// Which run of a section is the current one, so a replaced run finishing
+    /// late does not mark its successor done.
+    private var runGenerations: [Section: Int] = [:]
+
+    private func stopRun(_ section: Section) {
+        runTasks[section]?.cancel()
+        runTasks[section] = nil
+        runGenerations[section, default: 0] += 1
+        working.remove(section)
     }
 
     private func run(_ section: Section, _ block: @MainActor @escaping () async throws -> String) {
-        runTasks[section]?.cancel()
+        stopRun(section)
+        let generation = runGenerations[section, default: 0]
+        working.insert(section)
         results[section] = Self.workingText
         failures[section] = nil
         runTasks[section] = Task {
+            defer { if self.runGenerations[section] == generation { self.working.remove(section) } }
             do {
                 let output = try await block()
                 // This guards the *result text* only. It does not protect any
