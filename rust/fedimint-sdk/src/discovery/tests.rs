@@ -414,7 +414,7 @@ async fn test_query_single_relay_stalled_deadline() {
         assert!(req.to_text().unwrap().contains("REQ"));
         let _ = req_tx.send(());
         // Server stalls without sending EOSE or events until client disconnects
-        while let Some(_) = ws.next().await {}
+        while ws.next().await.is_some() {}
     })
     .await;
 
