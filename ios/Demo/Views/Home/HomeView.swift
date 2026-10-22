@@ -11,6 +11,8 @@ struct HomeView: View {
     let showFederations: () -> Void
     let showRecoveryPhrase: () -> Void
 
+    @State private var showingRecovery = false
+
     /// How many recent rows Home shows before "See all".
     private static let recentCount = 3
 
@@ -37,6 +39,10 @@ struct HomeView: View {
         .screenBackground()
         // Home's header row stands in for a navigation bar.
         .toolbar(.hidden, for: .navigationBar)
+        // Attached to the screen rather than the card, which disappears when the
+        // recovery completes: a destination tied to it would close the screen
+        // before its "recovered" state could be seen.
+        .navigationDestination(isPresented: $showingRecovery) { RecoveryView(model: model) }
         .navigationDestination(for: ActivityItem.self) { OperationDetailView(model: model, item: $0) }
         .task(id: model.federationName) {
             // Once per federation: later loads are a pull or a tap, so a
@@ -126,9 +132,7 @@ struct HomeView: View {
     }
 
     private var recoveryCard: some View {
-        NavigationLink {
-            RecoveryView(model: model)
-        } label: {
+        Button { showingRecovery = true } label: {
             ListRow(icon: "arrow.clockwise", title: "Recovering your funds",
                     subtitle: "Sending and receiving open once it's done") {
                 Image(systemName: "chevron.right")

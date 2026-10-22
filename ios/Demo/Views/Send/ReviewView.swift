@@ -88,6 +88,7 @@ struct ReviewView: View {
                     if secondsLeft > 0 {
                         Button("Approve & send", action: approve)
                             .buttonStyle(.primary)
+                            .disabled(model.isAttaching || model.isSendingEcash)
                     } else {
                         Button("Get a new quote", action: requote)
                             .buttonStyle(.primary)
@@ -152,12 +153,14 @@ struct ReviewView: View {
 
     // MARK: - Actions
 
+    /// Moves on to the result only if the send started: one refused at the
+    /// start, such as while a federation is being attached, has no result of
+    /// its own to show, and the screen would show the previous send's.
     private func approve() {
-        submitted = true
         switch rail {
-        case .lightning: model.lnPay()
-        case .ecash: model.ecashSend()
-        case .onchain: model.onchainSend()
+        case .lightning: submitted = model.lnPay()
+        case .ecash: submitted = model.ecashSend()
+        case .onchain: submitted = model.onchainSend()
         }
     }
 

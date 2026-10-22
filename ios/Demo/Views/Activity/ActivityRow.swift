@@ -17,7 +17,7 @@ struct ActivityRow: View {
                 Text(signedAmount(amount))
                     .font(Typeface.figure)
                     .monospacedDigit()
-                    .foregroundStyle(settledCredit ? Palette.success : Palette.ink)
+                    .foregroundStyle(settledCredit ? Palette.success : (Self.moved(item) ? Palette.ink : Palette.muted))
             }
         }
     }
@@ -42,10 +42,32 @@ struct ActivityRow: View {
             }
         case .unknown: return "Operation"
         case .ecashReceive, .lnReceive:
-            return item.status == .pending ? "Receiving" : "Received"
+            switch item.status {
+            case .success: return "Received"
+            case .pending: return "Receiving"
+            // An invoice that expired unpaid ends `canceled`.
+            case .canceled: return "Not received"
+            case .failed: return "Receive failed"
+            case .refunded: return "Refunded"
+            case .unknown: return "Receive"
+            }
         case .ecashSend, .lnSend:
-            return item.status == .pending ? "Sending" : "Sent"
+            switch item.status {
+            case .success: return "Sent"
+            case .pending: return "Sending"
+            case .canceled: return "Canceled"
+            case .failed: return "Send failed"
+            case .refunded: return "Refunded"
+            case .unknown: return "Send"
+            }
         }
+    }
+
+    /// Whether the amount moved, or is moving: only then is it signed, and only
+    /// a settled credit is coloured. A failed, refunded or canceled payment
+    /// moved nothing in the end.
+    static func moved(_ item: ActivityItem) -> Bool {
+        item.status == .success || item.status == .pending
     }
 
     private var subtitle: String {
@@ -84,10 +106,14 @@ struct ActivityRow: View {
     }
 
     private func signedAmount(_ msats: UInt64) -> String {
-        Self.sign(item.direction) + SatsFormat.grouped(msats)
+        Self.sign(item) + SatsFormat.grouped(msats)
     }
 
-    static func sign(_ direction: Direction?) -> String {
+    static func sign(_ item: ActivityItem) -> String {
+        moved(item) ? sign(item.direction) : ""
+    }
+
+    private static func sign(_ direction: Direction?) -> String {
         switch direction {
         case .incoming: return "+"
         // U+2212 MINUS SIGN, the width of the plus.

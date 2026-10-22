@@ -10,7 +10,6 @@ import FedimintSdk
 /// spend one twice. A stopped attempt does not unlock it; only `done` does.
 struct RecoveryView: View {
     @ObservedObject var model: DemoModel
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
@@ -39,16 +38,12 @@ struct RecoveryView: View {
             .padding(Metrics.screenPadding)
         }
         .safeAreaInset(edge: .bottom) {
-            VStack(spacing: Metrics.gap) {
-                if case .failed = model.recoveryState {
-                    Button("Resume recovery") { model.resumeRecovery() }
-                        .buttonStyle(.primary)
-                }
-                Button("Go to home") { dismiss() }
-                    .buttonStyle(.secondary)
+            if case .failed = model.recoveryState {
+                Button("Resume recovery") { model.resumeRecovery() }
+                    .buttonStyle(.primary)
+                    .padding(Metrics.screenPadding)
+                    .background(Palette.background)
             }
-            .padding(Metrics.screenPadding)
-            .background(Palette.background)
         }
         .screenBackground()
         .navigationTitle("Recovery")
