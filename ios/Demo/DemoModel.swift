@@ -364,7 +364,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Join
 
     func preview() {
-        guard !isSendingEcash else { return }
+        guard !isSendingEcash, !isWorking(.join) else { return }
         run(.join) {
             guard let sdk = self.sdk else { return "open the wallet first" }
             let invite = self.trimmedInvite
@@ -388,7 +388,7 @@ final class DemoModel: ObservableObject {
     /// it: `.alreadyJoined` is the cue to look the running federation up by the
     /// id the invite code carries.
     func join() {
-        guard !isSending else { return }
+        guard !isSending, !isWorking(.join) else { return }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -418,7 +418,7 @@ final class DemoModel: ObservableObject {
     /// restored seed that already holds funds here. Spends and receives are
     /// refused until the rescan completes.
     func recover() {
-        guard !isSending else { return }
+        guard !isSending, !isWorking(.join) else { return }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -455,6 +455,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Lightning in
 
     func lnReceive() {
+        guard !isWorking(.lnReceive) else { return }
         // Before anything is awaited: the previous invoice's watcher would
         // otherwise go on writing into the state this invoice is about to show.
         // The previous invoice can still be paid; it is only no longer followed
@@ -497,6 +498,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Ecash
 
     func ecashReceive() {
+        guard !isWorking(.ecashReceive) else { return }
         run(.ecashReceive) {
             guard let ecash = self.federation?.ecash() else {
                 return "this federation has no mint module"
@@ -514,6 +516,8 @@ final class DemoModel: ObservableObject {
             switch try await operation.awaitFinal() {
             case .done:
                 outcome = "Redeemed \(formatMsats(notes.value()))"
+                // Spent now: left in the field, a second Redeem would only fail.
+                self.ecashNotes = ""
             case .failed(let reason):
                 outcome = "Not redeemed: \(reason)"
             case let state:
@@ -526,9 +530,8 @@ final class DemoModel: ObservableObject {
     /// Quotes an ecash send of `ecashSendAmount`, so the fee is on screen
     /// before anything is spent. `ecashSend` then executes it.
     func ecashQuoteAmount() {
-        // Both share `.ecashSend`, and `run` cancels the section's previous
-        // run: quoting during a send would cancel that send mid-commit.
-        guard !isSendingEcash else { return }
+        // Shares `.ecashSend` with the send, so this also waits for one.
+        guard !isWorking(.ecashSend) else { return }
         // Disarmed before the call, like the other quotes: a failed re-quote
         // must not leave the previous one live behind the error.
         ecashQuote = nil
@@ -663,7 +666,7 @@ final class DemoModel: ObservableObject {
     /// the receiver redeems first, the send ends `redeemed`, and
     /// `ecashSendState` says which way it went.
     func reclaimEcash() {
-        guard let operation = lastEcashSend else { return }
+        guard !isWorking(.ecashReclaim), let operation = lastEcashSend else { return }
         run(.ecashReclaim) {
             try await operation.requestCancel()
             return "reclaim requested"
@@ -675,9 +678,8 @@ final class DemoModel: ObservableObject {
     /// Quotes a pasted invoice: amount, fee, route and expiry, before anything
     /// is paid.
     func lnQuoteInvoice() {
-        // Shares `.lnPay` with the payment, and `run` cancels the section's
-        // previous run: quoting mid-payment would drop the payment's result.
-        guard !isPayingLightning else { return }
+        // Shares `.lnPay` with the payment, so this also waits for one.
+        guard !isWorking(.lnPay) else { return }
         // Disarmed synchronously, before the call: if this quote fails, the
         // previous one must not stay live behind the error message.
         lnQuote = nil
@@ -754,6 +756,7 @@ final class DemoModel: ObservableObject {
     /// follow, so the block ends with the address on screen and leaves the wait
     /// for the deposit to `watchNextDeposit`.
     func deposit() {
+        guard !isWorking(.deposit) else { return }
         // An earlier request's watcher renders into this section too, and it
         // may still be waiting for a payment to that request's address. It is
         // stopped here, or its next update would overwrite this request's
@@ -779,7 +782,8 @@ final class DemoModel: ObservableObject {
     }
 
     func onchainQuoteAddress() {
-        guard !isSendingOnchain else { return }
+        // Shares `.onchainSend` with the send, so this also waits for one.
+        guard !isWorking(.onchainSend) else { return }
         // Same as `lnQuoteInvoice`: a failed re-quote must not leave the
         // previous destination armed.
         onchainQuote = nil
@@ -1232,6 +1236,10 @@ final class DemoModel: ObservableObject {
     /// Whether `section`'s action is running, for a screen that shows progress.
     /// Tracked apart from `results`: a watcher writes that line too, while the
     /// action that started it may still be running.
+    ///
+    /// Actions also refuse to start while their section runs. Their buttons are
+    /// disabled then too, but a button's state lags a frame, and `run` cancels
+    /// the section's previous run, which would drop the first tap's result.
     func isWorking(_ section: Section) -> Bool {
         working.contains(section)
     }

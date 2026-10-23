@@ -91,6 +91,7 @@ struct ReviewView: View {
                             .disabled(model.isAttaching || (rail == .ecash && model.isSendingEcash))
                     } else {
                         Button("Get a new quote", action: requote)
+                            .disabled(model.isWorking(section))
                             .buttonStyle(.primary)
                     }
                     Button("Cancel") {
@@ -141,27 +142,48 @@ struct ReviewView: View {
         }
     }
 
-    private var unavailable: some View {
-        VStack(spacing: Metrics.gap) {
-            Text("This quote is no longer available.")
-                .font(Typeface.callout)
-                .foregroundStyle(Palette.muted)
-            Button("Back") { back() }.buttonStyle(.secondary)
+    /// No quote to review: a new one is on its way, the last request for one
+    /// failed, or it has been used or dropped.
+    @ViewBuilder private var unavailable: some View {
+        if model.isWorking(section) {
+            ProgressView("Getting a new quote")
+                .padding(Metrics.screenPadding)
+        } else {
+            VStack(spacing: Metrics.gap) {
+                Text(model.failures[section] ?? "This quote is no longer available.")
+                    .font(Typeface.callout)
+                    .foregroundStyle(Palette.muted)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                Button("Back") { back() }.buttonStyle(.secondary)
+            }
+            .padding(Metrics.screenPadding)
         }
-        .padding(Metrics.screenPadding)
+    }
+
+    /// The model section this rail quotes and sends in.
+    private var section: Section {
+        switch rail {
+        case .lightning: .lnPay
+        case .ecash: .ecashSend
+        case .onchain: .onchainSend
+        }
     }
 
     // MARK: - Actions
 
     /// Moves on to the result only if the send started: one refused at the
     /// start, such as while a federation is being attached, has no result of
-    /// its own to show, and the screen would show the previous send's.
+    /// its own to show. Never moves back: a second tap before the redraw is
+    /// refused too, and must not hide the send the first one started.
     private func approve() {
+        let started: Bool
         switch rail {
-        case .lightning: submitted = model.lnPay()
-        case .ecash: submitted = model.ecashSend()
-        case .onchain: submitted = model.onchainSend()
+        case .lightning: started = model.lnPay()
+        case .ecash: started = model.ecashSend()
+        case .onchain: started = model.onchainSend()
         }
+        if started { submitted = true }
     }
 
     private func requote() {
