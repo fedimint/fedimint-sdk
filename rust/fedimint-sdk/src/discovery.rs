@@ -144,11 +144,11 @@ fn parse_relay_message(msg_str: &str) -> RelayAction {
             if let Some(event) = arr
                 .get(2)
                 .and_then(|v| serde_json::from_value::<RawNip87Event>(v.clone()).ok())
+                .filter(|ev| {
+                    ev.verify_signature() && DiscoveredFederation::try_from(ev.clone()).is_ok()
+                })
             {
-                if event.verify_signature() && DiscoveredFederation::try_from(event.clone()).is_ok()
-                {
-                    return RelayAction::Event(event);
-                }
+                return RelayAction::Event(event);
             }
             RelayAction::Ignore
         }
