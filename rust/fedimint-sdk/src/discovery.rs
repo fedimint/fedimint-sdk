@@ -34,10 +34,17 @@ async fn fetch_from_nostr(relays: Vec<String>) -> Result<Vec<DiscoveredFederatio
     aggregate_discovered_events(results)
 }
 
+#[derive(Debug)]
+struct AggregatedEntry {
+    created_at: u64,
+    federation: DiscoveredFederation,
+}
+
 fn aggregate_discovered_events(
     results: Vec<Result<Vec<RawNip87Event>>>,
 ) -> Result<Vec<DiscoveredFederation>> {
-    let mut all_federations: HashMap<FederationId, DiscoveredFederation> = HashMap::new();
+    use crate::InviteCode;
+    let mut all_federations: HashMap<(FederationId, InviteCode), AggregatedEntry> = HashMap::new();
     let mut any_success = false;
 
     for res in results {
@@ -45,9 +52,25 @@ fn aggregate_discovered_events(
             Ok(events) => {
                 any_success = true;
                 for event in events {
+                    let created_at = event.created_at.unwrap_or(0);
                     if let Ok(fed) = DiscoveredFederation::try_from(event) {
-                        let id = fed.id.clone();
-                        all_federations.entry(id).or_insert(fed);
+                        let key = (fed.id.clone(), fed.invite.clone());
+                        match all_federations.entry(key) {
+                            std::collections::hash_map::Entry::Vacant(vacant) => {
+                                vacant.insert(AggregatedEntry {
+                                    created_at,
+                                    federation: fed,
+                                });
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                                if created_at > occupied.get().created_at {
+                                    occupied.insert(AggregatedEntry {
+                                        created_at,
+                                        federation: fed,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -64,8 +87,15 @@ fn aggregate_discovered_events(
         ));
     }
 
-    let mut federations: Vec<DiscoveredFederation> = all_federations.into_values().collect();
-    federations.sort_by_key(|a| a.id.to_string());
+    let mut federations: Vec<DiscoveredFederation> = all_federations
+        .into_values()
+        .map(|entry| entry.federation)
+        .collect();
+    federations.sort_by(|a, b| {
+        a.id.to_string()
+            .cmp(&b.id.to_string())
+            .then_with(|| a.invite.to_string().cmp(&b.invite.to_string()))
+    });
     Ok(federations)
 }
 
@@ -115,7 +145,10 @@ fn parse_relay_message(msg_str: &str) -> RelayAction {
                 .get(2)
                 .and_then(|v| serde_json::from_value::<RawNip87Event>(v.clone()).ok())
             {
-                return RelayAction::Event(event);
+                if event.verify_signature() && DiscoveredFederation::try_from(event.clone()).is_ok()
+                {
+                    return RelayAction::Event(event);
+                }
             }
             RelayAction::Ignore
         }
@@ -177,6 +210,31 @@ pub(crate) fn finalize_relay_query(
 // Platform-specific relay query implementations
 // ---------------------------------------------------------------------------
 
+fn validate_relay_url(relay_url: &str) -> Result<()> {
+    let parsed = fedimint_core::util::SafeUrl::parse(relay_url).map_err(|e| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("Discovery error: malformed relay URL {relay_url}: {e}"),
+        )
+    })?;
+    let scheme = parsed.url().scheme();
+    if scheme != "ws" && scheme != "wss" {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("Discovery error: relay URL {relay_url} scheme must be ws:// or wss://"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn ensure_rustls_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub(crate) async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
     query_single_relay_with_timeout(relay_url, std::time::Duration::from_secs(5)).await
@@ -187,6 +245,9 @@ pub(crate) async fn query_single_relay_with_timeout(
     relay_url: String,
     timeout_duration: std::time::Duration,
 ) -> Result<Vec<RawNip87Event>> {
+    validate_relay_url(&relay_url)?;
+    ensure_rustls_crypto_provider();
+
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async_with_config;
     use tokio_tungstenite::tungstenite::Message;
@@ -211,7 +272,7 @@ pub(crate) async fn query_single_relay_with_timeout(
             .await
             .map_err(|e| {
                 Error::new(
-                    ErrorCode::Internal,
+                    ErrorCode::FederationUnreachable,
                     format!("Discovery error: failed to send REQ to {relay_url}: {e}"),
                 )
             })?;
@@ -240,7 +301,7 @@ pub(crate) async fn query_single_relay_with_timeout(
     .await
     .map_err(|_| {
         Error::new(
-            ErrorCode::FederationUnreachable,
+            ErrorCode::Timeout,
             if timeout_duration == std::time::Duration::from_secs(5) {
                 format!("Discovery error: relay {relay_url} timed out after 5s")
             } else {
@@ -252,6 +313,8 @@ pub(crate) async fn query_single_relay_with_timeout(
 
 #[cfg(target_family = "wasm")]
 async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
+    validate_relay_url(&relay_url)?;
+
     use futures::{SinkExt, StreamExt};
     use gloo_net::websocket::Message;
     use gloo_net::websocket::futures::WebSocket;
@@ -273,7 +336,7 @@ async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
             if let Err(e) = res {
                 timeout.cancel();
                 return Err(Error::new(
-                    ErrorCode::Internal,
+                    ErrorCode::FederationUnreachable,
                     format!("Discovery error: failed to send REQ to {relay_url}: {e}"),
                 ));
             }
@@ -281,7 +344,7 @@ async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
         _ = &mut rx => {
             timeout.cancel();
             return Err(Error::new(
-                ErrorCode::FederationUnreachable,
+                ErrorCode::Timeout,
                 format!("Discovery error: relay {relay_url} timed out on WASM"),
             ));
         }
@@ -316,7 +379,7 @@ async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
     let _ = ws.send(Message::Text(make_close_message())).await;
     if timeout_expired {
         return Err(Error::new(
-            ErrorCode::FederationUnreachable,
+            ErrorCode::Timeout,
             format!("Discovery error: relay {relay_url} timed out on WASM"),
         ));
     }

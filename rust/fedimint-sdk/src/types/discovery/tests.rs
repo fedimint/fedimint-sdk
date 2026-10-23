@@ -235,3 +235,116 @@ fn test_reserved_metadata_keys_rejected_from_content_when_tags_absent() {
     assert!(!fed.metadata.contains_key("network"));
     assert_eq!(fed.metadata.get("custom_attr").unwrap(), "ok");
 }
+
+fn sign_test_event(
+    keypair: &fedimint_core::secp256k1::Keypair,
+    created_at: u64,
+    kind: u64,
+    tags: Vec<Vec<String>>,
+    content: String,
+) -> RawNip87Event {
+    let (xonly, _) = keypair.x_only_public_key();
+    let pubkey_hex = xonly.to_string();
+    let serialized =
+        serde_json::to_string(&(0, &pubkey_hex, created_at, kind, &tags, &content)).unwrap();
+    use fedimint_core::bitcoin::hashes::{Hash, sha256};
+    let id_hash = sha256::Hash::hash(serialized.as_bytes());
+    let id_hex = format!("{id_hash:x}");
+    let msg = fedimint_core::secp256k1::Message::from_digest(id_hash.to_byte_array());
+    let sig = fedimint_core::secp256k1::SECP256K1.sign_schnorr(&msg, keypair);
+
+    RawNip87Event {
+        id: Some(id_hex),
+        pubkey: Some(pubkey_hex),
+        created_at: Some(created_at),
+        kind: Some(kind),
+        tags,
+        content,
+        sig: Some(sig.to_string()),
+    }
+}
+
+#[test]
+fn test_verify_signature_valid() {
+    let secp = fedimint_core::secp256k1::Secp256k1::new();
+    let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[42u8; 32]).unwrap();
+    let keypair = fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk);
+
+    let event = sign_test_event(
+        &keypair,
+        1700000000,
+        38173,
+        vec![
+            vec!["d".to_string(), CODE_FEDERATION_ID.to_string()],
+            vec!["u".to_string(), CODE.to_string()],
+        ],
+        r#"{"name": "Valid Signed Fed"}"#.to_string(),
+    );
+
+    assert!(event.verify_signature());
+}
+
+#[test]
+fn test_verify_signature_tampered_id() {
+    let secp = fedimint_core::secp256k1::Secp256k1::new();
+    let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[42u8; 32]).unwrap();
+    let keypair = fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk);
+
+    let mut event = sign_test_event(
+        &keypair,
+        1700000000,
+        38173,
+        vec![vec!["d".to_string(), CODE_FEDERATION_ID.to_string()]],
+        "content".to_string(),
+    );
+    event.id = Some("1111111111111111111111111111111111111111111111111111111111111111".to_string());
+    assert!(!event.verify_signature());
+}
+
+#[test]
+fn test_verify_signature_tampered_content() {
+    let secp = fedimint_core::secp256k1::Secp256k1::new();
+    let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[42u8; 32]).unwrap();
+    let keypair = fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk);
+
+    let mut event = sign_test_event(
+        &keypair,
+        1700000000,
+        38173,
+        vec![vec!["d".to_string(), CODE_FEDERATION_ID.to_string()]],
+        "legitimate content".to_string(),
+    );
+    event.content = "tampered content".to_string();
+    assert!(!event.verify_signature());
+}
+
+#[test]
+fn test_verify_signature_corrupted_sig() {
+    let secp = fedimint_core::secp256k1::Secp256k1::new();
+    let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[42u8; 32]).unwrap();
+    let keypair = fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk);
+
+    let mut event = sign_test_event(
+        &keypair,
+        1700000000,
+        38173,
+        vec![vec!["d".to_string(), CODE_FEDERATION_ID.to_string()]],
+        "content".to_string(),
+    );
+    event.sig = Some("00".repeat(64));
+    assert!(!event.verify_signature());
+}
+
+#[test]
+fn test_verify_signature_missing_sig() {
+    let raw = RawNip87Event {
+        id: Some("11".repeat(32)),
+        pubkey: Some("22".repeat(32)),
+        created_at: Some(12345),
+        kind: Some(38173),
+        tags: vec![],
+        content: "".to_string(),
+        sig: None,
+    };
+    assert!(!raw.verify_signature());
+}

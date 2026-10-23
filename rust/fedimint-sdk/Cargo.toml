@@ -117,6 +117,9 @@ tracing = "0.1.44"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # Native WebSocket client for Nostr NIP-87 federation discovery (target-gated to non-wasm).
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+# Named directly to install a default process-level CryptoProvider (ring) on native targets before
+# initiating wss:// connections with tokio-tungstenite.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Must equal the `uniffi` that `rust/uniffi-bindgen` builds: the generator reads the metadata this
 # version bakes into the built library, so a mismatch fails codegen. `tokio` is what makes
 # `#[uniffi::export(async_runtime = "tokio")]` available.

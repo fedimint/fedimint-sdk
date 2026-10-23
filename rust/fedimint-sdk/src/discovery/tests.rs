@@ -26,26 +26,102 @@ async fn test_discover_federations_empty_relays_fails() {
     assert_eq!(res.unwrap_err().code, ErrorCode::InvalidInput);
 }
 
+fn make_signed_test_event(
+    fed_id: &str,
+    invite: &str,
+    created_at: u64,
+    content: &str,
+) -> RawNip87Event {
+    let secp = fedimint_core::secp256k1::Secp256k1::new();
+    let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[42u8; 32]).unwrap();
+    let keypair = fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk);
+    let (xonly, _) = keypair.x_only_public_key();
+    let pubkey_hex = xonly.to_string();
+
+    let tags = vec![
+        vec!["d".to_string(), fed_id.to_string()],
+        vec!["u".to_string(), invite.to_string()],
+    ];
+
+    let serialized =
+        serde_json::to_string(&(0, &pubkey_hex, created_at, 38173u64, &tags, content)).unwrap();
+
+    use fedimint_core::bitcoin::hashes::{Hash, sha256};
+    let id_hash = sha256::Hash::hash(serialized.as_bytes());
+    let id_hex = format!("{id_hash:x}");
+    let msg = fedimint_core::secp256k1::Message::from_digest(id_hash.to_byte_array());
+    let sig = secp.sign_schnorr(&msg, &keypair);
+
+    RawNip87Event {
+        id: Some(id_hex),
+        pubkey: Some(pubkey_hex),
+        created_at: Some(created_at),
+        kind: Some(38173),
+        tags,
+        content: content.to_string(),
+        sig: Some(sig.to_string()),
+    }
+}
+
+fn make_signed_event_frame(event: &RawNip87Event) -> String {
+    let ev_val = serde_json::json!({
+        "id": event.id,
+        "pubkey": event.pubkey,
+        "created_at": event.created_at,
+        "kind": event.kind,
+        "tags": event.tags,
+        "content": event.content,
+        "sig": event.sig,
+    });
+    serde_json::json!(["EVENT", SUB_ID, ev_val]).to_string()
+}
+
+fn make_test_raw_event(fed_id: &str, invite: &str) -> RawNip87Event {
+    make_signed_test_event(fed_id, invite, 12345, r#"{"name": "Test Fed"}"#)
+}
+
 #[test]
 fn test_parse_relay_event_message() {
-    let raw_msg = format!(
-        r#"["EVENT", "{SUB_ID}", {{
-            "kind": 38173,
-            "pubkey": "pubkey123",
-            "content": "{{\"name\": \"Community Fed\"}}",
-            "tags": [
-                ["d", "{CODE_FEDERATION_ID}"],
-                ["u", "{CODE}"]
-            ]
-        }}]"#
+    let ev = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        12345,
+        r#"{"name": "Community Fed"}"#,
     );
+    let raw_msg = make_signed_event_frame(&ev);
     match parse_relay_message(&raw_msg) {
-        RelayAction::Event(ev) => {
-            assert_eq!(ev.kind, Some(38173));
-            assert_eq!(ev.pubkey.as_deref(), Some("pubkey123"));
+        RelayAction::Event(parsed) => {
+            assert_eq!(parsed.kind, Some(38173));
+            assert_eq!(parsed.pubkey, ev.pubkey);
         }
         other => panic!("expected RelayAction::Event, got {other:?}"),
     }
+}
+
+#[test]
+fn test_parse_relay_rejects_invalid_signature() {
+    let mut ev = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        12345,
+        r#"{"name": "Spoofed Fed"}"#,
+    );
+    ev.sig = Some("00".repeat(64));
+    let raw_msg = make_signed_event_frame(&ev);
+    assert_eq!(parse_relay_message(&raw_msg), RelayAction::Ignore);
+}
+
+#[test]
+fn test_parse_relay_rejects_tampered_id() {
+    let mut ev = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        12345,
+        r#"{"name": "Spoofed Fed"}"#,
+    );
+    ev.id = Some("11".repeat(32));
+    let raw_msg = make_signed_event_frame(&ev);
+    assert_eq!(parse_relay_message(&raw_msg), RelayAction::Ignore);
 }
 
 #[test]
@@ -68,17 +144,22 @@ fn test_parse_relay_ignore_message() {
     let bare_eose = r#"["EOSE"]"#;
     assert_eq!(parse_relay_message(bare_eose), RelayAction::Ignore);
 
-    let wrong_sub_event = format!(
-        r#"["EVENT", "wrong_sub_id", {{
-            "kind": 38173,
-            "pubkey": "pubkey123",
-            "content": "{{\"name\": \"Community Fed\"}}",
-            "tags": [
-                ["d", "{CODE_FEDERATION_ID}"],
-                ["u", "{CODE}"]
-            ]
-        }}]"#
+    let ev = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        12345,
+        r#"{"name": "Community Fed"}"#,
     );
+    let wrong_sub_event = serde_json::json!(["EVENT", "wrong_sub_id", {
+        "id": ev.id,
+        "pubkey": ev.pubkey,
+        "created_at": ev.created_at,
+        "kind": ev.kind,
+        "tags": ev.tags,
+        "content": ev.content,
+        "sig": ev.sig,
+    }])
+    .to_string();
     assert_eq!(parse_relay_message(&wrong_sub_event), RelayAction::Ignore);
 
     let oversized_msg = format!(
@@ -99,20 +180,6 @@ fn test_make_req_message_includes_limit() {
     assert_eq!(arr[2]["limit"], MAX_EVENTS);
 }
 
-fn make_test_raw_event(fed_id: &str, invite: &str) -> RawNip87Event {
-    RawNip87Event {
-        id: Some("ev1".to_string()),
-        pubkey: Some("pub1".to_string()),
-        created_at: Some(12345),
-        kind: Some(38173),
-        tags: vec![
-            vec!["d".to_string(), fed_id.to_string()],
-            vec!["u".to_string(), invite.to_string()],
-        ],
-        content: r#"{"name": "Test Fed"}"#.to_string(),
-    }
-}
-
 #[test]
 fn test_aggregate_discovered_events_deduplication() {
     let ev1 = make_test_raw_event(CODE_FEDERATION_ID, CODE);
@@ -129,6 +196,54 @@ fn test_aggregate_discovered_events_deduplication() {
         feds[0].id,
         CODE_FEDERATION_ID.parse::<FederationId>().unwrap()
     );
+}
+
+#[test]
+fn test_aggregate_discovered_events_anti_shadowing_preserves_multiple_invites() {
+    let invite1 = CODE;
+    let fed_id = CODE_FEDERATION_ID.parse::<FederationId>().unwrap();
+    let other_url = fedimint_core::util::SafeUrl::parse("wss://secondary.guardian.net/").unwrap();
+    let invite2_str =
+        fedimint_core::invite_code::InviteCode::new(other_url, fed_id.to_upstream(), None, None)
+            .to_string();
+
+    let ev1 = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        invite1,
+        100,
+        r#"{"name": "Primary Fed"}"#,
+    );
+    let ev2 = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        &invite2_str,
+        100,
+        r#"{"name": "Secondary Fed"}"#,
+    );
+
+    let results = vec![Ok(vec![ev1, ev2])];
+    let feds = aggregate_discovered_events(results).expect("aggregation should succeed");
+    assert_eq!(
+        feds.len(),
+        2,
+        "distinct invite codes for the same federation must both be preserved"
+    );
+}
+
+#[test]
+fn test_aggregate_discovered_events_updates_to_latest_timestamp() {
+    let ev_old =
+        make_signed_test_event(CODE_FEDERATION_ID, CODE, 100, r#"{"name": "Old Fed Name"}"#);
+    let ev_new = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        200,
+        r#"{"name": "Updated Fed Name"}"#,
+    );
+
+    let results = vec![Ok(vec![ev_old]), Ok(vec![ev_new])];
+    let feds = aggregate_discovered_events(results).expect("aggregation should succeed");
+    assert_eq!(feds.len(), 1);
+    assert_eq!(feds[0].name.as_deref(), Some("Updated Fed Name"));
 }
 
 #[test]
@@ -178,17 +293,13 @@ fn test_shared_completion_policy_eose_and_cutoff() {
     let mut events = Vec::new();
     let mut received_eose = false;
 
-    let ev_str = format!(
-        r#"["EVENT", "{SUB_ID}", {{
-            "kind": 38173,
-            "pubkey": "pubkey123",
-            "content": "{{\"name\": \"Community Fed\"}}",
-            "tags": [
-                ["d", "{CODE_FEDERATION_ID}"],
-                ["u", "{CODE}"]
-            ]
-        }}]"#
+    let ev = make_signed_test_event(
+        CODE_FEDERATION_ID,
+        CODE,
+        12345,
+        r#"{"name": "Community Fed"}"#,
     );
+    let ev_str = make_signed_event_frame(&ev);
     let should_break = process_relay_message_frame(&ev_str, &mut events, &mut received_eose);
     assert!(!should_break);
     assert_eq!(events.len(), 1);
@@ -290,17 +401,13 @@ async fn test_query_single_relay_matching_eose_with_events() {
     let (url, server) = spawn_mock_relay(|mut ws| async move {
         let req = ws.next().await.unwrap().unwrap();
         assert!(req.to_text().unwrap().contains("REQ"));
-        let event_json = format!(
-            r#"["EVENT", "{SUB_ID}", {{
-                "kind": 38173,
-                "pubkey": "pubkey123",
-                "content": "{{\"name\": \"Community Fed\"}}",
-                "tags": [
-                    ["d", "{CODE_FEDERATION_ID}"],
-                    ["u", "{CODE}"]
-                ]
-            }}]"#
+        let ev = make_signed_test_event(
+            CODE_FEDERATION_ID,
+            CODE,
+            12345,
+            r#"{"name": "Community Fed"}"#,
         );
+        let event_json = make_signed_event_frame(&ev);
         ws.send(Message::text(event_json)).await.unwrap();
         ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
             .await
@@ -325,17 +432,13 @@ async fn test_query_single_relay_disconnect_before_eose_partial_events() {
 
     let (url, server) = spawn_mock_relay(|mut ws| async move {
         let _ = ws.next().await;
-        let event_json = format!(
-            r#"["EVENT", "{SUB_ID}", {{
-                "kind": 38173,
-                "pubkey": "pubkey123",
-                "content": "{{\"name\": \"Partial Fed\"}}",
-                "tags": [
-                    ["d", "{CODE_FEDERATION_ID}"],
-                    ["u", "{CODE}"]
-                ]
-            }}]"#
+        let ev = make_signed_test_event(
+            CODE_FEDERATION_ID,
+            CODE,
+            12345,
+            r#"{"name": "Partial Fed"}"#,
         );
+        let event_json = make_signed_event_frame(&ev);
         ws.send(Message::text(event_json)).await.unwrap();
         let _ = ws.close(None).await;
     })
@@ -377,17 +480,13 @@ async fn test_query_single_relay_completion_at_event_cap_without_eose() {
     let (url, server) = spawn_mock_relay(|mut ws| async move {
         let _ = ws.next().await;
         for i in 0..MAX_EVENTS {
-            let event_json = format!(
-                r#"["EVENT", "{SUB_ID}", {{
-                    "kind": 38173,
-                    "pubkey": "pubkey_{i}",
-                    "content": "{{\"name\": \"Fed {i}\"}}",
-                    "tags": [
-                        ["d", "{CODE_FEDERATION_ID}"],
-                        ["u", "{CODE}"]
-                    ]
-                }}]"#
+            let ev = make_signed_test_event(
+                CODE_FEDERATION_ID,
+                CODE,
+                1000 + i as u64,
+                &format!(r#"{{"name": "Fed {i}"}}"#),
             );
+            let event_json = make_signed_event_frame(&ev);
             ws.send(Message::text(event_json)).await.unwrap();
         }
         let close = ws.next().await.unwrap().unwrap();
@@ -421,13 +520,33 @@ async fn test_query_single_relay_stalled_deadline() {
     let err = query_single_relay_with_timeout(url, std::time::Duration::from_millis(500))
         .await
         .expect_err("stalled relay must hit query timeout deadline");
-    assert_eq!(err.code, ErrorCode::FederationUnreachable);
+    assert_eq!(err.code, ErrorCode::Timeout);
     assert!(err.message.contains("timed out"));
     assert!(
         req_rx.await.is_ok(),
         "query handshake must complete before timeout"
     );
     server.await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_rejects_malformed_url() {
+    let err = query_single_relay("not-a-valid-url".to_string())
+        .await
+        .expect_err("malformed URL must fail");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("malformed relay URL"));
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_rejects_non_ws_scheme() {
+    let err = query_single_relay("http://127.0.0.1:8080".to_string())
+        .await
+        .expect_err("http scheme must fail");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("scheme must be ws:// or wss://"));
 }
 
 // ---------------------------------------------------------------------------
