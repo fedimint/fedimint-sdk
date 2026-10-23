@@ -217,7 +217,7 @@ fn validate_relay_url(relay_url: &str) -> Result<()> {
             format!("Discovery error: malformed relay URL {relay_url}: {e}"),
         )
     })?;
-    let scheme = parsed.url().scheme();
+    let scheme = parsed.scheme();
     if scheme != "ws" && scheme != "wss" {
         return Err(Error::new(
             ErrorCode::InvalidInput,

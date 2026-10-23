@@ -203,9 +203,13 @@ fn test_aggregate_discovered_events_anti_shadowing_preserves_multiple_invites() 
     let invite1 = CODE;
     let fed_id = CODE_FEDERATION_ID.parse::<FederationId>().unwrap();
     let other_url = fedimint_core::util::SafeUrl::parse("wss://secondary.guardian.net/").unwrap();
-    let invite2_str =
-        fedimint_core::invite_code::InviteCode::new(other_url, fed_id.to_upstream(), None, None)
-            .to_string();
+    let invite2_str = fedimint_core::invite_code::InviteCode::new(
+        other_url,
+        fedimint_core::PeerId::from(1),
+        fed_id.inner(),
+        None,
+    )
+    .to_string();
 
     let ev1 = make_signed_test_event(
         CODE_FEDERATION_ID,
