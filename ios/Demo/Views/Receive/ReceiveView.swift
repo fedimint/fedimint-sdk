@@ -97,10 +97,10 @@ struct ReceiveView: View {
             } else {
                 Button("Create invoice", action: createInvoice)
                     .buttonStyle(.primary)
-                    .disabled(satsToMsats == nil)
+                    .disabled(satsToMsats == nil || model.isWorking(.lnReceive))
             }
 
-            failure(model.results[.lnReceive], shown: !showingInvoice)
+            failure(model.failures[.lnReceive], shown: !showingInvoice)
         }
         // A new invoice landing ends composing, and shows that invoice.
         .onChange(of: model.lastInvoice) { composing = false }
@@ -179,7 +179,7 @@ struct ReceiveView: View {
 
             Button("Redeem") { model.ecashReceive() }
                 .buttonStyle(.primary)
-                .disabled(notesValue == nil)
+                .disabled(notesValue == nil || model.isWorking(.ecashReceive))
 
             failure(model.results[.ecashReceive], shown: true)
         }
@@ -230,9 +230,10 @@ struct ReceiveView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Get deposit address") { model.deposit() }
                     .buttonStyle(.primary)
+                    .disabled(model.isWorking(.deposit))
             }
 
-            failure(model.results[.deposit], shown: model.lastAddress == nil)
+            failure(model.failures[.deposit], shown: model.lastAddress == nil)
         }
     }
 
