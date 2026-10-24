@@ -165,8 +165,8 @@ final class DemoModel: ObservableObject {
     @Published private(set) var isPayingLightning = false
     @Published private(set) var isSendingOnchain = false
 
-    /// Open Wallet, Join and Recover runs in flight — everything that may end in
-    /// `attach`.
+    /// Wallet opens, joins and recoveries in flight — everything that may end
+    /// in `attach`.
     ///
     /// The other half of `isSendingEcash`. That flag stops an attach from
     /// starting during a send; this one stops a send from starting while an
@@ -245,7 +245,7 @@ final class DemoModel: ObservableObject {
     // MARK: - Wallet
 
     func openWallet() {
-        guard !isSending else { return }
+        guard !isSending, !isAttaching else { return }
         attachesInFlight += 1
         run(.wallet) {
             defer { self.attachesInFlight -= 1 }
@@ -316,7 +316,7 @@ final class DemoModel: ObservableObject {
             // Hidden while the prompt was up, such as the sheet showing it
             // being dismissed: the phrase must not appear behind that.
             guard generation == revealGeneration else { return }
-            // Read the handle after the prompt, not before: an Open Wallet
+            // Read the handle after the prompt, not before: a wallet open
             // that lands while it is up replaces the instance, and the phrase
             // shown has to be the open wallet's.
             guard let sdk = self.sdk else { return }
@@ -348,7 +348,7 @@ final class DemoModel: ObservableObject {
             // what `attach` both cancels and clears, and this section holds the
             // SDK-level status line — so `attach` never cancels this run and
             // `isSuperseded` alone cannot see a federation switch. Compare the
-            // handle instead, or a Refresh started on the previous federation
+            // handle instead, or a refresh started on the previous federation
             // lands its balance under the new one.
             guard !self.isSuperseded, self.federation === federation else {
                 return "federation changed — refresh again"
@@ -456,11 +456,6 @@ final class DemoModel: ObservableObject {
 
     func lnReceive() {
         guard !isWorking(.lnReceive) else { return }
-        // Before anything is awaited: the previous invoice's watcher would
-        // otherwise go on writing into the state this invoice is about to show.
-        // The previous invoice can still be paid; it is only no longer followed
-        // here.
-        stopWatching(.lnReceive)
         run(.lnReceive) {
             guard let lightning = self.federation?.lightning() else {
                 return "this federation has no lightning module"
@@ -474,6 +469,12 @@ final class DemoModel: ObservableObject {
                 description: self.lnReceiveDescription
             )
             guard !self.isSuperseded else { return "superseded by a newer request" }
+            // Before the state below is reset: the previous invoice's watcher
+            // would otherwise go on writing into it. Not before the invoice
+            // exists, so a request that fails leaves the previous one followed.
+            // The previous invoice can still be paid; it is only no longer
+            // followed here.
+            self.stopWatching(.lnReceive)
             self.lastInvoice = receive.invoice
             self.lnReceiveState = nil
             self.lnReceiveInvoiceMsats = nil
@@ -629,21 +630,17 @@ final class DemoModel: ObservableObject {
             // federation the user has since switched away from is the lesser
             // evil.
             //
-            // The token leaves only through `lastNotes` and "Copy notes". The
-            // summary names the notes but never prints them, because it renders
-            // as selectable text, and a long-press copy
-            // would put bearer value on the pasteboard without the local-only,
-            // expiring write that button makes. `attach` clears `lastNotes` and
-            // this summary together, so leaving the token out of it loses
-            // nothing.
+            // The token leaves only through `lastNotes`, which the ready screen
+            // shares or copies. The summary names the notes but never prints
+            // them, so they never sit in text that could be copied without the
+            // local-only, expiring write that screen's copy makes. `attach`
+            // clears `lastNotes` and this summary together, so leaving the
+            // token out of it loses nothing.
             self.lastNotes = sent.notes
             self.lastEcashSend = sent.operation
 
             let summary = """
                 notes \(formatMsats(quote.notesValue())) + fee \(formatMsats(quote.fee()))
-
-                hand these notes to the receiver: tap Copy notes. The copy stays
-                on this device and leaves the pasteboard after two minutes.
 
                 operation \(sent.operation.id()) — \(state.map { "\($0)" } ?? "state unavailable")
                 """
@@ -745,7 +742,7 @@ final class DemoModel: ObservableObject {
 
     // MARK: - On-chain
 
-    /// Shows a deposit address, then follows the first deposit the wallet finds.
+    /// Shows a deposit address, then follows the first deposit found to it.
     ///
     /// The subscription is opened before the address is requested. It yields
     /// only the deposits found after it was opened, so one opened later could
@@ -757,12 +754,6 @@ final class DemoModel: ObservableObject {
     /// for the deposit to `watchNextDeposit`.
     func deposit() {
         guard !isWorking(.deposit) else { return }
-        // An earlier request's watcher renders into this section too, and it
-        // may still be waiting for a payment to that request's address. It is
-        // stopped here, or its next update would overwrite this request's
-        // address.
-        stopWatching(.deposit)
-
         run(.deposit) {
             guard let onchain = self.federation?.onchain() else {
                 return "this federation has no wallet module"
@@ -771,12 +762,17 @@ final class DemoModel: ObservableObject {
             let deposits = try await onchain.deposits()
             let address = try await onchain.receive()
             guard !self.isSuperseded else { return "superseded by a newer request" }
+            // An earlier request's watcher renders into this section too, and it
+            // may still be waiting for a payment to that request's address. It is
+            // stopped only now, so a request that fails leaves the address on
+            // screen still followed.
+            self.stopWatching(.deposit)
             self.lastAddress = address
             self.depositFound = false
             self.depositState = nil
 
             let header = "Send bitcoin to:\n\(address)"
-            self.watchNextDeposit(deposits, header: header)
+            self.watchNextDeposit(deposits, address: address, header: header)
             return header
         }
     }
@@ -852,7 +848,7 @@ final class DemoModel: ObservableObject {
     /// case, the recovery screen opens with `followRecovery` and leaves this to
     /// the user's tap.
     func resumeRecovery() {
-        guard let sdk, let id = federationId else { return }
+        guard !isWorking(.recovery), let sdk, let id = federationId else { return }
         run(.recovery) {
             let handle = try await sdk.resumeRecovery(id: id)
             guard !self.isSuperseded else { return "superseded by a newer resume" }
@@ -866,8 +862,6 @@ final class DemoModel: ObservableObject {
         }
     }
 
-    /// A recovery that completed also changed the federation's status, from
-    /// `recovering`, so that is read again with it.
     /// Reads where the recovery stands without starting anything, and follows
     /// it only if it is running. A stopped attempt is left stopped: resuming
     /// it starts a new attempt, which is the user's call, not the screen's.
@@ -907,6 +901,8 @@ final class DemoModel: ObservableObject {
         }
     }
 
+    /// A recovery that completed also changed the federation's status, from
+    /// `recovering`, so that is read again with it.
     private func recoveryProgressed(_ state: RecoveryState) {
         recoveryState = state
         if case .done = state { refreshFederationStatus() }
@@ -1353,17 +1349,21 @@ final class DemoModel: ObservableObject {
     /// found it. This is the Swift counterpart of the Android demo's
     /// `watchNextDeposit`.
     ///
-    /// The wait lasts until the wallet finds its next deposit, to any address
-    /// it has handed out, and `next()` cannot be interrupted. That is why it
-    /// runs in a watcher task and not in the `run` block that showed the
-    /// address: a watcher does not hold the model, see `watch`. A wait that
-    /// fails, such as the federation closing, is rendered under `header`.
-    private func watchNextDeposit(_ deposits: OnchainDeposits, header: String) {
-        watchTasks[.deposit]?.cancel()
+    /// The wallet yields deposits to any address it has handed out, so the
+    /// ones to other addresses are skipped, and `next()` cannot be
+    /// interrupted. That is why it runs in a watcher task and not in the `run`
+    /// block that showed the address: a watcher does not hold the model, see
+    /// `watch`. A wait that fails, such as the federation closing, is rendered
+    /// under `header`.
+    private func watchNextDeposit(_ deposits: OnchainDeposits, address: Address, header: String) {
         watchTasks[.deposit] = Task { [weak self] in
             let operation: OnchainReceiveOperation
             do {
-                operation = try await deposits.next()
+                var found = try await deposits.next()
+                while try await found.details().address != address {
+                    found = try await deposits.next()
+                }
+                operation = found
             } catch let error as SdkError {
                 // The address stays on screen above the error: it may already
                 // have been shown to a payer.

@@ -47,6 +47,7 @@ struct RecoveryView: View {
             if case .failed = model.recoveryState {
                 Button("Resume recovery") { model.resumeRecovery() }
                     .buttonStyle(.primary)
+                    .disabled(model.isWorking(.recovery))
                     .padding(Metrics.screenPadding)
                     .background(Palette.background)
             }
