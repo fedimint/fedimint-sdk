@@ -233,7 +233,7 @@ struct ReceiveView: View {
                     .disabled(model.isWorking(.deposit))
             }
 
-            failure(model.failures[.deposit], shown: model.lastAddress == nil)
+            failure(model.failures[.deposit], shown: true)
         }
     }
 
