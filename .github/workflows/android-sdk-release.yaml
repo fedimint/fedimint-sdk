@@ -43,9 +43,9 @@ name: Android SDK Release
 #   1. Run sdk-version-bump.yaml (Actions → SDK Version Bump) for `android`,
 #      or for `bindings` or `all` to release other components with it. It
 #      opens a pull request that sets `fedimintSdk` in
-#      android/gradle/libs.versions.toml and drafts the version's section in
-#      android/CHANGELOG.md.
-#   2. Rewrite the drafted notes for users in that pull request, and merge it.
+#      android/gradle/libs.versions.toml and writes the version's section in
+#      android/CHANGELOG.md from the commits since the last release.
+#   2. Optionally edit the notes in that pull request, then merge it.
 #      sdk-tag.yaml then tags the merge commit `android-sdk-v<version>`
 #      and starts this workflow on the tag.
 #   3. Approve the `maven-central` environment when the run asks.

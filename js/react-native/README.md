@@ -77,10 +77,10 @@ workflow:
    both tarballs and their checksums attached.
 
 A release is refused if the tag is not a `react-native-sdk-v*` tag that names the version the
-packages have in the tree, if its commit is not on `main`, if its notes are missing or still a
-draft, if another component has the same version tagged on another commit, or if the version is
-not newer than every earlier release tag, of the React Native SDK or of another component, and
-every version of either package on npm, snapshots included. The header of
+packages have in the tree, if its commit is not on `main`, if its notes are missing, if another
+component has the same version tagged on another commit, or if the version is not newer than
+every earlier release tag, of the React Native SDK or of another component, and every version of
+either package on npm, snapshots included. The header of
 [`scripts/sdk-release.sh`](../../scripts/sdk-release.sh) has the full rules.
 
 A tag cannot be moved or deleted, and a version on npm cannot be published again. A release that

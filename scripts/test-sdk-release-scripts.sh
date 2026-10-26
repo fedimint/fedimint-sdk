@@ -241,6 +241,9 @@ change() {
     git -C "$dir" commit -q -m "$subject"
 }
 
+# Prints its arguments, one per line.
+lines() { printf '%s\n' "$@"; }
+
 # expect_ok <name> <expected stdout> -- <command...>
 expect_ok() {
     local name="$1" want="$2" out
@@ -249,6 +252,25 @@ expect_ok() {
         if [[ "$out" == "$want" ]]; then pass "$name"; else fail "$name" "expected: $want"$'\n'"got: $out"; fi
     else
         fail "$name" "exited non-zero: $out"
+    fi
+}
+
+# expect_split <name> <expected stdout> <expected stderr> -- <command...>: succeeds, prints exactly
+# the first on stdout and exactly the second on stderr.
+expect_split() {
+    local name="$1" want_out="$2" want_err="$3" out err status=0
+    shift 4
+    "$@" >"$WORK/split.out" 2>"$WORK/split.err" || status=$?
+    out="$(<"$WORK/split.out")"
+    err="$(<"$WORK/split.err")"
+    if [[ "$status" -ne 0 ]]; then
+        fail "$name" "exited with status $status: $err"
+    elif [[ "$out" != "$want_out" ]]; then
+        fail "$name" "expected on stdout: $want_out"$'\n'"got: $out"
+    elif [[ "$err" != "$want_err" ]]; then
+        fail "$name" "expected on stderr: $want_err"$'\n'"got: $err"
+    else
+        pass "$name"
     fi
 }
 
@@ -488,7 +510,7 @@ android/settings.gradle.kts
 android/gradle.properties
 rust/fedimint-sdk
 rust/uniffi-bindgen
-nix
+nix/ffi.nix
 flake.nix
 flake.lock
 scripts/generate-android-bindings.sh
@@ -506,6 +528,61 @@ flake.lock
 scripts/generate-sdk-rn-bindings.sh
 scripts/assemble-rn-ios-xcframework.sh
 scripts/react-native-sdk-pack.sh
+EOF
+            ;;
+    esac
+}
+
+# The scopes that mark a commit as not about each component, one per line.
+expected_foreign_scopes() {
+    case "$1" in
+        rust)
+            cat <<'EOF'
+flake
+ci
+workflows
+tests
+examples
+release
+web
+sdk-web
+vite-core
+react-native
+rn-bindings
+js
+swift
+EOF
+            ;;
+        android)
+            cat <<'EOF'
+flake
+ci
+workflows
+tests
+examples
+release
+web
+sdk-web
+vite-core
+react-native
+rn-bindings
+js
+swift
+ios
+EOF
+            ;;
+        react-native)
+            cat <<'EOF'
+flake
+ci
+workflows
+tests
+examples
+release
+web
+sdk-web
+vite-core
+swift
 EOF
             ;;
     esac
@@ -559,10 +636,13 @@ for component in rust android react-native; do
             fail "$component path $path exists in this checkout" "git ls-files lists nothing there"
         fi
     done < <(expected_paths "$component")
+    expect_ok "component_foreign_scopes $component lists the scopes that are not about it" \
+        "$(expected_foreign_scopes "$component")" -- \
+        sourced "component_foreign_scopes $component"
 done
 
 for fn in is_component component_title component_tag_prefix component_changelog \
-    component_workflow component_paths; do
+    component_workflow component_paths component_foreign_scopes; do
     expect_fail "$fn refuses an unknown name" \
         "sideways is not a component: it must be one of rust, android, react-native" -- \
         sourced "$fn sideways"
@@ -1068,54 +1148,74 @@ printf '\n## 0.0.9\n\n' >>"$r/android/CHANGELOG.md"
 expect_fail "check fails an empty section" "section is empty" -- "$c" check android 0.0.9
 
 # Releases 0.1.0-beta.1, then adds commits: SDK sources, both Cargo
-# lockfiles and flake.lock count; JS changes and the bump commit do not.
+# lockfiles and flake.lock count; JS changes do not, and neither does a commit that is neither
+# a breaking change nor a feat or a fix, such as the bump commit.
 git -C "$r" tag android-sdk-v0.1.0-beta.1
 change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): a new call"
-change "$r" rust/fedimint-sdk/Cargo.lock "chore(deps): bump a crate in the SDK lockfile"
-change "$r" rust/uniffi-bindgen/Cargo.lock "chore(deps): bump uniffi-bindgen's lockfile"
-change "$r" flake.lock "chore(nix): update the flake inputs"
+change "$r" rust/fedimint-sdk/Cargo.lock "fix(deps): bump a crate in the SDK lockfile"
+change "$r" rust/uniffi-bindgen/Cargo.lock "fix(deps): bump uniffi-bindgen's lockfile"
+change "$r" flake.lock "fix(nix): update the flake inputs"
 change "$r" js/web/index.ts "feat(web): unrelated to Android"
 change "$r" android/gradle/libs.versions.toml "chore(release): bump the Android SDK to 0.1.0-beta.2 (#9)"
-"$c" draft android 0.1.0-beta.2 0.1.0-beta.1
+expect_split "write says on stderr how many of the commits it looked at are in the notes" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 4 of 5 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
 notes="$("$c" section android 0.1.0-beta.2)"
-for subject in "feat(sdk): a new call" \
-    "chore(deps): bump a crate in the SDK lockfile" \
-    "chore(deps): bump uniffi-bindgen's lockfile" \
-    "chore(nix): update the flake inputs"; do
-    if [[ "$notes" == *"- $subject ("* ]]; then pass "draft lists: $subject"; else fail "draft lists: $subject" "$notes"; fi
+for text in "a new call" "bump a crate in the SDK lockfile" "bump uniffi-bindgen's lockfile" \
+    "update the flake inputs"; do
+    if grep -qxF -- "- $text" <<<"$notes"; then
+        pass "write lists: $text"
+    else
+        fail "write lists: $text" "$notes"
+    fi
 done
-for subject in "feat(web): unrelated to Android" "bump the Android SDK to"; do
-    if [[ "$notes" != *"$subject"* ]]; then pass "draft leaves out: $subject"; else fail "draft leaves out: $subject" "$notes"; fi
+for text in "unrelated to Android" "bump the Android SDK to"; do
+    if [[ "$notes" != *"$text"* ]]; then
+        pass "write leaves out: $text"
+    else
+        fail "write leaves out: $text" "$notes"
+    fi
 done
-expect_fail "check refuses a draft" "still a draft" -- "$c" check android 0.1.0-beta.2
+expect_ok "write groups the commits by their type, the newest first" "$(lines \
+    '### Added' '' '- a new call' '' \
+    '### Fixed' '' '- update the flake inputs' "- bump uniffi-bindgen's lockfile" \
+    '- bump a crate in the SDK lockfile')" -- "$c" section android 0.1.0-beta.2
+expect_ok "check passes the notes that write made as they are" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2" -- "$c" check android 0.1.0-beta.2
 first="$(grep -m1 '^## ' "$r/android/CHANGELOG.md")"
-if [[ "$first" == "## 0.1.0-beta.2" ]]; then pass "draft goes above the newest section"; else fail "draft goes above the newest section" "first heading: $first"; fi
-expect_ok "draft leaves older sections alone" $'First beta.\n\n- Something users can do.' -- \
+if [[ "$first" == "## 0.1.0-beta.2" ]]; then
+    pass "write goes above the newest section"
+else
+    fail "write goes above the newest section" "first heading: $first"
+fi
+expect_ok "write leaves older sections alone" $'First beta.\n\n- Something users can do.' -- \
     "$c" section android 0.1.0-beta.1
-expect_fail "draft refuses a version that has a section" "already has" -- \
-    "$c" draft android 0.1.0-beta.2 0.1.0-beta.1
-expect_fail "draft needs the previous release's tag" "no tag android-sdk-v0.0.1" -- \
-    "$c" draft android 0.2.0 0.0.1
+expect_fail "write refuses a version that has a section" "already has" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_fail "write needs the previous release's tag" "no tag android-sdk-v0.0.1" -- \
+    "$c" write android 0.2.0 0.0.1
 
 r="$(repo 0.1.0-beta.1 < <(printf '# Changelog\n\nIntro.\n'))"
 c="$r/scripts/sdk-changelog.sh"
-"$c" draft android 0.1.0-beta.1
-if "$c" section android 0.1.0-beta.1 | grep -q 'nothing is released yet'; then
-    pass "draft with nothing released asks for first-release notes"
-else
-    fail "draft with nothing released asks for first-release notes" "$(cat "$r/android/CHANGELOG.md")"
-fi
+expect_split "write with nothing released says on stderr that it wrote a first release" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.1, those of a first release" -- \
+    "$c" write android 0.1.0-beta.1
+expect_ok "write with nothing released puts the first release in the notes" \
+    "The first release of the Android SDK." -- "$c" section android 0.1.0-beta.1
+expect_ok "check passes the notes of a first release as they are" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.1" -- "$c" check android 0.1.0-beta.1
 
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 c="$r/scripts/sdk-changelog.sh"
 git -C "$r" tag android-sdk-v0.1.0-beta.1
 change "$r" js/web/index.ts "feat(web): unrelated to Android"
-"$c" draft android 0.1.0-beta.2 0.1.0-beta.1
-if "$c" section android 0.1.0-beta.2 | grep -q 'No changes to the SDK since 0.1.0-beta.1'; then
-    pass "draft says so when nothing touched the SDK"
-else
-    fail "draft says so when nothing touched the SDK" "$("$c" section android 0.1.0-beta.2)"
-fi
+expect_ok "write says that no commit touched the SDK" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 0 of 0 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_ok "write says so in the notes when nothing touched the SDK" \
+    "No changes for users since 0.1.0-beta.1." -- "$c" section android 0.1.0-beta.2
+expect_ok "check passes the notes that say there are no changes" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2" -- "$c" check android 0.1.0-beta.2
 
 # `commits` needs neither the version catalog nor the changelog.
 r="$(bare_repo)"
@@ -1193,7 +1293,7 @@ expect_ok "commits works from a lightweight tag" \
     "- feat(web): something ($(git -C "$r" rev-parse --short HEAD))" -- \
     "$c" commits --tag-prefix android-sdk-v --since 0.1.0-beta.1 js
 for sub in "section android 0.1.0-beta.1" "check android 0.1.0-beta.1" \
-    "draft android 0.1.0-beta.2 0.1.0-beta.1"; do
+    "write android 0.1.0-beta.2 0.1.0-beta.1"; do
     # shellcheck disable=SC2086 # $sub is meant to split into the subcommand and its arguments.
     expect_fail "${sub%% *} needs android/CHANGELOG.md" "android/CHANGELOG.md" -- "$c" $sub
 done
@@ -1221,49 +1321,51 @@ for row in "rust|rust/fedimint-sdk/CHANGELOG.md" "android|android/CHANGELOG.md" 
     printf '\n## 0.0.9\n\n' >>"$r/$file"
     expect_fail "check $component names $file when the section is empty" \
         "$file's \`## 0.0.9\` section is empty" -- "$c" check "$component" 0.0.9
-    printf '\n## 0.0.8\n\n<!-- draft: the commits since 0.0.7 that touched the SDK. -->\n' \
-        >>"$r/$file"
-    expect_fail "check $component names $file when the section is a draft" \
-        "$file's \`## 0.0.8\` section is still a draft: rewrite it and remove the draft comment" \
-        -- "$c" check "$component" 0.0.8
-    expect_fail "draft $component names $file when the section exists" \
-        "$file already has a \`## 0.0.8\` section" -- "$c" draft "$component" 0.0.8
+    printf '\n## 0.0.8\n\n  \n\t\n' >>"$r/$file"
+    expect_fail "check $component names $file when the section has blank lines only" \
+        "$file's \`## 0.0.8\` section is empty" -- "$c" check "$component" 0.0.8
+    expect_fail "write $component names $file when the section exists" \
+        "$file already has a \`## 0.0.8\` section" -- "$c" write "$component" 0.0.8
     rm "$r/$file"
-    for sub in section release-notes check draft; do
+    for sub in section release-notes check write; do
         expect_fail "$sub $component needs $file" "$file" -- "$c" "$sub" "$component" 0.1.0-beta.1
     done
 done
 
 echo
-echo "sdk-changelog.sh draft"
+echo "sdk-changelog.sh write"
 
-# Releases 0.1.0-beta.1 of every component, then adds a commit under each kind of path. A
-# draft lists the commits that touched what its component is built from, and not the commits
-# that only bump a version.
+# Releases 0.1.0-beta.1 of every component, then adds a commit under each kind of path. The
+# notes of a component list the commits that touched what it is built from, if they are breaking
+# changes, feats or fixes, and not the commits that only bump a version.
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 c="$r/scripts/sdk-changelog.sh"
 git -C "$r" tag rust-sdk-v0.1.0-beta.1
 git -C "$r" tag android-sdk-v0.1.0-beta.1
 git -C "$r" tag -a react-native-sdk-v0.1.0-beta.1 -m "React Native SDK 0.1.0-beta.1"
 subjects=(
-    "feat(rn): a new call"
-    "feat(android): a new call"
-    "feat(sdk): a new call"
-    "chore(nix): update the toolchain"
+    "feat(rn): a call of the React Native SDK"
+    "feat(android): a call of the Android SDK"
+    "feat(sdk): a call of the crate"
+    "fix(nix): pin the toolchain"
     "feat(web): unrelated to every component"
-    "feat(release): add a release helper"
-    "chore(deps): bump a crate in the SDK lockfile"
-    "chore(deps): bump uniffi-bindgen's lockfile"
-    "chore(deps): bump ubrn's lockfile"
+    "feat(sdk)!: rename a call of the crate"
+    "fix(deps): bump a crate in the SDK lockfile"
+    "fix(deps): bump uniffi-bindgen's lockfile"
+    "fix(deps): bump ubrn's lockfile"
     "chore(release): bump the SDK to 1.0.0"
     "chore(release): bump the Android SDK to 0.1.0-beta.2 (#9)"
 )
-# Whether the drafts of rust, android and react-native list each subject, in the same order.
+# Whether the notes of rust, android and react-native list each subject, in the same order.
 listed=("n n y" "n y n" "y y y" "n y y" "n n n" "y y y" "y y y" "n y n" "n n y" "n n n" "n n n")
+# How many of the commits that touched what each component is built from are in its notes, and
+# how many touched it.
+counts=("3 of 4" "6 of 8" "6 of 7")
+files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md)
 change "$r" js/react-native/react-native/src/index.ts "${subjects[0]}"
 change "$r" android/fedimint-sdk/src/Sdk.kt "${subjects[1]}"
 change "$r" rust/fedimint-sdk/src/lib.rs "${subjects[2]}"
-change "$r" nix/sdk.nix "${subjects[3]}"
+change "$r" nix/ffi.nix "${subjects[3]}"
 change "$r" js/web/index.ts "${subjects[4]}"
 change "$r" rust/fedimint-sdk/src/release.rs "${subjects[5]}"
 change "$r" rust/fedimint-sdk/Cargo.lock "${subjects[6]}"
@@ -1273,85 +1375,619 @@ change "$r" rust/fedimint-sdk/Cargo.toml "${subjects[9]}"
 change "$r" android/gradle/libs.versions.toml "${subjects[10]}"
 index=0
 for component in rust android react-native; do
-    expect_ok "draft $component succeeds and prints nothing" "" -- \
-        "$c" draft "$component" 0.1.0-beta.2 0.1.0-beta.1
+    line="${files[$index]} has notes for 0.1.0-beta.2"
+    line="$line from ${counts[$index]} commits since 0.1.0-beta.1"
+    expect_split "write $component prints its line on stderr and nothing on stdout" "" "$line" -- \
+        "$c" write "$component" 0.1.0-beta.2 0.1.0-beta.1
     notes="$("$c" section "$component" 0.1.0-beta.2)"
     for i in "${!subjects[@]}"; do
         read -ra want <<<"${listed[$i]}"
         subject="${subjects[$i]}"
-        if [[ "${want[$index]}" == y && "$notes" == *"- $subject ("* ]]; then
-            pass "draft $component lists: $subject"
-        elif [[ "${want[$index]}" == n && "$notes" != *"$subject"* ]]; then
-            pass "draft $component leaves out: $subject"
+        text="${subject#*: }"
+        if [[ "${want[$index]}" == y ]] && grep -qxF -- "- $text" <<<"$notes"; then
+            pass "write $component lists: $subject"
+        elif [[ "${want[$index]}" == n && "$notes" != *"$text"* ]]; then
+            pass "write $component leaves out: $subject"
         else
-            fail "draft $component: $subject (expected ${want[$index]})" "$notes"
+            fail "write $component: $subject (expected ${want[$index]})" "$notes"
         fi
     done
-    if [[ "$notes" == *"<!-- draft: the commits since 0.1.0-beta.1 that touched the SDK."* ]]; then
-        pass "draft $component says what it lists"
-    else
-        fail "draft $component says what it lists" "$notes"
-    fi
     index=$((index + 1))
 done
-expect_changed "each draft writes the notes of its own component only" "$r" \
+expect_ok "write puts the commits of rust under their headings, the newest first" "$(lines \
+    '### Breaking' '' '- rename a call of the crate' '' \
+    '### Added' '' '- a call of the crate' '' \
+    '### Fixed' '' '- bump a crate in the SDK lockfile')" -- "$c" section rust 0.1.0-beta.2
+expect_ok "write puts the commits of android under their headings, the newest first" "$(lines \
+    '### Breaking' '' '- rename a call of the crate' '' \
+    '### Added' '' '- a call of the crate' '- a call of the Android SDK' '' \
+    '### Fixed' '' "- bump uniffi-bindgen's lockfile" '- bump a crate in the SDK lockfile' \
+    '- pin the toolchain')" -- "$c" section android 0.1.0-beta.2
+expect_ok "write puts the commits of react-native under their headings, the newest first" "$(lines \
+    '### Breaking' '' '- rename a call of the crate' '' \
+    '### Added' '' '- a call of the crate' '- a call of the React Native SDK' '' \
+    '### Fixed' '' "- bump ubrn's lockfile" '- bump a crate in the SDK lockfile' \
+    '- pin the toolchain')" -- "$c" section react-native 0.1.0-beta.2
+expect_changed "each write changes the notes of its own component only" "$r" \
     rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md
 for row in "rust|rust/fedimint-sdk/CHANGELOG.md" "android|android/CHANGELOG.md" \
     "react-native|js/react-native/CHANGELOG.md"; do
     IFS='|' read -r component file <<<"$row"
     first="$(grep -m1 '^## ' "$r/$file")"
     if [[ "$first" == "## 0.1.0-beta.2" ]]; then
-        pass "draft $component puts its section above the newest in $file"
+        pass "write $component puts its section above the newest in $file"
     else
-        fail "draft $component puts its section above the newest in $file" "first heading: $first"
+        fail "write $component puts its section above the newest in $file" "first heading: $first"
     fi
+    expect_ok "check $component passes the notes that write made as they are" \
+        "$file has notes for 0.1.0-beta.2" -- "$c" check "$component" 0.1.0-beta.2
 done
 
 # Only the tags of its own component's releases count.
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 c="$r/scripts/sdk-changelog.sh"
 git -C "$r" tag android-sdk-v0.1.0-beta.1
-expect_fail "draft rust does not see the Android tags" "no tag rust-sdk-v0.1.0-beta.1" -- \
-    "$c" draft rust 0.1.0-beta.2 0.1.0-beta.1
-expect_fail "draft react-native does not see the Android tags" \
-    "no tag react-native-sdk-v0.1.0-beta.1" -- "$c" draft react-native 0.1.0-beta.2 0.1.0-beta.1
-expect_fail "draft android needs the previous release's tag" "no tag android-sdk-v0.0.1" -- \
-    "$c" draft android 0.2.0 0.0.1
+expect_fail "write rust does not see the Android tags" "no tag rust-sdk-v0.1.0-beta.1" -- \
+    "$c" write rust 0.1.0-beta.2 0.1.0-beta.1
+expect_fail "write react-native does not see the Android tags" \
+    "no tag react-native-sdk-v0.1.0-beta.1" -- "$c" write react-native 0.1.0-beta.2 0.1.0-beta.1
+expect_fail "write android needs the previous release's tag" "no tag android-sdk-v0.0.1" -- \
+    "$c" write android 0.2.0 0.0.1
 
-for row in "rust|rust/fedimint-sdk/CHANGELOG.md|rust-sdk-v" \
-    "android|android/CHANGELOG.md|android-sdk-v" \
-    "react-native|js/react-native/CHANGELOG.md|react-native-sdk-v"; do
-    IFS='|' read -r component file prefix <<<"$row"
+for row in "rust|rust/fedimint-sdk/CHANGELOG.md|rust-sdk-v|Rust SDK" \
+    "android|android/CHANGELOG.md|android-sdk-v|Android SDK" \
+    "react-native|js/react-native/CHANGELOG.md|react-native-sdk-v|React Native SDK"; do
+    IFS='|' read -r component file prefix title <<<"$row"
     r="$(repo 0.1.0-beta.1 < <(printf '# Changelog\n\nIntro.\n'))"
     c="$r/scripts/sdk-changelog.sh"
-    expect_ok "draft $component succeeds when nothing is released" "" -- \
-        "$c" draft "$component" 0.1.0-beta.1
-    if "$c" section "$component" 0.1.0-beta.1 | grep -q 'nothing is released yet'; then
-        pass "draft $component with nothing released asks for first-release notes"
-    else
-        fail "draft $component with nothing released asks for first-release notes" \
-            "$(cat "$r/$file")"
-    fi
+    expect_split "write $component says on stderr that its notes are those of a first release" \
+        "" "$file has notes for 0.1.0-beta.1, those of a first release" -- \
+        "$c" write "$component" 0.1.0-beta.1
+    expect_ok "write $component with nothing released names the $title" \
+        "The first release of the $title." -- "$c" section "$component" 0.1.0-beta.1
+    expect_ok "check $component passes the notes of a first release as they are" \
+        "$file has notes for 0.1.0-beta.1" -- "$c" check "$component" 0.1.0-beta.1
 
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     c="$r/scripts/sdk-changelog.sh"
     git -C "$r" tag "${prefix}0.1.0-beta.1"
     change "$r" js/web/index.ts "feat(web): unrelated to every component"
-    expect_ok "draft $component succeeds when nothing touched the SDK" "" -- \
-        "$c" draft "$component" 0.1.0-beta.2 0.1.0-beta.1
-    notes="$("$c" section "$component" 0.1.0-beta.2)"
-    if grep -q 'No changes to the SDK since 0.1.0-beta.1' <<<"$notes"; then
-        pass "draft $component says so when nothing touched the SDK"
-    else
-        fail "draft $component says so when nothing touched the SDK" "$notes"
-    fi
+    expect_split "write $component says on stderr that it took no commit when none touched it" "" \
+        "$file has notes for 0.1.0-beta.2 from 0 of 0 commits since 0.1.0-beta.1" -- \
+        "$c" write "$component" 0.1.0-beta.2 0.1.0-beta.1
+    expect_ok "write $component says so when nothing touched the SDK" \
+        "No changes for users since 0.1.0-beta.1." -- "$c" section "$component" 0.1.0-beta.2
+    expect_ok "check $component passes the notes that say so as they are" \
+        "$file has notes for 0.1.0-beta.2" -- "$c" check "$component" 0.1.0-beta.2
 done
+
+# written_for <component> <path> <subject>...: the notes that `write` makes for the component from
+# commits with these subjects, oldest first, each of them a change to the file <path>, in a fresh
+# repository in which every component was released at 0.1.0-beta.1. Prints them, as `section`
+# does.
+written_for() {
+    local component="$1" path="$2" dir subject
+    shift 2
+    dir="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    git -C "$dir" tag rust-sdk-v0.1.0-beta.1
+    git -C "$dir" tag android-sdk-v0.1.0-beta.1
+    git -C "$dir" tag react-native-sdk-v0.1.0-beta.1
+    for subject in "$@"; do
+        change "$dir" "$path" "$subject"
+    done
+    "$dir/scripts/sdk-changelog.sh" write "$component" 0.1.0-beta.2 0.1.0-beta.1 2>/dev/null
+    "$dir/scripts/sdk-changelog.sh" section "$component" 0.1.0-beta.2
+}
+
+# written <subject>...: the same for the Android SDK, with changes to the sources of the crate.
+written() { written_for android rust/fedimint-sdk/src/lib.rs "$@"; }
+
+# change_line <repository> <path> <subject>: commits a change as `change` does, and prints the line
+# that `commits` and `left-out` print for the commit.
+change_line() {
+    change "$@"
+    echo "- $3 ($(git -C "$1" rev-parse --short HEAD))"
+}
+
+# set_lock <repository> <lock>: commits the lockfile of the crate, as a `chore(deps)` commit, which
+# is an empty one when nothing changes. <lock> is `none` for no lockfile, `-` for one that has no
+# fedimint-core package, or `<version> <source>` for one that has the package. Packages with a name
+# that only starts or ends like it come first, and are no use to anyone who takes them for it.
+set_lock() {
+    local dir="$1" lock="$2" name
+    if [[ "$lock" == none ]]; then
+        rm -f "$dir/$CARGO_LOCK"
+    else
+        cargo_lock 0.1.0-beta.1 >"$dir/$CARGO_LOCK"
+        if [[ "$lock" != - ]]; then
+            for name in fedimint-core-types my-fedimint-core; do
+                printf '\n[[package]]\nname = "%s"\nversion = "9.9.9"\n' "$name"
+                printf 'source = "git+https://example.invalid"\n'
+            done >>"$dir/$CARGO_LOCK"
+            printf '\n[[package]]\nname = "fedimint-core"\nversion = "%s"\nsource = "%s"\n' \
+                "${lock%% *}" "${lock#* }" >>"$dir/$CARGO_LOCK"
+        fi
+    fi
+    git -C "$dir" add -A
+    git -C "$dir" commit -q --allow-empty -m "chore(deps): update the lockfile"
+}
+
+# changed <text>: the notes that have the entry <text> under Changed, and nothing else.
+changed() { lines '### Changed' '' "- $1"; }
+
+# fedimint_notes <component> <lock> <lock>: the notes that `write` makes for the component, which
+# was released at 0.1.0-beta.1, with the first <lock> as the lockfile of the crate at that release
+# and the second at HEAD. See set_lock. Prints them, as `section` does.
+fedimint_notes() {
+    local component="$1" dir
+    dir="$(repo 0.1.0-beta.1 < <(finished_notes))"
+    set_lock "$dir" "$2"
+    git -C "$dir" tag rust-sdk-v0.1.0-beta.1
+    git -C "$dir" tag android-sdk-v0.1.0-beta.1
+    git -C "$dir" tag react-native-sdk-v0.1.0-beta.1
+    set_lock "$dir" "$3"
+    "$dir/scripts/sdk-changelog.sh" write "$component" 0.1.0-beta.2 0.1.0-beta.1 2>/dev/null
+    "$dir/scripts/sdk-changelog.sh" section "$component" 0.1.0-beta.2
+}
+
+# A `!` before the colon makes a breaking change of any type, which is listed under Breaking only.
+expect_ok "write lists a breaking refactor under Breaking only" \
+    "$(lines '### Breaking' '' '- rename a type')" -- written "refactor(sdk)!: rename a type"
+expect_ok "write lists a breaking feat under Breaking and not under Added" \
+    "$(lines '### Breaking' '' '- remove a call')" -- written "feat(sdk)!: remove a call"
+expect_ok "write lists a breaking fix under Breaking and not under Fixed" \
+    "$(lines '### Breaking' '' '- change what a call returns')" -- \
+    written "fix(sdk)!: change what a call returns"
+expect_ok "write lists a breaking change without a scope under Breaking" \
+    "$(lines '### Breaking' '' '- drop the old storage')" -- written "feat!: drop the old storage"
+expect_ok "write lists a breaking chore under Breaking" \
+    "$(lines '### Breaking' '' '- require a newer toolchain')" -- \
+    written "chore(build)!: require a newer toolchain"
+
+# A feat is Added and a fix is Fixed, with or without a scope.
+expect_ok "write lists a feat under Added" "$(lines '### Added' '' '- add a call')" -- \
+    written "feat(sdk): add a call"
+expect_ok "write lists a feat without a scope under Added" \
+    "$(lines '### Added' '' '- add a call')" -- written "feat: add a call"
+expect_ok "write lists a fix under Fixed" "$(lines '### Fixed' '' '- stop a crash')" -- \
+    written "fix(sdk): stop a crash"
+expect_ok "write lists a fix without a scope under Fixed" \
+    "$(lines '### Fixed' '' '- stop a crash')" -- written "fix: stop a crash"
+
+# Every other commit is left out, whatever it changed.
+for subject in "chore(deps): bump a crate" "build(nix): change the build" "ci: change a workflow" \
+    "docs(sdk): explain a call" "test(sdk): cover a call" "refactor(sdk): tidy a module" \
+    "perf(sdk): speed up a call" "style(sdk): format a file" \
+    "chore(release): bump the SDK to 0.2.0 (#14)" "Add a call without a type" \
+    "feat(sdk) a call without a colon" "feat(sdk):a call without a space" \
+    "Feat(sdk): a type in capitals" "feat(sdk: a scope that is not closed" \
+    'Revert "feat(sdk): add a call"' 'Reapply "feat(sdk): add a call"'; do
+    expect_ok "write leaves out: $subject" "No changes for users since 0.1.0-beta.1." -- \
+        written "$subject"
+done
+expect_ok "write says that nothing changed when no commit follows the release" \
+    "No changes for users since 0.1.0-beta.1." -- written
+
+# An entry is the subject without its prefix and otherwise as it is.
+expect_ok "write removes the prefix and keeps the number of the pull request and the case" \
+    "$(lines '### Added' '' '- useBalance returns a Promise (#12)')" -- \
+    written "feat(sdk): useBalance returns a Promise (#12)"
+expect_ok "write keeps the capital letter that starts a summary" \
+    "$(lines '### Fixed' '' '- Stop a crash')" -- written "fix: Stop a crash"
+expect_ok "write keeps the characters that a shell or awk could read as something else" \
+    "$(lines '### Fixed' '' '- handle \n, & and %s in `paths` and $HOME')" -- \
+    written 'fix(sdk): handle \n, & and %s in `paths` and $HOME'
+expect_ok "write keeps a summary that has a colon of its own" \
+    "$(lines '### Added' '' '- add a call: with a colon')" -- \
+    written "feat(sdk): add a call: with a colon"
+
+# The headings come in one order, whatever the order of the commits, and only with entries.
+expect_ok "write orders the headings Breaking, Added, Fixed" "$(lines \
+    '### Breaking' '' '- b' '' '### Added' '' '- a' '' '### Fixed' '' '- f')" -- \
+    written "fix(sdk): f" "feat(sdk): a" "feat(sdk)!: b"
+expect_ok "write orders them the same for the opposite order of commits" "$(lines \
+    '### Breaking' '' '- b' '' '### Added' '' '- a' '' '### Fixed' '' '- f')" -- \
+    written "feat(sdk)!: b" "feat(sdk): a" "fix(sdk): f"
+expect_ok "write has no Breaking heading without a breaking change" "$(lines \
+    '### Added' '' '- a' '' '### Fixed' '' '- f')" -- written "fix(sdk): f" "feat(sdk): a"
+expect_ok "write has no Added heading without a feat" "$(lines \
+    '### Breaking' '' '- b' '' '### Fixed' '' '- f')" -- written "fix(sdk): f" "feat(sdk)!: b"
+expect_ok "write has no Fixed heading without a fix" "$(lines \
+    '### Breaking' '' '- b' '' '### Added' '' '- a')" -- written "feat(sdk): a" "feat(sdk)!: b"
+expect_ok "write lists the commits under a heading newest first" "$(lines \
+    '### Added' '' '- third' '- second' '- first')" -- \
+    written "feat(sdk): first" "feat(sdk): second" "feat(sdk): third"
+expect_ok "write skips the commits it leaves out between the ones it lists" \
+    "$(lines '### Added' '' '- c' '- a')" -- \
+    written "feat(sdk): a" "docs: b" "feat(sdk): c" "chore: d"
+
+# A merge is not listed, and the commits it merged are.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+git -C "$r" checkout -q -b side
+change "$r" rust/fedimint-sdk/src/side.rs "fix(sdk): on a side branch"
+git -C "$r" checkout -q main
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): on main"
+git -C "$r" merge -q --no-ff side -m "feat(sdk): the merge of a side branch"
+expect_split "write counts the merged commits and not the merge" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 2 of 2 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_ok "write lists a merged commit but not the merge" "$(lines \
+    '### Added' '' '- on main' '' '### Fixed' '' '- on a side branch')" -- \
+    "$c" section android 0.1.0-beta.2
+
+# A commit whose scope is foreign to the component is left out whatever its type, a `!` included,
+# although it touched what the component is built from. All three components are built from the
+# crate's sources, so a change to them under each scope shows which components leave it out. Only
+# a scope that is exactly a foreign one counts: a commit with another scope, or none, is listed.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+git -C "$r" tag rust-sdk-v0.1.0-beta.1
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+git -C "$r" tag react-native-sdk-v0.1.0-beta.1
+# Each row is a subject, and whether the notes of rust, android and react-native list it.
+rows=(
+    "feat(flake): a change scoped (flake)|n n n"
+    "fix(ci): a change scoped (ci)|n n n"
+    "fix(workflows): a change scoped (workflows)|n n n"
+    "fix(tests): a change scoped (tests)|n n n"
+    "fix(examples): a change scoped (examples)|n n n"
+    "feat(release): a change scoped (release)|n n n"
+    "feat(web): a change scoped (web)|n n n"
+    "fix(sdk-web): a change scoped (sdk-web)|n n n"
+    "fix(vite-core): a change scoped (vite-core)|n n n"
+    "fix(react-native): a change scoped (react-native)|n n y"
+    "fix(rn-bindings): a change scoped (rn-bindings)|n n y"
+    "fix(js): a change scoped (js)|n n y"
+    "fix(swift): a change scoped (swift)|n n n"
+    "fix(ios): a change scoped (ios)|y n y"
+    "feat(android): a change scoped (android)|y y y"
+    "fix(sdk): a change scoped (sdk)|y y y"
+    "fix(nix): a change scoped (nix)|y y y"
+    "fix: a change without a scope|y y y"
+    "feat(flake)!: a breaking change scoped (flake)|n n n"
+    "refactor(react-native)!: a breaking change scoped (react-native)|n n y"
+    "fix(ios)!: a breaking change scoped (ios)|y n y"
+    "fix(web,sdk): a change scoped (web,sdk)|y y y"
+    "fix(Web): a change scoped (Web)|y y y"
+    "fix(websocket): a change scoped (websocket)|y y y"
+    "fix(somewhere): a change scoped (somewhere)|y y y"
+    "fix(*): a change scoped (*)|y y y"
+)
+# How many of the commits are in the notes of rust, android and react-native.
+counts=("11 of 26" "9 of 26" "15 of 26")
+files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md)
+for row in "${rows[@]}"; do
+    change "$r" rust/fedimint-sdk/src/lib.rs "${row%|*}"
+done
+index=0
+for component in rust android react-native; do
+    line="${files[$index]} has notes for 0.1.0-beta.2"
+    line="$line from ${counts[$index]} commits since 0.1.0-beta.1"
+    expect_split "write $component counts a commit with a foreign scope as looked at only" "" \
+        "$line" -- "$c" write "$component" 0.1.0-beta.2 0.1.0-beta.1
+    notes="$("$c" section "$component" 0.1.0-beta.2)"
+    # What `left-out` prints is what `write` has no entry for.
+    left="$("$c" left-out "$component" 0.1.0-beta.1)"
+    for row in "${rows[@]}"; do
+        subject="${row%|*}"
+        read -ra want <<<"${row##*|}"
+        text="${subject#*: }"
+        if [[ "${want[$index]}" == y ]] && grep -qxF -- "- $text" <<<"$notes"; then
+            pass "write $component lists: $subject"
+        elif [[ "${want[$index]}" == n && "$notes" != *"$text"* ]]; then
+            pass "write $component leaves out: $subject"
+        else
+            fail "write $component: $subject (expected ${want[$index]})" "$notes"
+        fi
+        if [[ "${want[$index]}" == y && "$left" != *"- $subject ("* ]] ||
+            [[ "${want[$index]}" == n && "$left" == *"- $subject ("* ]]; then
+            pass "left-out $component agrees with write about: $subject"
+        else
+            fail "left-out $component disagrees with write about: $subject" "$left"
+        fi
+    done
+    in_notes="${counts[$index]% of *}"
+    all_commits="${counts[$index]#* of }"
+    if [[ "$(grep -c '' <<<"$left")" -eq $((all_commits - in_notes)) ]]; then
+        pass "left-out $component prints the commits that write did not list"
+    else
+        fail "left-out $component prints the commits that write did not list" "$left"
+    fi
+    index=$((index + 1))
+done
+
+# nix/ffi.nix builds the native library that the Android SDK and the React Native packages share,
+# and nix/web-bindgen.nix provides the binding generators of the React Native packages and the web
+# SDK. A change that touched only the second is not a change to the Android SDK.
+expect_ok "write leaves a change that only touched web-bindgen.nix out of the crate's notes" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written_for rust nix/web-bindgen.nix "fix(sdk): update the binding generators"
+expect_ok "write leaves a change that only touched web-bindgen.nix out of the Android SDK's" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written_for android nix/web-bindgen.nix "fix(sdk): update the binding generators"
+expect_ok "write lists a change that only touched web-bindgen.nix for the React Native SDK" \
+    "$(lines '### Fixed' '' '- update the binding generators')" -- \
+    written_for react-native nix/web-bindgen.nix "fix(sdk): update the binding generators"
+
+# A revert is never an entry. It takes away the entry of the commit in the same range whose subject
+# is the one it names, with or without the number that a squash merge adds to its own.
+expect_ok "write takes a revert and the commit it reverts out of the notes" \
+    "$(lines '### Added' '' '- add another call (#13)')" -- \
+    written "feat(sdk): add a call (#12)" "feat(sdk): add another call (#13)" \
+    'Revert "feat(sdk): add a call (#12)" (#14)'
+expect_ok "write takes a revert without a number and the commit it reverts out of the notes" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "fix(sdk): stop a crash (#12)" 'Revert "fix(sdk): stop a crash (#12)"'
+expect_ok "write takes a reverted breaking change out of the notes" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "feat(sdk)!: remove a call (#12)" 'Revert "feat(sdk)!: remove a call (#12)" (#13)'
+expect_ok "write does not take away a commit that comes after its revert" \
+    "$(lines '### Added' '' '- add a call')" -- \
+    written "feat(sdk): add a call" 'Revert "feat(sdk): add a call"' "feat(sdk): add a call"
+expect_ok "write lets a revert take away one commit" "$(lines '### Fixed' '' '- stop a crash')" -- \
+    written "fix(sdk): stop a crash" "fix(sdk): stop a crash" 'Revert "fix(sdk): stop a crash"'
+expect_ok "write lets two reverts take away two commits" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "fix(sdk): stop a crash" "fix(sdk): stop a crash" 'Revert "fix(sdk): stop a crash"' \
+    'Revert "fix(sdk): stop a crash"'
+expect_ok "write takes away nothing for a revert that names another subject" \
+    "$(lines '### Added' '' '- add a call (#12)')" -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add another call"'
+# The subject a revert names is compared as it is, not as a pattern.
+expect_ok "write compares the subject of a revert as text, characters of a pattern included" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written 'fix(sdk): handle a/b, [x], * and ? (#12)' \
+    'Revert "fix(sdk): handle a/b, [x], * and ? (#12)"'
+expect_ok "write does not take a pattern in a subject for what a revert names" \
+    "$(lines '### Fixed' '' '- handle * (#13)')" -- \
+    written "fix(sdk): handle a (#12)" "fix(sdk): handle * (#13)" \
+    'Revert "fix(sdk): handle a (#12)"'
+
+# A revert that is itself reverted takes away nothing, so the commit stays, and one more revert
+# takes it away again.
+expect_ok "write keeps a commit whose revert was reverted" \
+    "$(lines '### Added' '' '- add a call (#12)')" -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Revert "Revert "feat(sdk): add a call (#12)" (#13)" (#14)'
+expect_ok "write takes a commit away again when the revert of its revert is reverted" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Revert "Revert "feat(sdk): add a call (#12)" (#13)" (#14)' \
+    'Revert "Revert "Revert "feat(sdk): add a call (#12)" (#13)" (#14)" (#15)'
+
+# A revert, and the commit it reverts, are commits that `write` looked at and did not take into
+# the notes.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): add a call (#12)"
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): add another call (#13)"
+change "$r" rust/fedimint-sdk/src/lib.rs 'Revert "feat(sdk): add a call (#12)" (#14)'
+expect_split "write counts a revert and the commit it reverts as looked at only" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 1 of 3 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+
+# The notes of the release that has a commit are written already, so a revert of that commit in
+# the next release takes away nothing. It is left out like any other subject that is not a feat or
+# a fix, and does not take away a commit of the range.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): add a call (#12)"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+change "$r" rust/fedimint-sdk/src/lib.rs 'Revert "feat(sdk): add a call (#12)" (#13)'
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): add another call (#14)"
+expect_split "write counts a revert of an earlier release as looked at only" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 1 of 2 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_ok "write lists the commits since the release and not a revert of an earlier one" \
+    "$(lines '### Added' '' '- add another call (#14)')" -- "$c" section android 0.1.0-beta.2
+
+# `git revert` of a revert writes `Reapply "<subject>"` and the numbers the revert had, to which a
+# squash merge may add the number of the reapply's own pull request. It undoes the revert, which
+# then takes away nothing, and it is never an entry.
+expect_ok "write keeps a commit whose revert a reapply undid" \
+    "$(lines '### Added' '' '- add a call (#12)')" -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Reapply "feat(sdk): add a call (#12)" (#13)'
+expect_ok "write keeps it for a reapply that a squash merge numbered too" \
+    "$(lines '### Added' '' '- add a call (#12)')" -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Reapply "feat(sdk): add a call (#12)" (#13) (#14)'
+expect_ok "write keeps a commit whose revert has no number, for a reapply that has none" \
+    "$(lines '### Added' '' '- add a call')" -- \
+    written "feat(sdk): add a call" 'Revert "feat(sdk): add a call"' \
+    'Reapply "feat(sdk): add a call"'
+expect_ok "write keeps it for a reapply that only a squash merge numbered" \
+    "$(lines '### Added' '' '- add a call')" -- \
+    written "feat(sdk): add a call" 'Revert "feat(sdk): add a call"' \
+    'Reapply "feat(sdk): add a call" (#14)'
+expect_ok "write does not list a reapply" "$(lines '### Added' '' '- add a call')" -- \
+    written "feat(sdk): add a call" 'Reapply "feat(sdk): add a call"'
+expect_ok "write lets a reapply undo only the revert that has its subject" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Reapply "feat(sdk): add another call (#12)" (#13)'
+expect_ok "write lets a reapply undo one revert only" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "feat(sdk): add a call" 'Revert "feat(sdk): add a call"' \
+    'Revert "feat(sdk): add a call" (#14)' 'Reapply "feat(sdk): add a call" (#14)'
+expect_ok "write takes a commit away again when the reapply that kept it is reverted" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call (#12)" (#13)' \
+    'Reapply "feat(sdk): add a call (#12)" (#13)' \
+    'Revert "Reapply "feat(sdk): add a call (#12)" (#13)" (#14)'
+
+# GitHub titles a revert pull request without the number of the pull request it reverts, so a
+# revert takes away the commit whose subject is the one it names, or that one and a number. Each
+# name is still used up by one commit.
+expect_ok "write takes away a commit that has a number when the revert names it without one" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    written "fix(sdk): stop a crash (#12)" 'Revert "fix(sdk): stop a crash" (#13)'
+expect_ok "write uses such a name up on one commit" \
+    "$(lines '### Fixed' '' '- stop a crash (#12)')" -- \
+    written "fix(sdk): stop a crash (#12)" "fix(sdk): stop a crash (#13)" \
+    'Revert "fix(sdk): stop a crash" (#14)'
+expect_ok "write leaves a numbered commit with another subject alone" \
+    "$(lines '### Fixed' '' '- stop a crash again (#12)')" -- \
+    written "fix(sdk): stop a crash again (#12)" 'Revert "fix(sdk): stop a crash" (#13)'
+expect_ok "write keeps a commit whose revert was reverted by a title without numbers" \
+    "$(lines '### Added' '' '- add a call (#12)')" -- \
+    written "feat(sdk): add a call (#12)" 'Revert "feat(sdk): add a call" (#13)' \
+    'Revert "Revert "feat(sdk): add a call"" (#14)'
+
+# The fedimint that the crate is built against is the first fedimint-core package in its lockfile.
+# When it differs between the release and HEAD, in version or in source, the notes of every
+# component have one line for it under Changed.
+crates_io="registry+https://github.com/rust-lang/crates.io-index"
+git_a="git+https://github.com/fedimint/fedimint?rev=3c808b0#3c808b0aaaaaaaaaaaaaaaaaaaa"
+git_b="git+https://github.com/fedimint/fedimint?rev=1d3758c#1d3758cbbbbbbbbbbbbbbbbbbbb"
+built="Built against fedimint 0.13.0-beta.1, where 0.1.0-beta.1 was built against fedimint 0.12.0."
+for component in rust android react-native; do
+    expect_ok "write $component says that the fedimint went from one release to another" \
+        "$(changed "$built")" -- \
+        fedimint_notes "$component" "0.12.0 $crates_io" "0.13.0-beta.1 $crates_io"
+done
+expect_ok "write has no Changed heading when the fedimint is the same release" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    fedimint_notes android "0.13.0-beta.1 $crates_io" "0.13.0-beta.1 $crates_io"
+built="Built against fedimint 0.13.0-beta.1, where 0.1.0-beta.1 was built against"
+built+=" an unreleased fedimint."
+expect_ok "write says that the fedimint went from a git revision to a release" \
+    "$(changed "$built")" -- \
+    fedimint_notes android "0.13.0-alpha $git_a" "0.13.0-beta.1 $crates_io"
+built="Built against an unreleased fedimint, where 0.1.0-beta.1 was built against fedimint 0.12.0."
+expect_ok "write says that the fedimint went from a release to a git revision" \
+    "$(changed "$built")" -- \
+    fedimint_notes android "0.12.0 $crates_io" "0.13.0-alpha $git_a"
+expect_ok "write says that the fedimint went from a git revision to another one" \
+    "$(changed "Built against another unreleased fedimint than 0.1.0-beta.1.")" -- \
+    fedimint_notes android "0.13.0-alpha $git_a" "0.13.0-alpha $git_b"
+expect_ok "write has no Changed heading when the fedimint is the same git revision" \
+    "No changes for users since 0.1.0-beta.1." -- \
+    fedimint_notes android "0.13.0-alpha $git_a" "0.13.0-alpha $git_a"
+for row in "none|no lockfile" "-|a lockfile without the package"; do
+    IFS='|' read -r missing what <<<"$row"
+    expect_ok "write has no line about the fedimint when the release has $what" \
+        "No changes for users since 0.1.0-beta.1." -- \
+        fedimint_notes android "$missing" "0.13.0-beta.1 $crates_io"
+    expect_ok "write has no line about the fedimint when HEAD has $what" \
+        "No changes for users since 0.1.0-beta.1." -- \
+        fedimint_notes android "0.12.0 $crates_io" "$missing"
+    expect_ok "write has no line about the fedimint when both have $what" \
+        "No changes for users since 0.1.0-beta.1." -- fedimint_notes android "$missing" "$missing"
+done
+
+# Only the first package with that name counts, and not one that merely has it in its name. The
+# line about the fedimint is not a commit, and the stderr line does not count it.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+set_lock "$r" "0.12.0 $crates_io"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+set_lock "$r" "0.13.0-beta.1 $crates_io"
+printf '\n[[package]]\nname = "fedimint-core"\nversion = "0.99.0"\nsource = "%s"\n' "$git_a" \
+    >>"$r/$CARGO_LOCK"
+commit_all "$r" "chore(deps): add a second fedimint-core package"
+built="Built against fedimint 0.13.0-beta.1, where 0.1.0-beta.1 was built against fedimint 0.12.0."
+expect_split "write does not count the line about the fedimint as a commit" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 0 of 2 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_ok "write takes the first fedimint-core package of the lockfile" \
+    "$(changed "$built")" -- "$c" section android 0.1.0-beta.2
+
+# The first release of a component has no release to compare with.
+r="$(repo 0.1.0-beta.1 < <(printf '# Changelog\n\nIntro.\n'))"
+c="$r/scripts/sdk-changelog.sh"
+set_lock "$r" "0.13.0-beta.1 $crates_io"
+expect_split "write gives the first release no line about the fedimint" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.1, those of a first release" -- \
+    "$c" write android 0.1.0-beta.1
+expect_ok "write puts only the first release in its notes" \
+    "The first release of the Android SDK." -- "$c" section android 0.1.0-beta.1
+
+# The headings come in the order Breaking, Added, Changed, Fixed.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+set_lock "$r" "0.13.0-alpha $git_a"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+set_lock "$r" "0.13.0-beta.1 $crates_io"
+change "$r" rust/fedimint-sdk/src/lib.rs "fix(sdk): f"
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): a"
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk)!: b"
+"$c" write android 0.1.0-beta.2 0.1.0-beta.1 2>/dev/null
+built="Built against fedimint 0.13.0-beta.1, where 0.1.0-beta.1 was built against"
+built+=" an unreleased fedimint."
+expect_ok "write orders the headings Breaking, Added, Changed, Fixed" "$(lines \
+    '### Breaking' '' '- b' '' '### Added' '' '- a' '' '### Changed' '' "- $built" '' \
+    '### Fixed' '' '- f')" -- "$c" section android 0.1.0-beta.2
+expect_ok "check passes the notes that have a Changed heading as they are" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2" -- "$c" check android 0.1.0-beta.2
+
+echo
+echo "sdk-changelog.sh left-out"
+
+# `left-out` prints the commits that `write` reads and gives no entry, newest first, as `commits`
+# prints them: those of a type that is not listed, subjects that are not in the form, commits with
+# a foreign scope, reverts and reapplies, and the commits that a revert took away.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+git -C "$r" tag react-native-sdk-v0.1.0-beta.1
+# Each row is a subject, and whether the notes of android and react-native leave it out.
+rows=(
+    "feat(sdk): add a call (#12)|n n"
+    "chore(deps): bump a crate|y y"
+    "Add a call without a type|y y"
+    "fix(flake): change the flake|y y"
+    "fix(ios): change the iOS build|y n"
+    "fix(sdk): stop a crash (#13)|y y"
+    'Revert "fix(sdk): stop a crash" (#14)|y y'
+    "fix(sdk): stop another crash (#15)|n n"
+    'Revert "fix(sdk): stop another crash (#15)" (#16)|y y'
+    'Reapply "fix(sdk): stop another crash (#15)" (#16)|y y'
+    "feat(sdk)!: remove a call (#17)|n n"
+)
+want_android=""
+want_react_native=""
+for row in "${rows[@]}"; do
+    line="$(change_line "$r" rust/fedimint-sdk/src/lib.rs "${row%|*}")"
+    read -ra out <<<"${row##*|}"
+    [[ "${out[0]}" == n ]] || want_android="$line"$'\n'"$want_android"
+    [[ "${out[1]}" == n ]] || want_react_native="$line"$'\n'"$want_react_native"
+done
+expect_ok "left-out prints the commits that the notes of android have no entry for, newest first" \
+    "${want_android%$'\n'}" -- "$c" left-out android 0.1.0-beta.1
+expect_ok "left-out reads the scopes of the component: ios is in the notes of react-native" \
+    "${want_react_native%$'\n'}" -- "$c" left-out react-native 0.1.0-beta.1
+expect_split "write reads the same commits, and lists those that left-out does not print" "" \
+    "android/CHANGELOG.md has notes for 0.1.0-beta.2 from 3 of 11 commits since 0.1.0-beta.1" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1
+expect_ok "write lists exactly the commits that left-out does not print" "$(lines \
+    '### Breaking' '' '- remove a call (#17)' '' '### Added' '' '- add a call (#12)' '' \
+    '### Fixed' '' '- stop another crash (#15)')" -- "$c" section android 0.1.0-beta.2
+rm "$r/android/CHANGELOG.md"
+expect_ok "left-out reads no file, so it needs no notes" "${want_android%$'\n'}" -- \
+    "$c" left-out android 0.1.0-beta.1
+expect_fail "left-out needs the tag of the release" \
+    "no tag android-sdk-v0.9.9 in this checkout; fetch the tags and history" -- \
+    "$c" left-out android 0.9.9
+expect_fail "left-out does not see the tags of another component" \
+    "no tag rust-sdk-v0.1.0-beta.1 in this checkout" -- "$c" left-out rust 0.1.0-beta.1
+
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+c="$r/scripts/sdk-changelog.sh"
+git -C "$r" tag android-sdk-v0.1.0-beta.1
+expect_ok "left-out prints nothing when no commit follows the release" "" -- \
+    "$c" left-out android 0.1.0-beta.1
+change "$r" rust/fedimint-sdk/src/lib.rs "feat(sdk): add a call"
+change "$r" rust/fedimint-sdk/src/lib.rs "fix(sdk): stop a crash"
+change "$r" js/web/index.ts "chore(web): change what the Android SDK is not built from"
+expect_ok "left-out prints nothing when every commit it reads has an entry" "" -- \
+    "$c" left-out android 0.1.0-beta.1
 
 echo
 echo "sdk-changelog.sh release-notes"
-
-# Prints its arguments, one per line.
-lines() { printf '%s\n' "$@"; }
 
 # unwrapped <section text>: what `release-notes` prints for a section holding the text.
 unwrapped() {
@@ -1465,7 +2101,7 @@ echo "sdk-changelog.sh usage"
 
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 c="$r/scripts/sdk-changelog.sh"
-for sub in section release-notes check draft; do
+for sub in section release-notes check write left-out; do
     expect_fail "$sub refuses an unknown component" \
         "sideways is not a component: it must be one of rust, android, react-native" -- \
         "$c" "$sub" sideways 0.1.0-beta.1
@@ -1477,10 +2113,25 @@ done
 expect_usage "section takes one version" -- "$c" section android 0.1.0-beta.1 extra
 expect_usage "release-notes takes one version" -- "$c" release-notes android 0.1.0-beta.1 extra
 expect_usage "check takes one version" -- "$c" check android 0.1.0-beta.1 extra
-expect_usage "draft takes at most a previous version" -- \
-    "$c" draft android 0.1.0-beta.2 0.1.0-beta.1 extra
+expect_usage "write takes at most a previous version" -- \
+    "$c" write android 0.1.0-beta.2 0.1.0-beta.1 extra
+expect_usage "left-out takes one previous version" -- \
+    "$c" left-out android 0.1.0-beta.1 extra
 expect_usage "a command is needed" -- "$c"
 expect_usage "an unknown command is refused" -- "$c" sideways
+usage="$("$c" 2>&1 || true)"
+write_usage="usage: scripts/sdk-changelog.sh write <component> <version> [<previous version>]"
+if [[ "$usage" == *"$write_usage"* && "$usage" != *draft* ]]; then
+    pass "the usage lists write and no draft"
+else
+    fail "the usage lists write and no draft" "$usage"
+fi
+left_out_usage="usage: scripts/sdk-changelog.sh left-out <component> <previous version>"
+if [[ "$usage" == *"$left_out_usage"* ]]; then
+    pass "the usage lists left-out"
+else
+    fail "the usage lists left-out" "$usage"
+fi
 
 echo
 echo "sdk-release.sh"
@@ -1804,25 +2455,6 @@ expect_stdout() {
         fi
     else
         fail "$name" "exited non-zero"
-    fi
-}
-
-# expect_split <name> <expected stdout> <expected stderr> -- <command...>: succeeds, prints exactly
-# the first on stdout and exactly the second on stderr.
-expect_split() {
-    local name="$1" want_out="$2" want_err="$3" out err status=0
-    shift 4
-    "$@" >"$WORK/split.out" 2>"$WORK/split.err" || status=$?
-    out="$(<"$WORK/split.out")"
-    err="$(<"$WORK/split.err")"
-    if [[ "$status" -ne 0 ]]; then
-        fail "$name" "exited with status $status: $err"
-    elif [[ "$out" != "$want_out" ]]; then
-        fail "$name" "expected on stdout: $want_out"$'\n'"got: $out"
-    elif [[ "$err" != "$want_err" ]]; then
-        fail "$name" "expected on stderr: $want_err"$'\n'"got: $err"
-    else
-        pass "$name"
     fi
 }
 
@@ -2325,13 +2957,13 @@ notes_for() {
     done
 }
 
-# Release notes whose only section, for the version $1, is still a draft.
-draft_notes() {
-    printf '# Changelog\n\n## %s\n\n<!-- draft: the commits since 0.0.9. -->\n' "$1"
+# Release notes whose only section, for the version $1, has nothing under its heading.
+empty_notes() {
+    printf '# Changelog\n\n## %s\n' "$1"
 }
 
-# A tree that can be released: nothing is released anywhere, and the notes are finished. Each
-# component asks only the registries it is published to, if any.
+# A tree that can be released: nothing is released anywhere, and the notes have a section for the
+# version. Each component asks only the registries it is published to, if any.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
@@ -2514,17 +3146,16 @@ expect_equal "tag android prints no tag" "" "$OUT"
 expect_contains "tag android names the tags of react-native" "$below" "$ERR"
 expect_equal "tag android creates no tag" "$tags" "$(git -C "$r" tag -l)"
 
-# The notes of the component must be finished. Those of the other components do not matter.
+# The notes of the component must have a section for the version, with something in it. Those of
+# the other components do not matter.
 for component in rust android react-native; do
     fresh_registries
     file="$(changelog_of "$component")"
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
-    draft_notes 0.1.0-beta.1 >"$r/$file"
-    draft="$file's \`## 0.1.0-beta.1\` section is still a draft:"
-    draft="$draft rewrite it and remove the draft comment"
-    expect_fail "check $component refuses notes that are still a draft" "$draft" -- \
-        "$rel" check "$component"
+    empty_notes 0.1.0-beta.1 >"$r/$file"
+    expect_fail "check $component refuses notes whose section has nothing under its heading" \
+        "$file's \`## 0.1.0-beta.1\` section is empty" -- "$rel" check "$component"
     printf '# Changelog\n\n## 0.1.0-beta.0\n\nOlder notes.\n' >"$r/$file"
     expect_fail "check $component refuses a version without a section in its notes" \
         "$file has no \`## 0.1.0-beta.1\` section; add the notes for 0.1.0-beta.1" -- \
@@ -2976,13 +3607,13 @@ for component in rust android react-native; do
         "$component tags: 0.1.0-beta.1 is lower than 0.1.0-beta.2, which is already released" -- \
         "$rel" check-tag "$tag"
     git -C "$r" tag -d "$(prefix_of "$component")0.1.0-beta.2" >/dev/null
-    draft_notes 0.1.0-beta.1 >"$r/$file"
-    commit_all "$r" "notes that are still a draft"
+    empty_notes 0.1.0-beta.1 >"$r/$file"
+    commit_all "$r" "notes with nothing under the heading of the version"
     sync_main "$r"
     git -C "$r" tag -d "$tag" >/dev/null
     git -C "$r" tag "$tag"
-    expect_fail "check-tag refuses $tag when the notes are still a draft" "is still a draft" -- \
-        "$rel" check-tag "$tag"
+    expect_fail "check-tag refuses $tag when the section of the notes is empty" \
+        "section is empty" -- "$rel" check-tag "$tag"
 done
 
 # The version of the tag is newer than the tags of the other components too.
@@ -3342,7 +3973,8 @@ expect_contains "check-tree names it for the other components as well" "rust: 0.
 expect_equal "check-tree does not call a component released or to be released" "" \
     "$(grep ': \(released\|to be released\)$' <<<"$OUT" || true)"
 
-# The notes of every component must be finished, whether it is released or not.
+# The notes of every component must have a section for its version, with something in it, whether
+# it is released or not.
 for component in rust android react-native; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -3351,12 +3983,11 @@ for component in rust android react-native; do
     for other in rust android react-native; do
         release_tag "$r" "$other" 0.1.0-beta.1
     done
-    draft_notes 0.1.0-beta.1 >"$r/$file"
-    draft="$component: $file's \`## 0.1.0-beta.1\` section is still a draft:"
-    draft="$draft rewrite it and remove the draft comment"
+    empty_notes 0.1.0-beta.1 >"$r/$file"
+    empty="$component: $file's \`## 0.1.0-beta.1\` section is empty"
     run "$rel" check-tree
-    expect_equal "check-tree fails for draft notes of $component" 1 "$STATUS"
-    expect_contains "check-tree names the draft notes of $component" "$draft" "$OUT"
+    expect_equal "check-tree fails for notes of $component with an empty section" 1 "$STATUS"
+    expect_contains "check-tree names the empty section in the notes of $component" "$empty" "$OUT"
     expect_contains "check-tree still says which of the two holds for $component" \
         "$component 0.1.0-beta.1: released" "$OUT"
     printf '# Changelog\n\n## 0.0.9\n\nOlder notes.\n' >"$r/$file"
@@ -3406,11 +4037,11 @@ done
 put "$r" rust 0.1.0-beta.1
 put "$r" android 0.1.0-beta.2
 file="$(changelog_of rust)"
-printf '# Changelog\n\n## 0.1.0-beta.1\n\n<!-- draft: the commits since 0.0.9. -->\n' >"$r/$file"
+empty_notes 0.1.0-beta.1 >"$r/$file"
 run "$rel" check-tree
 expect_equal "check-tree fails with two problems" 1 "$STATUS"
-expect_contains "check-tree reports the draft notes of the first problem" \
-    "rust: $file's \`## 0.1.0-beta.1\` section is still a draft" "$OUT"
+expect_contains "check-tree reports the empty section in the notes of the first problem" \
+    "rust: $file's \`## 0.1.0-beta.1\` section is empty" "$OUT"
 expect_contains "check-tree reports the component below the line of the second problem" \
     "android: 0.1.0-beta.2 has no release tag and is not the line's version, 0.1.0-beta.3" "$OUT"
 expect_contains "check-tree reports the component that is to be released as well" \
@@ -4692,15 +5323,15 @@ expect_equal "gh started the release of android only" "$start_android" "$(gh_cal
 # A component whose check fails holds back the others: no tag reaches the remote, for any
 # component, and gh is not called.
 tag_repo android react-native
-draft_notes 0.1.0-beta.2 >"$r/js/react-native/CHANGELOG.md"
-commit_all "$r" "notes that are still a draft"
+empty_notes 0.1.0-beta.2 >"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "notes with nothing under the heading of the version"
 git -C "$r" push -q origin main
 record_pushes "$origin"
 tag_job "$r" push "$before" ""
 expect_equal "the first step decides on both components" "android react-native" "$DECIDED"
 expect_equal "the second step fails when the check of a component does" 1 "$TAG_STATUS"
 expect_contains "the log shows which check failed" \
-    "js/react-native/CHANGELOG.md's \`## 0.1.0-beta.2\` section is still a draft" "$TAG_OUT"
+    "js/react-native/CHANGELOG.md's \`## 0.1.0-beta.2\` section is empty" "$TAG_OUT"
 nothing_tagged="::error::nothing was tagged. See the message above. If a check refused a"
 nothing_tagged="$nothing_tagged version, fix it in a pull request. Then run the SDK Tag workflow by"
 nothing_tagged="$nothing_tagged hand on main."
@@ -5091,12 +5722,12 @@ expect_versions() {
     expect_equal "$name" "$(lines "rust $3" "android $4" "react-native $5")" "$got"
 }
 
-# expect_listed <name> <y|n> <notes> <subject>: the notes list the commit with that subject (y) or
-# leave it out (n).
+# expect_listed <name> <y|n> <notes> <summary>: the notes list the commit with that summary, which
+# is its subject without the prefix (y), or leave it out (n).
 expect_listed() {
-    local name="$1" listing="$2" notes="$3" subject="$4"
-    if [[ "$listing" == y && "$notes" == *"- $subject ("* ]] ||
-        [[ "$listing" == n && "$notes" != *"$subject"* ]]; then
+    local name="$1" listing="$2" notes="$3" summary="$4"
+    if [[ "$listing" == y ]] && grep -qxF -- "- $summary" <<<"$notes" ||
+        [[ "$listing" == n && "$notes" != *"$summary"* ]]; then
         pass "$name"
     else
         fail "$name (expected $listing)" "$notes"
@@ -5104,25 +5735,28 @@ expect_listed() {
 }
 
 # Every component is released at 0.1.0 and the line moves on to the first beta of the next patch.
-# The commits since the release touch the paths of some components only, and the draft of each
-# component lists the commits that touched its own paths.
+# The commits since the release touch the paths of some components only, and the notes of each
+# component list the feats and fixes that touched its own paths.
 fresh_registries
 r="$(released_at 0.1.0)"
 rel="$r/scripts/sdk-release.sh"
 subjects=(
-    "feat(rn): a new call"
-    "feat(android): a new call"
-    "feat(sdk): a new call"
-    "chore(nix): update the toolchain"
+    "feat(rn): a call of the React Native SDK"
+    "feat(android): a call of the Android SDK"
+    "feat(sdk): a call of the crate"
+    "fix(nix): pin the toolchain"
     "feat(web): unrelated to every component"
     "chore(release): bump the SDK to 0.1.0"
 )
-# Whether the drafts of rust, android and react-native list each subject, in the same order.
+# Whether the notes of rust, android and react-native list each subject, in the same order.
 listed=("n n y" "n y n" "y y y" "n y y" "n n n" "n n n")
+# How many of the commits that touched what each component is built from are in its notes, and
+# how many touched it.
+counts=("1 of 2" "3 of 4" "3 of 4")
 change "$r" js/react-native/react-native/src/index.ts "${subjects[0]}"
 change "$r" android/fedimint-sdk/src/Sdk.kt "${subjects[1]}"
 change "$r" rust/fedimint-sdk/src/lib.rs "${subjects[2]}"
-change "$r" nix/sdk.nix "${subjects[3]}"
+change "$r" nix/ffi.nix "${subjects[3]}"
 change "$r" js/web/index.ts "${subjects[4]}"
 change "$r" rust/fedimint-sdk/src/release.rs "${subjects[5]}"
 run_split "$rel" bump all patch --beta
@@ -5141,13 +5775,21 @@ for component in rust android react-native; do
     notes="$("$r/scripts/sdk-changelog.sh" section "$component" 0.1.1-beta.1 || true)"
     for i in "${!subjects[@]}"; do
         read -ra want <<<"${listed[$i]}"
-        expect_listed "bump all drafts $component: ${subjects[$i]}" "${want[$index]}" "$notes" \
-            "${subjects[$i]}"
+        expect_listed "bump all writes $component: ${subjects[$i]}" "${want[$index]}" "$notes" \
+            "${subjects[$i]#*: }"
     done
-    expect_contains "bump all drafts $component from the commits since its last release" \
-        "<!-- draft: the commits since 0.1.0 that touched the SDK." "$notes"
+    line="$(changelog_of "$component") has notes for 0.1.1-beta.1"
+    line="$line from ${counts[$index]} commits since 0.1.0"
+    expect_contains "bump all says how many commits since its last release $component has" \
+        "$line" "$ERR"
     index=$((index + 1))
 done
+expect_equal "bump all writes the notes of android under their headings" "$(lines \
+    '### Added' '' '- a call of the crate' '- a call of the Android SDK' '' \
+    '### Fixed' '' '- pin the toolchain')" \
+    "$("$r/scripts/sdk-changelog.sh" section android 0.1.1-beta.1)"
+run "$rel" check-tree
+expect_equal "check-tree accepts the tree that bump wrote, with its notes as they are" 0 "$STATUS"
 
 # The bindings alone, in the middle of a beta: the crate keeps its version and its notes.
 fresh_registries
@@ -5167,7 +5809,7 @@ expect_equal "bump bindings leaves the crate's versions and notes byte for byte 
     "$crate_sums" "$(cd "$r" && cksum "${crate_files[@]}")"
 
 # A component that is behind the line goes to the next version of the line, not to its own next.
-# Its draft starts from its own last release, which is not the line's version.
+# Its notes start from its own last release, which is not the line's version.
 fresh_registries
 r="$(released_at 0.2.0)"
 rel="$r/scripts/sdk-release.sh"
@@ -5182,9 +5824,10 @@ expect_versions "bump android leaves the other components at their versions" "$r
     0.2.1
 expect_changed "bump android writes its version and its notes and nothing else" "$r" "$CATALOG" \
     android/CHANGELOG.md
-expect_contains "bump android drafts from the commits since its own last release" \
-    "<!-- draft: the commits since 0.2.0 that touched the SDK." \
-    "$("$r/scripts/sdk-changelog.sh" section android 0.2.2)"
+expect_contains "bump android writes its notes from the commits since its own last release" \
+    "android/CHANGELOG.md has notes for 0.2.2 from 0 of 0 commits since 0.2.0" "$ERR"
+expect_equal "bump android says in its notes that nothing changed since its own last release" \
+    "No changes for users since 0.2.0." "$("$r/scripts/sdk-changelog.sh" section android 0.2.2)"
 
 # A beta of one component is released while the line is at a beta.
 fresh_registries
@@ -5208,7 +5851,7 @@ expect_versions "bump rust moves the crate alone" "$r" 0.2.0 0.1.0 0.1.0
 expect_changed "bump rust writes the manifest, the lockfile, the Swift constant and its notes" \
     "$r" "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" rust/fedimint-sdk/CHANGELOG.md
 
-# A component that has no release yet gets the draft for a first release, which lists no commits.
+# A component that has no release yet gets the notes of a first release, which list no commits.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.1))"
 rel="$r/scripts/sdk-release.sh"
@@ -5218,18 +5861,15 @@ run_split "$rel" bump all beta
 expect_equal "bump all beta succeeds when a component has no release yet" 0 "$STATUS"
 expect_equal "bump all beta prints the next beta" "0.1.0-beta.2" "$OUT"
 for component in rust android; do
-    expect_contains "bump drafts $component from the commits since its release" \
-        "<!-- draft: the commits since 0.1.0-beta.1 that touched the SDK." \
+    expect_equal "bump writes $component from the commits since its release" \
+        "No changes for users since 0.1.0-beta.1." \
         "$("$r/scripts/sdk-changelog.sh" section "$component" 0.1.0-beta.2)"
 done
 notes="$("$r/scripts/sdk-changelog.sh" section react-native 0.1.0-beta.2 || true)"
-expect_contains "bump drafts a component that has no release as a first release" \
-    "<!-- draft: nothing is released yet" "$notes"
-if [[ "$notes" != *"the commits since"* ]]; then
-    pass "bump lists no commits for a component that has no release"
-else
-    fail "bump lists no commits for a component that has no release" "$notes"
-fi
+expect_equal "bump writes the notes of a first release for a component that has no release" \
+    "The first release of the React Native SDK." "$notes"
+expect_contains "bump says that the notes of that component are those of a first release" \
+    "js/react-native/CHANGELOG.md has notes for 0.1.0-beta.2, those of a first release" "$ERR"
 
 # What `next` refuses is refused, and nothing is written.
 fresh_registries
@@ -5389,14 +6029,15 @@ expect_contains "the message of the tag has the line that starts with an issue r
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-draft_notes 0.1.0-beta.1 >"$r/js/react-native/CHANGELOG.md"
-commit_all "$r" "notes that are still a draft"
-draft="js/react-native/CHANGELOG.md's \`## 0.1.0-beta.1\` section is still a draft"
+empty_notes 0.1.0-beta.1 >"$r/js/react-native/CHANGELOG.md"
+commit_all "$r" "notes with nothing under the heading of the version"
+empty="js/react-native/CHANGELOG.md's \`## 0.1.0-beta.1\` section is empty"
 for order in "android react-native" "react-native android" "rust android react-native"; do
     # shellcheck disable=SC2086 # $order is meant to split into the component names.
     run_split "$rel" tag $order
-    expect_equal "tag $order fails when the notes of react-native are still a draft" 1 "$STATUS"
-    expect_contains "tag $order says which notes are still a draft" "$draft" "$ERR"
+    expect_equal "tag $order fails when the section in the notes of react-native is empty" 1 \
+        "$STATUS"
+    expect_contains "tag $order says which notes have an empty section" "$empty" "$ERR"
     expect_equal "tag $order prints no tag when it fails" "" "$OUT"
     expect_equal "tag $order creates no tag at all" "" "$(git -C "$r" tag -l)"
 done
@@ -5539,18 +6180,18 @@ expect_equal "tag android succeeds once the bump is committed" "android-sdk-v0.1
 expect_equal "tag puts the tag on a commit that holds the version the tag names" "0.1.0-beta.2" \
     "$("$r/scripts/sdk-version.sh" current android --at android-sdk-v0.1.0-beta.2)"
 
-# The notes alone, finished in the working tree while the commit has them as a draft.
+# The notes alone, written in the working tree while the commit has an empty section.
 fresh_registries
-r="$(repo 0.1.0-beta.1 < <(draft_notes 0.1.0-beta.1))"
+r="$(repo 0.1.0-beta.1 < <(empty_notes 0.1.0-beta.1))"
 rel="$r/scripts/sdk-release.sh"
 finished_notes >"$r/android/CHANGELOG.md"
 run_split "$rel" tag android
-expect_equal "tag android fails when its notes are finished and not committed" 1 "$STATUS"
+expect_equal "tag android fails when its notes are written and not committed" 1 "$STATUS"
 expect_contains "tag android names the notes that are not committed" \
     "$(uncommitted android android/CHANGELOG.md)" "$ERR"
 expect_equal "tag android creates no tag when its notes are not committed" "" \
     "$(git -C "$r" tag -l)"
-commit_all "$r" "finish the notes of android"
+commit_all "$r" "write the notes of android"
 run_split "$rel" tag android
 expect_equal "tag android succeeds once the notes are committed" "android-sdk-v0.1.0-beta.1" "$OUT"
 

@@ -1,6 +1,6 @@
 name: SDK Version Bump
 
-# Bumps the version of the SDK's components, drafts their release notes and
+# Bumps the version of the SDK's components, writes their release notes and
 # opens a pull request with both. The components are the Rust crate, the
 # Android SDK and the React Native packages, and they share one line of
 # versions: a release takes the next version of the line and gives it to the
@@ -33,10 +33,13 @@ name: SDK Version Bump
 # crates.io, so this cannot propose a version that is taken. Nothing is
 # written unless every check passed.
 #
-# The drafted notes list the commits since the last release that touched the
-# component (scripts/sdk-changelog.sh), as a section of the CHANGELOG.md of
-# each component that gets the version. Rewrite them for users in the pull
-# request and remove the draft comments; the release refuses a draft.
+# The notes of each component that gets the version are written from the
+# commits since its last release that touched it (scripts/sdk-changelog.sh):
+# the breaking ones, `feat` and `fix`, as a section of its CHANGELOG.md, and
+# a line when the fedimint the crate is built against has changed. The pull
+# request lists the commits that got no entry (`sdk-changelog.sh left-out`),
+# so that whoever reads the notes can add a line for what users see among
+# them. Editing the notes in the pull request is optional.
 #
 # Merging the pull request starts the release: sdk-tag.yaml then tags the
 # merge commit for each component that got the version and starts that
@@ -123,8 +126,8 @@ jobs:
 
       # Credentials kept, unlike the other workflows: this job pushes the
       # bump branch. The full history and tags are for the checks, which read
-      # the release tags, and for drafting the notes, which list the commits
-      # since the last release's tag.
+      # the release tags, and for writing the notes, which are made from the
+      # commits since the last release's tag.
       - name: 'Checkout'
         uses: actions/checkout@v7
         with:
@@ -132,7 +135,7 @@ jobs:
 
       # npm and curl, which the checks ask for the versions on the registries,
       # are on the runner. The new version is the only line on stdout.
-      - name: 'Bump the versions and draft the notes'
+      - name: 'Bump the versions and write the notes'
         id: bump
         env:
           GROUP: ${{ inputs.components }}
@@ -188,6 +191,7 @@ jobs:
           notes=""
           tags=""
           unreleased=""
+          left_out=""
           while IFS= read -r component; do
             from="$(scripts/sdk-version.sh current "$component" --at HEAD)"
             bumped+="- $(component_title "$component"): \`$from\` to \`$NEXT\`"$'\n'
@@ -198,6 +202,22 @@ jobs:
             latest="$(scripts/sdk-release.sh latest "$component")"
             if [[ -n "$latest" ]]; then
               tags="${tags:+$tags, }$tag"
+              # The commits that got no entry in its notes, for whoever reads
+              # them. GitHub limits a pull request body to 65536 characters, so
+              # no more than 50 of each component are listed.
+              commits="$(scripts/sdk-changelog.sh left-out "$component" "$latest")"
+              if [[ -n "$commits" ]]; then
+                count="$(grep -c '' <<<"$commits")"
+                summary="Not in the $(component_title "$component")'s notes: $count commits"
+                [[ "$count" -ne 1 ]] || summary="${summary%s}"
+                left_out+="<details><summary>$summary</summary>"$'\n\n'
+                left_out+="$(sed -n '1,50p' <<<"$commits")"$'\n\n'
+                if [[ "$count" -gt 50 ]]; then
+                  more="\`scripts/sdk-changelog.sh left-out $component $latest\`"
+                  left_out+="And $((count - 50)) more: $more lists them all."$'\n\n'
+                fi
+                left_out+="</details>"$'\n\n'
+              fi
             else
               unreleased+="- $(component_title "$component"): $tag"$'\n'
             fi
@@ -207,14 +227,22 @@ jobs:
             echo
             printf '%s' "$bumped"
             echo
-            echo "**Before merging:** in each of these files, rewrite the drafted" \
-              "\`## $NEXT\` notes for users (what was added, changed or fixed, and anything that" \
-              "breaks callers) and delete the draft comment:"
+            echo "The \`## $NEXT\` notes in these files are written from the breaking," \
+              "\`feat\` and \`fix\` commits since each component's last release:"
             echo
             printf '%s' "$notes"
             echo
-            echo "The release refuses a draft."
+            # One paragraph, on one line: GitHub shows every line break of the body.
+            review="Editing them in this pull request is optional. Check their Added and Fixed"
+            review+=" lines for a change that breaks callers: it belongs under Breaking when its"
+            review+=" commit had no \`!\`."
+            if [[ -n "$left_out" ]]; then
+              review+=" The commits below got no line. Add one for anything among them that"
+              review+=" users see."
+            fi
+            echo "$review"
             echo
+            printf '%s' "$left_out"
             if [[ -z "$unreleased" ]]; then
               echo "**Merging this starts the release of \`$NEXT\`** of those components. The SDK" \
                 "Tag workflow tags the merge commit ($tags) and starts each component's release" \

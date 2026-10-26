@@ -86,8 +86,13 @@ component_workflow() {
 # What the component $1 is built from, one path per line, relative to the repository. A commit
 # that touches none of them cannot change the component, so it does not belong in its notes. The
 # directories include their Cargo lockfiles (rust/fedimint-sdk/Cargo.lock,
-# rust/uniffi-bindgen/Cargo.lock, rust/ubrn/Cargo.lock), so a dependency-only bump is listed too;
-# scripts/test-sdk-release-scripts.sh checks that.
+# rust/uniffi-bindgen/Cargo.lock, rust/ubrn/Cargo.lock), so a commit that only changes a dependency
+# touches the component too; scripts/test-sdk-release-scripts.sh checks that.
+#
+# The Android SDK names nix/ffi.nix, which builds its native library, rather than the nix
+# directory. The other file there, nix/web-bindgen.nix, provides the binding generators of the
+# React Native packages (ubrn) and of the web SDK (ubrn and wasm-bindgen-cli), which the Android
+# SDK does not use, so only the React Native packages list the whole directory.
 component_paths() {
     case "${1:-}" in
         rust)
@@ -103,7 +108,7 @@ component_paths() {
                 android/gradle.properties \
                 rust/fedimint-sdk \
                 rust/uniffi-bindgen \
-                nix \
+                nix/ffi.nix \
                 flake.nix \
                 flake.lock \
                 scripts/generate-android-bindings.sh \
@@ -120,6 +125,74 @@ component_paths() {
                 scripts/generate-sdk-rn-bindings.sh \
                 scripts/assemble-rn-ios-xcframework.sh \
                 scripts/react-native-sdk-pack.sh
+            ;;
+        *) not_a_component "${1:-}" ;;
+    esac
+}
+
+# The scopes that mark a commit as not being about the component $1, one per line. The scope of a
+# commit is the text in the parentheses of its conventional commit subject, as in
+# `fix(flake): ...`. A commit with one of these scopes is left out of the component's notes, even
+# though it touched something the component is built from (see component_paths). A scope is foreign
+# to a component when it names
+#
+#   - the development environment or the repository's tooling: flake, ci, workflows, tests,
+#     examples and release;
+#   - or a part of the repository that the component does not ship: the web SDK (web, sdk-web and
+#     vite-core), the React Native packages (react-native and rn-bindings), js (the JavaScript
+#     workspace), and swift and ios (the Swift SDK and iOS).
+#
+# The React Native scopes and js are foreign to the crate and the Android SDK, but not to the
+# React Native packages, which ship them. `ios` is foreign to the Android SDK only: the React
+# Native packages ship for iOS, and the crate runs on it. `android` is foreign to none of them,
+# because the crate's Android code is in rust/fedimint-sdk, which all three ship.
+component_foreign_scopes() {
+    case "${1:-}" in
+        rust)
+            printf '%s\n' \
+                flake \
+                ci \
+                workflows \
+                tests \
+                examples \
+                release \
+                web \
+                sdk-web \
+                vite-core \
+                react-native \
+                rn-bindings \
+                js \
+                swift
+            ;;
+        android)
+            printf '%s\n' \
+                flake \
+                ci \
+                workflows \
+                tests \
+                examples \
+                release \
+                web \
+                sdk-web \
+                vite-core \
+                react-native \
+                rn-bindings \
+                js \
+                swift \
+                ios
+            ;;
+        react-native)
+            printf '%s\n' \
+                flake \
+                ci \
+                workflows \
+                tests \
+                examples \
+                release \
+                web \
+                sdk-web \
+                vite-core \
+                swift
             ;;
         *) not_a_component "${1:-}" ;;
     esac

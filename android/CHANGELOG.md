@@ -3,11 +3,11 @@
 Release notes for the Android SDK, `org.fedimint:sdk` on Maven Central,
 newest first. Each section also becomes that version's GitHub Release.
 
-The version bump pull request drafts the next section from the commits since
-the last release. Rewrite it there for users, grouped under Added, Changed,
-Fixed and Breaking as they apply, and remove the draft comment. The release
-refuses a version whose section is missing or still a draft. See "Making a
-release" in [RELEASING.md](../RELEASING.md).
+The version bump pull request writes the next section from the commits since
+the last release, grouped under Breaking, Added, Changed and Fixed, and the
+section can be edited in that pull request. The release refuses a version that
+has no section. See "Release notes" in
+[RELEASING.md](../RELEASING.md#release-notes).
 
 ## 0.1.0-beta.2
 

@@ -9,11 +9,12 @@ name: React Native SDK Release
 # To release, run sdk-version-bump.yaml (Actions → SDK Version Bump) for
 # `react-native`, or for `bindings` or `all` to release other components with
 # it. It opens a pull request that sets the version of both packages and
-# drafts the version's section in js/react-native/CHANGELOG.md. Rewrite the
-# notes for users in that pull request, and merge it: sdk-tag.yaml then tags
-# the merge commit `react-native-sdk-v<version>` and starts this workflow on
-# the tag. Pushing such a tag by hand starts a release too, and the checks are
-# the same either way.
+# writes the version's section in js/react-native/CHANGELOG.md from the
+# commits since the last release. Edit the notes in that pull request if they
+# need more, which is optional, and merge it: sdk-tag.yaml then tags the merge
+# commit `react-native-sdk-v<version>` and starts this workflow on the tag.
+# Pushing such a tag by hand starts a release too, and the checks are the same
+# either way.
 #
 # The version is in the tree: both packages have it in their package.json,
 # and both are `"private": true`. That keeps every other publishing path in
@@ -27,7 +28,7 @@ name: React Native SDK Release
 #
 #   check           the tag: a React Native one, whose version is the one the
 #                   packages have in the tree, whose commit is on main and
-#                   whose notes are finished, and which is newer than every
+#                   whose version has notes, and which is newer than every
 #                   earlier release tag of any component and every version of
 #                   either package on npm (scripts/sdk-release.sh)
 #   android-native  the Android libraries, the build the Android SDK ships

@@ -18,7 +18,7 @@ name: SDK Tag
 #     only leaves a note in the log, and nothing is released by surprise;
 #   * the release checks pass: the version is newer than every release tag of
 #     every component and every version on the registry the component is
-#     published to, its notes are finished, and no component has tagged that
+#     published to, it has release notes, and no component has tagged that
 #     version on another commit (scripts/sdk-release.sh check).
 #
 # Components whose version changed together are tagged on the same commit.
@@ -172,9 +172,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           read -ra components <<<"$RELEASES"
-          # A failed check is typically notes merged as a draft. The pull
-          # request that fixes it does not change a version, so it does not
-          # bring this workflow back by itself.
+          # The pull request that fixes what a check refused changes no
+          # version, so it does not bring this workflow back by itself.
           if ! created="$(scripts/sdk-release.sh tag "${components[@]}")"; then
             echo "::error::nothing was tagged. See the message above. If a check refused a" \
               "version, fix it in a pull request. Then run the SDK Tag workflow by hand on main."

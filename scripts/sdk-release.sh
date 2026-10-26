@@ -40,8 +40,8 @@
 #      release tag, or at the line's version, which is the next one to be released.
 #
 # `latest` prints the newest released version of a component, taken from its release tags, or
-# nothing when it has none. The version bump uses it to find the release that the draft of the
-# next release notes starts from.
+# nothing when it has none. The version bump uses it to find the release that the next release
+# notes are written from.
 #
 # `published` prints the versions that the registries of a component list, one per line: those of
 # the crate on crates.io for `rust`, the yanked ones included, and those of both npm packages for
@@ -59,7 +59,7 @@
 # workflow runs in its dry run, which publishes nothing. It fails unless the version the component
 # has in the tree can be released from the commit that is checked out: it is newer than the release
 # tags of every component and than the versions on the registries the component is published to
-# (rule 3), its release notes are finished (see sdk-changelog.sh) and no component has tagged the
+# (rule 3), its release notes have a section (see sdk-changelog.sh) and no component has tagged the
 # same version on another commit (rule 4). So a version below the release tag of another component
 # is refused, whichever component it is for. The registries of the other components are not asked,
 # as their release tags are the record of their releases, and a tag of another component for this
@@ -82,7 +82,7 @@
 # annotated: the release notes are in the CHANGELOG.md. It ends with `<tag> can be released`.
 #
 # `check-tree` is for the pull request check and asks no registry. It requires of every
-# component a valid version, finished release notes and rule 5: either the release tag of its
+# component a valid version, release notes for it and rule 5: either the release tag of its
 # version exists (it prints `released`), or the version is the line's and newer than every
 # release tag of every component (it prints `to be released`). It reports every problem it
 # finds, not only the first.
@@ -111,12 +111,11 @@
 # `bump` refuses what `next` refuses, such as `patch` in the middle of a beta, and then runs
 # `check-version` on the new version. For each component named it looks up the latest release
 # (`latest`) and checks that its notes can take a new section. Only then does it write: the new
-# version into the files that hold it (`sdk-version.sh set`), and into the notes of each component a
-# draft of the new version's section (`sdk-changelog.sh draft`) that lists the commits since its
-# latest release, or has the form that says nothing is released yet when it has none. Nothing is
-# written unless every check before the first write passed, and the version files and notes of the
-# components that were not named are not touched. The progress goes to stderr, and the new version
-# alone to stdout.
+# version into the files that hold it (`sdk-version.sh set`), and into the notes of each component
+# the new version's section (`sdk-changelog.sh write`), made from the commits since its latest
+# release, or the section of a first release when it has none. Nothing is written unless every
+# check before the first write passed, and the version files and notes of the components that were
+# not named are not touched. The progress goes to stderr, and the new version alone to stdout.
 #
 # `tag` is what the tag workflow does to the repository, without pushing. It takes the components
 # to tag, at least one. What is tagged is the commit, but the checks and the notes of the tags are
@@ -572,11 +571,11 @@ untagged() {
     [[ -z "$result" ]] || echo "$result"
 }
 
-# Gives the next version of the line to the components of the group $1 and drafts their notes, as
+# Gives the next version of the line to the components of the group $1 and writes their notes, as
 # the header describes. $2 and $3 are what `sdk-version.sh next` takes. Prints the new version.
 bump() {
     local group="$1" kind="$2" flag="${3:-}" names next component file release listed="" i
-    local -a components=() files=() releases=()
+    local -a components=() releases=()
     case "$kind" in
         major | minor | patch) [[ -z "$flag" || "$flag" == --beta ]] || usage ;;
         beta | release) ;;
@@ -595,7 +594,6 @@ bump() {
         release="$(latest "$component")" || exit 1
         releases+=("$release")
         file="$(component_changelog "$component")" || exit 1
-        files+=("$file")
         [[ -f "$ROOT/$file" ]] || die "no $ROOT/$file"
         if "$CHANGELOG_SCRIPT" section "$component" "$next" >/dev/null 2>&1; then
             die "$file already has a \`## $next\` section"
@@ -603,14 +601,9 @@ bump() {
     done
     "$VERSION_SCRIPT" set "$next" "${components[@]}" >&2
     for i in "${!components[@]}"; do
-        "$CHANGELOG_SCRIPT" draft "${components[i]}" "$next" ${releases[i]:+"${releases[i]}"} >&2
-        if [[ -n "${releases[i]}" ]]; then
-            echo "${components[i]}: set to $next; ${files[i]} has a draft of the commits" \
-                "since ${releases[i]}" >&2
-        else
-            echo "${components[i]}: set to $next; ${files[i]} has a draft for the first release," \
-                "as nothing is released yet" >&2
-        fi
+        # `write` says on stderr which commits the notes are made from.
+        "$CHANGELOG_SCRIPT" write "${components[i]}" "$next" ${releases[i]:+"${releases[i]}"} >&2
+        echo "${components[i]}: set to $next" >&2
     done
     echo "$next"
 }

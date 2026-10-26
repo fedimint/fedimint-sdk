@@ -6,9 +6,10 @@ name: Rust SDK Release
 #
 # To release, run sdk-version-bump.yaml (Actions → SDK Version Bump) for
 # `all`, which releases the crate together with every binding. It opens a
-# pull request that sets the version of the crate and drafts the version's
-# section in rust/fedimint-sdk/CHANGELOG.md. Rewrite the notes for users in
-# that pull request, and merge it: sdk-tag.yaml then tags the merge commit
+# pull request that sets the version of the crate and writes the version's
+# section in rust/fedimint-sdk/CHANGELOG.md from the commits since the last
+# release. Edit the notes in that pull request if they need more, which is
+# optional, and merge it: sdk-tag.yaml then tags the merge commit
 # `rust-sdk-v<version>` and starts this workflow on the tag. Pushing such a
 # tag by hand starts a release too, and the checks are the same either way.
 #
@@ -19,7 +20,7 @@ name: Rust SDK Release
 #
 #   check           the tag: a Rust SDK one, whose version is the one the
 #                   crate has in the tree, whose commit is on main and whose
-#                   notes are finished, and which is newer than every earlier
+#                   version has notes, and which is newer than every earlier
 #                   release tag of any component and every version of the
 #                   crate on crates.io (scripts/sdk-release.sh)
 #   test            all of rust-sdk-ci.yaml, on the release commit

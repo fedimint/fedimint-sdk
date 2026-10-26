@@ -79,20 +79,23 @@ A beta is always either continued (`beta`) or released (`release`). There is no 
    The `beta` box is ticked by default and only matters for `patch`, `minor` and `major`.
 
    The workflow opens a pull request from the branch `sdk/version-<version>`. It sets the new
-   version for the chosen components and drafts their release notes: one `## <version>` section
-   in each chosen component's `CHANGELOG.md`, listing the commits since that component's last
-   release that touched what it is built from. It refuses a bump that does not fit, such as
+   version for the chosen components and writes their release notes: one `## <version>` section
+   in each chosen component's `CHANGELOG.md`, made from the commits since that component's last
+   release, as "Release notes" below describes. It refuses a bump that does not fit, such as
    `patch` in the middle of a beta, or a version that is already taken, before it writes anything.
 
-2. Rewrite the drafted notes for users, in each file, in that component's own terms: what was
-   added, changed or fixed, and anything that breaks callers. Delete the draft comments. The
-   pull request check (step 3) refuses a draft, and so does the release.
+2. Read the notes in the pull request, in each file. Under the list of the files, the pull
+   request lists the commits that got no entry in each component's notes, 50 at most, and
+   `scripts/sdk-changelog.sh left-out <component> <last release>` lists them all. Check the Added
+   and Fixed lines for a change that breaks callers, which belongs under Breaking when its commit
+   had no `!`, and add a line for anything users see among the commits left out. Edit the notes
+   there for anything else they need, for example to explain how to adapt to a breaking change.
+   This is optional.
 3. A pull request opened by a workflow does not start other workflows, so close and reopen it
    to start its checks, and let all of them finish before you merge. They also build the native
    libraries that the release then takes from the cache. One of them, **SDK Release Scripts**,
    runs `scripts/sdk-release.sh check-tree` on every pull request that changes a version or a
-   `CHANGELOG.md`, so a version bump whose notes are still drafts fails there, before it is
-   merged.
+   `CHANGELOG.md`.
 4. Merge it. Merging starts the release: the **SDK Tag** workflow runs when a push to `main`
    changes a file that holds a version. For each component whose version the push changed from a
    released one, it tags the merge commit and starts that component's release workflow on the
@@ -112,6 +115,94 @@ Each workflow first checks its tag, then builds and tests the tagged commit, and
 if all of that passed. The header of each workflow file says what it does in detail.
 [`android/README.md`](android/README.md) and
 [`js/react-native/README.md`](js/react-native/README.md) say what is particular to those two.
+
+### Release notes
+
+The version bump writes the notes of each component from the subjects of the commits since that
+component's last release that touched what it is built from, newest first. A subject is read as a
+conventional commit, `<type>(<scope>)!: <summary>` with the scope and the `!` optional, and its
+type decides where the commit goes:
+
+- `### Breaking`: any type with a `!` before the colon, such as `feat(sdk)!: ...`.
+- `### Added`: `feat`.
+- `### Fixed`: `fix`.
+
+A section has the headings that have entries, in the order Breaking, Added, Changed, Fixed.
+`### Changed` is for the one line that is not a commit, described below. An entry under the other
+three is a list item holding the subject without its `<type>(<scope>)!: ` prefix and otherwise as
+it is, so the number of the pull request, which a squash merge appends to the subject as `(#123)`,
+stays. Commits of any other type are left out: `chore` (which includes the `chore(release): ...`
+commit of a version bump), `build`, `ci`, `docs`, `test`, `refactor` and so on. Subjects that are
+not in this form are left out too.
+
+A commit that touched what a component is built from can still be about something else. Its scope,
+the text in the parentheses, says so: a commit whose scope is foreign to a component is left out of
+that component's notes, whatever its type and with or without a `!`. A scope is foreign to a
+component when it names the development environment or the repository's tooling, or a part of the
+repository that the component does not ship:
+
+- `flake`, `ci`, `workflows`, `tests`, `examples` and `release` are foreign to every component.
+- So are `web`, `sdk-web` and `vite-core` (the web SDK) and `swift` (the Swift SDK), which none of
+  them ships.
+- `react-native`, `rn-bindings` and `js` (the JavaScript workspace) are foreign to the crate and to
+  the Android SDK, but not to the React Native SDK.
+- `ios` is foreign to the Android SDK only. The React Native packages ship for iOS, and the crate
+  runs on it.
+- `android` is foreign to none of them, because the crate's Android code is in `rust/fedimint-sdk`,
+  which all three ship.
+
+`component_foreign_scopes` in [`scripts/sdk-components.sh`](scripts/sdk-components.sh) has the
+lists, and `component_paths` in the same file what each component is built from. The scope is
+compared whole, so `sdk-web` is not `web`. A commit with no scope, or with any other scope, is
+listed as its type says, so a scope that is in none of the lists puts a commit in the notes rather
+than losing it.
+
+A revert is never listed, and it takes away the entry of the commit it reverts. Its subject is
+`Revert "<subject>"`. `git revert` and GitHub's Revert button write there the subject of the
+commit they revert, number included, but GitHub titles the revert's pull request
+`Revert "<title>"`, without the number, and the title is what lands when that pull request has
+several commits. So among the commits since the component's last release, a revert takes away the
+entry of one commit, the one whose subject is `<subject>` or `<subject> (#<number>)`, and a commit
+and its revert leave nothing in the notes. A revert that is itself reverted takes away nothing, so
+the commit stays in the notes. The revert of a revert is written `Revert "Revert "<subject>""`, or,
+by `git revert` 2.43 and later, `Reapply "<subject>"` followed by the numbers the revert had, to
+which a squash merge may add one more. A reapply is never listed either. A revert of a commit that
+an earlier release listed takes away nothing, because the notes of that release are written
+already: if users need to hear about it, write a line by hand in the version bump pull request.
+
+The crate's `Cargo.lock`, the one in `rust/fedimint-sdk`, says which fedimint every component is
+built against. The bump reads its first `fedimint-core` package at the component's last release and
+at the commit it runs on, and describes each as `fedimint <version>` when the package comes from
+crates.io, or as `an unreleased fedimint` when it is a git revision. When the two differ, the notes
+get `### Changed` with one line:
+`Built against <new>, where <previous version> was built against <old>.` When both are git
+revisions, and not the same one, the line is
+`Built against another unreleased fedimint than <previous version>.` There is no such line for the
+first release of a component, or when the lockfile or its `fedimint-core` package is missing at
+either commit.
+
+The version bump pull request lists, in a collapsed block for each component that has been
+released before, the commits that got no entry in its notes: those of a type that is not listed,
+subjects that are not in the form, commits with a foreign scope, reverts and reapplies, and the
+commits that a revert took away. The block shows 50 commits at most, and
+`scripts/sdk-changelog.sh left-out <component> <last release>` lists them all. Look through the
+list for anything users see, and add a line for it by hand.
+
+Two cases give a section of a single line:
+
+- `No changes for users since <previous version>.` when no commit has an entry and the fedimint is
+  the same;
+- `The first release of the <title>.` for a component that has never been released, such as
+  `The first release of the Android SDK.`
+
+Pull requests are squash-merged with GitHub's "Default message" (see "What the releases rely on").
+A pull request lands on `main` as one commit. Its subject is the subject of the pull request's
+only commit, or the pull request's title when it has several, with ` (#<number>)` appended either
+way, and that subject is what the notes read. A commit or a title that changes what users see is
+therefore `feat(<scope>): ...` or `fix(<scope>): ...`, in words users understand, and one that
+breaks callers marks its type with `!`, as in `feat(sdk)!: ...`. For a pull request with one
+commit, a `!` or a better summary that review asks for goes into the commit, which is reworded,
+and not only into the title, because the title is not what lands. Write both in this form.
 
 ### The first release of a component
 
@@ -134,11 +225,11 @@ components. The release rules would refuse it, and the component would need the 
   workflow again.
 - **The tag workflow fails.** Its error says what to do. Once the tags are pushed, the summary
   of the run lists them, the releases it started and the ones it did not.
-  - A check refused a version, typically notes that were merged as a draft. Nothing is tagged
-    then, for any component. Fix it in a pull request, then run SDK Tag by hand on `main`
-    (Actions → SDK Tag → Run workflow, which skips any other branch) for the same components. A
-    manual run tags the components that have no tag for their version yet. The pull request that
-    fixes it changes no version, so it does not start the workflow by itself.
+  - A check refused a version. Nothing is tagged then, for any component. Fix it in a pull
+    request, then run SDK Tag by hand on `main` (Actions → SDK Tag → Run workflow, which skips
+    any other branch) for the same components. A manual run tags the components that have no tag
+    for their version yet. The pull request that fixes it changes no version, so it does not
+    start the workflow by itself.
   - The workflow could not decide what to release. Nothing is tagged then either. Once the cause
     is fixed, run SDK Tag by hand on `main` in the same way. A release whose automatic run was
     skipped or lost is started like this too.
@@ -168,9 +259,9 @@ components. The release rules would refuse it, and the component would need the 
   component's own, name the version in the tree and be on `main`. The version must be newer than
   the earlier releases of every component, not only this one's, and than the versions on the
   registry this component is published to, if it has one. It must not be tagged on another commit
-  by another component, and its notes must be finished. A tag pushed by hand starts a release
-  too, under the same rules. A tag cannot be moved or deleted and no registry takes a version
-  twice, so the fix is the next version: bump again, for the components concerned.
+  by another component, and its notes must have a section for it. A tag pushed by hand starts a
+  release too, under the same rules. A tag cannot be moved or deleted and no registry takes a
+  version twice, so the fix is the next version: bump again, for the components concerned.
 - **A version bump pull request is merged after another one.** Keep one version bump pull
   request open at a time. One that was opened from the same version is no longer the next version
   of the line once the first is merged: after `react-native` went from `0.1.0-beta.1` to `0.1.0`,
@@ -178,7 +269,7 @@ components. The release rules would refuse it, and the component would need the 
   the same, the tag workflow refuses to tag a version that is lower than a release that is out,
   and nothing is released. Bump again for those components, which gives them the next version of
   the line, and move the notes of the version that was not released into the section of the new
-  one: the bump drafts that section above the old one and leaves the old one in place. The merge
+  one: the bump writes that section above the old one and leaves the old one in place. The merge
   of this second bump changes a version that was never released, so run SDK Tag by hand for the
   components right after it (see "The first release of a component").
 - **A version bump whose release went out was reverted.** Do not revert such a bump: the tree
@@ -269,6 +360,13 @@ Settings outside this repository's files. All of them have to be in place before
   organization's repository.
 - **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions →
   General), or the version bump cannot open its pull request.
+- **Squash merges with the "Default message"** (Settings → General → Pull Requests → Allow squash
+  merging → Default commit message, which the API calls `squash_merge_commit_title` and sets to
+  `COMMIT_OR_PR_TITLE`). The generated release notes read the subjects that this setting produces:
+  the subject of a pull request's only commit, or its title when it has several, with
+  ` (#<number>)` appended. "Release notes" above is written for this setting: with another
+  choice, the title of a pull request with one commit would land instead of the commit's subject,
+  and review would fix the title rather than reword the commit.
 - **Self-hosted runners** with the labels `self-hosted, linux, x64` and
   `self-hosted, macOS, ARM64, device-tests`. The Android release builds its native libraries on
   the first and runs the example app on an emulator on the second, and the React Native release

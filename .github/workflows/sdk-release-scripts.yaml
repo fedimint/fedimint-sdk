@@ -4,9 +4,10 @@ name: SDK Release Scripts
 #
 #   * scripts/sdk-version.sh (what a valid version is, and that a release is
 #     newer than every earlier one) and scripts/sdk-changelog.sh (the release
-#     notes a release needs, and the drafts written from the commits since the
-#     last one), with the components they know, in scripts/sdk-components.sh.
-#     The release, version bump and tag workflows use them;
+#     notes a release needs, and how they are written from the commits since
+#     the last one), with the components they know, in
+#     scripts/sdk-components.sh. The release, version bump and tag workflows
+#     use them;
 #   * scripts/sdk-release.sh, which holds the rules every release of the SDK
 #     must pass: that its version is not taken, that a version is tagged on one
 #     commit only, and that the committed versions and notes are consistent.
@@ -37,11 +38,11 @@ name: SDK Release Scripts
 #
 # It also checks the committed state the way a release will, with
 # `scripts/sdk-release.sh check-tree`: the version of every component (the
-# Rust crate, the Android SDK and the React Native packages) is valid and its
-# release notes are finished, and each component is at a version it has
-# released, which has a release tag, or at the version of the line, the next
-# to be released. A version bump pull request whose drafted notes were never
-# rewritten fails here, before merging it would start a release that the tag
+# Rust crate, the Android SDK and the React Native packages) is valid and has
+# release notes, and each component is at a version it has released, which has
+# a release tag, or at the version of the line, the next to be released. A
+# pull request that leaves a version without notes, a missing or an empty
+# section, fails here, before merging it would start a release that the tag
 # workflow then refuses. The check reads the release tags, so the checkout
 # fetches the whole history, and the step fails first if it came without any.
 #
