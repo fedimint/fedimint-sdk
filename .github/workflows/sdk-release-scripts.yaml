@@ -22,7 +22,9 @@ name: SDK Release Scripts
 #     scripts/hide-ios-symbols.sh (what the iOS libraries still export);
 #   * the Rust crate's release: scripts/rust-sdk-publish.sh, which decides
 #     whether a release still has to publish the crate, and stops one whose
-#     version another commit published.
+#     version another commit published;
+#   * the browser SDK's packaging: scripts/web-sdk-pack.sh (what the web
+#     SDK npm tarball must contain, and its WebAssembly verification).
 #
 # The release workflows only run these scripts once something is being
 # released, so this is what checks them on a pull request. It needs no build
@@ -64,6 +66,8 @@ on:
       - 'scripts/react-native-sdk-*'
       - 'scripts/rust-sdk-publish.sh'
       - 'scripts/test-react-native-sdk-scripts.sh'
+      - 'scripts/web-sdk-*'
+      - 'scripts/test-web-sdk-scripts.sh'
       - 'scripts/assemble-rn-ios-xcframework.sh'
       - 'scripts/test-assemble-rn-ios-xcframework.sh'
       - 'scripts/build-sdk-rn-ios.sh'
@@ -73,6 +77,7 @@ on:
       - 'scripts/rn-android-emulator.sh'
       - 'scripts/sdk-web-wasm-size.sh'
       - 'scripts/test-sdk-web-wasm-size.sh'
+      - 'js/web/web-sdk/package.json'
       # scripts/react-native-sdk-example.sh stages the example and pins its
       # dependencies from the lockfile; its tests run against both.
       - 'js/examples/react-native/**'
@@ -122,6 +127,9 @@ jobs:
           scripts/test-assemble-rn-ios-xcframework.sh
           scripts/test-build-sdk-rn-ios.sh
           scripts/test-hide-ios-symbols.sh
+
+      - name: 'Run the browser SDK packaging tests'
+        run: scripts/test-web-sdk-scripts.sh
 
       - name: 'Run the browser SDK size check tests'
         run: scripts/test-sdk-web-wasm-size.sh

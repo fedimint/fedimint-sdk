@@ -40,7 +40,8 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "sideEffects": [
     "./dist/worker.js"
