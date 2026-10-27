@@ -11,16 +11,17 @@ use crate::{DiscoveredFederation, Error, ErrorCode, FederationId, Result};
 
 /// Discovers federations from the requested source (Dev fixture or Nostr relays).
 ///
-/// # Nostr Discovery Policy & Limitations
+/// # Nostr Discovery Policy & Continuation
 ///
-/// When using [`DiscoverySource::Nostr`], discovery queries a single-shot snapshot of the
-/// newest 100 raw kind-38173 events per relay (`limit: 100`). It does not perform recursive
-/// pagination or historical backfill. If an open relay contains more than 100 newer events
-/// that lack valid federation announcements, older valid announcements will not be requested.
+/// When using [`DiscoverySource::Nostr`], discovery queries Nostr relays for NIP-87
+/// kind-38173 announcements with up to [`MAX_EVENTS`] (100) raw events per page. To defend
+/// against raw-window crowdout by spam or non-announcement events, the query executes a
+/// bounded continuation backfill (up to [`MAX_PAGES`] pages, or 300 raw events total per relay)
+/// using `until` timestamp filters whenever initial pages yield fewer than the maximum
+/// accepted events.
 ///
-/// To mitigate relay crowdout and malicious spam, callers should query multiple curated or
-/// reputable relays. Aggregation deduplicates valid announcements across relays and retains
-/// the newest valid announcement per federation.
+/// Multi-relay aggregation concurrently queries all specified relays, deduplicating
+/// announcements by `(FederationId, InviteCode)` and retaining the newest announcement.
 ///
 /// # Errors
 ///
@@ -154,27 +155,38 @@ fn select_aggregate_error(errors: Vec<Error>) -> Error {
 const SUB_ID: &str = "fedimint_discovery";
 
 /// The maximum number of events to request from a relay or accept in one query.
-const MAX_EVENTS: usize = 100;
+pub(crate) const MAX_EVENTS: usize = 100;
+
+/// The maximum number of pagination continuation pages to query per relay.
+pub(crate) const MAX_PAGES: usize = 3;
 
 /// Maximum allowed size for a single incoming relay message frame in bytes (64 KiB).
-const MAX_MESSAGE_BYTES: usize = 65_536;
+pub(crate) const MAX_MESSAGE_BYTES: usize = 65_536;
 
-fn make_req_message() -> String {
-    serde_json::json!(["REQ", SUB_ID, { "kinds": [38173], "limit": MAX_EVENTS }]).to_string()
+pub(crate) fn make_req_message() -> String {
+    make_req_message_with_until(None)
 }
 
-fn make_close_message() -> String {
+pub(crate) fn make_req_message_with_until(until: Option<u64>) -> String {
+    let mut filter = serde_json::json!({ "kinds": [38173], "limit": MAX_EVENTS });
+    if let Some(until_ts) = until {
+        filter["until"] = serde_json::json!(until_ts);
+    }
+    serde_json::json!(["REQ", SUB_ID, filter]).to_string()
+}
+
+pub(crate) fn make_close_message() -> String {
     serde_json::json!(["CLOSE", SUB_ID]).to_string()
 }
 
 #[derive(Debug, PartialEq)]
-enum RelayAction {
+pub(crate) enum RelayAction {
     Event(RawNip87Event),
     Eose,
     Ignore,
 }
 
-fn parse_relay_message(msg_str: &str) -> RelayAction {
+pub(crate) fn parse_relay_message(msg_str: &str) -> RelayAction {
     if msg_str.len() > MAX_MESSAGE_BYTES {
         return RelayAction::Ignore;
     }
@@ -214,6 +226,77 @@ fn parse_relay_message(msg_str: &str) -> RelayAction {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FrameOutcome {
+    Continue,
+    NextPage { until: u64 },
+    Finished,
+}
+
+fn inspect_raw_event_frame(text: &str) -> Option<Option<u64>> {
+    let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return None;
+    };
+    if arr.first().and_then(|v| v.as_str()) != Some("EVENT")
+        || arr.get(1).and_then(|v| v.as_str()) != Some(SUB_ID)
+    {
+        return None;
+    }
+    let ts = arr
+        .get(2)
+        .and_then(|v| v.get("created_at"))
+        .and_then(|v| v.as_u64());
+    Some(ts)
+}
+
+pub(crate) fn process_relay_message_frame_with_pagination(
+    text: &str,
+    events: &mut Vec<RawNip87Event>,
+    received_eose: &mut bool,
+    pages_queried: &mut usize,
+    raw_events_in_page: &mut usize,
+    oldest_created_at_in_page: &mut Option<u64>,
+) -> FrameOutcome {
+    if let Some(ts_opt) = inspect_raw_event_frame(text) {
+        *raw_events_in_page += 1;
+        if let Some(ts) = ts_opt {
+            *oldest_created_at_in_page =
+                Some(oldest_created_at_in_page.map_or(ts, |min| min.min(ts)));
+        }
+    }
+
+    match parse_relay_message(text) {
+        RelayAction::Event(ev) => {
+            events.push(ev);
+            if events.len() >= MAX_EVENTS {
+                return FrameOutcome::Finished;
+            }
+            FrameOutcome::Continue
+        }
+        RelayAction::Eose => {
+            *received_eose = true;
+            if *raw_events_in_page < MAX_EVENTS
+                || events.len() >= MAX_EVENTS
+                || *pages_queried + 1 >= MAX_PAGES
+            {
+                return FrameOutcome::Finished;
+            }
+
+            let Some(oldest_ts) = (*oldest_created_at_in_page).filter(|&ts| ts > 0) else {
+                return FrameOutcome::Finished;
+            };
+
+            let until = oldest_ts.saturating_sub(1);
+            *pages_queried += 1;
+            *raw_events_in_page = 0;
+            *oldest_created_at_in_page = None;
+            *received_eose = false;
+            FrameOutcome::NextPage { until }
+        }
+        RelayAction::Ignore => FrameOutcome::Continue,
+    }
+}
+
 /// Processes a raw relay message text frame, appending any valid event to `events`
 /// and checking for EOSE or the `MAX_EVENTS` cutoff.
 ///
@@ -223,17 +306,17 @@ pub(crate) fn process_relay_message_frame(
     events: &mut Vec<RawNip87Event>,
     received_eose: &mut bool,
 ) -> bool {
-    match parse_relay_message(text) {
-        RelayAction::Event(ev) => {
-            events.push(ev);
-            events.len() >= MAX_EVENTS
-        }
-        RelayAction::Eose => {
-            *received_eose = true;
-            true
-        }
-        RelayAction::Ignore => false,
-    }
+    let mut pages_queried = 0;
+    let mut raw_events_in_page = 0;
+    let mut oldest_created_at_in_page = None;
+    process_relay_message_frame_with_pagination(
+        text,
+        events,
+        received_eose,
+        &mut pages_queried,
+        &mut raw_events_in_page,
+        &mut oldest_created_at_in_page,
+    ) != FrameOutcome::Continue
 }
 
 /// Finalizes a relay query by enforcing EOSE completion semantics.
@@ -330,11 +413,35 @@ pub(crate) async fn query_single_relay_with_timeout(
 
         let mut events = Vec::new();
         let mut received_eose = false;
+        let mut pages_queried = 0;
+        let mut raw_events_in_page = 0;
+        let mut oldest_created_at_in_page = None;
+
         while let Some(msg_result) = ws_stream.next().await {
             match msg_result {
                 Ok(Message::Text(text)) => {
-                    if process_relay_message_frame(&text, &mut events, &mut received_eose) {
-                        break;
+                    match process_relay_message_frame_with_pagination(
+                        &text,
+                        &mut events,
+                        &mut received_eose,
+                        &mut pages_queried,
+                        &mut raw_events_in_page,
+                        &mut oldest_created_at_in_page,
+                    ) {
+                        FrameOutcome::Continue => {}
+                        FrameOutcome::NextPage { until } => {
+                            if ws_stream.send(Message::text(make_close_message())).await.is_err() {
+                                break;
+                            }
+                            if ws_stream
+                                .send(Message::text(make_req_message_with_until(Some(until))))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        FrameOutcome::Finished => break,
                     }
                 }
                 Ok(Message::Close(_)) => break,
@@ -404,14 +511,31 @@ async fn query_single_relay(relay_url: String) -> Result<Vec<RawNip87Event>> {
     let mut events = Vec::new();
     let mut received_eose = false;
     let mut timeout_expired = false;
+    let mut pages_queried = 0;
+    let mut raw_events_in_page = 0;
+    let mut oldest_created_at_in_page = None;
 
     loop {
         tokio::select! {
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if process_relay_message_frame(&text, &mut events, &mut received_eose) {
-                            break;
+                        match process_relay_message_frame_with_pagination(
+                            &text,
+                            &mut events,
+                            &mut received_eose,
+                            &mut pages_queried,
+                            &mut raw_events_in_page,
+                            &mut oldest_created_at_in_page,
+                        ) {
+                            FrameOutcome::Continue => {}
+                            FrameOutcome::NextPage { until } => {
+                                let _ = ws.send(Message::Text(make_close_message())).await;
+                                if ws.send(Message::Text(make_req_message_with_until(Some(until)))).await.is_err() {
+                                    break;
+                                }
+                            }
+                            FrameOutcome::Finished => break,
                         }
                     }
                     Some(Ok(Message::Bytes(_))) => {}

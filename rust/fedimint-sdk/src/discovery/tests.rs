@@ -652,6 +652,145 @@ async fn test_query_single_relay_rejects_non_ws_scheme() {
     assert!(err.message.contains("scheme must be ws:// or wss://"));
 }
 
+#[test]
+fn test_pagination_state_triggers_next_page_when_raw_limit_hit() {
+    let mut events = Vec::new();
+    let mut received_eose = false;
+    let mut pages_queried = 0;
+    let mut raw_events_in_page = 0;
+    let mut oldest_created_at_in_page = None;
+
+    // Simulate 100 raw events that are invalid/spam
+    for i in 0..MAX_EVENTS {
+        let ts = 2000 - i as u64;
+        let spam_frame = format!(
+            r#"["EVENT", "{SUB_ID}", {{"id": "spam{i}", "kind": 38173, "created_at": {ts}, "tags": [], "content": ""}}]"#
+        );
+        let outcome = process_relay_message_frame_with_pagination(
+            &spam_frame,
+            &mut events,
+            &mut received_eose,
+            &mut pages_queried,
+            &mut raw_events_in_page,
+            &mut oldest_created_at_in_page,
+        );
+        assert_eq!(outcome, FrameOutcome::Continue);
+    }
+    assert_eq!(raw_events_in_page, MAX_EVENTS);
+    assert_eq!(events.len(), 0);
+    assert_eq!(oldest_created_at_in_page, Some(1901));
+
+    // EOSE frame should trigger NextPage with until = 1900
+    let eose_frame = format!(r#"["EOSE", "{SUB_ID}"]"#);
+    let outcome = process_relay_message_frame_with_pagination(
+        &eose_frame,
+        &mut events,
+        &mut received_eose,
+        &mut pages_queried,
+        &mut raw_events_in_page,
+        &mut oldest_created_at_in_page,
+    );
+    assert_eq!(outcome, FrameOutcome::NextPage { until: 1900 });
+    assert_eq!(pages_queried, 1);
+    assert_eq!(raw_events_in_page, 0);
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_bounded_backfill_recovers_announcement_behind_crowdout() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (url, server) = spawn_mock_relay(|mut ws| async move {
+        // Page 1: Receive first REQ
+        let req1 = ws.next().await.unwrap().unwrap();
+        assert!(req1.to_text().unwrap().contains("REQ"));
+
+        // Send 100 spam events (created_at = 1100 down to 1001)
+        for i in 0..MAX_EVENTS {
+            let ts = 1100 - i as u64;
+            let spam_event = format!(
+                r#"["EVENT", "{SUB_ID}", {{"id": "spam_{i}", "kind": 38173, "created_at": {ts}, "tags": [], "content": "spam"}}]"#
+            );
+            ws.send(Message::text(spam_event)).await.unwrap();
+        }
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        // Client should send CLOSE then second REQ with until = 1000
+        let close1 = ws.next().await.unwrap().unwrap();
+        assert!(close1.to_text().unwrap().contains("CLOSE"));
+
+        let req2 = ws.next().await.unwrap().unwrap();
+        let req2_text = req2.to_text().unwrap();
+        assert!(req2_text.contains("REQ"));
+        assert!(req2_text.contains(r#""until":1000"#));
+
+        // Page 2: Send 1 valid event (created_at = 900) followed by EOSE
+        let valid_ev = make_signed_test_event(
+            CODE_FEDERATION_ID,
+            CODE,
+            900,
+            r#"{"name": "Valid Fed"}"#,
+        );
+        ws.send(Message::text(make_signed_event_frame(&valid_ev)))
+            .await
+            .unwrap();
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        // Client should send final CLOSE
+        let close2 = ws.next().await.unwrap().unwrap();
+        assert!(close2.to_text().unwrap().contains("CLOSE"));
+    })
+    .await;
+
+    let res = query_single_relay(url)
+        .await
+        .expect("backfill should successfully recover valid announcement behind crowdout");
+    assert_eq!(res.len(), 1);
+    assert_eq!(res[0].created_at, Some(900));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_bounded_backfill_stops_at_max_pages() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (url, server) = spawn_mock_relay(|mut ws| async move {
+        for page in 0..MAX_PAGES {
+            let req = ws.next().await.unwrap().unwrap();
+            assert!(req.to_text().unwrap().contains("REQ"));
+
+            let base_ts = 3000 - (page * 100) as u64;
+            for i in 0..MAX_EVENTS {
+                let ts = base_ts - i as u64;
+                let spam_event = format!(
+                    r#"["EVENT", "{SUB_ID}", {{"id": "spam_{page}_{i}", "kind": 38173, "created_at": {ts}, "tags": [], "content": "spam"}}]"#
+                );
+                ws.send(Message::text(spam_event)).await.unwrap();
+            }
+            ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+                .await
+                .unwrap();
+
+            let close = ws.next().await.unwrap().unwrap();
+            assert!(close.to_text().unwrap().contains("CLOSE"));
+        }
+    })
+    .await;
+
+    let res = query_single_relay(url)
+        .await
+        .expect("bounded backfill should complete after max pages even with zero valid events");
+    assert_eq!(res.len(), 0);
+    server.await.unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Testing Boundary & Rationale
 // ---------------------------------------------------------------------------

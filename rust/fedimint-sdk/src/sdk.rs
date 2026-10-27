@@ -435,14 +435,14 @@ impl Sdk {
     /// [`invite`](crate::DiscoveredFederation::invite) field and feed it to
     /// [`Sdk::preview`] or [`Sdk::join`].
     ///
-    /// # Nostr Discovery Policy & Limitations
+    /// # Nostr Discovery Policy & Continuation
     ///
     /// When querying [`DiscoverySource::Nostr`](crate::DiscoverySource::Nostr), the SDK
-    /// fetches a single snapshot of up to 100 newest raw NIP-87 events per relay. It does
-    /// not perform multi-page historical continuation or backfill. If an open relay has more
-    /// than 100 newer events that lack valid federation announcements, older valid
-    /// announcements will not be requested. Callers should provide multiple curated relays
-    /// to ensure discovery resilience.
+    /// queries Nostr relays for NIP-87 announcements with up to 100 raw events per page.
+    /// To defend against raw-window crowdout by spam or non-announcement events, the query
+    /// performs bounded continuation backfill (up to 3 pages, or 300 raw events total per relay)
+    /// using `until` timestamp filters within the query deadline. Callers should provide
+    /// multiple curated relays to ensure discovery resilience.
     ///
     /// # Errors
     ///
