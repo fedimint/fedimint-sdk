@@ -52,14 +52,21 @@ try {
   const federation = await sdk.join(InviteCode.parse(inviteCode))
   // ... use `federation` and the rest of the generated API.
 } catch (error) {
-  if (error instanceof Exception) {
-    console.error(error.code(), error.reason(), error.details())
+  if (Exception.hasInner(error)) {
+    const failure = Exception.getInner(error)
+    console.error(failure.code(), failure.reason(), failure.details())
   }
   throw error
 } finally {
   await close()
 }
 ```
+
+Pass what the user pastes or scans to the SDK as it is. `InviteCode.parse`, `Notes.parse` and the
+string-typed values (a `Bolt11Invoice`, an `Address`) ignore whitespace around the text. A
+`Bolt11Invoice`, such as the one `lightning.quote(invoice)` takes, also accepts a `lightning:`
+scheme in any case, as a QR code often carries it. A `bitcoin:` (BIP-21) URI is not an invoice:
+take the invoice or the address out of it first.
 
 ### Option 2: With Expo
 
@@ -131,9 +138,13 @@ directly since JSI calls need no round trip. This package re-exports that whole 
 type or function documented there (`InviteCode`, `Notes`, `Mnemonic`, tagged enums such as
 `LnReceiveState`, and so on) is available from `@fedimint/react-native` directly.
 
-Failures surface as `Exception`, with `code()` giving the stable error code to branch on,
-`reason()` a human-readable message (never parsed, only logged), and `details()` structured
-detail where the failure has any.
+A failure is thrown as an `Error` that carries an `Exception`, so `error instanceof Exception`
+does not match it. `Exception.hasInner(error)` tells whether a thrown value is an SDK failure, and
+`Exception.getInner(error)` takes the `Exception` out. On it, `code()` gives the stable error code
+to branch on, `reason()` a human-readable message (never parsed, only logged), and `details()`
+structured detail where the failure has any. The thrown error's `message` names the code and the
+reason, so an uncaught failure reads as more than `Exception` in a log, and the `Exception`'s own
+`toString()` reads `<code>: <reason>`.
 
 `close()` shuts the SDK down and destroys it; every object obtained from the session is dead
 afterward, and a later call waits on the same teardown and reports its outcome. Once destroyed,
@@ -232,6 +243,26 @@ for (const federation of sdk.federations()) {
 
 `sdk.recoveryStatus(id)` reads where a federation's recovery stands without starting anything, and
 is `undefined` for a federation that was joined rather than recovered.
+
+## Federation metadata
+
+`federation.meta()` reads what a federation says about itself, such as its name or welcome
+message. `get(key)` and `all()` give one merged view, with values as strings. For each key, the
+first of three sources that defines it wins:
+
+1. the consensus metadata of the federation's meta module, which the guardians can change;
+2. the override document at the URL the federation's configuration names under
+   `meta_override_url`. The client fetches it in the background, and the SDK reads that copy;
+3. the configuration metadata, fixed for the life of the federation's configuration.
+
+```ts
+const meta = federation.meta()
+const welcome = await meta.get('welcome_message')
+```
+
+`configMetadata()` and `consensusMetadata()` read those two sources on their own, for an app that
+needs to know where a value came from, or the consensus revision. The override document has no
+reader of its own: the client keeps it already merged with the configuration metadata.
 
 ## License
 
