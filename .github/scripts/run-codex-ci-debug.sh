@@ -171,8 +171,9 @@ Baseline investigation:
   match.
 
 Common failure categories in this repository:
-- The "Rust SDK Release", "Android SDK Release" and "React Native SDK Release"
-  workflows publish to crates.io, Maven Central and npm. The "SDK Tag" workflow
+- The "Rust SDK Release" workflow publishes to crates.io, "Android SDK Release"
+  to Maven Central, and "React Native SDK Release" and "Web SDK Release" to
+  npm. The "SDK Tag" workflow
   starts each on its new tag when a version bump pull request is merged, and a
   pushed `*-sdk-v*` tag starts one too. crates.io and npm use trusted
   publishing, without a token. A tag and a published version are permanent, so

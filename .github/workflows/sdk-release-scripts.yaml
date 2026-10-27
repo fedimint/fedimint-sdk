@@ -14,9 +14,10 @@ name: SDK Release Scripts
 #     It also does what sdk-version-bump.yaml does to the tree and what
 #     sdk-tag.yaml does to the repository (`bump` and `tag`), so that those
 #     workflows hold no logic of their own;
+#   * scripts/sdk-npm-publish.sh, which publishes the tarballs of every
+#     component that goes to npm (what gets published, and when not);
 #   * the React Native release's own: scripts/react-native-sdk-pack.sh (what
-#     a tarball must contain), scripts/react-native-sdk-publish.sh (what gets
-#     published, and when not), scripts/react-native-sdk-example.sh and
+#     a tarball must contain), scripts/react-native-sdk-example.sh and
 #     scripts/react-native-sdk-smoke.sh (how the tarballs are tested),
 #     scripts/assemble-rn-ios-xcframework.sh, scripts/build-sdk-rn-ios.sh and
 #     scripts/hide-ios-symbols.sh (what the iOS libraries still export);
@@ -29,24 +30,25 @@ name: SDK Release Scripts
 # The release workflows only run these scripts once something is being
 # released, so this is what checks them on a pull request. It needs no build
 # and takes a few minutes. It also runs the step of android-sdk-release.yaml,
-# of react-native-sdk-release.yaml and of rust-sdk-release.yaml that applies
-# scripts/sdk-release.sh to the tag or the dry run that started the release,
-# so that what the workflows add around the script, such as refusing the tag
-# of another component, cannot be dropped unnoticed. Of rust-sdk-release.yaml
-# it runs the steps that decide what to publish and that check what was
-# packaged as well. It runs the two steps of sdk-tag.yaml too, on a repository
-# with a remote of its own and a fake `gh`, so that what is tagged, pushed and
-# started cannot change unnoticed.
+# of react-native-sdk-release.yaml, of web-sdk-release.yaml and of
+# rust-sdk-release.yaml that applies scripts/sdk-release.sh to the tag or the
+# dry run that started the release, so that what the workflows add around the
+# script, such as refusing the tag of another component, cannot be dropped
+# unnoticed. Of rust-sdk-release.yaml it runs the steps that decide what to
+# publish and that check what was packaged as well. It runs the two steps of
+# sdk-tag.yaml too, on a repository with a remote of its own and a fake `gh`,
+# so that what is tagged, pushed and started cannot change unnoticed.
 #
 # It also checks the committed state the way a release will, with
 # `scripts/sdk-release.sh check-tree`: the version of every component (the
-# Rust crate, the Android SDK and the React Native packages) is valid and has
-# release notes, and each component is at a version it has released, which has
-# a release tag, or at the version of the line, the next to be released. A
-# pull request that leaves a version without notes, a missing or an empty
-# section, fails here, before merging it would start a release that the tag
-# workflow then refuses. The check reads the release tags, so the checkout
-# fetches the whole history, and the step fails first if it came without any.
+# Rust crate, the Android SDK, the React Native packages and the web SDK) is
+# valid and has release notes, and each component is at a version it has
+# released, which has a release tag, or at the version of the line, the next to
+# be released. A pull request that leaves a version without notes, a missing
+# or an empty section, fails here, before merging it would start a release
+# that the tag workflow then refuses. The check reads the release tags, so the
+# checkout fetches the whole history, and the step fails first if it came
+# without any.
 #
 # One more script is tested here although it gates no release:
 # scripts/sdk-web-wasm-size.sh, which measures the browser SDK's wasm module
@@ -62,6 +64,7 @@ on:
       - 'scripts/sdk-version.sh'
       - 'scripts/sdk-changelog.sh'
       - 'scripts/sdk-release.sh'
+      - 'scripts/sdk-npm-publish.sh'
       - 'scripts/test-sdk-release-scripts.sh'
       - 'scripts/react-native-sdk-*'
       - 'scripts/rust-sdk-publish.sh'
@@ -91,12 +94,14 @@ on:
       - 'js/react-native/react-native-bindings/package.json'
       - 'js/react-native/react-native/package.json'
       - 'js/react-native/CHANGELOG.md'
+      - 'js/web/web-sdk/CHANGELOG.md'
       - '.github/workflows/sdk-release-scripts.yaml'
       - '.github/workflows/sdk-version-bump.yaml'
       - '.github/workflows/sdk-tag.yaml'
       - '.github/workflows/android-sdk-release.yaml'
       - '.github/workflows/react-native-sdk-release.yaml'
       - '.github/workflows/rust-sdk-release.yaml'
+      - '.github/workflows/web-sdk-release.yaml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

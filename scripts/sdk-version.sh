@@ -19,8 +19,8 @@
 # jumping from one to another version.
 #
 # A release is made of components, which scripts/sdk-components.sh defines: the
-# Rust crate, the Android SDK and the React Native packages. Each keeps its
-# version in the tree:
+# Rust crate, the Android SDK, the React Native packages and the web SDK. Each
+# keeps its version in the tree:
 #
 #   rust          `version` in the [package] table of
 #                 rust/fedimint-sdk/Cargo.toml. `set` also writes it to the
@@ -30,11 +30,15 @@
 #   react-native  `"version"` in js/react-native/react-native-bindings/package.json
 #                 and in js/react-native/react-native/package.json, which must
 #                 agree.
+#   web           `"version"` in js/web/web-sdk/package.json.
 #
 # The components share one line of versions: a release takes the next version
 # of the line and gives it to the components it publishes, all of them or only
 # some. So a component can be behind the line, and the version of the line is
-# the newest version any component has.
+# the newest version any component has. A component that has never been
+# released is at 0.0.0, which is the oldest version there is, so it is never
+# the line's unless every component is at it. scripts/sdk-release.sh reads
+# 0.0.0 as "not released yet".
 #
 # `components` prints the names of all the components, of the `bindings` (the
 # ones generated from the crate's UniFFI surface) or of the one named, one per
@@ -83,6 +87,7 @@ CRATE_LOCK=rust/fedimint-sdk/Cargo.lock
 SWIFT_VERSION=ios/Sources/FedimintSdk/Version.swift
 BINDINGS_MANIFEST=js/react-native/react-native-bindings/package.json
 WRAPPER_MANIFEST=js/react-native/react-native/package.json
+WEB_MANIFEST=js/web/web-sdk/package.json
 # The commit `current --at` reads the files from, as the caller named it and as
 # a full hash. Both are empty when the files are read from the working tree.
 AT_NAME=""
@@ -237,6 +242,7 @@ version_files() {
         rust) printf '%s\n' "manifest $CRATE_MANIFEST" "lock $CRATE_LOCK" "swift $SWIFT_VERSION" ;;
         android) printf '%s\n' "catalog $CATALOG" ;;
         react-native) printf '%s\n' "json $BINDINGS_MANIFEST" "json $WRAPPER_MANIFEST" ;;
+        web) printf '%s\n' "json $WEB_MANIFEST" ;;
         *) die "no version files for $1" ;;
     esac
 }
@@ -266,6 +272,7 @@ component_version() {
                     "but $WRAPPER_MANIFEST is $wrapper$(at_suffix)"
             echo "$bindings"
             ;;
+        web) file_version json "$WEB_MANIFEST" ;;
         *) die "no version files for $1" ;;
     esac
 }

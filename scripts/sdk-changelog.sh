@@ -16,6 +16,7 @@
 #   rust          rust/fedimint-sdk/CHANGELOG.md
 #   android       android/CHANGELOG.md
 #   react-native  js/react-native/CHANGELOG.md
+#   web           js/web/web-sdk/CHANGELOG.md
 #
 # `section` prints a version's notes as the file has them. `release-notes`
 # prints them for the version's GitHub Release, which shows each line break of

@@ -74,7 +74,8 @@ name: React Native SDK Release
 #     Environments → npm): naming the environment here does not add any.
 #     Whoever approves checks that the run is the release that was merged:
 #     its tag, and that the tagged commit is on main;
-#   * it accepts only `react-native-sdk-v*` tags, and has to exist before the
+#   * it accepts only the release tags of the npm components,
+#     `react-native-sdk-v*` and `web-sdk-v*`, and has to exist before the
 #     first release: a job that names a missing environment creates it,
 #     without any rule.
 #
@@ -114,7 +115,7 @@ on:
 # wait, which GitHub does not promise to be the order the tags were pushed
 # in. Whatever the order, no dist-tag moves back to an older release: `check`
 # refuses a release that starts when a newer tag exists, and
-# scripts/react-native-sdk-publish.sh refuses to publish under a dist-tag
+# scripts/sdk-npm-publish.sh refuses to publish under a dist-tag
 # that is already on a newer version.
 # Dry runs publish nothing, so each gets a group of its own and neither waits
 # for a release nor holds one up.
@@ -497,14 +498,15 @@ jobs:
           path: ${{ runner.temp }}/tarballs
 
       - name: 'npm publish --dry-run'
-        run: scripts/react-native-sdk-publish.sh --dry-run "$RUNNER_TEMP/tarballs"
+        run: scripts/sdk-npm-publish.sh --dry-run react-native "$RUNNER_TEMP/tarballs"
 
   publish:
     name: 'Publish to npm'
     needs: [pack, test-android, test-ios]
     # A tag push and a manual run with `publish` on a tag both publish: the
     # second is how sdk-tag.yaml starts a release. The `npm` environment
-    # refuses every ref that is not a `react-native-sdk-v*` tag as well.
+    # refuses every ref that is not a `react-native-sdk-v*` or `web-sdk-v*`
+    # tag as well.
     if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
     # Trusted publishing needs a hosted runner.
     runs-on: ubuntu-24.04
@@ -538,9 +540,9 @@ jobs:
 
       # Bindings first, then the package that names them as a peer. A package
       # whose version is already on npm as the same tarball is skipped: see
-      # scripts/react-native-sdk-publish.sh.
+      # scripts/sdk-npm-publish.sh.
       - name: 'Publish'
-        run: scripts/react-native-sdk-publish.sh "$RUNNER_TEMP/tarballs"
+        run: scripts/sdk-npm-publish.sh react-native "$RUNNER_TEMP/tarballs"
 
       # What npm serves, with its SHA-256 sums, for the GitHub Release.
       - name: 'Upload the published tarballs'
