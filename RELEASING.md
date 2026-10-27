@@ -1,6 +1,6 @@
 # Releasing
 
-How the SDK is released, for whoever cuts a release. Three things are published from this
+How the SDK is released, for whoever cuts a release. Four things are published from this
 repository, all built from the Rust crate in `rust/fedimint-sdk`:
 
 | Component      | Published as                                                                                                                                                                                   | Version in the tree                                  | Release tag                   | Release notes                                                      |
@@ -8,15 +8,17 @@ repository, all built from the Rust crate in `rust/fedimint-sdk`:
 | `rust`         | the [`fedimint-sdk`](https://crates.io/crates/fedimint-sdk) crate on crates.io                                                                                                                 | `rust/fedimint-sdk/Cargo.toml`                       | `rust-sdk-v<version>`         | [`rust/fedimint-sdk/CHANGELOG.md`](rust/fedimint-sdk/CHANGELOG.md) |
 | `android`      | [`org.fedimint:sdk`](https://central.sonatype.com/artifact/org.fedimint/sdk) on Maven Central                                                                                                  | `fedimintSdk` in `android/gradle/libs.versions.toml` | `android-sdk-v<version>`      | [`android/CHANGELOG.md`](android/CHANGELOG.md)                     |
 | `react-native` | [`@fedimint/react-native`](https://www.npmjs.com/package/@fedimint/react-native) and [`@fedimint/react-native-bindings`](https://www.npmjs.com/package/@fedimint/react-native-bindings) on npm | both `package.json` files under `js/react-native`    | `react-native-sdk-v<version>` | [`js/react-native/CHANGELOG.md`](js/react-native/CHANGELOG.md)     |
+| `web`          | [`@fedimint/web-sdk`](https://www.npmjs.com/package/@fedimint/web-sdk) on npm                                                                                                                  | `js/web/web-sdk/package.json`                        | `web-sdk-v<version>`          | [`js/web/web-sdk/CHANGELOG.md`](js/web/web-sdk/CHANGELOG.md)       |
 
-The Swift SDK in `ios/` and the browser package in `js/web/web-sdk` are not published yet.
+The web SDK has not had its first release yet, which needs some steps on npm first (see "The
+first release of the web SDK"). The Swift SDK in `ios/` is not published yet.
 
 ## Versions
 
 A version is `X.Y.Z-beta.N`, a beta for testing, or `X.Y.Z`, a release. Nothing else is
 accepted: no alpha, no rc. Versions follow [semantic versioning](https://semver.org) and
 describe what a caller of the component sees. The Kotlin and JavaScript APIs are generated from
-the Rust one, so a change to the Rust API usually counts for all three.
+the Rust one, so a change to the Rust API usually counts for all of them.
 
 | Change since the last release                                                               | Before 1.0.0 | From 1.0.0 |
 | ------------------------------------------------------------------------------------------- | ------------ | ---------- |
@@ -29,25 +31,29 @@ Going to 1.0.0 is a `major` bump, made on purpose once the API is stable. Before
 
 The version of a component is kept in the file the first table names, and the crate's also in
 `rust/fedimint-sdk/Cargo.lock` and `ios/Sources/FedimintSdk/Version.swift`. Do not edit it by
-hand: the version bump sets it (see "Making a release").
+hand: the version bump sets it (see "Making a release"). A component that has never been released
+is at `0.0.0`, which stands for "not released yet": the checks accept it without notes, nothing
+tags it, and the first version bump that includes the component gives it the next version of the
+line (see "The first release of a component").
 
 ### One line of versions
 
-The three components share one line of versions.
+The components share one line of versions.
 
 - A release takes the next version of the line and gives it to the components it publishes.
-- The usual release publishes all three. They then carry the same version and are built from
+- The usual release publishes all of them. They then carry the same version and are built from
   the same commit.
-- A point release publishes only the bindings (the Android SDK and the React Native packages),
-  or only one of them. Those get the next version of the line and the others keep theirs. So a
-  component's versions can have gaps: after the Android SDK alone went from `0.2.0` to `0.2.1`,
-  the next patch release of everything is `0.2.2`. The crate is only released with both
-  bindings, as `all`.
+- A point release publishes only the bindings (the Android SDK, the React Native packages and the
+  web SDK), or only one of them. Those get the next version of the line and the others keep
+  theirs. So a component's versions can have gaps: after the Android SDK alone went from `0.2.0`
+  to `0.2.1`, the next patch release of everything is `0.2.2`. The crate is only released with
+  every binding, as `all`.
 - A version is used once. It is newer than every version released before it, of any component,
   and it is never given to two different commits.
 
-`0.1.0-beta.1`, the first release of each component, is the exception to the rule that a version
-is never given to two commits: the three releases are not on one commit.
+`0.1.0-beta.1`, the first release of the crate, the Android SDK and the React Native packages, is
+the exception to the rule that a version is never given to two commits: the three releases are
+not on one commit.
 
 A version moves like this:
 
@@ -64,11 +70,11 @@ A beta is always either continued (`beta`) or released (`release`). There is no 
 1. Run the **SDK Version Bump** workflow on `main` (Actions → SDK Version Bump → Run
    workflow). It refuses to run on any other branch. Choose what to release and how to bump:
 
-   | `components`              | Publishes                                                    |
-   | ------------------------- | ------------------------------------------------------------ |
-   | `all`                     | the crate, the Android SDK and the React Native packages     |
-   | `bindings`                | the Android SDK and the React Native packages, not the crate |
-   | `android`, `react-native` | that binding alone                                           |
+   | `components`                     | Publishes                                                                 |
+   | -------------------------------- | ------------------------------------------------------------------------- |
+   | `all`                            | the crate and every binding                                               |
+   | `bindings`                       | the Android SDK, the React Native packages and the web SDK, not the crate |
+   | `android`, `react-native`, `web` | that binding alone                                                        |
 
    | `bump`                    | From      | To                                                   |
    | ------------------------- | --------- | ---------------------------------------------------- |
@@ -110,6 +116,7 @@ A beta is always either continued (`beta`) or released (`release`). There is no 
    | `rust`         | Rust SDK Release         | the crate to crates.io, and the GitHub Release                 |
    | `android`      | Android SDK Release      | the release to Maven Central, and the GitHub Release           |
    | `react-native` | React Native SDK Release | both packages to npm, and the GitHub Release with the tarballs |
+   | `web`          | Web SDK Release          | the package to npm, and the GitHub Release with the tarball    |
 
 Each workflow first checks its tag, then builds and tests the tagged commit, and publishes only
 if all of that passed. The header of each workflow file says what it does in detail.
@@ -142,14 +149,15 @@ component when it names the development environment or the repository's tooling,
 repository that the component does not ship:
 
 - `flake`, `ci`, `workflows`, `tests`, `examples` and `release` are foreign to every component.
-- So are `web`, `sdk-web` and `vite-core` (the web SDK) and `swift` (the Swift SDK), which none of
-  them ships.
-- `react-native`, `rn-bindings` and `js` (the JavaScript workspace) are foreign to the crate and to
-  the Android SDK, but not to the React Native SDK.
-- `ios` is foreign to the Android SDK only. The React Native packages ship for iOS, and the crate
-  runs on it.
-- `android` is foreign to none of them, because the crate's Android code is in `rust/fedimint-sdk`,
-  which all three ship.
+- So is `swift` (the Swift SDK), which none of them ships.
+- `web`, `sdk-web`, `web-sdk` and `vite-core` (the web SDK) are foreign to every component but the
+  web SDK.
+- `react-native` and `rn-bindings` are foreign to every component but the React Native SDK, and
+  `js` (the JavaScript workspace) to the crate and to the Android SDK.
+- `ios` is foreign to the Android SDK and to the web SDK. The React Native packages ship for iOS,
+  and the crate runs on it.
+- `android` is foreign to the web SDK only. The crate's Android code is in `rust/fedimint-sdk`,
+  which every component is built from, but none of it is compiled into the web SDK's wasm module.
 
 `component_foreign_scopes` in [`scripts/sdk-components.sh`](scripts/sdk-components.sh) has the
 lists, and `component_paths` in the same file what each component is built from. The scope is
@@ -206,9 +214,12 @@ and not only into the title, because the title is not what lands. Write both in 
 
 ### The first release of a component
 
-The merge tags a component only if the version it changed from was released. A component that
-has never been released is left out, so that adding one to the tree releases nothing by surprise.
-The pull request lists such components, and the log of the tag job names each one it left out.
+A component that has never been released is at `0.0.0` in the tree until a version bump includes
+it. The bump gives it the next version of the line, and its notes say only
+`The first release of the <title>.` The merge tags a component only if the version it changed
+from was released, so the first release of a component is not tagged by the merge, and adding a
+component to the tree releases nothing by surprise. The pull request lists such components, and
+the log of the tag job names each one it left out.
 
 Start the first release of such a component by running **SDK Tag** by hand (Actions → SDK Tag →
 Run workflow, on `main`, with `components` set to the component or to a group that holds it)
@@ -216,6 +227,32 @@ right after the version bump is merged, before anything else is merged. Componen
 together are tagged on one commit, and a version is never tagged on two commits. A commit merged
 in between would put the tag on a later commit than the tags the merge made for the other
 components. The release rules would refuse it, and the component would need the next version.
+
+### The first release of the web SDK
+
+The web SDK's release publishes through npm's trusted publishing, like the React Native one, but
+npm only lets a package that exists set up a trusted publisher, and `@fedimint/web-sdk` has never
+been published. A trusted publisher also expires when it has not published within two days of
+being set up. So before the first version bump that includes `web`, a maintainer of the package on
+npm (a member of the `@fedimint` scope) does this:
+
+1. At any time: publish a placeholder, version `0.0.0`, of `@fedimint/web-sdk` by hand, from a
+   directory that holds only a `package.json` with that name and version and a README that says
+   to install `@fedimint/web-sdk@beta`. Then, in the package's settings, set "Require two-factor
+   authentication and disallow tokens", and deprecate the placeholder with the same message:
+   `npm deprecate "@fedimint/web-sdk@0.0.0" "Install @fedimint/web-sdk@beta instead"`.
+2. At most two days before the release: add the trusted publisher, which names this repository,
+   the workflow file `web-sdk-release.yaml` and the environment `npm`, with `npm publish` allowed.
+   On the command line that is `npm trust github @fedimint/web-sdk --file web-sdk-release.yaml
+--repository fedimint/fedimint-sdk --environment npm --allow-publish`.
+3. After the release: move `latest` off the placeholder, with
+   `npm dist-tag add @fedimint/web-sdk@<version> latest`. A beta is published under `beta` only,
+   so without this `latest` stays on the placeholder until the first `X.Y.Z`.
+
+The repository needs the settings that "What the releases rely on" lists for the web SDK as well:
+the `npm` environment has to accept `web-sdk-v*` tags, and the `web-sdk-v*` tag ruleset has to
+exist. Then run the version bump for `web`, or for a group that holds it, and run SDK Tag by hand
+for it right after the merge, as above.
 
 ## When something goes wrong
 
@@ -249,10 +286,12 @@ components. The release rules would refuse it, and the component would need the 
   after a failed validation uploads again, as nothing was published. If the job ran out of time
   waiting for Central, the version may be out already: read "Releases" in
   [`android/README.md`](android/README.md) first.
-  [`js/react-native/README.md`](js/react-native/README.md) says why re-running all jobs is
-  wrong for the npm packages. Finish a release before the next one goes out: once any component
-  has a newer release, the first job refuses the older tag, so that release can then only be
-  finished by re-running its failed jobs, which leaves the first job out.
+  [`js/react-native/README.md`](js/react-native/README.md) says why re-running all jobs is wrong for
+  the npm packages. It is for the web SDK as well: its wasm-bindgen glue comes out in another order
+  from every build, so a package that is on npm already never matches a new build. Finish a release
+  before the next one goes out: once any component has a newer release, the first job refuses the
+  older tag, so that release can then only be finished by re-running its failed jobs, which leaves
+  the first job out.
 - **A release workflow refuses its tag,** or a release turns out bad. The first job of a release
   holds the tag to the release rules, which the header of
   [`scripts/sdk-release.sh`](scripts/sdk-release.sh) lists. The tag must be one of the
@@ -295,6 +334,7 @@ release would, and publishes nothing, tags nothing and creates no GitHub Release
 | Rust SDK Release         | the version check, all of the crate's continuous integration, and `cargo package`                                                                                     | no                       |
 | Android SDK Release      | the version check and the whole Android build and test chain, then it signs the artifacts into a local Maven repository, kept as the `maven-central-dry-run` artifact | yes, `maven-central`     |
 | React Native SDK Release | the version check, the native builds, the tarballs and their tests, then `npm publish --dry-run`                                                                      | no                       |
+| Web SDK Release          | the version check, the wasm module and the bindings, the tarball and its checks, an app built from it and opened in headless Chromium, then `npm publish --dry-run`   | no                       |
 
 On a branch, a dry run takes the version from the tree and checks it as a release would, but a
 version that could not be released only gives a warning, and the run goes on. So on the branch of
@@ -306,9 +346,9 @@ The Android dry run signs the artifacts with the key held by the `maven-central`
 its `publish` job (shown as "Dry run") waits for that environment's required reviewers like a
 release does. Approving it hands the environment's secrets to the workflow file as it is on that
 branch. The reviewer therefore looks at what the branch changes under `.github/workflows` and in
-the scripts the job runs (the Gradle build under `android/`) before approving. The Rust and React
-Native dry runs reach no environment: only their `publish` jobs name one, and those run on a tag
-only, for a tag push or a run with `publish` ticked.
+the scripts the job runs (the Gradle build under `android/`) before approving. The other dry runs
+reach no environment: only their `publish` jobs name one, and those run on a tag only, for a tag
+push or a run with `publish` ticked.
 
 The scripts that hold the rules work in a shell too. While the line is at `0.1.0-beta.1`, for
 example:
@@ -336,28 +376,29 @@ Settings outside this repository's files. All of them have to be in place before
   `0.1.0-beta.1`, was published by hand, and its tag and GitHub Release were made by hand as
   well, because the release rules refuse a version that another component tagged on another
   commit.
-- **npm trusted publishing.** Each of the two packages names this repository, the workflow file
-  `react-native-sdk-release.yaml` and the environment `npm` as a trusted publisher, with
-  `npm publish` among the allowed actions.
+- **npm trusted publishing.** Each of the two React Native packages names this repository, the
+  workflow file `react-native-sdk-release.yaml` and the environment `npm` as a trusted publisher,
+  with `npm publish` among the allowed actions, and `@fedimint/web-sdk` names the workflow file
+  `web-sdk-release.yaml` in the same way. npm only lets a package that exists set up trusted
+  publishing; "The first release of the web SDK" says how the web SDK gets there.
 - **Maven Central credentials.** A Central Portal user token (`MAVEN_CENTRAL_USERNAME` and
   `MAVEN_CENTRAL_PASSWORD`) and the signing key with its passphrase (`MAVEN_SIGNING_KEY` and
   `MAVEN_SIGNING_KEY_PASSWORD`), as secrets of the `maven-central` environment and nowhere else.
   The key's public half is on a keyserver that Central checks, such as keys.openpgp.org.
-- **Three environments with required reviewers** (Settings → Environments): `crates-io`,
-  limited to tags matching `rust-sdk-v*`; `npm`, limited to tags matching
-  `react-native-sdk-v*`; and `maven-central`, which is not limited to tags because the Android
-  dry run and the Android SDK Snapshot workflow use it from branches. Each release publishes in
-  its environment, and the environment's required reviewers approve that job before it starts.
-  Each has "Prevent self-review" on, so that whoever started a release run, for example by
-  pushing a tag by hand, cannot approve it, and more than one reviewer for that reason. A run
-  that the SDK Tag workflow started was started by GitHub Actions, so every reviewer can approve
-  it. A job that names an environment which does not exist creates it without any rule, so they
-  have to exist first.
-- **Tag rulesets** (Settings → Rules → Rulesets) for `rust-sdk-v*`, `android-sdk-v*` and
-  `react-native-sdk-v*`, which restrict updates and deletions and block force pushes, so that a
-  release tag never moves. None may restrict creating a tag: the tag workflow creates the tags
-  with its own token, and GitHub does not accept that on a ruleset's bypass list in an
-  organization's repository.
+- **Three environments with required reviewers** (Settings → Environments): `crates-io`, limited to
+  tags matching `rust-sdk-v*`; `npm`, limited to tags matching `react-native-sdk-v*` and
+  `web-sdk-v*`; and `maven-central`, which is not limited to tags because the Android dry run and
+  the Android SDK Snapshot workflow use it from branches. Each release publishes in its environment,
+  and the environment's required reviewers approve that job before it starts. Each has "Prevent
+  self-review" on, so that whoever started a release run, for example by pushing a tag by hand,
+  cannot approve it, and more than one reviewer for that reason. A run that the SDK Tag workflow
+  started was started by GitHub Actions, so every reviewer can approve it. A job that names an
+  environment which does not exist creates it without any rule, so they have to exist first.
+- **Tag rulesets** (Settings → Rules → Rulesets) for `rust-sdk-v*`, `android-sdk-v*`,
+  `react-native-sdk-v*` and `web-sdk-v*`, which restrict updates and deletions and block force
+  pushes, so that a release tag never moves. None may restrict creating a tag: the tag workflow
+  creates the tags with its own token, and GitHub does not accept that on a ruleset's bypass list
+  in an organization's repository.
 - **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions →
   General), or the version bump cannot open its pull request.
 - **Squash merges with the "Default message"** (Settings → General → Pull Requests → Allow squash
@@ -369,8 +410,9 @@ Settings outside this repository's files. All of them have to be in place before
   and review would fix the title rather than reword the commit.
 - **Self-hosted runners** with the labels `self-hosted, linux, x64` and
   `self-hosted, macOS, ARM64, device-tests`. The Android release builds its native libraries on
-  the first and runs the example app on an emulator on the second, and the React Native release
-  builds its Android libraries on the first. A release waits in the queue while they are away.
+  the first and runs the example app on an emulator on the second, the React Native release
+  builds its Android libraries on the first, and the web SDK's release its wasm module. A release
+  waits in the queue while they are away.
 
 The required reviewers are what decides whether something is published. Creating a release
 tag is open to everybody who can push, and a workflow runs as its file is in the tagged

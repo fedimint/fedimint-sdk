@@ -9,16 +9,17 @@
 #   rust          the `fedimint-sdk` crate, to crates.io
 #   android       the Android SDK, `org.fedimint:sdk`, to Maven Central
 #   react-native  `@fedimint/react-native` and `@fedimint/react-native-bindings`, to npm
+#   web           `@fedimint/web-sdk`, to npm
 #
 # They share one line of versions: a release takes the next version of the line and gives it
 # to the components it publishes, which may be all of them or only some.
 #
 # Sourcing this file defines names only. It runs nothing and reads no file.
 
-COMPONENTS=(rust android react-native)
+COMPONENTS=(rust android react-native web)
 # The components generated from the crate's UniFFI surface.
 # shellcheck disable=SC2034 # Read by the scripts that source this file.
-BINDINGS=(android react-native)
+BINDINGS=(android react-native web)
 
 # Says on stderr that $1 is not a component, and fails.
 not_a_component() {
@@ -48,6 +49,7 @@ component_title() {
         rust) echo "Rust SDK" ;;
         android) echo "Android SDK" ;;
         react-native) echo "React Native SDK" ;;
+        web) echo "Web SDK" ;;
         *) not_a_component "${1:-}" ;;
     esac
 }
@@ -59,6 +61,7 @@ component_tag_prefix() {
         rust) echo "rust-sdk-v" ;;
         android) echo "android-sdk-v" ;;
         react-native) echo "react-native-sdk-v" ;;
+        web) echo "web-sdk-v" ;;
         *) not_a_component "${1:-}" ;;
     esac
 }
@@ -69,6 +72,7 @@ component_changelog() {
         rust) echo "rust/fedimint-sdk/CHANGELOG.md" ;;
         android) echo "android/CHANGELOG.md" ;;
         react-native) echo "js/react-native/CHANGELOG.md" ;;
+        web) echo "js/web/web-sdk/CHANGELOG.md" ;;
         *) not_a_component "${1:-}" ;;
     esac
 }
@@ -79,6 +83,19 @@ component_workflow() {
         rust) echo "rust-sdk-release.yaml" ;;
         android) echo "android-sdk-release.yaml" ;;
         react-native) echo "react-native-sdk-release.yaml" ;;
+        web) echo "web-sdk-release.yaml" ;;
+        *) not_a_component "${1:-}" ;;
+    esac
+}
+
+# The npm packages of the component $1, one per line, in the order a release publishes them. The
+# bindings of the React Native packages come first: the wrapper names their exact version as a
+# peer, so it must never be on npm before them. The crate and the Android SDK have none.
+component_npm_packages() {
+    case "${1:-}" in
+        rust | android) ;;
+        react-native) printf '%s\n' @fedimint/react-native-bindings @fedimint/react-native ;;
+        web) echo @fedimint/web-sdk ;;
         *) not_a_component "${1:-}" ;;
     esac
 }
@@ -92,7 +109,8 @@ component_workflow() {
 # The Android SDK names nix/ffi.nix, which builds its native library, rather than the nix
 # directory. The other file there, nix/web-bindgen.nix, provides the binding generators of the
 # React Native packages (ubrn) and of the web SDK (ubrn and wasm-bindgen-cli), which the Android
-# SDK does not use, so only the React Native packages list the whole directory.
+# SDK does not use, so only the React Native packages and the web SDK list the whole directory:
+# the web SDK's wasm module is built by nix/ffi.nix as well.
 component_paths() {
     case "${1:-}" in
         rust)
@@ -126,6 +144,18 @@ component_paths() {
                 scripts/assemble-rn-ios-xcframework.sh \
                 scripts/react-native-sdk-pack.sh
             ;;
+        web)
+            printf '%s\n' \
+                js/web/web-sdk \
+                rust/fedimint-sdk \
+                rust/ubrn \
+                nix \
+                flake.nix \
+                flake.lock \
+                scripts/generate-sdk-web-bindings.sh \
+                scripts/nix-build-sdk-wasm.sh \
+                scripts/web-sdk-pack.sh
+            ;;
         *) not_a_component "${1:-}" ;;
     esac
 }
@@ -138,14 +168,18 @@ component_paths() {
 #
 #   - the development environment or the repository's tooling: flake, ci, workflows, tests,
 #     examples and release;
-#   - or a part of the repository that the component does not ship: the web SDK (web, sdk-web and
-#     vite-core), the React Native packages (react-native and rn-bindings), js (the JavaScript
-#     workspace), and swift and ios (the Swift SDK and iOS).
+#   - or a part of the repository that the component does not ship: the web SDK (web, sdk-web,
+#     web-sdk and vite-core), the React Native packages (react-native and rn-bindings), js (the
+#     JavaScript workspace), swift and ios (the Swift SDK and iOS), and android.
 #
-# The React Native scopes and js are foreign to the crate and the Android SDK, but not to the
-# React Native packages, which ship them. `ios` is foreign to the Android SDK only: the React
-# Native packages ship for iOS, and the crate runs on it. `android` is foreign to none of them,
-# because the crate's Android code is in rust/fedimint-sdk, which all three ship.
+# The web SDK's scopes are foreign to the crate, the Android SDK and the React Native packages, and
+# the React Native scopes and js are foreign to the crate and the Android SDK, but not to the React
+# Native packages, which ship them. The web SDK is in the JavaScript workspace, so js is not
+# foreign to it, but it is built for browsers only: react-native, rn-bindings, swift, ios and
+# android are foreign to it, because no Android or iOS code reaches its wasm module. `ios` is
+# foreign to the Android SDK and the web SDK only: the React Native packages ship for iOS, and the
+# crate runs on it. `android` is foreign to the web SDK only: the crate's Android code is in
+# rust/fedimint-sdk, which the crate, the Android SDK and the React Native packages ship.
 component_foreign_scopes() {
     case "${1:-}" in
         rust)
@@ -158,6 +192,7 @@ component_foreign_scopes() {
                 release \
                 web \
                 sdk-web \
+                web-sdk \
                 vite-core \
                 react-native \
                 rn-bindings \
@@ -174,6 +209,7 @@ component_foreign_scopes() {
                 release \
                 web \
                 sdk-web \
+                web-sdk \
                 vite-core \
                 react-native \
                 rn-bindings \
@@ -191,8 +227,23 @@ component_foreign_scopes() {
                 release \
                 web \
                 sdk-web \
+                web-sdk \
                 vite-core \
                 swift
+            ;;
+        web)
+            printf '%s\n' \
+                flake \
+                ci \
+                workflows \
+                tests \
+                examples \
+                release \
+                react-native \
+                rn-bindings \
+                swift \
+                ios \
+                android
             ;;
         *) not_a_component "${1:-}" ;;
     esac

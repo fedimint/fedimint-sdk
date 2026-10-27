@@ -60,6 +60,7 @@ CARGO_LOCK=rust/fedimint-sdk/Cargo.lock
 VERSION_SWIFT=ios/Sources/FedimintSdk/Version.swift
 BINDINGS_MANIFEST=js/react-native/react-native-bindings/package.json
 WRAPPER_MANIFEST=js/react-native/react-native/package.json
+WEB_MANIFEST=js/web/web-sdk/package.json
 
 # Each of the next five prints a whole version file for the version $1, so that a case can
 # compare a file with what it must hold after a write. Every other `version` in them is a decoy
@@ -163,6 +164,7 @@ files_of() {
         rust) printf '%s\n' "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" ;;
         android) printf '%s\n' "$CATALOG" ;;
         react-native) printf '%s\n' "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" ;;
+        web) printf '%s\n' "$WEB_MANIFEST" ;;
     esac
 }
 
@@ -177,6 +179,7 @@ put_file() {
         "$VERSION_SWIFT") version_swift "$version" ;;
         "$BINDINGS_MANIFEST") package_json @fedimint/react-native-bindings "$version" ;;
         "$WRAPPER_MANIFEST") package_json @fedimint/react-native "$version" ;;
+        "$WEB_MANIFEST") package_json @fedimint/web-sdk "$version" ;;
     esac >"$dir/$path"
 }
 
@@ -195,16 +198,18 @@ put() {
 repo() {
     local dir component
     dir="$(mktemp -d "$WORK/repo.XXXX")"
-    mkdir -p "$dir/scripts" "$dir/android" "$dir/rust/fedimint-sdk" "$dir/js/react-native"
+    mkdir -p "$dir/scripts" "$dir/android" "$dir/rust/fedimint-sdk" "$dir/js/react-native" \
+        "$dir/js/web/web-sdk"
     cp "$ROOT/scripts/sdk-components.sh" "$ROOT/scripts/sdk-version.sh" \
         "$ROOT/scripts/sdk-changelog.sh" "$ROOT/scripts/sdk-release.sh" \
         "$ROOT/scripts/rust-sdk-publish.sh" "$dir/scripts/"
-    for component in rust android react-native; do
+    for component in rust android react-native web; do
         put "$dir" "$component" "$1"
     done
     cat >"$dir/android/CHANGELOG.md"
     cp "$dir/android/CHANGELOG.md" "$dir/rust/fedimint-sdk/CHANGELOG.md"
     cp "$dir/android/CHANGELOG.md" "$dir/js/react-native/CHANGELOG.md"
+    cp "$dir/android/CHANGELOG.md" "$dir/js/web/web-sdk/CHANGELOG.md"
     git -C "$dir" init -q -b main
     git -C "$dir" config user.name test
     git -C "$dir" config user.email test@example.invalid
@@ -530,6 +535,19 @@ scripts/assemble-rn-ios-xcframework.sh
 scripts/react-native-sdk-pack.sh
 EOF
             ;;
+        web)
+            cat <<'EOF'
+js/web/web-sdk
+rust/fedimint-sdk
+rust/ubrn
+nix
+flake.nix
+flake.lock
+scripts/generate-sdk-web-bindings.sh
+scripts/nix-build-sdk-wasm.sh
+scripts/web-sdk-pack.sh
+EOF
+            ;;
     esac
 }
 
@@ -546,6 +564,7 @@ examples
 release
 web
 sdk-web
+web-sdk
 vite-core
 react-native
 rn-bindings
@@ -563,6 +582,7 @@ examples
 release
 web
 sdk-web
+web-sdk
 vite-core
 react-native
 rn-bindings
@@ -581,8 +601,24 @@ examples
 release
 web
 sdk-web
+web-sdk
 vite-core
 swift
+EOF
+            ;;
+        web)
+            cat <<'EOF'
+flake
+ci
+workflows
+tests
+examples
+release
+react-native
+rn-bindings
+swift
+ios
+android
 EOF
             ;;
     esac
@@ -602,14 +638,14 @@ expect_ok "sourcing prints nothing" "" -- \
 expect_ok "sourcing creates no file" "" -- \
     bash -c 'cd "$1" && set -euo pipefail && . "$2" && ls -A' _ "$empty" "$components_file"
 # shellcheck disable=SC2016 # The shell that runs the code expands it, not this one.
-expect_ok "the components are rust, android and react-native, in that order" \
-    "rust android react-native" -- sourced 'echo "${COMPONENTS[*]}"'
+expect_ok "the components are rust, android, react-native and web, in that order" \
+    "rust android react-native web" -- sourced 'echo "${COMPONENTS[*]}"'
 # shellcheck disable=SC2016 # The shell that runs the code expands it, not this one.
 expect_ok "the bindings are the components generated from the UniFFI surface" \
-    "android react-native" -- sourced 'echo "${BINDINGS[*]}"'
+    "android react-native web" -- sourced 'echo "${BINDINGS[*]}"'
 
 for row in "rust|Rust SDK|rust-sdk-v" "android|Android SDK|android-sdk-v" \
-    "react-native|React Native SDK|react-native-sdk-v"; do
+    "react-native|React Native SDK|react-native-sdk-v" "web|Web SDK|web-sdk-v"; do
     IFS='|' read -r component title prefix <<<"$row"
     expect_ok "is_component accepts $component" "" -- sourced "is_component $component"
     expect_ok "component_title $component" "$title" -- sourced "component_title $component"
@@ -618,14 +654,15 @@ for row in "rust|Rust SDK|rust-sdk-v" "android|Android SDK|android-sdk-v" \
 done
 for row in "rust|rust/fedimint-sdk/CHANGELOG.md|rust-sdk-release.yaml" \
     "android|android/CHANGELOG.md|android-sdk-release.yaml" \
-    "react-native|js/react-native/CHANGELOG.md|react-native-sdk-release.yaml"; do
+    "react-native|js/react-native/CHANGELOG.md|react-native-sdk-release.yaml" \
+    "web|js/web/web-sdk/CHANGELOG.md|web-sdk-release.yaml"; do
     IFS='|' read -r component changelog workflow <<<"$row"
     expect_ok "component_changelog $component" "$changelog" -- \
         sourced "component_changelog $component"
     expect_ok "component_workflow $component" "$workflow" -- \
         sourced "component_workflow $component"
 done
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "component_paths $component lists what it is built from" \
         "$(expected_paths "$component")" -- sourced "component_paths $component"
     # A path that matches nothing would silently drop commits from the notes.
@@ -644,10 +681,10 @@ done
 for fn in is_component component_title component_tag_prefix component_changelog \
     component_workflow component_paths component_foreign_scopes; do
     expect_fail "$fn refuses an unknown name" \
-        "sideways is not a component: it must be one of rust, android, react-native" -- \
+        "sideways is not a component: it must be one of rust, android, react-native, web" -- \
         sourced "$fn sideways"
     expect_fail "$fn refuses an empty name" \
-        " is not a component: it must be one of rust, android, react-native" -- \
+        " is not a component: it must be one of rust, android, react-native, web" -- \
         sourced "$fn ''"
     expect_fail "$fn refuses a missing name" "is not a component" -- sourced "$fn"
     expect_fail "$fn refuses a group name" "all is not a component" -- sourced "$fn all"
@@ -751,17 +788,17 @@ echo "sdk-version.sh components"
 
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 v="$r/scripts/sdk-version.sh"
-expect_ok "components lists every component" $'rust\nandroid\nreact-native' -- "$v" components
-expect_ok "components all lists every component" $'rust\nandroid\nreact-native' -- \
+expect_ok "components lists every component" $'rust\nandroid\nreact-native\nweb' -- "$v" components
+expect_ok "components all lists every component" $'rust\nandroid\nreact-native\nweb' -- \
     "$v" components all
-expect_ok "components bindings lists the generated components" $'android\nreact-native' -- \
-    "$v" components bindings
-for component in rust android react-native; do
+expect_ok "components bindings lists the generated components" \
+    $'android\nreact-native\nweb' -- "$v" components bindings
+for component in rust android react-native web; do
     expect_ok "components $component prints that component" "$component" -- \
         "$v" components "$component"
 done
 expect_fail "components refuses an unknown name" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$v" components sideways
 expect_fail "components refuses an empty name" "is not a component" -- "$v" components ""
 expect_usage "components takes at most one argument" -- "$v" components all bindings
@@ -775,7 +812,7 @@ r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 v="$r/scripts/sdk-version.sh"
 # The files of the repository $1 that differ from its last commit, one per line, sorted.
 written() { git -C "$1" diff --name-only | LC_ALL=C sort; }
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "files lists the files that hold the version of $component" \
         "$(files_of "$component")" -- "$v" files "$component"
     "$v" set 0.2.0 "$component"
@@ -787,7 +824,7 @@ bare="$(bare_repo)"
 expect_ok "files names the files whether or not they exist" "$(files_of rust)" -- \
     "$bare/scripts/sdk-version.sh" files rust
 expect_fail "files refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$v" files sideways
 expect_fail "files refuses a group name" "all is not a component" -- "$v" files all
 expect_fail "files refuses an empty component" "is not a component" -- "$v" files ""
@@ -890,7 +927,7 @@ expect_ok "manifests that disagree leave the other components alone" "0.2.0" -- 
 put_file "$r" "$BINDINGS_MANIFEST" 0.2.0
 
 expect_fail "current refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$v" current sideways
 expect_fail "current refuses an empty component" "is not a component" -- "$v" current ""
 expect_fail "current refuses a group name" "all is not a component" -- "$v" current all
@@ -909,7 +946,7 @@ put "$r" react-native 0.4.0
 commit_all "$r" "bump the components"
 # Not committed, so that only the working tree has it.
 put "$r" android 0.9.0
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "current $component --at reads the version of that commit" "0.1.0-beta.1" -- \
         "$v" current "$component" --at old
 done
@@ -965,8 +1002,8 @@ expect_ok "next major --beta starts from the line's version" "1.0.0-beta.1" -- \
     "$v" next major --beta
 expect_fail "next beta is refused when the line is at a release" "0.2.1 is a release" -- \
     "$v" next beta
-for component in rust android react-native; do
-    for other in rust android react-native; do
+for component in rust android react-native web; do
+    for other in rust android react-native web; do
         put "$r" "$other" 0.2.0
     done
     put "$r" "$component" 0.3.0-beta.2
@@ -1071,7 +1108,7 @@ expect_ok "set a component twice: it holds the version" "0.5.0" -- "$v" current 
 reset_repo "$r"
 
 expect_fail "set refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$v" set 0.2.0 sideways
 expect_fail "set refuses an unknown component after a known one" "sideways is not a component" -- \
     "$v" set 0.2.0 android sideways
@@ -1343,6 +1380,7 @@ c="$r/scripts/sdk-changelog.sh"
 git -C "$r" tag rust-sdk-v0.1.0-beta.1
 git -C "$r" tag android-sdk-v0.1.0-beta.1
 git -C "$r" tag -a react-native-sdk-v0.1.0-beta.1 -m "React Native SDK 0.1.0-beta.1"
+git -C "$r" tag web-sdk-v0.1.0-beta.1
 subjects=(
     "feat(rn): a call of the React Native SDK"
     "feat(android): a call of the Android SDK"
@@ -1356,12 +1394,14 @@ subjects=(
     "chore(release): bump the SDK to 1.0.0"
     "chore(release): bump the Android SDK to 0.1.0-beta.2 (#9)"
 )
-# Whether the notes of rust, android and react-native list each subject, in the same order.
-listed=("n n y" "n y n" "y y y" "n y y" "n n n" "y y y" "y y y" "n y n" "n n y" "n n n" "n n n")
+# Whether the notes of rust, android, react-native and web list each subject, in the same order.
+listed=("n n y n" "n y n n" "y y y y" "n y y y" "n n n n" "y y y y" "y y y y" "n y n n" "n n y y"
+    "n n n n" "n n n n")
 # How many of the commits that touched what each component is built from are in its notes, and
 # how many touched it.
-counts=("3 of 4" "6 of 8" "6 of 7")
-files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md)
+counts=("3 of 4" "6 of 8" "6 of 7" "5 of 6")
+files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md
+    js/web/web-sdk/CHANGELOG.md)
 change "$r" js/react-native/react-native/src/index.ts "${subjects[0]}"
 change "$r" android/fedimint-sdk/src/Sdk.kt "${subjects[1]}"
 change "$r" rust/fedimint-sdk/src/lib.rs "${subjects[2]}"
@@ -1374,7 +1414,7 @@ change "$r" rust/ubrn/Cargo.lock "${subjects[8]}"
 change "$r" rust/fedimint-sdk/Cargo.toml "${subjects[9]}"
 change "$r" android/gradle/libs.versions.toml "${subjects[10]}"
 index=0
-for component in rust android react-native; do
+for component in rust android react-native web; do
     line="${files[$index]} has notes for 0.1.0-beta.2"
     line="$line from ${counts[$index]} commits since 0.1.0-beta.1"
     expect_split "write $component prints its line on stderr and nothing on stdout" "" "$line" -- \
@@ -1408,10 +1448,16 @@ expect_ok "write puts the commits of react-native under their headings, the newe
     '### Added' '' '- a call of the crate' '- a call of the React Native SDK' '' \
     '### Fixed' '' "- bump ubrn's lockfile" '- bump a crate in the SDK lockfile' \
     '- pin the toolchain')" -- "$c" section react-native 0.1.0-beta.2
+expect_ok "write puts the commits of web under their headings, the newest first" "$(lines \
+    '### Breaking' '' '- rename a call of the crate' '' \
+    '### Added' '' '- a call of the crate' '' \
+    '### Fixed' '' "- bump ubrn's lockfile" '- bump a crate in the SDK lockfile' \
+    '- pin the toolchain')" -- "$c" section web 0.1.0-beta.2
 expect_changed "each write changes the notes of its own component only" "$r" \
-    rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md
+    rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md \
+    js/web/web-sdk/CHANGELOG.md
 for row in "rust|rust/fedimint-sdk/CHANGELOG.md" "android|android/CHANGELOG.md" \
-    "react-native|js/react-native/CHANGELOG.md"; do
+    "react-native|js/react-native/CHANGELOG.md" "web|js/web/web-sdk/CHANGELOG.md"; do
     IFS='|' read -r component file <<<"$row"
     first="$(grep -m1 '^## ' "$r/$file")"
     if [[ "$first" == "## 0.1.0-beta.2" ]]; then
@@ -1431,6 +1477,8 @@ expect_fail "write rust does not see the Android tags" "no tag rust-sdk-v0.1.0-b
     "$c" write rust 0.1.0-beta.2 0.1.0-beta.1
 expect_fail "write react-native does not see the Android tags" \
     "no tag react-native-sdk-v0.1.0-beta.1" -- "$c" write react-native 0.1.0-beta.2 0.1.0-beta.1
+expect_fail "write web does not see the Android tags" \
+    "no tag web-sdk-v0.1.0-beta.1" -- "$c" write web 0.1.0-beta.2 0.1.0-beta.1
 expect_fail "write android needs the previous release's tag" "no tag android-sdk-v0.0.1" -- \
     "$c" write android 0.2.0 0.0.1
 
@@ -1472,6 +1520,7 @@ written_for() {
     git -C "$dir" tag rust-sdk-v0.1.0-beta.1
     git -C "$dir" tag android-sdk-v0.1.0-beta.1
     git -C "$dir" tag react-native-sdk-v0.1.0-beta.1
+    git -C "$dir" tag web-sdk-v0.1.0-beta.1
     for subject in "$@"; do
         change "$dir" "$path" "$subject"
     done
@@ -1525,6 +1574,7 @@ fedimint_notes() {
     git -C "$dir" tag rust-sdk-v0.1.0-beta.1
     git -C "$dir" tag android-sdk-v0.1.0-beta.1
     git -C "$dir" tag react-native-sdk-v0.1.0-beta.1
+    git -C "$dir" tag web-sdk-v0.1.0-beta.1
     set_lock "$dir" "$3"
     "$dir/scripts/sdk-changelog.sh" write "$component" 0.1.0-beta.2 0.1.0-beta.1 2>/dev/null
     "$dir/scripts/sdk-changelog.sh" section "$component" 0.1.0-beta.2
@@ -1618,7 +1668,7 @@ expect_ok "write lists a merged commit but not the merge" "$(lines \
     "$c" section android 0.1.0-beta.2
 
 # A commit whose scope is foreign to the component is left out whatever its type, a `!` included,
-# although it touched what the component is built from. All three components are built from the
+# although it touched what the component is built from. All four components are built from the
 # crate's sources, so a change to them under each scope shows which components leave it out. Only
 # a scope that is exactly a foreign one counts: a commit with another scope, or none, is listed.
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -1626,43 +1676,49 @@ c="$r/scripts/sdk-changelog.sh"
 git -C "$r" tag rust-sdk-v0.1.0-beta.1
 git -C "$r" tag android-sdk-v0.1.0-beta.1
 git -C "$r" tag react-native-sdk-v0.1.0-beta.1
-# Each row is a subject, and whether the notes of rust, android and react-native list it.
+git -C "$r" tag web-sdk-v0.1.0-beta.1
+# Each row is a subject, and whether the notes of rust, android, react-native and web list it.
 rows=(
-    "feat(flake): a change scoped (flake)|n n n"
-    "fix(ci): a change scoped (ci)|n n n"
-    "fix(workflows): a change scoped (workflows)|n n n"
-    "fix(tests): a change scoped (tests)|n n n"
-    "fix(examples): a change scoped (examples)|n n n"
-    "feat(release): a change scoped (release)|n n n"
-    "feat(web): a change scoped (web)|n n n"
-    "fix(sdk-web): a change scoped (sdk-web)|n n n"
-    "fix(vite-core): a change scoped (vite-core)|n n n"
-    "fix(react-native): a change scoped (react-native)|n n y"
-    "fix(rn-bindings): a change scoped (rn-bindings)|n n y"
-    "fix(js): a change scoped (js)|n n y"
-    "fix(swift): a change scoped (swift)|n n n"
-    "fix(ios): a change scoped (ios)|y n y"
-    "feat(android): a change scoped (android)|y y y"
-    "fix(sdk): a change scoped (sdk)|y y y"
-    "fix(nix): a change scoped (nix)|y y y"
-    "fix: a change without a scope|y y y"
-    "feat(flake)!: a breaking change scoped (flake)|n n n"
-    "refactor(react-native)!: a breaking change scoped (react-native)|n n y"
-    "fix(ios)!: a breaking change scoped (ios)|y n y"
-    "fix(web,sdk): a change scoped (web,sdk)|y y y"
-    "fix(Web): a change scoped (Web)|y y y"
-    "fix(websocket): a change scoped (websocket)|y y y"
-    "fix(somewhere): a change scoped (somewhere)|y y y"
-    "fix(*): a change scoped (*)|y y y"
+    "feat(flake): a change scoped (flake)|n n n n"
+    "fix(ci): a change scoped (ci)|n n n n"
+    "fix(workflows): a change scoped (workflows)|n n n n"
+    "fix(tests): a change scoped (tests)|n n n n"
+    "fix(examples): a change scoped (examples)|n n n n"
+    "feat(release): a change scoped (release)|n n n n"
+    "feat(web): a change scoped (web)|n n n y"
+    "fix(sdk-web): a change scoped (sdk-web)|n n n y"
+    "fix(web-sdk): a change scoped (web-sdk)|n n n y"
+    "fix(vite-core): a change scoped (vite-core)|n n n y"
+    "fix(react-native): a change scoped (react-native)|n n y n"
+    "fix(rn-bindings): a change scoped (rn-bindings)|n n y n"
+    "fix(js): a change scoped (js)|n n y y"
+    "fix(swift): a change scoped (swift)|n n n n"
+    "fix(ios): a change scoped (ios)|y n y n"
+    "feat(ios): a feature scoped (ios)|y n y n"
+    "fix(android): a change scoped (android)|y y y n"
+    "feat(android): a change scoped (android)|y y y n"
+    "fix(sdk): a change scoped (sdk)|y y y y"
+    "fix(nix): a change scoped (nix)|y y y y"
+    "fix: a change without a scope|y y y y"
+    "feat(flake)!: a breaking change scoped (flake)|n n n n"
+    "refactor(react-native)!: a breaking change scoped (react-native)|n n y n"
+    "fix(ios)!: a breaking change scoped (ios)|y n y n"
+    "fix(android)!: a breaking change scoped (android)|y y y n"
+    "fix(web,sdk): a change scoped (web,sdk)|y y y y"
+    "fix(Web): a change scoped (Web)|y y y y"
+    "fix(websocket): a change scoped (websocket)|y y y y"
+    "fix(somewhere): a change scoped (somewhere)|y y y y"
+    "fix(*): a change scoped (*)|y y y y"
 )
-# How many of the commits are in the notes of rust, android and react-native.
-counts=("11 of 26" "9 of 26" "15 of 26")
-files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md)
+# How many of the commits are in the notes of rust, android, react-native and web.
+counts=("14 of 30" "11 of 30" "18 of 30" "13 of 30")
+files=(rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md js/react-native/CHANGELOG.md
+    js/web/web-sdk/CHANGELOG.md)
 for row in "${rows[@]}"; do
     change "$r" rust/fedimint-sdk/src/lib.rs "${row%|*}"
 done
 index=0
-for component in rust android react-native; do
+for component in rust android react-native web; do
     line="${files[$index]} has notes for 0.1.0-beta.2"
     line="$line from ${counts[$index]} commits since 0.1.0-beta.1"
     expect_split "write $component counts a commit with a foreign scope as looked at only" "" \
@@ -1698,9 +1754,10 @@ for component in rust android react-native; do
     index=$((index + 1))
 done
 
-# nix/ffi.nix builds the native library that the Android SDK and the React Native packages share,
-# and nix/web-bindgen.nix provides the binding generators of the React Native packages and the web
-# SDK. A change that touched only the second is not a change to the Android SDK.
+# nix/ffi.nix builds the native library that the Android SDK and the React Native packages share
+# and the web SDK's wasm module, and nix/web-bindgen.nix provides the binding generators of the
+# React Native packages and the web SDK. A change that touched only the second is not a change to
+# the Android SDK.
 expect_ok "write leaves a change that only touched web-bindgen.nix out of the crate's notes" \
     "No changes for users since 0.1.0-beta.1." -- \
     written_for rust nix/web-bindgen.nix "fix(sdk): update the binding generators"
@@ -1710,6 +1767,22 @@ expect_ok "write leaves a change that only touched web-bindgen.nix out of the An
 expect_ok "write lists a change that only touched web-bindgen.nix for the React Native SDK" \
     "$(lines '### Fixed' '' '- update the binding generators')" -- \
     written_for react-native nix/web-bindgen.nix "fix(sdk): update the binding generators"
+expect_ok "write lists a change that only touched web-bindgen.nix for the web SDK" \
+    "$(lines '### Fixed' '' '- update the binding generators')" -- \
+    written_for web nix/web-bindgen.nix "fix(sdk): update the binding generators"
+
+# A change under js/web/web-sdk is about the web SDK alone. Its own scopes, and js, which is not
+# foreign to it, list it; no other component is built from that directory.
+for scope in web-sdk web sdk-web vite-core js; do
+    expect_ok "write lists a change of js/web/web-sdk scoped ($scope) for the web SDK" \
+        "$(lines '### Fixed' '' '- repair the worker')" -- \
+        written_for web js/web/web-sdk/src/worker.ts "fix($scope): repair the worker"
+    for component in rust android react-native; do
+        expect_ok "write leaves a change of js/web/web-sdk scoped ($scope) out of $component" \
+            "No changes for users since 0.1.0-beta.1." -- \
+            written_for "$component" js/web/web-sdk/src/worker.ts "fix($scope): repair the worker"
+    done
+done
 
 # A revert is never an entry. It takes away the entry of the commit in the same range whose subject
 # is the one it names, with or without the number that a squash merge adds to its own.
@@ -1844,7 +1917,7 @@ crates_io="registry+https://github.com/rust-lang/crates.io-index"
 git_a="git+https://github.com/fedimint/fedimint?rev=3c808b0#3c808b0aaaaaaaaaaaaaaaaaaaa"
 git_b="git+https://github.com/fedimint/fedimint?rev=1d3758c#1d3758cbbbbbbbbbbbbbbbbbbbb"
 built="Built against fedimint 0.13.0-beta.1, where 0.1.0-beta.1 was built against fedimint 0.12.0."
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "write $component says that the fedimint went from one release to another" \
         "$(changed "$built")" -- \
         fedimint_notes "$component" "0.12.0 $crates_io" "0.13.0-beta.1 $crates_io"
@@ -2103,7 +2176,7 @@ r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 c="$r/scripts/sdk-changelog.sh"
 for sub in section release-notes check write left-out; do
     expect_fail "$sub refuses an unknown component" \
-        "sideways is not a component: it must be one of rust, android, react-native" -- \
+        "sideways is not a component: it must be one of rust, android, react-native, web" -- \
         "$c" "$sub" sideways 0.1.0-beta.1
     expect_fail "$sub refuses a group name" "all is not a component" -- \
         "$c" "$sub" all 0.1.0-beta.1
@@ -2256,6 +2329,7 @@ export FAKE_NPM FAKE_CRATES
 
 BINDINGS_PACKAGE=@fedimint/react-native-bindings
 WRAPPER_PACKAGE=@fedimint/react-native
+WEB_PACKAGE=@fedimint/web-sdk
 INDEX_URL=https://index.crates.io/fe/di/fedimint-sdk
 INDEX_AGENT='fedimint-sdk release check (https://github.com/fedimint/fedimint-sdk)'
 # Where static.crates.io serves the file of a version of the crate.
@@ -2400,6 +2474,7 @@ prefix_of() {
         rust) echo rust-sdk-v ;;
         android) echo android-sdk-v ;;
         react-native) echo react-native-sdk-v ;;
+        web) echo web-sdk-v ;;
     esac
 }
 
@@ -2409,6 +2484,7 @@ changelog_of() {
         rust) echo rust/fedimint-sdk/CHANGELOG.md ;;
         android) echo android/CHANGELOG.md ;;
         react-native) echo js/react-native/CHANGELOG.md ;;
+        web) echo js/web/web-sdk/CHANGELOG.md ;;
     esac
 }
 
@@ -2556,12 +2632,12 @@ echo "sdk-release.sh latest"
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "latest $component prints nothing when it has no release tag" "" -- \
         "$rel" latest "$component"
 done
 expect_fail "latest refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" latest sideways
 expect_fail "latest refuses a group name" "all is not a component" -- "$rel" latest all
 
@@ -2572,14 +2648,14 @@ expect_stdout "latest prints nothing when its only tags are outside the grammar"
 git -C "$r" branch rust-sdk-v9.9.9
 expect_stdout "latest does not count a branch named like a release tag" "" -- "$rel" latest rust
 
-for component in rust android react-native; do
+for component in rust android react-native web; do
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
     prefix="$(prefix_of "$component")"
     release_tag "$r" "$component" 0.1.0-beta.1
     expect_ok "latest $component prints its only release" "0.1.0-beta.1" -- \
         "$rel" latest "$component"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         if [[ "$other" != "$component" ]]; then
             expect_ok "latest $other does not count the tags of $component" "" -- \
                 "$rel" latest "$other"
@@ -2599,7 +2675,7 @@ for component in rust android react-native; do
     expect_equal "latest $component says on stderr which tag it ignored" \
         "ignoring 1.0.0-rc.1: not a version"$'\n'"ignoring foo: not a version" \
         "$("$rel" latest "$component" 2>&1 >/dev/null)"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         if [[ "$other" != "$component" ]]; then
             release_tag "$r" "$other" 9.9.9
         fi
@@ -2620,7 +2696,7 @@ echo "sdk-release.sh published"
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_ok "published $component prints nothing when no registry lists a version of it" "" -- \
         "$rel" published "$component"
 done
@@ -2657,10 +2733,33 @@ npm_has "$WRAPPER_PACKAGE" '["0.1.0-beta.1"]'
 expect_ok "published react-native prints the versions of the package that is on npm alone" \
     "0.1.0-beta.1" -- "$rel" published react-native
 
+# The web SDK: the versions of its one package, and only that package is asked.
+fresh_registries
+npm_has "$WEB_PACKAGE" '["0.0.0","0.1.0-beta.1","0.1.0-beta.2"]'
+npm_has "$WRAPPER_PACKAGE" '["9.9.9"]'
+expect_ok "published web prints the versions of @fedimint/web-sdk" \
+    "$(lines 0.0.0 0.1.0-beta.1 0.1.0-beta.2)" -- "$rel" published web
+expect_equal "published web asks npm for its package only" "view $WEB_PACKAGE versions --json" \
+    "$(<"$FAKE_NPM/calls")"
+expect_equal "published web does not ask crates.io" "no" \
+    "$([[ -e "$FAKE_CRATES/calls" ]] && echo yes || echo no)"
+fresh_registries
+npm_has "$WEB_PACKAGE" '"0.1.0-beta.3"'
+expect_ok "published web reads a package with exactly one version" "0.1.0-beta.3" -- \
+    "$rel" published web
+fresh_registries
+npm_fails "$WEB_PACKAGE" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
+run_split "$rel" published web
+expect_equal "published web fails when npm cannot be reached" 1 "$STATUS"
+expect_contains "published web says which package npm failed for" \
+    "cannot list the versions of $WEB_PACKAGE on npm: error code ECONNREFUSED; retry later" "$ERR"
+expect_equal "published web prints no versions then" "" "$OUT"
+
 # The Android SDK has no registry: its tags are the record of its releases.
 fresh_registries
 npm_has "$BINDINGS_PACKAGE" '["0.1.0-beta.1"]'
 npm_has "$WRAPPER_PACKAGE" '["0.1.0-beta.1"]'
+npm_has "$WEB_PACKAGE" '["0.1.0-beta.1"]'
 crates_has 0.1.0-beta.1
 expect_ok "published android prints nothing, whatever the other registries list" "" -- \
     "$rel" published android
@@ -2703,7 +2802,7 @@ expect_ok "published react-native asks the second package when npm reads its sta
     "$(lines 0.0.0 9.9.9)" -- "$rel" published react-native
 
 expect_fail "published refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" published sideways
 expect_fail "published refuses a group name" "all is not a component" -- "$rel" published all
 expect_usage "published needs a component" -- "$rel" published
@@ -2722,7 +2821,9 @@ expect_ok "check-version passes when nothing is released anywhere" "$(lines \
     'android tags: 0.1.0-beta.1: nothing is released yet' \
     'react-native tags: 0.1.0-beta.1: nothing is released yet' \
     "$BINDINGS_PACKAGE: 0.1.0-beta.1: nothing is released yet" \
-    "$WRAPPER_PACKAGE: 0.1.0-beta.1: nothing is released yet")" -- \
+    "$WRAPPER_PACKAGE: 0.1.0-beta.1: nothing is released yet" \
+    'web tags: 0.1.0-beta.1: nothing is released yet' \
+    "$WEB_PACKAGE: 0.1.0-beta.1: nothing is released yet")" -- \
     "$rel" check-version 0.1.0-beta.1
 git -C "$r" branch android-sdk-v9.9.9
 expect_prints "check-version does not count a branch named like a release tag" \
@@ -2732,11 +2833,12 @@ expect_prints "check-version does not count a branch named like a release tag" \
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 npm_has "$BINDINGS_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
 npm_has "$WRAPPER_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
+npm_has "$WEB_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
 crates_has 0.1.0-beta.1
 newer="is newer than the latest release, 0.1.0-beta.1"
 expect_ok "check-version passes when newer than every tag and every registry" "$(lines \
@@ -2745,11 +2847,13 @@ expect_ok "check-version passes when newer than every tag and every registry" "$
     "android tags: 0.1.0-beta.2 $newer" \
     "react-native tags: 0.1.0-beta.2 $newer" \
     "$BINDINGS_PACKAGE: 0.1.0-beta.2 $newer" \
-    "$WRAPPER_PACKAGE: 0.1.0-beta.2 $newer")" -- \
+    "$WRAPPER_PACKAGE: 0.1.0-beta.2 $newer" \
+    "web tags: 0.1.0-beta.2 $newer" \
+    "$WEB_PACKAGE: 0.1.0-beta.2 $newer")" -- \
     "$rel" check-version 0.1.0-beta.2
-expect_equal "check-version asks npm for both packages" "$(lines \
-    "view $BINDINGS_PACKAGE versions --json" "view $WRAPPER_PACKAGE versions --json")" \
-    "$(<"$FAKE_NPM/calls")"
+expect_equal "check-version asks npm for every package" "$(lines \
+    "view $BINDINGS_PACKAGE versions --json" "view $WRAPPER_PACKAGE versions --json" \
+    "view $WEB_PACKAGE versions --json")" "$(<"$FAKE_NPM/calls")"
 expect_contains "check-version asks crates.io for the crate at its page in the index" \
     "$INDEX_URL" "$(<"$FAKE_CRATES/calls")"
 expect_contains "check-version tells crates.io who is asking" "$INDEX_AGENT" \
@@ -2761,7 +2865,7 @@ expect_usage "check-version takes one version" -- "$rel" check-version 0.1.0 0.2
 
 # A version taken by, or below, a tag of any one component is refused, and the refusal names the
 # component's tags. Only the tags are in the way: the registries hold nothing.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -2780,8 +2884,8 @@ for component in rust android react-native; do
         "$rel" check-version 0.2.1
 done
 
-# A version on npm, of either package, is taken as well.
-for package in "$BINDINGS_PACKAGE" "$WRAPPER_PACKAGE"; do
+# A version on npm, of any package, is taken as well.
+for package in "$BINDINGS_PACKAGE" "$WRAPPER_PACKAGE" "$WEB_PACKAGE"; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -2993,17 +3097,67 @@ expect_equal "check react-native asks npm for both packages" "$(lines \
     "$(<"$FAKE_NPM/calls")"
 expect_equal "check react-native does not ask crates.io" "no" \
     "$([[ -e "$FAKE_CRATES/calls" ]] && echo yes || echo no)"
+fresh_registries
+expect_ok "check web passes on a tree that can be released" "$(lines \
+    'web tags: 0.1.0-beta.1: nothing is released yet' \
+    "$WEB_PACKAGE: 0.1.0-beta.1: nothing is released yet" \
+    'js/web/web-sdk/CHANGELOG.md has notes for 0.1.0-beta.1' \
+    'web 0.1.0-beta.1 can be released')" -- "$rel" check web
+expect_equal "check web asks npm for its package only" "view $WEB_PACKAGE versions --json" \
+    "$(<"$FAKE_NPM/calls")"
+expect_equal "check web does not ask crates.io" "no" \
+    "$([[ -e "$FAKE_CRATES/calls" ]] && echo yes || echo no)"
 expect_fail "check refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" check sideways
 expect_usage "check needs a component" -- "$rel" check
 expect_usage "check takes one component" -- "$rel" check rust android
 expect_usage "check takes no other option than --except-own" -- "$rel" check rust --sideways
 expect_usage "check takes --except-own once" -- "$rel" check rust --except-own --except-own
 
+# A component at 0.0.0 has not been given a version to release yet: `check`, `tag` and `check-tag`
+# refuse it, whether or not anything is released and whatever the registries and the tags hold.
+refused="has not been given a version to release yet: a version bump gives it one"
+for component in rust android react-native web; do
+    fresh_registries
+    r="$(repo 0.0.0 < <(finished_notes))"
+    rel="$r/scripts/sdk-release.sh"
+    expect_fail "check $component refuses 0.0.0 in a repository where nothing is released" \
+        "$component is at 0.0.0, which stands for a component that $refused" -- \
+        "$rel" check "$component"
+    expect_fail "check $component --except-own refuses 0.0.0 too" "$refused" -- \
+        "$rel" check "$component" --except-own
+    expect_unasked "check $component asks no registry for a version it refuses"
+    expect_untouched "tag $component refuses 0.0.0 and writes nothing" "$r" "$refused" -- \
+        "$rel" tag "$component"
+    expect_equal "tag $component creates no tag for 0.0.0" "" "$(git -C "$r" tag -l)"
+    git -C "$r" tag "$(prefix_of "$component")0.0.0"
+    expect_fail "check-tag refuses a tag of $component for 0.0.0" "$refused" -- \
+        "$rel" check-tag "$(prefix_of "$component")0.0.0"
+done
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" web 0.0.0
+commit_all "$r" "the web SDK at 0.0.0"
+expect_fail "check web refuses 0.0.0 while the other components are released" "$refused" -- \
+    "$rel" check web
+# The crate could be released, and is not tagged either when web is named with it.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+put "$r" web 0.0.0
+commit_all "$r" "the web SDK at 0.0.0"
+expect_untouched "tag rust web refuses 0.0.0 for web and tags nothing" "$r" "$refused" -- \
+    "$rel" tag rust web
+expect_equal "tag rust web creates no tag, not even for the component that could be released" "" \
+    "$(git -C "$r" tag -l)"
+
 # The tags of the component itself: the version in the tree must be newer than all of them. The
 # tree is at 0.1.0-beta.2, the next of the first beta.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
@@ -3032,13 +3186,13 @@ done
 # already. The first of the other components, in the order of the components, that has a higher
 # tag is named. --except-own leaves out the version of the component itself and nothing else, so
 # it changes nothing here. Once the tags have refused, no registry is asked.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
     release_tag "$r" "$component" 0.1.0-beta.1
     first=""
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         if [[ "$other" != "$component" ]]; then
             release_tag "$r" "$other" 0.3.0
             first="${first:-$other}"
@@ -3055,11 +3209,11 @@ done
 
 # Tags of the other components that are all lower do not stand in the way, and say nothing: what
 # the check prints is what it prints without them.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         release_tag "$r" "$other" 0.0.9
         release_tag "$r" "$other" 0.1.0-beta.1
     done
@@ -3070,6 +3224,7 @@ for component in rust android react-native; do
             registries="$BINDINGS_PACKAGE: 0.1.0-beta.2: nothing is released yet"
             registries="$registries"$'\n'"$WRAPPER_PACKAGE: 0.1.0-beta.2: nothing is released yet"
             ;;
+        web) registries="$WEB_PACKAGE: 0.1.0-beta.2: nothing is released yet" ;;
     esac
     passes="$(lines "$component tags: 0.1.0-beta.2 is newer than the latest release, 0.1.0-beta.1" \
         ${registries:+"$registries"} "$(changelog_of "$component") has notes for 0.1.0-beta.2" \
@@ -3083,12 +3238,12 @@ done
 # A joint release: the components carry the same version and are tagged on the same commit, so the
 # tags of the other components for that version are the release's own, whichever component is
 # checked. Their earlier releases are lower.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.2.0 < <(notes_for 0.2.0 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
     tag="$(prefix_of "$component")0.2.0"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         release_tag "$r" "$other" 0.1.0-beta.1
         if [[ "$other" != "$component" ]]; then
             release_tag "$r" "$other" 0.2.0
@@ -3110,7 +3265,7 @@ done
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 put "$r" react-native 0.1.0
@@ -3148,7 +3303,7 @@ expect_equal "tag android creates no tag" "$tags" "$(git -C "$r" tag -l)"
 
 # The notes of the component must have a section for the version, with something in it. Those of
 # the other components do not matter.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     file="$(changelog_of "$component")"
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -3166,7 +3321,7 @@ for component in rust android react-native; do
     rm "$r/$file"
     expect_fail "check $component refuses a tree without notes" "no $r/$file" -- \
         "$rel" check "$component"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         if [[ "$other" != "$component" ]]; then
             printf '# Changelog\n' >"$r/$(changelog_of "$other")"
         fi
@@ -3178,8 +3333,8 @@ done
 
 # Rule 4: a version is never tagged on two commits. Another component that has tagged the same
 # version must have done so on the commit that is checked out.
-for component in rust android react-native; do
-    for other in rust android react-native; do
+for component in rust android react-native web; do
+    for other in rust android react-native web; do
         if [[ "$other" == "$component" ]]; then
             continue
         fi
@@ -3207,7 +3362,7 @@ done
 
 # The component's own tag of the version is no exception. --except-own leaves the version out of
 # the comparison with the tags, but a tag of it must still be on the commit that is checked out.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3240,8 +3395,8 @@ for component in rust android react-native; do
 done
 
 # A tag that exists but names a tree or a blob is not a commit, and is not taken for absent.
-for component in rust android react-native; do
-    for other in rust android react-native; do
+for component in rust android react-native web; do
+    for other in rust android react-native web; do
         fresh_registries
         r="$(repo 0.1.0-beta.1 < <(finished_notes))"
         rel="$r/scripts/sdk-release.sh"
@@ -3274,10 +3429,10 @@ fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
 change "$r" js/web/index.ts "a commit after the branches"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     git -C "$r" branch "$(prefix_of "$component")0.1.0-beta.1" HEAD~1
 done
-for component in rust android react-native; do
+for component in rust android react-native web; do
     expect_last "check $component does not take branches named like the release tags for tags" \
         "$component 0.1.0-beta.1 can be released" -- "$rel" check "$component"
     expect_last "check $component --except-own does not either" \
@@ -3294,7 +3449,7 @@ expect_last "check does not mind a tag of another component for another version"
 
 # A tag outside the grammar never released anything: check notes it and goes on, as if it were
 # not there.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.2.0 < <(notes_for 0.2.0))"
     rel="$r/scripts/sdk-release.sh"
@@ -3328,6 +3483,30 @@ for package in "$BINDINGS_PACKAGE" "$WRAPPER_PACKAGE"; do
     expect_last "check react-native passes above the snapshots of $package" \
         "react-native 0.1.0-beta.1 can be released" -- "$rel" check react-native
 done
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+npm_has "$WEB_PACKAGE" '["0.0.0","0.1.0-beta.1"]'
+expect_fail "check web refuses a version that $WEB_PACKAGE has on npm" \
+    "$WEB_PACKAGE: 0.1.0-beta.1 is already released; bump the version first" -- "$rel" check web
+expect_last "check web --except-own leaves the version of $WEB_PACKAGE out" \
+    "web 0.1.0-beta.1 can be released" -- "$rel" check web --except-own
+npm_has "$WEB_PACKAGE" '["0.0.0","0.1.0-beta.2"]'
+expect_fail "check web --except-own still refuses a higher version of $WEB_PACKAGE" \
+    "$WEB_PACKAGE: 0.1.0-beta.1 is lower than 0.1.0-beta.2, which is already released" -- \
+    "$rel" check web --except-own
+npm_has "$WEB_PACKAGE" '["0.0.0","0.0.0-canary-abc"]'
+expect_last "check web passes above the snapshots of $WEB_PACKAGE" \
+    "web 0.1.0-beta.1 can be released" -- "$rel" check web
+fresh_registries
+npm_has "$WRAPPER_PACKAGE" '["9.9.9"]'
+expect_last "check web does not read the versions of the React Native packages" \
+    "web 0.1.0-beta.1 can be released" -- "$rel" check web
+fresh_registries
+npm_fails "$WEB_PACKAGE" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
+expect_fail "check web stops when npm cannot be reached, and says so" \
+    "cannot list the versions of $WEB_PACKAGE on npm: error code ECONNREFUSED; retry later" -- \
+    "$rel" check web
 fresh_registries
 npm_fails "$WRAPPER_PACKAGE" '{"error":{"code":"ECONNREFUSED","summary":"connect ECONNREFUSED"}}'
 expect_fail "check react-native stops when npm cannot be reached, and says so" \
@@ -3394,7 +3573,7 @@ expect_unasked "check android asks neither npm nor crates.io, even with their ve
 own="is there already and counts as this release's own, so that a release that stopped half way"
 own="$own can run again"
 nothing="0.1.0-beta.1: nothing is released yet"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3403,6 +3582,7 @@ for component in rust android react-native; do
         rust) registries="crates.io: $nothing" ;;
         android) registries="" ;;
         react-native) registries="$BINDINGS_PACKAGE: $nothing"$'\n'"$WRAPPER_PACKAGE: $nothing" ;;
+        web) registries="$WEB_PACKAGE: $nothing" ;;
     esac
     expect_ok "check $component --except-own says that its own tag is there" "$(lines \
         "$component tags: 0.1.0-beta.1 $own" \
@@ -3439,6 +3619,12 @@ for package in "$BINDINGS_PACKAGE" "$WRAPPER_PACKAGE"; do
             'react-native 0.1.0-beta.1 can be released')" -- "$rel" check react-native --except-own
 done
 fresh_registries
+npm_has "$WEB_PACKAGE" '["0.1.0-beta.1"]'
+expect_ok "check web --except-own says that $WEB_PACKAGE has the version" "$(lines \
+    "web tags: $nothing" "$WEB_PACKAGE: 0.1.0-beta.1 $own" \
+    'js/web/web-sdk/CHANGELOG.md has notes for 0.1.0-beta.1' \
+    'web 0.1.0-beta.1 can be released')" -- "$rel" check web --except-own
+fresh_registries
 npm_has "$BINDINGS_PACKAGE" '["0.1.0-beta.1"]'
 npm_has "$WRAPPER_PACKAGE" '["0.1.0-beta.1"]'
 release_tag "$r" react-native 0.1.0-beta.1
@@ -3466,7 +3652,7 @@ echo "sdk-release.sh check-tag"
 # The tag of each component, on a tree that can be released and is on origin/main. The tag is the
 # one being released, so it is not counted against its own version. It need not be annotated: the
 # notes are in the component's CHANGELOG.md.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3549,7 +3735,7 @@ expect_fail "check-tag compares a tag with the version of its own component" "$w
 
 # The version a release names is the one in the tree, so a version outside the grammar cannot be
 # released: check, tag and check-tag refuse it, and tag creates nothing.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3595,7 +3781,7 @@ expect_fail "check-tag refuses a checkout without origin/main" \
     "no origin/main in this checkout; fetch it first" -- "$rel" check-tag rust-sdk-v0.1.0-beta.1
 
 # The checks of the component, with the tag's own version left out.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3617,14 +3803,14 @@ for component in rust android react-native; do
 done
 
 # The version of the tag is newer than the tags of the other components too.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
     tag="$(prefix_of "$component")0.1.0-beta.1"
     git -C "$r" tag "$tag"
     first=""
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         if [[ "$other" != "$component" ]]; then
             release_tag "$r" "$other" 0.1.0-beta.2
             first="${first:-$other}"
@@ -3636,7 +3822,7 @@ for component in rust android react-native; do
 done
 
 # The newest tag of a component passes, whatever older ones it has.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
@@ -3651,8 +3837,8 @@ for component in rust android react-native; do
 done
 
 # Rule 4: the version is taken by the commit that another component tagged it on.
-for component in rust android react-native; do
-    for other in rust android react-native; do
+for component in rust android react-native web; do
+    for other in rust android react-native web; do
         if [[ "$other" == "$component" ]]; then
             continue
         fi
@@ -3752,7 +3938,7 @@ expect_last "check-tag passes the tag once the version is committed" \
     "android-sdk-v0.1.0-beta.2 can be released" -- "$rel" check-tag android-sdk-v0.1.0-beta.2
 
 # Each file that holds a version, and the notes, are guarded, for each component.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -3823,13 +4009,14 @@ echo "sdk-release.sh check-tree"
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 expect_ok "check-tree passes when every component is at a released version" "$(lines \
     'rust 0.1.0-beta.1: released' \
     'android 0.1.0-beta.1: released' \
-    'react-native 0.1.0-beta.1: released')" -- "$rel" check-tree
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.1.0-beta.1: released')" -- "$rel" check-tree
 expect_unasked "check-tree asks neither npm nor crates.io"
 expect_usage "check-tree takes no argument" -- "$rel" check-tree extra
 
@@ -3842,7 +4029,8 @@ git -C "$r" tag rust-sdk-v1.0.0-rc.1
 expect_ok "check-tree passes when every component is to be released" "$(lines \
     'rust 0.1.0-beta.1: to be released' \
     'android 0.1.0-beta.1: to be released' \
-    'react-native 0.1.0-beta.1: to be released')" -- "$rel" check-tree
+    'react-native 0.1.0-beta.1: to be released' \
+    'web 0.1.0-beta.1: to be released')" -- "$rel" check-tree
 
 # Only a tag records a release: a branch named like the release tag does not.
 fresh_registries
@@ -3851,21 +4039,21 @@ rel="$r/scripts/sdk-release.sh"
 git -C "$r" branch rust-sdk-v0.2.0
 expect_ok "check-tree: a branch named like the release tag does not release a component" \
     "$(lines 'rust 0.2.0: to be released' 'android 0.2.0: to be released' \
-        'react-native 0.2.0: to be released')" -- "$rel" check-tree
+        'react-native 0.2.0: to be released' 'web 0.2.0: to be released')" -- "$rel" check-tree
 git -C "$r" branch android-sdk-v0.2.0
 git -C "$r" branch react-native-sdk-v0.2.0
 expect_ok "check-tree: branches named like the tags of every component release none of them" \
     "$(lines 'rust 0.2.0: to be released' 'android 0.2.0: to be released' \
-        'react-native 0.2.0: to be released')" -- "$rel" check-tree
+        'react-native 0.2.0: to be released' 'web 0.2.0: to be released')" -- "$rel" check-tree
 
 # A release is under way: the components it publishes are at the line's version, which is newer
 # than everything released.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
     rel="$r/scripts/sdk-release.sh"
     report=""
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         release_tag "$r" "$other" 0.1.0-beta.1
         if [[ "$other" == "$component" ]]; then
             put "$r" "$other" 0.1.0-beta.2
@@ -3880,7 +4068,7 @@ done
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 put "$r" rust 0.1.0-beta.2
@@ -3888,13 +4076,14 @@ put "$r" react-native 0.1.0-beta.2
 expect_ok "check-tree passes when several components are to be released together" "$(lines \
     'rust 0.1.0-beta.2: to be released' \
     'android 0.1.0-beta.1: released' \
-    'react-native 0.1.0-beta.2: to be released')" -- "$rel" check-tree
+    'react-native 0.1.0-beta.2: to be released' \
+    'web 0.1.0-beta.1: released')" -- "$rel" check-tree
 
 # A component at a version that is neither released nor the line's.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.3 0.1.0-beta.2 0.1.0-beta.1))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 put "$r" android 0.1.0-beta.2
@@ -3928,6 +4117,7 @@ r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
 release_tag "$r" android 0.1.0-beta.1
 release_tag "$r" react-native 0.1.0-beta.1
+release_tag "$r" web 0.1.0-beta.1
 run "$rel" check-tree
 expect_equal "check-tree fails for a version that another component's tag takes" 1 "$STATUS"
 taken="rust: 0.1.0-beta.1 has no release tag yet, but"
@@ -3935,13 +4125,17 @@ expect_contains "check-tree names the tags of android that take the version" \
     "$taken android tags: 0.1.0-beta.1 is already released; bump the version first" "$OUT"
 expect_contains "check-tree names the tags of react-native that take the version" \
     "$taken react-native tags: 0.1.0-beta.1 is already released; bump the version first" "$OUT"
+expect_contains "check-tree names the tags of web that take the version" \
+    "$taken web tags: 0.1.0-beta.1 is already released; bump the version first" "$OUT"
 expect_contains "check-tree still reports the released components" \
-    "android 0.1.0-beta.1: released"$'\n'"react-native 0.1.0-beta.1: released" "$OUT"
+    "android 0.1.0-beta.1: released"$'\n'"react-native 0.1.0-beta.1: released"$'\n'\
+"web 0.1.0-beta.1: released" "$OUT"
 release_tag "$r" rust 0.1.0-beta.1
 expect_ok "check-tree passes once the tag that records the version exists" "$(lines \
     'rust 0.1.0-beta.1: released' \
     'android 0.1.0-beta.1: released' \
-    'react-native 0.1.0-beta.1: released')" -- "$rel" check-tree
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.1.0-beta.1: released')" -- "$rel" check-tree
 
 fresh_registries
 r="$(repo 0.1.0-beta.2 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
@@ -3973,14 +4167,67 @@ expect_contains "check-tree names it for the other components as well" "rust: 0.
 expect_equal "check-tree does not call a component released or to be released" "" \
     "$(grep ': \(released\|to be released\)$' <<<"$OUT" || true)"
 
+# A component at 0.0.0 has not been released yet. With no release tag at all, it is reported as
+# such, needs no section in its notes and does not stand in the way of the others.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" web 0.0.0
+printf '# Changelog\n\nIntro.\n' >"$r/js/web/web-sdk/CHANGELOG.md"
+expect_ok "check-tree passes with the web SDK at 0.0.0 and no web tag" "$(lines \
+    'rust 0.1.0-beta.1: released' \
+    'android 0.1.0-beta.1: released' \
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.0.0: not released yet')" -- "$rel" check-tree
+printf '# Changelog\n\n## 0.0.0\n\nNotes.\n' >"$r/js/web/web-sdk/CHANGELOG.md"
+expect_ok "check-tree takes the notes of a component at 0.0.0 as they are" "$(lines \
+    'rust 0.1.0-beta.1: released' \
+    'android 0.1.0-beta.1: released' \
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.0.0: not released yet')" -- "$rel" check-tree
+rm "$r/js/web/web-sdk/CHANGELOG.md"
+expect_ok "check-tree needs no notes for a component at 0.0.0" "$(lines \
+    'rust 0.1.0-beta.1: released' \
+    'android 0.1.0-beta.1: released' \
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.0.0: not released yet')" -- "$rel" check-tree
+expect_unasked "check-tree asks neither npm nor crates.io for a component at 0.0.0"
+# When every component is at 0.0.0 the line is 0.0.0 as well, and none of them is released.
+r="$(repo 0.0.0 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+expect_ok "check-tree reports every component at 0.0.0 as not released yet" "$(lines \
+    'rust 0.0.0: not released yet' \
+    'android 0.0.0: not released yet' \
+    'react-native 0.0.0: not released yet' \
+    'web 0.0.0: not released yet')" -- "$rel" check-tree
+# A component at 0.0.0 that has release tags is a problem, like any version that is neither
+# released nor the line's.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+release_tag "$r" web 0.1.0-beta.1
+put "$r" web 0.0.0
+run "$rel" check-tree
+expect_equal "check-tree fails for a component at 0.0.0 that has a release tag" 1 "$STATUS"
+expect_contains "check-tree says that the component at 0.0.0 is below the line" \
+    "web: 0.0.0 has no release tag and is not the line's version, 0.1.0-beta.1: set web to \
+0.1.0-beta.1, or back to 0.1.0-beta.1, its last release" "$OUT"
+expect_equal "check-tree does not call that component not released yet" "" \
+    "$(grep '^web 0.0.0: ' <<<"$OUT" || true)"
+
 # The notes of every component must have a section for its version, with something in it, whether
 # it is released or not.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
     file="$(changelog_of "$component")"
-    for other in rust android react-native; do
+    for other in rust android react-native web; do
         release_tag "$r" "$other" 0.1.0-beta.1
     done
     empty_notes 0.1.0-beta.1 >"$r/$file"
@@ -4003,7 +4250,7 @@ done
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 put_file "$r" "$CATALOG" 0.2.0-rc.1
@@ -4031,7 +4278,7 @@ expect_fail "check-tree names the manifests of the React Native packages that di
 fresh_registries
 r="$(repo 0.1.0-beta.3 < <(notes_for 0.1.0-beta.3 0.1.0-beta.2 0.1.0-beta.1))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 put "$r" rust 0.1.0-beta.1
@@ -4410,7 +4657,8 @@ rel="$r/scripts/sdk-release.sh"
 expect_ok "check-tree itself accepts a repository that has no release yet" "$(lines \
     'rust 0.1.0-beta.1: to be released' \
     'android 0.1.0-beta.1: to be released' \
-    'react-native 0.1.0-beta.1: to be released')" -- "$rel" check-tree
+    'react-native 0.1.0-beta.1: to be released' \
+    'web 0.1.0-beta.1: to be released')" -- "$rel" check-tree
 run in_repo "$r" bash -e "$step"
 expect_equal "the step fails in a checkout without release tags" 1 "$STATUS"
 expect_contains "the step says as an error that the checkout has no release tags" \
@@ -4426,13 +4674,14 @@ expect_equal "the step fails for tags that are not release tags" 1 "$STATUS"
 expect_contains "the step says it for them as well" "::error::the checkout has no release tags" \
     "$OUT"
 
-for component in rust android react-native; do
+for component in rust android react-native web; do
     release_tag "$r" "$component" 0.1.0-beta.1
 done
 expect_ok "the step runs check-tree in a checkout that has the release tags" "$(lines \
     'rust 0.1.0-beta.1: released' \
     'android 0.1.0-beta.1: released' \
-    'react-native 0.1.0-beta.1: released')" -- in_repo "$r" bash -e "$step"
+    'react-native 0.1.0-beta.1: released' \
+    'web 0.1.0-beta.1: released')" -- in_repo "$r" bash -e "$step"
 git -C "$r" tag -d android-sdk-v0.1.0-beta.1 react-native-sdk-v0.1.0-beta.1 >/dev/null
 run in_repo "$r" bash -e "$step"
 expect_equal "the step fails when check-tree does" 1 "$STATUS"
@@ -4444,13 +4693,13 @@ expect_equal "the step does not call that a checkout without release tags" "" \
 echo
 echo "the release workflows"
 
-# The release workflows of the Rust crate, of the Android SDK and of the React Native packages
-# each have a step that applies scripts/sdk-release.sh to the run: a tag, pushed or started by
-# hand, is held to the release rules, and a dry run on a branch checks the version in the tree and
-# only warns about a version that could not be released. The step reads the version first, so that
-# a version that cannot be read stops it before any check or warning. Another step refuses to
-# publish from a branch. The cases run the commands of those steps, as the workflows have them, in
-# a repository, the way GitHub runs them (bash -eo pipefail) and with the environment it gives
+# The release workflows of the Rust crate, of the Android SDK, of the React Native packages and of
+# the Web SDK each have a step that applies scripts/sdk-release.sh to the run: a tag, pushed or
+# started by hand, is held to the release rules, and a dry run on a branch checks the version in the
+# tree and only warns about a version that could not be released. The step reads the version first,
+# so that a version that cannot be read stops it before any check or warning. Another step refuses
+# to publish from a branch. The cases run the commands of those steps, as the workflows have them,
+# in a repository, the way GitHub runs them (bash -eo pipefail) and with the environment it gives
 # them: the type and the name of the ref, and the file that the outputs of the step go to.
 #
 # The steps of the crate's workflow that decide what to publish and check what was packaged are
@@ -4499,11 +4748,11 @@ expect_unreadable_version() {
 
 # For each workflow: its component, the tag prefix of another component, the step that refuses to
 # publish from a branch, and what the version step gives its job: nothing for the Android SDK,
-# whose later jobs read the version from the catalog, and the version for the Rust crate and the
-# React Native packages.
+# whose later jobs read the version from the catalog, and the version for the others.
 for row in "rust|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1" \
     "android|rust-sdk-v|Refuse to upload from a branch|" \
-    "react-native|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1"; do
+    "react-native|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1" \
+    "web|android-sdk-v|Refuse to publish from a branch|version=0.1.0-beta.1"; do
     IFS='|' read -r component other refuse output <<<"$row"
     prefix="$(prefix_of "$component")"
     title="$(sourced "component_title $component")"
@@ -4599,6 +4848,11 @@ for row in "rust|android-sdk-v|Refuse to publish from a branch|version=0.1.0-bet
             disagreement="$disagreement but $WRAPPER_MANIFEST is 0.2.0"
             expect_unreadable_version "$component" "$version_step" "$b" \
                 "the two manifests disagree" "$disagreement"
+            ;;
+        web)
+            expect_unreadable_version "$component" "$version_step" \
+                "$(broken_repo "$WEB_MANIFEST" '{\n  "name": "x"\n}\n')" \
+                "the manifest has no version" "no \"version\" in $WEB_MANIFEST"
             ;;
     esac
 
@@ -4813,6 +5067,10 @@ pin_job react-native publish "$IF_RELEASE"
 pin_job react-native dry-run "$IF_DRY_RUN"
 pin_job react-native github-release "$IF_RELEASE"
 pin_step react-native "Refuse to publish from a branch" "$IF_REFUSE"
+pin_job web publish "$IF_RELEASE"
+pin_job web dry-run "$IF_DRY_RUN"
+pin_job web github-release "$IF_RELEASE"
+pin_step web "Refuse to publish from a branch" "$IF_REFUSE"
 # The crate has no dry-run job: a dry run is a run in which `publish` and `github-release` do not
 # run. In `publish` the decision always runs, and the steps that follow it act on its word.
 pin_job rust publish "$IF_RELEASE"
@@ -4866,7 +5124,8 @@ done
 # The same for the Android SDK and the React Native packages, every job of the chain from the check
 # of the version to the job that publishes and to the release: a job that stops waiting for the
 # one before it would publish what was not checked, built or tested. `dry-run` of the React Native
-# workflow is not on that chain: it is the end of a dry run and reaches no environment.
+# workflow is not on that chain: it is the end of a dry run and reaches no environment. The Web
+# SDK's chain follows these.
 android_code="$WORK/android-workflow-without-comments.yaml"
 without_comments "$ROOT/.github/workflows/$(sourced "component_workflow android")" >"$android_code"
 for row in "chain|    needs: version" "publish|    needs: chain" \
@@ -4886,6 +5145,27 @@ for row in "android-native|    needs: check" "ios-native|    needs: check" \
     IFS='|' read -r job line <<<"$row"
     expect_equal "the React Native workflow's $job job has '${line#    }'" 1 \
         "$(job_text "$job" "$react_native_code" | grep -cxF "$line" || true)"
+done
+
+# What the Web SDK's workflow publishes is the tarball that was packed from the module that was
+# built, and tested. Like the crate's, its workflow has the permission to ask GitHub for an identity
+# token, and the `npm` environment, in `publish` alone, and `contents: write` in `github-release`
+# alone.
+web_code="$WORK/web-workflow-without-comments.yaml"
+without_comments "$ROOT/.github/workflows/$(sourced "component_workflow web")" >"$web_code"
+for row in "module|    needs: check" "pack|    needs: [check, module]" "test|    needs: pack" \
+    "publish|    needs: [pack, test]" "dry-run|    needs: [pack, test]" \
+    "github-release|    needs: [check, publish]"; do
+    IFS='|' read -r job line <<<"$row"
+    expect_equal "the Web SDK workflow's $job job has '${line#    }'" 1 \
+        "$(job_text "$job" "$web_code" | grep -cxF "$line" || true)"
+done
+for row in "id-token|publish" "environment: npm|publish" "contents: write|github-release"; do
+    IFS='|' read -r text job <<<"$row"
+    expect_equal "the Web SDK workflow mentions '$text' once" 1 \
+        "$(grep -cF "$text" "$web_code" || true)"
+    expect_equal "the Web SDK workflow mentions '$text' in its $job job" 1 \
+        "$(job_text "$job" "$web_code" | grep -cF "$text" || true)"
 done
 
 # What starts a release, what can stop one, and how `publish` packs the crate are pinned as text
@@ -4972,11 +5252,11 @@ job_text publish "$rust_workflow" >"$rust_publish_job"
 expect_pinned "the crate's publish job checks out with persist-credentials: false" false \
     "$(step_input Checkout persist-credentials "$rust_publish_job" 2>&1 || true)"
 
-# The three release workflows start on a push of a tag of their component, or by hand, and on no
+# The four release workflows start on a push of a tag of their component, or by hand, and on no
 # other event. A release is never cancelled once it runs, and no step or job of the workflow goes on
 # after it failed. The workflows that these call are not read here: android-native.yaml and
 # ios-native.yaml go on after a failed push to Cachix, on purpose.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     workflow_file="$ROOT/.github/workflows/$(sourced "component_workflow $component")"
     prefix="$(prefix_of "$component")"
     expect_pinned "the $component workflow does not cancel a release that is running" false \
@@ -5142,7 +5422,7 @@ tag_repo() {
     fresh_registries
     fresh_gh
     r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
-    for component in rust android react-native; do
+    for component in rust android react-native web; do
         release_tag "$r" "$component" 0.1.0-beta.1
     done
     origin="$(mktemp -d "$WORK/origin.XXXX")"
@@ -5205,7 +5485,7 @@ tag_job() {
 }
 
 earlier_tags="$(lines android-sdk-v0.1.0-beta.1 react-native-sdk-v0.1.0-beta.1 \
-    rust-sdk-v0.1.0-beta.1)"
+    rust-sdk-v0.1.0-beta.1 web-sdk-v0.1.0-beta.1)"
 new_android="android-sdk-v0.1.0-beta.2"
 new_react_native="react-native-sdk-v0.1.0-beta.2"
 new_rust="rust-sdk-v0.1.0-beta.2"
@@ -5264,6 +5544,26 @@ expect_equal "the remote has the three new tags after a push that bumped all thr
     "$(git -C "$origin" tag -l)"
 expect_equal "gh started the release of each component, in the order of the components" \
     "$(lines "$start_rust" "$start_android" "$start_react_native")" "$(gh_calls)"
+
+# A push that changed the version of the Web SDK alone: sdk-tag.yaml runs for a change of
+# js/web/web-sdk/package.json, and it tags the package and starts its release workflow.
+expect_contains "sdk-tag.yaml runs for a push that changes the manifest of the Web SDK" \
+    "- '$WEB_MANIFEST'" "$(trigger_filters push "$tag_workflow")"
+expect_contains "the manual run of sdk-tag.yaml can name the Web SDK" "- web" \
+    "$(trigger_filters workflow_dispatch "$tag_workflow")"
+new_web="web-sdk-v0.1.0-beta.2"
+tag_repo web
+record_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "after a push that bumped the Web SDK both steps succeed" "0 0" \
+    "$DECIDE_STATUS $TAG_STATUS"
+expect_equal "the first step outputs the Web SDK" "web" "$DECIDED"
+expect_equal "the remote has the new tag of the Web SDK besides those of the earlier release" \
+    "$(lines "$new_web" "$earlier_tags" | LC_ALL=C sort)" "$(git -C "$origin" tag -l)"
+expect_equal "the tag of the Web SDK reached the remote in one push" "refs/tags/$new_web" \
+    "$(pushes_of "$origin")"
+expect_equal "gh started the release of the Web SDK on its tag, with publishing on" \
+    "workflow run web-sdk-release.yaml --ref $new_web -f publish=true" "$(gh_calls)"
 
 # A push that bumped no version: no tag, no call of gh, and the first step succeeds. The second
 # step is skipped by its condition.
@@ -5432,7 +5732,7 @@ echo "sdk-release.sh pending"
 released_repo() {
     local dir component
     dir="$(repo 0.1.0-beta.1 < <(finished_notes))"
-    for component in rust android react-native; do
+    for component in rust android react-native web; do
         release_tag "$dir" "$component" 0.1.0-beta.1
     done
     echo "$dir"
@@ -5458,7 +5758,7 @@ change "$r" js/web/index.ts "a commit that changes no version"
 expect_ok "pending says nothing when only other files changed" "" -- "$rel" pending "$old"
 
 # A version bump after a release: the new version has no tag yet and the old one has.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     r="$(released_repo)"
     rel="$r/scripts/sdk-release.sh"
     old="$(git -C "$r" rev-parse HEAD)"
@@ -5487,7 +5787,7 @@ expect_unasked "pending asks neither npm nor crates.io"
 
 # A version that changed from one that was never released is not a bump after a release.
 fresh_registries
-for component in rust android react-native; do
+for component in rust android react-native web; do
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
     old="$(git -C "$r" rev-parse HEAD)"
@@ -5612,11 +5912,45 @@ notice="$(unreleased_note react-native "its earlier version could not be read ($
 expect_split "pending notes manifests that disagreed at the commit, and succeeds" "" "$notice" -- \
     "$rel" pending "$old"
 
+# A component at 0.0.0 has not been released yet and is never printed. A push that changed its
+# version says so in one line, and nothing else for it.
+zero_note="web: at 0.0.0 and not released yet; nothing to tag"
+fresh_registries
+r="$(released_repo)"
+rel="$r/scripts/sdk-release.sh"
+old="$(git -C "$r" rev-parse HEAD)"
+put "$r" web 0.0.0
+commit_all "$r" "set the web SDK to 0.0.0"
+expect_split "pending prints nothing for a component set to 0.0.0 and says so in one line" "" \
+    "$zero_note" -- "$rel" pending "$old"
+put "$r" rust 0.1.0-beta.2
+commit_all "$r" "bump the crate"
+expect_split "pending still prints the other components of the push that set one to 0.0.0" \
+    "rust" "$zero_note" -- "$rel" pending "$old"
+old="$(git -C "$r" rev-parse HEAD)"
+change "$r" js/web/index.ts "a commit that changes no version"
+expect_split "pending says nothing of a component that stays at 0.0.0" "" "" -- \
+    "$rel" pending "$old"
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" web 0.0.0
+commit_all "$r" "the web SDK at 0.0.0"
+old="$(git -C "$r" rev-parse HEAD)"
+"$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust web
+commit_all "$r" "bump the crate and the web SDK"
+notice="$(unreleased_note web \
+    "the version changed from 0.0.0, which was never released, to 0.1.0-beta.2")"
+expect_split "pending keeps the run-by-hand note for a component that leaves 0.0.0" "rust" \
+    "$notice" -- "$rel" pending "$old"
+
 # The push that first sets up the versions: none of them is there at the commit before.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
 rel="$r/scripts/sdk-release.sh"
-for component in rust android react-native; do
+for component in rust android react-native web; do
     while IFS= read -r file; do
         git -C "$r" rm -q "$file"
     done < <(files_of "$component")
@@ -5629,6 +5963,8 @@ notice="$notice"$'\n'"$(unreleased_note android \
     "its earlier version could not be read (no $CATALOG at $old)")"
 notice="$notice"$'\n'"$(unreleased_note react-native \
     "its earlier version could not be read (no $BINDINGS_MANIFEST at $old)")"
+notice="$notice"$'\n'"$(unreleased_note web \
+    "its earlier version could not be read (no $WEB_MANIFEST at $old)")"
 expect_split "pending releases nothing by surprise in the push that first sets up the versions" \
     "" "$notice" -- "$rel" pending "$old"
 put_file "$r" "$CATALOG" 0.2.0-rc.1
@@ -5682,11 +6018,30 @@ expect_split "untagged does not take a branch named like the tag for the tag" "r
     "$rel" untagged rust
 expect_unasked "untagged asks neither npm nor crates.io"
 
+# A component at 0.0.0 has nothing to tag yet: it is not printed, and the others are.
+r="$(repo 0.1.0-beta.1 < <(finished_notes))"
+rel="$r/scripts/sdk-release.sh"
+put "$r" web 0.0.0
+expect_split "untagged leaves out a component at 0.0.0, and says so" \
+    $'rust\nandroid\nreact-native' "web is at 0.0.0 and has nothing to tag yet" -- \
+    "$rel" untagged rust android react-native web
+expect_split "untagged leaves it out wherever it is named" $'rust\nandroid\nreact-native' \
+    "web is at 0.0.0 and has nothing to tag yet" -- \
+    "$rel" untagged web rust android react-native
+release_tag "$r" rust 0.1.0-beta.1
+expect_split "untagged still says that the tag of another component exists" \
+    $'android\nreact-native' "$(lines \
+        'rust-sdk-v0.1.0-beta.1 already exists; nothing to release' \
+        'web is at 0.0.0 and has nothing to tag yet')" -- \
+    "$rel" untagged rust android react-native web
+expect_split "untagged prints nothing for a component at 0.0.0 alone" "" \
+    "web is at 0.0.0 and has nothing to tag yet" -- "$rel" untagged web
+
 status=0
 out="$("$rel" untagged rust sideways 2>/dev/null)" || status=$?
 expect_equal "untagged prints nothing and fails for an unknown component" "1:" "$status:$out"
 expect_fail "untagged refuses an unknown component" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" untagged rust sideways
 expect_fail "untagged refuses a group name" "all is not a component" -- "$rel" untagged all
 put_file "$r" "$CATALOG" 0.2.0-rc.1
@@ -5706,20 +6061,20 @@ echo "sdk-release.sh bump"
 released_at() {
     local dir component
     dir="$(repo "$1" < <(notes_for "$1"))"
-    for component in rust android react-native; do
+    for component in rust android react-native web; do
         release_tag "$dir" "$component" "$1"
     done
     echo "$dir"
 }
 
-# expect_versions <name> <repository> <rust> <android> <react-native>: the components of the
+# expect_versions <name> <repository> <rust> <android> <react-native> <web>: the components of the
 # repository are at these versions.
 expect_versions() {
     local name="$1" dir="$2" got="" component
-    for component in rust android react-native; do
+    for component in rust android react-native web; do
         got="${got:+$got$'\n'}$component $("$dir/scripts/sdk-version.sh" current "$component")"
     done
-    expect_equal "$name" "$(lines "rust $3" "android $4" "react-native $5")" "$got"
+    expect_equal "$name" "$(lines "rust $3" "android $4" "react-native $5" "web $6")" "$got"
 }
 
 # expect_listed <name> <y|n> <notes> <summary>: the notes list the commit with that summary, which
@@ -5748,11 +6103,11 @@ subjects=(
     "feat(web): unrelated to every component"
     "chore(release): bump the SDK to 0.1.0"
 )
-# Whether the notes of rust, android and react-native list each subject, in the same order.
-listed=("n n y" "n y n" "y y y" "n y y" "n n n" "n n n")
+# Whether the notes of rust, android, react-native and web list each subject, in the same order.
+listed=("n n y n" "n y n n" "y y y y" "n y y y" "n n n n" "n n n n")
 # How many of the commits that touched what each component is built from are in its notes, and
 # how many touched it.
-counts=("1 of 2" "3 of 4" "3 of 4")
+counts=("1 of 2" "3 of 4" "3 of 4" "2 of 3")
 change "$r" js/react-native/react-native/src/index.ts "${subjects[0]}"
 change "$r" android/fedimint-sdk/src/Sdk.kt "${subjects[1]}"
 change "$r" rust/fedimint-sdk/src/lib.rs "${subjects[2]}"
@@ -5765,13 +6120,13 @@ expect_equal "bump prints the new version and nothing else on stdout" "0.1.1-bet
 expect_contains "bump says on stderr what it checked" \
     "rust tags: 0.1.1-beta.1 is newer than the latest release, 0.1.0" "$ERR"
 expect_versions "bump all gives every component the new version" "$r" 0.1.1-beta.1 \
-    0.1.1-beta.1 0.1.1-beta.1
+    0.1.1-beta.1 0.1.1-beta.1 0.1.1-beta.1
 expect_changed "bump all writes the versions and the notes of every component and nothing else" \
     "$r" "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" "$CATALOG" "$BINDINGS_MANIFEST" \
-    "$WRAPPER_MANIFEST" rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md \
-    js/react-native/CHANGELOG.md
+    "$WRAPPER_MANIFEST" "$WEB_MANIFEST" rust/fedimint-sdk/CHANGELOG.md android/CHANGELOG.md \
+    js/react-native/CHANGELOG.md js/web/web-sdk/CHANGELOG.md
 index=0
-for component in rust android react-native; do
+for component in rust android react-native web; do
     notes="$("$r/scripts/sdk-changelog.sh" section "$component" 0.1.1-beta.1 || true)"
     for i in "${!subjects[@]}"; do
         read -ra want <<<"${listed[$i]}"
@@ -5801,10 +6156,10 @@ run_split "$rel" bump bindings beta
 expect_equal "bump bindings beta succeeds" 0 "$STATUS"
 expect_equal "bump bindings beta prints the next beta" "0.1.0-beta.2" "$OUT"
 expect_versions "bump bindings moves the bindings and not the crate" "$r" 0.1.0-beta.1 \
-    0.1.0-beta.2 0.1.0-beta.2
+    0.1.0-beta.2 0.1.0-beta.2 0.1.0-beta.2
 expect_changed "bump bindings writes the versions and notes of the bindings and nothing else" \
-    "$r" "$CATALOG" "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" android/CHANGELOG.md \
-    js/react-native/CHANGELOG.md
+    "$r" "$CATALOG" "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" "$WEB_MANIFEST" \
+    android/CHANGELOG.md js/react-native/CHANGELOG.md js/web/web-sdk/CHANGELOG.md
 expect_equal "bump bindings leaves the crate's versions and notes byte for byte as they were" \
     "$crate_sums" "$(cd "$r" && cksum "${crate_files[@]}")"
 
@@ -5821,7 +6176,7 @@ expect_equal "bump android patch succeeds" 0 "$STATUS"
 expect_equal "bump android patch goes to the next version of the line, not to its own" "0.2.2" \
     "$OUT"
 expect_versions "bump android leaves the other components at their versions" "$r" 0.2.0 0.2.2 \
-    0.2.1
+    0.2.1 0.2.0
 expect_changed "bump android writes its version and its notes and nothing else" "$r" "$CATALOG" \
     android/CHANGELOG.md
 expect_contains "bump android writes its notes from the commits since its own last release" \
@@ -5837,7 +6192,7 @@ run_split "$rel" bump react-native release
 expect_equal "bump react-native release succeeds" 0 "$STATUS"
 expect_equal "bump react-native release prints the release of the beta" "0.3.0" "$OUT"
 expect_versions "bump react-native release leaves the other components in their beta" "$r" \
-    0.3.0-beta.2 0.3.0-beta.2 0.3.0
+    0.3.0-beta.2 0.3.0-beta.2 0.3.0 0.3.0-beta.2
 expect_changed "bump react-native writes both manifests and its notes and nothing else" "$r" \
     "$BINDINGS_MANIFEST" "$WRAPPER_MANIFEST" js/react-native/CHANGELOG.md
 
@@ -5847,7 +6202,7 @@ r="$(released_at 0.1.0)"
 rel="$r/scripts/sdk-release.sh"
 run_split "$rel" bump rust minor
 expect_equal "bump rust minor prints the next minor" "0.2.0" "$OUT"
-expect_versions "bump rust moves the crate alone" "$r" 0.2.0 0.1.0 0.1.0
+expect_versions "bump rust moves the crate alone" "$r" 0.2.0 0.1.0 0.1.0 0.1.0
 expect_changed "bump rust writes the manifest, the lockfile, the Swift constant and its notes" \
     "$r" "$CARGO_TOML" "$CARGO_LOCK" "$VERSION_SWIFT" rust/fedimint-sdk/CHANGELOG.md
 
@@ -5870,6 +6225,48 @@ expect_equal "bump writes the notes of a first release for a component that has 
     "The first release of the React Native SDK." "$notes"
 expect_contains "bump says that the notes of that component are those of a first release" \
     "js/react-native/CHANGELOG.md has notes for 0.1.0-beta.2, those of a first release" "$ERR"
+notes="$("$r/scripts/sdk-changelog.sh" section web 0.1.0-beta.2 || true)"
+expect_equal "bump writes the notes of a first release for the web SDK as well" \
+    "The first release of the Web SDK." "$notes"
+expect_contains "bump says that the notes of the web SDK are those of a first release" \
+    "js/web/web-sdk/CHANGELOG.md has notes for 0.1.0-beta.2, those of a first release" "$ERR"
+
+# The bindings include the web SDK, which has no release yet either.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+release_tag "$r" rust 0.1.0-beta.1
+release_tag "$r" android 0.1.0-beta.1
+run_split "$rel" bump bindings beta
+expect_equal "bump bindings beta succeeds when two bindings have no release yet" 0 "$STATUS"
+expect_versions "bump bindings beta moves the three bindings and not the crate" "$r" \
+    0.1.0-beta.1 0.1.0-beta.2 0.1.0-beta.2 0.1.0-beta.2
+expect_equal "bump bindings writes the notes of a first release for the web SDK" \
+    "The first release of the Web SDK." \
+    "$("$r/scripts/sdk-changelog.sh" section web 0.1.0-beta.2 || true)"
+expect_equal "bump bindings writes the notes of a first release for the React Native SDK" \
+    "The first release of the React Native SDK." \
+    "$("$r/scripts/sdk-changelog.sh" section react-native 0.1.0-beta.2 || true)"
+
+# A component at 0.0.0 has not been released yet. Naming it gives it the next version of the line
+# and the notes of a first release, and the other components stay as they are.
+fresh_registries
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.1))"
+rel="$r/scripts/sdk-release.sh"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" web 0.0.0
+commit_all "$r" "the web SDK at 0.0.0"
+run_split "$rel" bump web beta
+expect_equal "bump web beta succeeds for a component at 0.0.0" 0 "$STATUS"
+expect_equal "bump web beta prints the next beta of the line" "0.1.0-beta.2" "$OUT"
+expect_versions "bump web moves the web SDK alone" "$r" 0.1.0-beta.1 0.1.0-beta.1 \
+    0.1.0-beta.1 0.1.0-beta.2
+expect_changed "bump web writes its manifest and its notes and nothing else" "$r" \
+    "$WEB_MANIFEST" js/web/web-sdk/CHANGELOG.md
+expect_equal "bump web writes the notes of a first release" "The first release of the Web SDK." \
+    "$("$r/scripts/sdk-changelog.sh" section web 0.1.0-beta.2 || true)"
 
 # What `next` refuses is refused, and nothing is written.
 fresh_registries
@@ -5894,10 +6291,10 @@ expect_untouched "bump all beta --beta fails as next does, and writes nothing" "
 
 # A group that is none is refused, and nothing is written.
 expect_untouched "bump refuses an unknown group, and writes nothing" "$r" \
-    "sideways is not a component: it must be one of rust, android, react-native" -- \
+    "sideways is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" bump sideways patch
 expect_untouched "bump refuses an empty group, and writes nothing" "$r" \
-    " is not a component: it must be one of rust, android, react-native" -- \
+    " is not a component: it must be one of rust, android, react-native, web" -- \
     "$rel" bump "" patch
 expect_unasked "bump asks neither npm nor crates.io before it knows the group and the version"
 
@@ -5955,7 +6352,7 @@ expect_usage "bump refuses an unknown option" -- "$rel" bump all patch --sideway
 echo
 echo "sdk-release.sh tag"
 
-# Two of the three components are tagged. The tags are annotated, on HEAD, with the title and the
+# Two of the four components are tagged. The tags are annotated, on HEAD, with the title and the
 # version as the first paragraph and the notes as the rest, and they are not pushed.
 fresh_registries
 r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -6209,7 +6606,7 @@ expect_equal "tag android creates no tag when its notes are not tracked" "" \
     "$(git -C "$r" tag -l)"
 
 # Every file that holds a version, and the notes, of every component.
-for component in rust android react-native; do
+for component in rust android react-native web; do
     fresh_registries
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
     rel="$r/scripts/sdk-release.sh"
@@ -6278,7 +6675,7 @@ for name in sideways all bindings ""; do
     run_split "$rel" tag android "$name"
     expect_equal "tag android '$name' fails" 1 "$STATUS"
     expect_contains "tag refuses '$name', which is not a component" \
-        "$name is not a component: it must be one of rust, android, react-native" "$ERR"
+        "$name is not a component: it must be one of rust, android, react-native, web" "$ERR"
     expect_equal "tag android '$name' creates no tag, not even for android" "" \
         "$(git -C "$r" tag -l)"
 done

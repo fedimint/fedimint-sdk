@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
 #
-# Publishes the tarballs of `@fedimint/react-native-bindings` and `@fedimint/react-native` to
-# npm.
+# Publishes the tarballs of the npm packages of a component to npm.
 #
-#   scripts/react-native-sdk-publish.sh <dir>
-#   scripts/react-native-sdk-publish.sh --dry-run <dir>
+#   scripts/sdk-npm-publish.sh <component> <dir>
+#   scripts/sdk-npm-publish.sh --dry-run <component> <dir>
 #
-# <dir> holds the two tarballs scripts/react-native-sdk-pack.sh wrote: exactly one
-# `fedimint-react-native-bindings-*.tgz` and one `fedimint-react-native-<version>.tgz`, for the
-# same version, which has to be a release version (`X.Y.Z-beta.N` or `X.Y.Z`, see
-# sdk-version.sh). The bindings are published first: the wrapper names their exact
-# version as a peer, so it must never be on npm before them. A beta goes to the dist-tag `beta`
-# and a release to `latest`, since npm refuses a prerelease without a tag.
+# <component> is one that publishes to npm, `react-native` or `web`, and its packages are the ones
+# component_npm_packages names in sdk-components.sh, in the order they are published. <dir> holds
+# their tarballs, as scripts/<component>-sdk-pack.sh wrote them: for each package exactly one
+# `<name>-<version>.tgz`, where <name> is the package name without its `@` and with `/` replaced
+# by `-`, which is what `pnpm pack` names it. Every tarball must hold the package it is named for,
+# all of them at the same version, which has to be a release version (`X.Y.Z-beta.N` or `X.Y.Z`,
+# see sdk-version.sh). The packages are published in the order of component_npm_packages: the
+# React Native wrapper names the exact version of the bindings as a peer, so it must never be on
+# npm before them. A beta goes to the dist-tag `beta` and a release to `latest`, since npm refuses
+# a prerelease without a tag.
 #
-# The two tarballs were tested as a pair, and only that pair is ever released. A release that
-# stopped half way can be run again with the same tarballs: a package whose version is already
-# on npm is skipped, and so is one that turns out to be on npm although `npm publish` reported
-# an error, as long as npm serves that very tarball. A version that is on npm as any other
-# tarball stops the script. That is what building the packages again for a release that already
-# published one of them leads to, unless the build comes out byte for byte the same, and the way
-# out is the next version.
+# The tarballs of a component were tested together, and only they are ever released. A release
+# that stopped half way can be run again with the same tarballs: a package whose version is
+# already on npm is skipped, and so is one that turns out to be on npm although `npm publish`
+# reported an error, as long as npm serves that very tarball. A version that is on npm as any
+# other tarball stops the script. That is what building the packages again for a release that
+# already published one of them leads to, unless the build comes out byte for byte the same, and
+# the way out is the next version.
 #
 # A dist-tag never moves back either. When the dist-tag a package would be published under is
 # already on a newer version, a later release has replaced this one, and the script stops.
 #
-# Both packages are checked before anything is uploaded: one whose version is on npm has to be
+# Every package is checked before anything is uploaded: one whose version is on npm has to be
 # there as the local tarball, and one whose version is not must not move its dist-tag back. A
 # release that is refused there has uploaded nothing. When the script succeeds, the files in
 # <dir> are exactly what is on npm, and <dir>/SHA256SUMS lists their SHA-256 digests in the
@@ -35,15 +38,14 @@
 # publishing (OIDC), which needs npm 11.5.1 or later and no token, and adds the provenance
 # statement by itself.
 #
-# `--dry-run` only runs `npm publish --dry-run` on both tarballs: it asks the registry nothing
+# `--dry-run` only runs `npm publish --dry-run` on every tarball: it asks the registry nothing
 # and writes nothing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/sdk-components.sh
+. "$ROOT/scripts/sdk-components.sh"
 VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
-# The only two packages this script publishes, in the order it publishes them.
-BINDINGS_NAME=@fedimint/react-native-bindings
-WRAPPER_NAME=@fedimint/react-native
 # The oldest npm that can publish with trusted publishing.
 MIN_NPM=(11 5 1)
 
@@ -63,9 +65,9 @@ need() {
 }
 
 # Prints the one file in the directory $2 that matches the glob $3, and stops the script when
-# there is not exactly one. $1 names what is looked for.
+# there is not exactly one. $1 names what is looked for, and $4 is the script that packs it.
 find_one() {
-    local what="$1" dir="$2" pattern="$3" file names=""
+    local what="$1" dir="$2" pattern="$3" packer="$4" file names=""
     local -a found=()
     for file in "$dir"/$pattern; do
         if [[ -f "$file" ]]; then
@@ -74,10 +76,10 @@ find_one() {
         fi
     done
     if ((${#found[@]} == 0)); then
-        die "found no $what in $dir; pack both packages with scripts/react-native-sdk-pack.sh"
+        die "found no $what in $dir; pack the packages with $packer"
     fi
     if ((${#found[@]} > 1)); then
-        die "found ${#found[@]} ${what}s in $dir:$names; keep exactly one of each"
+        die "found ${#found[@]} ${what}s in $dir:$names; keep exactly one of each package"
     fi
     echo "${found[0]}"
 }
@@ -208,9 +210,9 @@ need_same_tarball() {
     have="$(integrity "$tarball")"
     [[ "$have" == "$want" ]] ||
         die "$spec is on npm as another tarball than ${tarball##*/}: npm reports the integrity" \
-            "$want and this file has $have. The two packages were tested as the pair in this" \
-            "directory, and only that pair is released, so the release stops here. Release" \
-            "the next version."
+            "$want and this file has $have. The tarballs in this directory were tested" \
+            "together, and only they are released, so the release stops here. Release the" \
+            "next version."
 }
 
 # Looks at $2@$3, the package in the tarball $1, before anything is uploaded. Stops the script
@@ -247,7 +249,7 @@ publish_one() {
     echo "published $name@$version under $tag"
 }
 
-# Writes SHA256SUMS in the directory $1 for the files $2 and $3 in it.
+# Writes SHA256SUMS in the directory $1 for the files $2... in it.
 write_sums() {
     local dir="$1"
     shift
@@ -259,16 +261,25 @@ write_sums() {
     echo "wrote $dir/SHA256SUMS"
 }
 
+# Prints the name of the tarball of the package $1 without its version, which is what `pnpm pack`
+# makes of the name: the `@` dropped and `/` replaced by `-`.
+tarball_stem() {
+    local stem="${1#@}"
+    echo "${stem//\//-}"
+}
+
 dry_run=0
 case $# in
-    1)
-        [[ "$1" != -* ]] || usage
-        dir="$1"
-        ;;
     2)
+        [[ "$1" != -* ]] || usage
+        component="$1"
+        dir="$2"
+        ;;
+    3)
         [[ "$1" == --dry-run ]] || usage
         dry_run=1
-        dir="$2"
+        component="$2"
+        dir="$3"
         ;;
     *) usage ;;
 esac
@@ -276,24 +287,34 @@ esac
 need node "to read the tarballs"
 need tar "to read the tarballs"
 need npm "to publish"
+is_component "$component" || exit 1
+packages=()
+while IFS= read -r package; do
+    packages+=("$package")
+done < <(component_npm_packages "$component")
+if ((${#packages[@]} == 0)); then
+    die "the component $component has no npm package, so there is nothing to publish to npm"
+fi
 [[ -d "$dir" ]] || die "$dir is not a directory; pass the directory the tarballs are in"
 dir="$(cd "$dir" && pwd)"
 
-bindings_tarball="$(find_one "bindings tarball" "$dir" "fedimint-react-native-bindings-*.tgz")"
-wrapper_tarball="$(find_one "wrapper tarball" "$dir" "fedimint-react-native-[0-9]*.tgz")"
-bindings_identity="$(identity "$bindings_tarball")"
-wrapper_identity="$(identity "$wrapper_tarball")"
-read -r bindings_name bindings_version <<<"$bindings_identity"
-read -r wrapper_name wrapper_version <<<"$wrapper_identity"
-[[ "$bindings_name" == "$BINDINGS_NAME" ]] ||
-    die "${bindings_tarball##*/} holds $bindings_name, not $BINDINGS_NAME; pack both again"
-[[ "$wrapper_name" == "$WRAPPER_NAME" ]] ||
-    die "${wrapper_tarball##*/} holds $wrapper_name, not $WRAPPER_NAME; pack both again"
-if [[ "$bindings_version" != "$wrapper_version" ]]; then
-    die "the tarballs are for different versions: ${bindings_tarball##*/} is $bindings_version" \
-        "and ${wrapper_tarball##*/} is $wrapper_version; pack both again"
-fi
-version="$bindings_version"
+# The tarball of each package, and the version it holds, in the order of the packages.
+tarballs=()
+version=""
+for package in "${packages[@]}"; do
+    tarball="$(find_one "tarball of $package" "$dir" "$(tarball_stem "$package")-[0-9]*.tgz" \
+        "scripts/$component-sdk-pack.sh")"
+    found="$(identity "$tarball")" || exit 1
+    read -r found_name found_version <<<"$found"
+    [[ "$found_name" == "$package" ]] ||
+        die "${tarball##*/} holds $found_name, not $package; pack the packages again"
+    if [[ -n "$version" && "$found_version" != "$version" ]]; then
+        die "the tarballs are for different versions: ${tarballs[0]##*/} is $version and" \
+            "${tarball##*/} is $found_version; pack the packages again"
+    fi
+    version="$found_version"
+    tarballs+=("$tarball")
+done
 # Only a release version has a dist-tag to go to: anything else would land under `latest`.
 "$VERSION_SCRIPT" check-newer "$version" </dev/null >/dev/null ||
     die "the tarballs are for $version, which cannot be published; pack a release version"
@@ -304,17 +325,23 @@ else
 fi
 
 if ((dry_run)); then
-    npm publish --dry-run "$bindings_tarball" --tag "$tag" --access public ||
-        die "npm publish --dry-run of $bindings_name@$version failed"
-    npm publish --dry-run "$wrapper_tarball" --tag "$tag" --access public ||
-        die "npm publish --dry-run of $wrapper_name@$version failed"
+    for i in "${!packages[@]}"; do
+        npm publish --dry-run "${tarballs[i]}" --tag "$tag" --access public ||
+            die "npm publish --dry-run of ${packages[i]}@$version failed"
+    done
     exit 0
 fi
 
 check_npm
-# Nothing is uploaded before both packages have passed.
-preflight "$bindings_tarball" "$bindings_name" "$version" "$tag"
-preflight "$wrapper_tarball" "$wrapper_name" "$version" "$tag"
-publish_one "$bindings_tarball" "$bindings_name" "$version" "$tag"
-publish_one "$wrapper_tarball" "$wrapper_name" "$version" "$tag"
-write_sums "$dir" "${bindings_tarball##*/}" "${wrapper_tarball##*/}"
+# Nothing is uploaded before every package has passed.
+for i in "${!packages[@]}"; do
+    preflight "${tarballs[i]}" "${packages[i]}" "$version" "$tag"
+done
+for i in "${!packages[@]}"; do
+    publish_one "${tarballs[i]}" "${packages[i]}" "$version" "$tag"
+done
+names=()
+for tarball in "${tarballs[@]}"; do
+    names+=("${tarball##*/}")
+done
+write_sums "$dir" "${names[@]}"

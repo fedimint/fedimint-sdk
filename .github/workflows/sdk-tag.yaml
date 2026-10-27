@@ -2,14 +2,14 @@ name: SDK Tag
 
 # Tags the releases of the SDK's components and starts the release workflow
 # of each component on its tag, so a release needs no hand-run git commands.
-# The components are the Rust crate, the Android SDK and the React Native
-# packages. A pull request from sdk-version-bump.yaml sets the new version of
-# the ones it releases, and merging it brings this workflow.
+# The components are the Rust crate, the Android SDK, the React Native
+# packages and the web SDK. A pull request from sdk-version-bump.yaml sets the
+# new version of the ones it releases, and merging it brings this workflow.
 #
 # It runs when a push to main changes a file that holds a version
-# (rust/fedimint-sdk/Cargo.toml, android/gradle/libs.versions.toml and the two
-# package.json files in js/react-native), and it tags a component only when
-# all of these hold for it:
+# (rust/fedimint-sdk/Cargo.toml, android/gradle/libs.versions.toml, the two
+# package.json files in js/react-native and js/web/web-sdk/package.json), and
+# it tags a component only when all of these hold for it:
 #
 #   * its version changed in that push, and has no release tag yet;
 #   * the version it changed from was released, that is, has a tag. That is
@@ -50,16 +50,16 @@ name: SDK Tag
 # not be started stays unstarted when the job is re-run: the error says how to
 # start it by hand.
 #
-# The tag rulesets for the release tags (`rust-sdk-v*`, `android-sdk-v*` and
-# `react-native-sdk-v*`) restrict updates and deletions, so a release tag is
-# never moved or removed. They must not restrict creation: this workflow
-# creates tags as the GitHub Actions app, and GitHub does not accept that app
-# as a bypass actor in an organization's repository, so a creation rule would
-# block it. So everybody who can push can create a release tag, on any commit,
-# and a workflow runs as its file is in the tagged commit. What decides
-# whether a tag publishes anything is therefore not a check in a workflow but
-# the environment each release publishes in (`crates-io`, `maven-central`,
-# `npm`): its required reviewers approve every publishing job.
+# The tag rulesets for the release tags (`rust-sdk-v*`, `android-sdk-v*`,
+# `react-native-sdk-v*` and `web-sdk-v*`) restrict updates and deletions, so a
+# release tag is never moved or removed. They must not restrict creation: this
+# workflow creates tags as the GitHub Actions app, and GitHub does not accept
+# that app as a bypass actor in an organization's repository, so a creation
+# rule would block it. So everybody who can push can create a release tag, on
+# any commit, and a workflow runs as its file is in the tagged commit. What
+# decides whether a tag publishes anything is therefore not a check in a
+# workflow but the environment each release publishes in (`crates-io`,
+# `maven-central`, `npm`): its required reviewers approve every publishing job.
 
 on:
   push:
@@ -69,13 +69,14 @@ on:
       - 'android/gradle/libs.versions.toml'
       - 'js/react-native/react-native/package.json'
       - 'js/react-native/react-native-bindings/package.json'
+      - 'js/web/web-sdk/package.json'
   workflow_dispatch:
     inputs:
       components:
         description: >-
           What to tag, if it has no tag for its version. all: the Rust crate and every
-          binding. bindings: every binding, the Android SDK and the React Native packages.
-          Or one component.
+          binding. bindings: every binding, the Android SDK, the React Native packages and the
+          web SDK. Or one component.
         type: choice
         options:
           - all
@@ -83,6 +84,7 @@ on:
           - rust
           - android
           - react-native
+          - web
 
 # Runs one at a time. `queue: max` lets up to 100 of them wait; without it
 # GitHub keeps one pending run per group and drops an older one when a newer

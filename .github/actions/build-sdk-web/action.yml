@@ -1,18 +1,29 @@
 name: Build SDK web bindings
 description:
-  Builds rust/fedimint-sdk for wasm32 via Nix, regenerates js/web/web-sdk's bindings
-  from it, and fails if the committed TypeScript is stale.
+  Builds rust/fedimint-sdk for wasm32 via Nix, or takes a module that is built already,
+  regenerates js/web/web-sdk's bindings from it, and fails if the committed TypeScript is stale.
 
 # Cachix is already authenticated by setup-nix earlier in the calling job, so this action takes
 # no token of its own.
+inputs:
+  wasm:
+    description:
+      The path of a built fedimint_sdk.wasm. When it is set, the module is not built here and not
+      pushed to Cachix, and the bindings are generated from this file. When it is empty, the
+      module is built with Nix.
+    required: false
+    default: ''
+
 runs:
   using: 'composite'
   steps:
     - name: Build the SDK wasm module
+      if: inputs.wasm == ''
       shell: bash
       run: nix build -L .#fedimint-sdk-wasm -o sdk-wasm
 
     - name: Push the module to Cachix
+      if: inputs.wasm == ''
       # cachix-action's post-run hook only pushes paths this job built, so on a runner with a
       # persistent /nix/store a module that was already there is never pushed and its cache
       # entry can expire. Push it explicitly.
@@ -24,9 +35,14 @@ runs:
       # Needs ubrn, wasm-bindgen and cargo from the shell, and `pnpm install` done before, so
       # ubrn formats with the workspace's prettier exactly as a contributor's run does.
       shell: bash
+      env:
+        WASM: ${{ inputs.wasm }}
       run: |
+        if [[ -z "$WASM" ]]; then
+          WASM="$(readlink -f sdk-wasm)/lib/fedimint_sdk.wasm"
+        fi
         nix develop --accept-flake-config .#wasm --command \
-          scripts/generate-sdk-web-bindings.sh "$(readlink -f sdk-wasm)/lib/fedimint_sdk.wasm"
+          scripts/generate-sdk-web-bindings.sh "$WASM"
 
     - name: The committed bindings must match the crate
       # Only the three files ubrn writes from the UniFFI metadata. The three wasm-bindgen glue

@@ -80,9 +80,10 @@ pure dependency bump):
 
 ## Published-Package Compatibility
 
-The React Native packages under `js/react-native/` are published to npm and
-the Android SDK to Maven Central, and downstream applications consume them.
-Treat their public API surface with the same care as a wire format.
+The React Native packages under `js/react-native/` and the web SDK in
+`js/web/web-sdk` are published to npm and the Android SDK to Maven Central,
+and downstream applications consume them. Treat their public API surface with
+the same care as a wire format.
 
 - **React Native packages**: the two packages under `js/react-native/` are
   released from `react-native-sdk-v*` tags by
@@ -92,6 +93,10 @@ Treat their public API surface with the same care as a wire format.
   `.github/workflows/sdk-version-bump.yaml`). Flag a PR that drops `private`,
   which would let other publishing paths reach them, and any other PR that
   changes their `version`.
+- **Web SDK**: `js/web/web-sdk` is released from `web-sdk-v*` tags by
+  `.github/workflows/web-sdk-release.yaml`, under the same rules: its
+  `package.json` stays `"private": true`, and only a version bump pull request
+  changes its `version`. Until its first release that version is `0.0.0`.
 - **Don't break examples silently.** The example apps are the de-facto
   integration tests for the public API; API changes should update them in
   the same PR.

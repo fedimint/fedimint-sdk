@@ -25,7 +25,7 @@
 # after the release, or npm only at the very end of it: the manifest and what it points at, the
 # files an app needs to build and run the native module, and the two packages naming each other
 # at the same version. The release workflow packs with the first form and tests the tarballs it
-# gets back; scripts/react-native-sdk-publish.sh publishes them.
+# gets back; scripts/sdk-npm-publish.sh publishes them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

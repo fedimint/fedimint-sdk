@@ -2,9 +2,9 @@ name: SDK Version Bump
 
 # Bumps the version of the SDK's components, writes their release notes and
 # opens a pull request with both. The components are the Rust crate, the
-# Android SDK and the React Native packages, and they share one line of
-# versions: a release takes the next version of the line and gives it to the
-# components it publishes. Picking `all`, `bindings` or one binding when
+# Android SDK, the React Native packages and the web SDK, and they share one
+# line of versions: a release takes the next version of the line and gives it
+# to the components it publishes. Picking `all`, `bindings` or one binding when
 # running this decides which components get it; the others keep their version,
 # and their files are not touched.
 #
@@ -14,8 +14,9 @@ name: SDK Version Bump
 # Pick what to release:
 #
 #   all         the Rust crate and every binding.
-#   bindings    every binding: the Android SDK and the React Native packages.
-#   android, react-native
+#   bindings    every binding: the Android SDK, the React Native packages and
+#               the web SDK.
+#   android, react-native, web
 #               that binding alone.
 #
 # and how to bump:
@@ -67,13 +68,14 @@ on:
       components:
         description: >-
           What to release. all: the Rust crate and every binding. bindings: every binding,
-          the Android SDK and the React Native packages. Or one binding.
+          the Android SDK, the React Native packages and the web SDK. Or one binding.
         type: choice
         options:
           - all
           - bindings
           - android
           - react-native
+          - web
       bump:
         description: >-
           patch/minor/major: next version after a release. beta: next beta. release: finish

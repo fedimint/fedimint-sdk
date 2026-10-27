@@ -1,6 +1,6 @@
 {
   "name": "@fedimint/web-sdk",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": true,
   "description": "The Fedimint SDK for browsers: rust/fedimint-sdk as WebAssembly in a worker",
   "keywords": [

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# Tests the scripts that pack, publish and try out the React Native packages. A wrong npm version
-# can never be taken back, so every rule they enforce has a case here. The rules a release has to
-# pass before it starts are scripts/sdk-release.sh's, and have their cases in
+# Tests the scripts that pack, publish and try out the React Native packages, and the script that
+# publishes them to npm, which publishes the web SDK as well. A wrong npm version can never be
+# taken back, so every rule they enforce has a case here. The rules a release has to pass before
+# it starts are scripts/sdk-release.sh's, and have their cases in
 # scripts/test-sdk-release-scripts.sh.
 #
 #   scripts/test-react-native-sdk-scripts.sh
 #
-# The publish script asks npm which versions of the packages exist and publishes to it; a fake
-# `npm`, first on PATH, answers from files in the directory named by FAKE_NPM instead, so no case
-# reaches the network.
+# The publish script, scripts/sdk-npm-publish.sh, asks npm which versions of the packages exist
+# and publishes to it; a fake `npm`, first on PATH, answers from files in the directory named by
+# FAKE_NPM instead, so no case reaches the network.
 #
 # The pack and publish scripts are run from this checkout: `verify` and publish only read the
 # directory of tarballs they are given, and the cases for a whole pack run a copy of the pack
@@ -759,9 +760,9 @@ expect_equal "a tree that is not built keeps its manifests" same \
     "$(same "$tree_bindings/package.json" "$WORK/bindings-package.json")"
 
 echo
-echo "react-native-sdk-publish.sh"
+echo "sdk-npm-publish.sh"
 
-publish="$ROOT/scripts/react-native-sdk-publish.sh"
+publish="$ROOT/scripts/sdk-npm-publish.sh"
 
 # on_registry <name> <version> <file>: the fake npm holds <name>@<version>, with <file> as its
 # tarball.
@@ -820,7 +821,7 @@ BT="fedimint-react-native-bindings-$VERSION.tgz"
 NT="fedimint-react-native-$VERSION.tgz"
 
 fresh "$VERSION"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a release of a beta that is nowhere on npm succeeds" 0 "$STATUS"
 expect_contains "the bindings are published first, under beta" \
     "published $BINDINGS@$VERSION under beta"$'\n'"published $WRAPPER@$VERSION under beta" "$OUT"
@@ -830,7 +831,7 @@ expect_equal "npm publish is called for the bindings first, then the wrapper" \
 expect_equal "SHA256SUMS lists both tarballs, bindings first, with their digests" \
     "$(sha256 "$d/$BT")  $BT"$'\n'"$(sha256 "$d/$NT")  $NT" "$(cat "$d/SHA256SUMS")"
 expect_equal "SHA256SUMS is accepted by the checker" ok "$(check_sums "$d")"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "running the release again succeeds" 0 "$STATUS"
 expect_contains "the second run skips both packages" \
     "$BINDINGS@$VERSION is already on npm, skipped"$'\n'\
@@ -842,7 +843,7 @@ expect_equal "SHA256SUMS is accepted by the checker after the second run" ok "$(
 BT0=fedimint-react-native-bindings-0.1.0.tgz
 NT0=fedimint-react-native-0.1.0.tgz
 fresh 0.1.0
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a release of a final version succeeds" 0 "$STATUS"
 expect_equal "both packages are published under latest" \
     "publish $BT0 --tag latest --access public"$'\n'"publish $NT0 --tag latest --access public" \
@@ -851,7 +852,7 @@ expect_equal "both packages are published under latest" \
 fresh "$VERSION"
 on_registry "$BINDINGS" "$VERSION" "$d/$BT"
 cp "$d/$BT" "$WORK/bindings-before.tgz"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "bindings that are already on npm: the release succeeds" 0 "$STATUS"
 expect_contains "the bindings are skipped" "$BINDINGS@$VERSION is already on npm, skipped" "$OUT"
 expect_contains "the wrapper is published" "published $WRAPPER@$VERSION under beta" "$OUT"
@@ -863,7 +864,7 @@ expect_equal "the local bindings tarball is unchanged" same \
 fresh "$VERSION"
 on_registry "$BINDINGS" "$VERSION" "$d/$BT"
 on_registry "$WRAPPER" "$VERSION" "$d/$NT"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "both packages already on npm: the release succeeds" 0 "$STATUS"
 expect_equal "nothing is published" "" "$(publish_log "$d")"
 expect_equal "SHA256SUMS is still written" "$(sha256 "$d/$BT")  $BT"$'\n'"$(sha256 "$d/$NT")  $NT" \
@@ -874,7 +875,7 @@ served="$WORK/served.tgz"
 echo "what npm serves" >"$served"
 on_registry "$BINDINGS" "$VERSION" "$served"
 cp "$d/$BT" "$WORK/bindings-before.tgz"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "bindings on npm with another digest: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the package and says it is another tarball" \
     "$BINDINGS@$VERSION is on npm as another tarball" "$OUT"
@@ -890,21 +891,23 @@ on_registry "$BINDINGS" "$VERSION" "$d/$BT"
 registry_integrity "$BINDINGS" "$VERSION" "md5-AAAA"
 cp "$d/$BT" "$WORK/bindings-before.tgz"
 expect_fail "a dist.integrity that is not a sha512 digest is refused" "not a sha512 digest" -- \
-    "$publish" "$d"
+    "$publish" react-native "$d"
 expect_equal "the local bindings tarball is kept when dist.integrity is refused" same \
     "$(same "$d/$BT" "$WORK/bindings-before.tgz")"
 expect_equal "nothing is published when dist.integrity is refused" "" "$(publish_log "$d")"
 
 fresh "$VERSION"
 echo '{"error":{"code":"ECONNREFUSED"}}' >"$FAKE_NPM/view-error.json"
-expect_fail "a registry that cannot be reached is refused" "ECONNREFUSED" -- "$publish" "$d"
+expect_fail "a registry that cannot be reached is refused" "ECONNREFUSED" -- \
+    "$publish" react-native "$d"
 expect_equal "nothing is published when the registry cannot be reached" "" "$(publish_log "$d")"
 expect_equal "no SHA256SUMS is written when the registry cannot be reached" absent \
     "$([[ -e "$d/SHA256SUMS" ]] && echo present || echo absent)"
 
 fresh "$VERSION"
 : >"$FAKE_NPM/publish-fails"
-expect_fail "a failed publish fails the release" "$BINDINGS@$VERSION" -- "$publish" "$d"
+expect_fail "a failed publish fails the release" "$BINDINGS@$VERSION" -- \
+    "$publish" react-native "$d"
 expect_equal "the wrapper is not attempted after the bindings failed" \
     "publish $BT --tag beta --access public" "$(publish_log "$d")"
 expect_equal "no SHA256SUMS is written after a failed publish" absent \
@@ -912,7 +915,7 @@ expect_equal "no SHA256SUMS is written after a failed publish" absent \
 
 fresh "$VERSION"
 : >"$FAKE_NPM/publish-fails-but-lands"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a publish that fails but lands is carried on from" 0 "$STATUS"
 expect_contains "the bindings are reported as on npm despite the failure" \
     "$BINDINGS@$VERSION is on npm although npm publish reported a failure" "$OUT"
@@ -924,18 +927,18 @@ $([[ -e "$FAKE_NPM/published/${WRAPPER//\//__}@$VERSION" ]] && echo yes || echo 
 
 fresh "$VERSION"
 echo 10.9.9 >"$FAKE_NPM/npm-version"
-expect_fail "an npm older than 11.5.1 is refused" "11.5.1" -- "$publish" "$d"
-expect_fail "the npm that was found is named" "10.9.9" -- "$publish" "$d"
+expect_fail "an npm older than 11.5.1 is refused" "11.5.1" -- "$publish" react-native "$d"
+expect_fail "the npm that was found is named" "10.9.9" -- "$publish" react-native "$d"
 expect_equal "an old npm is refused before any other npm call" "--version" \
     "$(sort -u "$FAKE_NPM/calls")"
-run "$publish" --dry-run "$d"
+run "$publish" --dry-run react-native "$d"
 expect_equal "an old npm is fine for a dry run" 0 "$STATUS"
 expect_equal "an old npm publishes both tarballs in a dry run" 2 \
     "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
 
 fresh "$VERSION"
 : >"$FAKE_NPM/forbid-view"
-run "$publish" --dry-run "$d"
+run "$publish" --dry-run react-native "$d"
 expect_equal "a dry run succeeds without asking the registry" 0 "$STATUS"
 expect_equal "a dry run runs npm publish --dry-run twice, bindings first" \
     "publish --dry-run $BT --tag beta --access public"$'\n'\
@@ -947,7 +950,7 @@ expect_equal "a dry run publishes nothing" absent \
     "$([[ -e "$FAKE_NPM/published" ]] && echo present || echo absent)"
 fresh 0.1.0
 : >"$FAKE_NPM/forbid-view"
-run "$publish" --dry-run "$d"
+run "$publish" --dry-run react-native "$d"
 expect_equal "a dry run of a final version uses latest" \
     "publish --dry-run $BT0 --tag latest --access public"$'\n'\
 "publish --dry-run $NT0 --tag latest --access public" \
@@ -955,7 +958,7 @@ expect_equal "a dry run of a final version uses latest" \
 fresh "$VERSION"
 : >"$FAKE_NPM/dry-run-fails"
 expect_fail "a dry run that fails fails the script" "$BINDINGS@$VERSION" -- \
-    "$publish" --dry-run "$d"
+    "$publish" --dry-run react-native "$d"
 expect_equal "a failed dry run of the bindings stops before the wrapper" \
     "publish --dry-run $BT --tag beta --access public" "$(publish_log "$d")"
 
@@ -963,32 +966,34 @@ fresh "$VERSION"
 tarballs "$WORK/other" 0.1.0-beta.2
 cp "$WORK/other/fedimint-react-native-0.1.0-beta.2.tgz" "$d/"
 rm "${d:?}/$NT"
-expect_fail "tarballs of different versions are refused" "0.1.0-beta.1" -- "$publish" "$d"
-expect_fail "the other version is named" "0.1.0-beta.2" -- "$publish" "$d"
+expect_fail "tarballs of different versions are refused" "0.1.0-beta.1" -- \
+    "$publish" react-native "$d"
+expect_fail "the other version is named" "0.1.0-beta.2" -- "$publish" react-native "$d"
 expect_equal "nothing is published for tarballs of different versions" "" "$(publish_log "$d")"
 
 fresh "$VERSION"
 cp "$WORK/other/fedimint-react-native-bindings-0.1.0-beta.2.tgz" "$d/"
-expect_fail "two bindings tarballs are refused" "found 2" -- "$publish" "$d"
+expect_fail "two bindings tarballs are refused" "found 2" -- "$publish" react-native "$d"
 fresh "$VERSION"
 cp "$WORK/other/fedimint-react-native-0.1.0-beta.2.tgz" "$d/"
-expect_fail "two wrapper tarballs are refused" "found 2" -- "$publish" "$d"
+expect_fail "two wrapper tarballs are refused" "found 2" -- "$publish" react-native "$d"
 d="$(mktemp -d "$WORK/pub.XXXX")"
-expect_fail "no tarball is refused" "found no" -- "$publish" "$d"
+expect_fail "no tarball is refused" "found no" -- "$publish" react-native "$d"
 echo old >"$d/$NT"
-expect_fail "a directory with only a wrapper tarball is refused" "found no" -- "$publish" "$d"
+expect_fail "a directory with only a wrapper tarball is refused" "found no" -- \
+    "$publish" react-native "$d"
 expect_fail "a directory that does not exist is refused" "$WORK/nothing" -- \
-    "$publish" "$WORK/nothing"
+    "$publish" react-native "$WORK/nothing"
 
 fresh "$VERSION"
 rewrite "$d/$BT" edit_manifest 'm.name = "@fedimint/other"'
 expect_fail "a bindings tarball holding another package is refused" "@fedimint/other" -- \
-    "$publish" "$d"
+    "$publish" react-native "$d"
 expect_equal "nothing is published for a tarball holding another package" "" "$(publish_log "$d")"
 fresh "$VERSION"
 rewrite "$d/$NT" edit_manifest 'm.name = "@fedimint/react-native-bindings"'
 expect_fail "a wrapper tarball holding another package is refused" "not $WRAPPER" -- \
-    "$publish" "$d"
+    "$publish" react-native "$d"
 
 # A publish that fails while another upload of the same version landed: what is on npm is not
 # this tarball, so the release stops there, before the wrapper is attempted, and the local file
@@ -1015,7 +1020,7 @@ chmod +x "$WORK/bin/npm-appears"
 mkdir "$WORK/appears"
 ln -s "$WORK/bin/npm-appears" "$WORK/appears/npm"
 cp "$d/$BT" "$WORK/bindings-before.tgz"
-REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" "$d"
+REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" react-native "$d"
 expect_equal "a publish that fails over a version someone else published fails the release" 1 \
     "$STATUS"
 expect_contains "the refusal names the bindings" \
@@ -1035,7 +1040,7 @@ mkdir "$FAKE_NPM/published"
 marker="$FAKE_NPM/published/${WRAPPER//\//__}@$VERSION"
 echo "published by someone else" >"$marker.tgz"
 integrity "$marker.tgz" >"$marker.integrity"
-REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" "$d"
+REAL_FAKE_NPM="$WORK/bin/npm" PATH="$WORK/appears:$PATH" run "$publish" react-native "$d"
 expect_equal "a wrapper that appears on npm during the release fails it" 1 "$STATUS"
 expect_contains "the refusal names the wrapper that appeared" \
     "$WRAPPER@$VERSION is on npm as another tarball" "$OUT"
@@ -1049,7 +1054,7 @@ expect_equal "no SHA256SUMS is written when the wrapper appeared" absent "$(sums
 fresh "$VERSION"
 echo "what npm serves" >"$served"
 on_registry "$WRAPPER" "$VERSION" "$served"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a wrapper on npm as another tarball: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the wrapper" "$WRAPPER@$VERSION is on npm as another tarball" \
     "$OUT"
@@ -1058,7 +1063,7 @@ expect_equal "the bindings are not uploaded first" "" "$(publish_log "$d")"
 fresh "$VERSION"
 on_registry "$BINDINGS" "$VERSION" "$d/$BT"
 on_registry "$WRAPPER" "$VERSION" "$served"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "same bindings and another wrapper on npm: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the wrapper when the bindings match" \
     "$WRAPPER@$VERSION is on npm as another tarball" "$OUT"
@@ -1070,7 +1075,7 @@ expect_equal "no SHA256SUMS is written for a wrapper that is another tarball" ab
 # A dist-tag never moves back.
 fresh "$VERSION"
 registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "bindings whose beta is on a newer version: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the package, the dist-tag and the version it is on" \
     "the dist-tag beta of $BINDINGS is on 0.1.0-beta.2" "$OUT"
@@ -1080,7 +1085,7 @@ expect_equal "nothing is published when the bindings' beta is ahead" "" "$(publi
 fresh "$VERSION"
 registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.0.9-beta.3"}'
 registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a wrapper whose beta is on a newer version: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the wrapper's beta" \
     "the dist-tag beta of $WRAPPER is on 0.1.0-beta.2" "$OUT"
@@ -1090,7 +1095,7 @@ expect_equal "the bindings are not uploaded before the wrapper's dist-tag is rea
 fresh "$VERSION"
 on_registry "$BINDINGS" "$VERSION" "$d/$BT"
 registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "an older release run again after a newer one: the release fails" 1 "$STATUS"
 expect_contains "the older release is refused over the wrapper's dist-tag" \
     "the dist-tag beta of $WRAPPER is on 0.1.0-beta.2" "$OUT"
@@ -1099,7 +1104,7 @@ expect_equal "nothing is published for an older release run again" "" "$(publish
 fresh "$VERSION"
 registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.0.9-beta.3","canary":"0.0.0-canary-abc123"}'
 registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.0.9-beta.3","canary":"0.0.0-canary-abc123"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "dist-tags on older versions: the release succeeds" 0 "$STATUS"
 expect_equal "both packages are published under beta over an older beta" \
     "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
@@ -1108,7 +1113,7 @@ expect_equal "both packages are published under beta over an older beta" \
 fresh "$VERSION"
 registry_tags "$BINDINGS" '{"latest":"0.0.0"}'
 registry_tags "$WRAPPER" '{"latest":"0.0.0"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "packages without a beta dist-tag: the release succeeds" 0 "$STATUS"
 expect_equal "both packages are published under beta when there is none yet" \
     "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
@@ -1117,7 +1122,7 @@ expect_equal "both packages are published under beta when there is none yet" \
 fresh 0.1.0
 registry_tags "$BINDINGS" '{"latest":"0.0.0","beta":"0.2.0-beta.1"}'
 registry_tags "$WRAPPER" '{"latest":"0.0.0","beta":"0.2.0-beta.1"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a final version with a beta that is ahead: the release succeeds" 0 "$STATUS"
 expect_equal "both packages are published under latest, whatever beta is on" \
     "publish $BT0 --tag latest --access public"$'\n'"publish $NT0 --tag latest --access public" \
@@ -1125,7 +1130,7 @@ expect_equal "both packages are published under latest, whatever beta is on" \
 
 fresh 0.1.0
 registry_tags "$BINDINGS" '{"latest":"0.2.0"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a final version below latest: the release fails" 1 "$STATUS"
 expect_contains "the refusal names latest" "the dist-tag latest of $BINDINGS is on 0.2.0" "$OUT"
 expect_equal "nothing is published below latest" "" "$(publish_log "$d")"
@@ -1134,7 +1139,7 @@ expect_equal "nothing is published below latest" "" "$(publish_log "$d")"
 # with, as any version on a registry does.
 fresh 0.1.0
 registry_tags "$BINDINGS" '{"latest":"0.2.0-rc.1"}'
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "a final version below a latest outside the grammar: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the version latest is on, as npm has it" \
     "the dist-tag latest of $BINDINGS is on 0.2.0-rc.1" "$OUT"
@@ -1143,7 +1148,7 @@ expect_equal "nothing is published below a latest outside the grammar" "" "$(pub
 # A dist-tag that cannot be read must not look like one that is not there.
 fresh "$VERSION"
 echo '{"error":{"code":"E500"}}' >"$FAKE_NPM/dist-tags-error.json"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "dist-tags that cannot be read: the release fails" 1 "$STATUS"
 expect_contains "the refusal names the error code" "E500" "$OUT"
 expect_equal "nothing is published when the dist-tags cannot be read" "" "$(publish_log "$d")"
@@ -1151,7 +1156,7 @@ expect_equal "nothing is published when the dist-tags cannot be read" "" "$(publ
 for answer in '"0.1.0"' '[]'; do
     fresh "$VERSION"
     registry_tags "$BINDINGS" "$answer"
-    run "$publish" "$d"
+    run "$publish" react-native "$d"
     expect_equal "dist-tags that are $answer: the release fails" 1 "$STATUS"
     expect_contains "dist-tags that are $answer are refused as unreadable" \
         "which this script does not read" "$OUT"
@@ -1165,9 +1170,9 @@ d2="$(mktemp -d "$WORK/pub.XXXX")"
 tarballs "$d2" 0.1.0-beta.2
 BT2=fedimint-react-native-bindings-0.1.0-beta.2.tgz
 NT2=fedimint-react-native-0.1.0-beta.2.tgz
-run "$publish" "$d2"
+run "$publish" react-native "$d2"
 expect_equal "the newer beta is published" 0 "$STATUS"
-run "$publish" "$d1"
+run "$publish" react-native "$d1"
 expect_equal "the older beta is refused after the newer one" 1 "$STATUS"
 expect_contains "the older beta is refused over the bindings' dist-tag" \
     "the dist-tag beta of $BINDINGS is on 0.1.0-beta.2" "$OUT"
@@ -1176,7 +1181,7 @@ expect_equal "only the two uploads of the newer beta were made" \
     "$(publish_log "$d2")"
 expect_equal "no SHA256SUMS is written for the refused older beta" absent "$(sums_state "$d1")"
 tag_reads="$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
-run "$publish" "$d2"
+run "$publish" react-native "$d2"
 expect_equal "the newer beta run again: the release succeeds" 0 "$STATUS"
 expect_contains "the newer beta skips the bindings" \
     "$BINDINGS@0.1.0-beta.2 is already on npm, skipped" "$OUT"
@@ -1189,28 +1194,153 @@ expect_equal "running the newer beta again uploads nothing" 2 \
 
 fresh 1.0.0-rc.1
 expect_fail "tarballs of a version outside the grammar are refused" \
-    "must be X.Y.Z-beta.N or X.Y.Z" -- "$publish" "$d"
+    "must be X.Y.Z-beta.N or X.Y.Z" -- "$publish" react-native "$d"
 expect_equal "nothing is published for a version outside the grammar" "" "$(publish_log "$d")"
 fresh 1.0.0-rc.1
 : >"$FAKE_NPM/forbid-view"
 expect_fail "a dry run refuses a version outside the grammar too" \
-    "must be X.Y.Z-beta.N or X.Y.Z" -- "$publish" --dry-run "$d"
+    "must be X.Y.Z-beta.N or X.Y.Z" -- "$publish" --dry-run react-native "$d"
 
 fresh "$VERSION"
 : >"$FAKE_NPM/view-empty"
-run "$publish" "$d"
+run "$publish" react-native "$d"
 expect_equal "an empty answer from npm view counts as not published" \
     "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
     "$(publish_log "$d")"
 
+# The web component has one package. Its tarball is built like the React Native ones, from a small
+# dummy file and a manifest with the package's name and a version.
+WEB=@fedimint/web-sdk
+
+# web_tarball <dir> <version>: a tarball of @fedimint/web-sdk for <version> in <dir>.
+web_tarball() {
+    local dir="$1" version="$2" stage
+    mkdir -p "$dir"
+    stage="$(mktemp -d "$WORK/stage.XXXX")"
+    mkdir "$stage/package"
+    echo dist >"$stage/package/index.js"
+    printf '{\n  "name": "%s",\n  "version": "%s"\n}\n' "$WEB" "$version" \
+        >"$stage/package/package.json"
+    tar -czf "$dir/fedimint-web-sdk-$version.tgz" -C "$stage" package
+}
+
+# fresh_web <version>: an empty fake registry and a directory with the tarball of the web SDK for
+# the version, in $d.
+fresh_web() {
+    FAKE_NPM="$(npm_dir)"
+    d="$(mktemp -d "$WORK/pub.XXXX")"
+    web_tarball "$d" "$1"
+}
+
+WT="fedimint-web-sdk-$VERSION.tgz"
+WT0=fedimint-web-sdk-0.1.0.tgz
+
+fresh_web "$VERSION"
+run "$publish" web "$d"
+expect_equal "web: a beta that is nowhere on npm is published" 0 "$STATUS"
+expect_contains "web: the one package is published under beta" \
+    "published $WEB@$VERSION under beta" "$OUT"
+expect_equal "web: npm publish is called once, for the web tarball" \
+    "publish $WT --tag beta --access public" "$(publish_log "$d")"
+expect_equal "web: SHA256SUMS lists the one tarball" "$(sha256 "$d/$WT")  $WT" \
+    "$(cat "$d/SHA256SUMS")"
+expect_equal "web: SHA256SUMS is accepted by the checker" ok "$(check_sums "$d")"
+run "$publish" web "$d"
+expect_equal "web: running the release again succeeds" 0 "$STATUS"
+expect_contains "web: the second run skips the package" \
+    "$WEB@$VERSION is already on npm, skipped" "$OUT"
+expect_equal "web: the second run publishes nothing" 1 "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
+
+fresh_web 0.1.0
+run "$publish" web "$d"
+expect_equal "web: a final version is published" 0 "$STATUS"
+expect_equal "web: a final version goes under latest" \
+    "publish $WT0 --tag latest --access public" "$(publish_log "$d")"
+
+fresh_web "$VERSION"
+on_registry "$WEB" "$VERSION" "$d/$WT"
+run "$publish" web "$d"
+expect_equal "web: a version on npm as this tarball is skipped" 0 "$STATUS"
+expect_equal "web: nothing is published for it" "" "$(publish_log "$d")"
+expect_equal "web: SHA256SUMS is still written" "$(sha256 "$d/$WT")  $WT" \
+    "$(cat "$d/SHA256SUMS")"
+
+fresh_web "$VERSION"
+on_registry "$WEB" "$VERSION" "$served"
+run "$publish" web "$d"
+expect_equal "web: a version on npm as another tarball stops the release" 1 "$STATUS"
+expect_contains "web: the refusal names the package" "$WEB@$VERSION is on npm as another tarball" \
+    "$OUT"
+expect_equal "web: nothing is published next to another tarball" "" "$(publish_log "$d")"
+expect_equal "web: no SHA256SUMS is written for another tarball" absent "$(sums_state "$d")"
+
+fresh_web "$VERSION"
+registry_tags "$WEB" '{"latest":"0.0.0","beta":"0.1.0-beta.2"}'
+run "$publish" web "$d"
+expect_equal "web: a beta that is on a newer version stops the release" 1 "$STATUS"
+expect_contains "web: the refusal names the dist-tag and the version it is on" \
+    "the dist-tag beta of $WEB is on 0.1.0-beta.2" "$OUT"
+expect_equal "web: nothing is uploaded before the dist-tag is read" "" "$(publish_log "$d")"
+expect_equal "web: no SHA256SUMS is written for a dist-tag that is ahead" absent \
+    "$(sums_state "$d")"
+
+fresh_web "$VERSION"
+: >"$FAKE_NPM/forbid-view"
+run "$publish" --dry-run web "$d"
+expect_equal "web: a dry run succeeds without asking the registry" 0 "$STATUS"
+expect_equal "web: a dry run runs npm publish --dry-run for the one tarball" \
+    "publish --dry-run $WT --tag beta --access public" "$(publish_log "$d")"
+expect_equal "web: a dry run writes no SHA256SUMS" absent "$(sums_state "$d")"
+: >"$FAKE_NPM/dry-run-fails"
+expect_fail "web: a dry run that fails fails the script" "$WEB@$VERSION" -- \
+    "$publish" --dry-run web "$d"
+
+fresh_web "$VERSION"
+rewrite "$d/$WT" edit_manifest 'm.name = "@fedimint/other"'
+expect_fail "web: a tarball holding another package is refused" \
+    "holds @fedimint/other, not $WEB" -- \
+    "$publish" web "$d"
+
+d="$(mktemp -d "$WORK/pub.XXXX")"
+expect_fail "web: a directory with no tarball is refused" "found no tarball of $WEB" -- \
+    "$publish" web "$d"
+tarballs "$d" "$VERSION"
+expect_fail "web: React Native's tarballs are not taken for the web SDK's" \
+    "found no tarball of $WEB" -- "$publish" web "$d"
+web_tarball "$d" "$VERSION"
+web_tarball "$WORK/other-web" 0.1.0-beta.2
+cp "$WORK/other-web/fedimint-web-sdk-0.1.0-beta.2.tgz" "$d/"
+expect_fail "web: two web tarballs are refused" "found 2" -- "$publish" web "$d"
+rm "${d:?}/fedimint-web-sdk-0.1.0-beta.2.tgz"
+FAKE_NPM="$(npm_dir)"
+run "$publish" react-native "$d"
+expect_equal "a web tarball does not disturb the React Native publish" 0 "$STATUS"
+expect_equal "only the React Native tarballs are published for react-native" \
+    "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
+    "$(publish_log "$d")"
+expect_equal "SHA256SUMS lists the React Native tarballs only" \
+    "$(sha256 "$d/$BT")  $BT"$'\n'"$(sha256 "$d/$NT")  $NT" "$(cat "$d/SHA256SUMS")"
+
+fresh_web "$VERSION"
+for component in rust android; do
+    expect_fail "$component has no npm package" "has no npm package" -- "$publish" "$component" "$d"
+done
+expect_fail "a name that is no component is refused" "not-a-component is not a component" -- \
+    "$publish" not-a-component "$d"
+expect_equal "nothing is published for a refused component" "" "$(publish_log "$d")"
+
 echo "usage"
 
 expect_usage "no arguments" -- "$publish"
-expect_usage "--dry-run without a directory" -- "$publish" --dry-run
-expect_usage "two directories" -- "$publish" "$d" "$d"
-expect_usage "an option other than --dry-run" -- "$publish" --tag "$d"
-expect_usage "--dry-run after the directory" -- "$publish" "$d" --dry-run
-expect_usage "--dry-run with two directories" -- "$publish" --dry-run "$d" "$d"
+expect_usage "a component without a directory" -- "$publish" react-native
+expect_usage "--dry-run without a component and a directory" -- "$publish" --dry-run
+expect_usage "--dry-run with a component only" -- "$publish" --dry-run react-native
+expect_usage "--dry-run in place of the component" -- "$publish" --dry-run "$d"
+expect_usage "two directories" -- "$publish" react-native "$d" "$d"
+expect_usage "an option other than --dry-run" -- "$publish" --tag react-native "$d"
+expect_usage "--dry-run after the component" -- "$publish" react-native --dry-run "$d"
+expect_usage "--dry-run after the directory" -- "$publish" react-native "$d" --dry-run
+expect_usage "--dry-run with two directories" -- "$publish" --dry-run react-native "$d" "$d"
 
 echo
 echo "react-native-sdk-example.sh"

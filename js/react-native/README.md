@@ -154,9 +154,10 @@ in place before a release:
   That leaves this workflow and a maintainer who publishes by hand, signed in with two-factor
   authentication.
 - **The `npm` environment** (Settings → Environments), with required reviewers and with
-  deployments limited to tags matching `react-native-sdk-v*`. It has "Prevent self-review" on, so
-  that whoever started a release run, for example by pushing a tag by hand, cannot approve it,
-  and more than one reviewer for that reason. A run that the SDK Tag workflow started was started
+  deployments limited to tags matching `react-native-sdk-v*` and `web-sdk-v*` (the web SDK
+  publishes in it too). It has "Prevent self-review" on, so that whoever started a release run,
+  for example by pushing a tag by hand, cannot approve it, and more than one reviewer for that
+  reason. A run that the SDK Tag workflow started was started
   by GitHub Actions, so every reviewer can approve it. The `publish` job is the only one that
   names the environment. A job that names an environment which does not exist creates it without
   any limit, so it has to exist first.

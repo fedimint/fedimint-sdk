@@ -16,15 +16,15 @@
 #   scripts/sdk-release.sh bump <all|bindings|component> <beta|release>
 #   scripts/sdk-release.sh tag <component>...
 #
-# This repository releases three components, which are built from one Rust crate and defined in
+# This repository releases four components, which are built from one Rust crate and defined in
 # sdk-components.sh: `rust`, the `fedimint-sdk` crate on crates.io, `android`, the Android SDK on
-# Maven Central, and `react-native`, the packages `@fedimint/react-native-bindings` and
-# `@fedimint/react-native` on npm. Each has its own version in the tree, its own CHANGELOG.md, its
-# own release tags, named `<prefix><version>`, and its own release workflow. A release starts
-# when a pull request that changes the versions in the tree is merged: a workflow then tags each
-# component whose version changed, and the tag starts that component's release. A pushed tag
-# cannot be moved or deleted and no registry accepts a version twice, so a wrong release is
-# permanent. These are the rules that prevent one:
+# Maven Central, `react-native`, the packages `@fedimint/react-native-bindings` and
+# `@fedimint/react-native` on npm, and `web`, the package `@fedimint/web-sdk` on npm. Each has its
+# own version in the tree, its own CHANGELOG.md, its own release tags, named `<prefix><version>`,
+# and its own release workflow. A release starts when a pull request that changes the versions in
+# the tree is merged: a workflow then tags each component whose version changed, and the tag
+# starts that component's release. A pushed tag cannot be moved or deleted and no registry accepts
+# a version twice, so a wrong release is permanent. These are the rules that prevent one:
 #
 #   1. A version is `X.Y.Z-beta.N` or `X.Y.Z`, and nothing else (see sdk-version.sh).
 #   2. The components share one line of versions, whose version is the newest version any
@@ -32,24 +32,28 @@
 #      the components it publishes: all of them, or only some, such as a point release of one
 #      binding or of both.
 #   3. A new version is newer than every release tag of every component and than every version
-#      already on a registry (either npm package, the crate), where a snapshot such as
+#      already on a registry (any npm package, the crate), where a snapshot such as
 #      `0.0.0-canary-abc123` counts as the release it starts with. A version is used once.
 #   4. Components released together carry the same version and are tagged on the same commit. A
 #      version is never tagged on two different commits.
 #   5. In the committed tree every component is either at a released version, which has its
-#      release tag, or at the line's version, which is the next one to be released.
+#      release tag, or at the line's version, which is the next one to be released, or at 0.0.0
+#      while it has no release tag at all: 0.0.0 stands for a component that has not been
+#      released yet. Such a component is never released as it is: `check` refuses 0.0.0, and
+#      a version bump gives the component a version of the line.
 #
 # `latest` prints the newest released version of a component, taken from its release tags, or
 # nothing when it has none. The version bump uses it to find the release that the next release
 # notes are written from.
 #
 # `published` prints the versions that the registries of a component list, one per line: those of
-# the crate on crates.io for `rust`, the yanked ones included, and those of both npm packages for
-# `react-native`, the bindings first and each version once. It prints nothing for `android`, which
-# has no registry, and for a package that was never published. These are the versions that
-# `check` and `check-version` compare with, for a script that has to know whether one is taken,
-# such as rust-sdk-publish.sh. A registry that cannot be asked fails the command, and nothing is
-# printed, so that a list which stops short is not taken for the whole.
+# the crate on crates.io for `rust`, the yanked ones included, those of both npm packages for
+# `react-native`, the bindings first and each version once, and those of `@fedimint/web-sdk` for
+# `web`. It prints nothing for `android`, which has no registry, and for a package that was never
+# published. These are the versions that `check` and `check-version` compare with, for a script
+# that has to know whether one is taken, such as rust-sdk-publish.sh. A registry that cannot be
+# asked fails the command, and nothing is printed, so that a list which stops short is not taken
+# for the whole.
 #
 # `check-version` is rule 3 for a version that is only proposed: it fails unless the version is
 # newer than every release tag of every component and than every version on a registry. A version
@@ -64,13 +68,14 @@
 # is refused, whichever component it is for. The registries of the other components are not asked,
 # as their release tags are the record of their releases, and a tag of another component for this
 # very version is no obstacle: rule 4 holds it to the checked out commit, which is how components
-# released together are tagged. It reads the working tree, so that it also tells someone about to
-# commit a version whether it could be released; `tag` and `check-tag`, which release a commit,
-# also require that what they read is committed. It ends with `<component> <version> can be
-# released`. --except-own leaves that version itself out of the comparison with the component's own
-# tags and registry versions, so that a release which stopped half way, after a tag or a registry
-# took the version, can run again. The tags of the other components are compared the same way with
-# and without it. Rule 4 applies to the component's own tag of that version as well.
+# released together are tagged. A component at 0.0.0 is refused, whether or not anything is
+# released: it has not been given a version to release yet. It reads the working tree, so that it
+# also tells someone about to commit a version whether it could be released; `tag` and `check-tag`,
+# which release a commit, also require that what they read is committed. It ends with `<component>
+# <version> can be released`. --except-own leaves that version itself out of the comparison with the
+# component's own tags and registry versions, so that a release which stopped half way, after a tag
+# or a registry took the version, can run again. The tags of the other components are compared the
+# same way with and without it. Rule 4 applies to the component's own tag of that version as well.
 #
 # `check-tag` is what a release workflow runs first, for the tag that started it. The tag must be
 # a release tag that exists here, with the commit it points at checked out, and the rest of its
@@ -84,8 +89,10 @@
 # `check-tree` is for the pull request check and asks no registry. It requires of every
 # component a valid version, release notes for it and rule 5: either the release tag of its
 # version exists (it prints `released`), or the version is the line's and newer than every
-# release tag of every component (it prints `to be released`). It reports every problem it
-# finds, not only the first.
+# release tag of every component (it prints `to be released`). A component at 0.0.0 that has no
+# release tag at all prints `not released yet` and needs no notes; one that has release tags and
+# is at 0.0.0 is a problem like any version that is neither released nor the line's. It reports
+# every problem it finds, not only the first.
 #
 # `pending` is for the workflow that tags releases after a push to main. It prints, in the order
 # of the components, each one whose version in the tree differs from its version at <commit>,
@@ -96,12 +103,15 @@
 # surprise, so it prints nothing for that component but a note on stderr. The note says that the
 # tag workflow has to be run by hand for it now, before anything else is merged, because
 # components released together are tagged on one commit. It also notes on stderr a new version
-# that is tagged already, and says nothing of a component that did not change. A <commit> that
-# is not in the checkout fails, and so does a version that cannot be read in the tree.
+# that is tagged already, and says nothing of a component that did not change. A component whose
+# version in the tree is 0.0.0 is never printed, and not given that note either: if its version
+# changed, a line on stderr says that it is at 0.0.0 and not released yet. A <commit> that is not
+# in the checkout fails, and so does a version that cannot be read in the tree.
 #
 # `untagged` is the same filter for a run of the tag workflow by hand, which names the components
 # to tag: it prints those with no release tag for their version, and says on stderr that the tag
 # exists for the others, so that running it again after it stopped half way tags what is missing.
+# A component at 0.0.0 is not printed either: it has nothing to tag yet, and says so on stderr.
 #
 # `bump` is what the version bump workflow does to the tree, without git. Its first argument says
 # which components get the new version: `all` of them, the `bindings` or one component, as
@@ -146,9 +156,9 @@ VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
 CHANGELOG_SCRIPT="$ROOT/scripts/sdk-changelog.sh"
 # Releases come from main only.
 MAIN_REF=origin/main
-# The npm packages of the React Native component, the bindings first: the order they are
-# published in.
-NPM_PACKAGES=(@fedimint/react-native-bindings @fedimint/react-native)
+# The version of a component that has not been released yet, and has no release tag. It is the
+# lowest version there is, so it is never the line's unless every component is at it.
+UNRELEASED=0.0.0
 # The crate of the Rust component and the page of its versions in the sparse index of crates.io.
 CRATE=fedimint-sdk
 CRATE_INDEX_URL=https://index.crates.io/fe/di/fedimint-sdk
@@ -186,7 +196,7 @@ registries_of() {
     case "$1" in
         rust) echo crates.io ;;
         android) ;;
-        react-native) printf '%s\n' "${NPM_PACKAGES[@]}" ;;
+        react-native | web) component_npm_packages "$1" ;;
     esac
 }
 
@@ -380,6 +390,9 @@ need_same_commit() {
 # of their releases. Only a refusal is printed for the other components.
 check_release() {
     local component="$1" version="$2" except="${3:-}" other
+    [[ "$version" != "$UNRELEASED" ]] ||
+        die "$component is at $UNRELEASED, which stands for a component that has not been given a" \
+            "version to release yet: a version bump gives it one"
     check_tags "$component" "$version" "$except" || exit 1
     for other in "${COMPONENTS[@]}"; do
         [[ "$other" != "$component" ]] || continue
@@ -493,6 +506,10 @@ check_tree() {
     line="$(cut -d' ' -f2 <<<"$readable" | "$VERSION_SCRIPT" latest)"
     while read -r component version; do
         [[ -n "$component" ]] || continue
+        if [[ "$version" == "$UNRELEASED" && -z "$(released_versions "$component")" ]]; then
+            echo "$component $version: not released yet"
+            continue
+        fi
         if has_tag "$(component_tag_prefix "$component")$version"; then
             echo "$component $version: released"
         elif [[ "$version" != "$line" ]]; then
@@ -536,7 +553,9 @@ pending() {
             why="its earlier version could not be read ($old)"
             old=""
         fi
-        if has_tag "$prefix$new"; then
+        if [[ "$new" == "$UNRELEASED" ]]; then
+            echo "$component: at $UNRELEASED and not released yet; nothing to tag" >&2
+        elif has_tag "$prefix$new"; then
             echo "$prefix$new already exists; nothing to release" >&2
         elif [[ -n "$old" ]] && has_tag "$prefix$old"; then
             result="${result:+$result$'\n'}$component"
@@ -562,7 +581,9 @@ untagged() {
         seen="$seen$component "
         version="$("$VERSION_SCRIPT" current "$component")" || exit 1
         tag="$(component_tag_prefix "$component")$version"
-        if has_tag "$tag"; then
+        if [[ "$version" == "$UNRELEASED" ]]; then
+            echo "$component is at $UNRELEASED and has nothing to tag yet" >&2
+        elif has_tag "$tag"; then
             echo "$tag already exists; nothing to release" >&2
         else
             result="${result:+$result$'\n'}$component"
