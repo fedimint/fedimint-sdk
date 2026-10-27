@@ -10634,13 +10634,16 @@ const FfiConverterTypeMultisigAccount = new FfiConverterObject(
  * holding the proposal and the approvals executes it with
  * [`Multisig::execute`](crate::Multisig::execute).
  *
- * Nothing here is trusted on its word: the channel can be anyone's. Every approval is a
- * signature the federation checks against the account's policy, so a forged or altered proposal
- * cannot move money.
+ * Nothing here is trusted on its word: the channel can be anyone's. The member who made a
+ * proposal signs it, and the payment goes to that member, its [`proposer`](Proposal::proposer).
+ * The parse checks that signature, so a proposal cannot be passed off under another member's
+ * name, or altered. Every approval is a signature the federation checks against the account's
+ * policy, so a forged approval cannot move money either.
  *
  * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
- * `msproposal` followed by lowercase base32. The parse checks the structure and that the policy
- * describes an account, not the signatures it will collect.
+ * `msproposal` followed by lowercase base32. The parse checks the structure, that the policy
+ * describes an account, and that one of its members signed the proposal, not the approvals it
+ * will collect.
  */
 export interface ProposalLike {
   /**
@@ -10659,6 +10662,14 @@ export interface ProposalLike {
    * The policy of the account the payment comes out of.
    */
   policy(): Policy
+  /**
+   * The member who made the proposal, and who the payment goes to.
+   *
+   * Signed by that member, so it is who made the proposal. A member of the account can still
+   * hand out a proposal of their own in place of the one the others expect, and this is what
+   * tells the two apart: show it before asking a member to approve.
+   */
+  proposer(): MemberKey
 }
 /**
  * @deprecated Use `ProposalLike` instead.
@@ -10675,13 +10686,16 @@ export type ProposalInterface = ProposalLike
  * holding the proposal and the approvals executes it with
  * [`Multisig::execute`](crate::Multisig::execute).
  *
- * Nothing here is trusted on its word: the channel can be anyone's. Every approval is a
- * signature the federation checks against the account's policy, so a forged or altered proposal
- * cannot move money.
+ * Nothing here is trusted on its word: the channel can be anyone's. The member who made a
+ * proposal signs it, and the payment goes to that member, its [`proposer`](Proposal::proposer).
+ * The parse checks that signature, so a proposal cannot be passed off under another member's
+ * name, or altered. Every approval is a signature the federation checks against the account's
+ * policy, so a forged approval cannot move money either.
  *
  * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
- * `msproposal` followed by lowercase base32. The parse checks the structure and that the policy
- * describes an account, not the signatures it will collect.
+ * `msproposal` followed by lowercase base32. The parse checks the structure, that the policy
+ * describes an account, and that one of its members signed the proposal, not the approvals it
+ * will collect.
  */
 export class Proposal extends UniffiAbstractObject implements ProposalLike {
   readonly [uniffiTypeNameSymbol] = 'Proposal'
@@ -10699,8 +10713,9 @@ export class Proposal extends UniffiAbstractObject implements ProposalLike {
    *
    * # Errors
    *
-   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, and for one
-   * written by a newer version of this SDK than this one reads.
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, for one that is not
+   * signed by a member of its account, and for one written by a newer version of this SDK than
+   * this one reads.
    */
   static parse(proposal: string): ProposalLike /*throws*/ {
     return FfiConverterTypeProposal.lift(
@@ -10794,6 +10809,30 @@ export class Proposal extends UniffiAbstractObject implements ProposalLike {
     )
     try {
       return FfiConverterTypePolicy.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The member who made the proposal, and who the payment goes to.
+   *
+   * Signed by that member, so it is who made the proposal. A member of the account can still
+   * hand out a proposal of their own in place of the one the others expect, and this is what
+   * tells the two apart: show it before asking a member to approve.
+   */
+  proposer(): MemberKey {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_proposal_proposer(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMemberKey.lift(__rb)
     } finally {
       nativeModule().rustbuffer_free(__rb)
     }
@@ -13324,9 +13363,9 @@ const FfiConverterTypeMultisigSweepOperation = new FfiConverterObject(
  * 2. [`account`](Multisig::account) turns the policy into its [`MultisigAccount`], the same one
  * for every member.
  * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
- * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose). The
- * other members each [`approve`](Multisig::approve) it, and once enough have, anyone
- * [`execute`](Multisig::execute)s it with their approvals.
+ * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
+ * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals.
  * 5. An executed proposal pays the member who proposed it. That member's
  * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
  *
@@ -13334,6 +13373,11 @@ const FfiConverterTypeMultisigSweepOperation = new FfiConverterObject(
  * it has, and keeps the group's policy. Neither this crate nor the federation keeps a list of a
  * member's groups. The channel is never trusted with money: the federation pays out only on the
  * signatures of enough of the account's members.
+ *
+ * A deposit, a payout or a sweep is recorded when the call that starts it returns. If the
+ * application stops before that, the federation can still carry it out, and the activity then
+ * lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
+ * account's [`balance`](Multisig::balance) before starting it again.
  *
  * Like every other facade's, a call that needs the federation fails with
  * [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The two that do not
@@ -13348,10 +13392,12 @@ export interface MultisigLike {
   /**
    * Approves `proposal`, as this member of `group`.
    *
-   * Show the member the proposal's [`amount`](Proposal::amount) and account before calling
-   * this: an approval is a signature that lets the payment through once enough members have
-   * given theirs. The proposal is checked first, so a proposal whose contents do not match what
-   * it says it pays is refused rather than signed.
+   * Show the member the proposal's [`proposer`](Proposal::proposer), who the payment goes to,
+   * its [`amount`](Proposal::amount) and its account before calling this: an approval is a
+   * signature that lets the payment through once enough members have given theirs. Another
+   * member can hand out a proposal of their own in place of the one expected, and the proposer
+   * is what tells them apart. The proposal is checked first, so a proposal whose contents do
+   * not match what it says it pays is refused rather than signed.
    *
    * # Errors
    *
@@ -13425,25 +13471,30 @@ export interface MultisigLike {
     asyncOpts_?: { signal: AbortSignal },
   ) /*throws*/ : Promise<MemberKey>
   /**
-   * Proposes paying `amount` out of `account` to this member.
+   * Proposes paying `amount` out of `account` to this member of `group`.
    *
    * Nothing moves yet, and nothing is sent anywhere: hand the returned proposal to the other
    * members to [`approve`](Multisig::approve), then [`execute`](Multisig::execute) it with
-   * their approvals. The payment goes to the member who proposed it, whoever executes it, and
-   * [`sweep`](Multisig::sweep) then moves it into that member's ecash balance.
+   * their approvals. The proposal is signed with this member's key for `group`, and names this
+   * member as its [`proposer`](Proposal::proposer). The payment goes to the proposer, whoever
+   * executes it, and [`sweep`](Multisig::sweep) then moves it into the proposer's ecash
+   * balance.
    *
    * A proposal does not stay valid for ever: the federation refuses one executed too long after
    * it was made, and the payout then ends [`Failed`](MultisigTransferState::Failed).
    *
    * # Errors
    *
-   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount or one in a different
-   * denomination from the account's, [`NotSupported`](crate::ErrorCode::NotSupported) for an
-   * account in a denomination this federation does not hold,
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a zero amount
+   * or one in a different denomination from the account's, and when this member's key for
+   * `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
    * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
    * [`FederationClosed`](crate::ErrorCode::FederationClosed).
    */
   propose(
+    group: string,
     account: MultisigAccountLike,
     amount: MultisigAmount,
     asyncOpts_?: { signal: AbortSignal },
@@ -13475,9 +13526,9 @@ export type MultisigInterface = MultisigLike
  * 2. [`account`](Multisig::account) turns the policy into its [`MultisigAccount`], the same one
  * for every member.
  * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
- * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose). The
- * other members each [`approve`](Multisig::approve) it, and once enough have, anyone
- * [`execute`](Multisig::execute)s it with their approvals.
+ * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
+ * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals.
  * 5. An executed proposal pays the member who proposed it. That member's
  * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
  *
@@ -13485,6 +13536,11 @@ export type MultisigInterface = MultisigLike
  * it has, and keeps the group's policy. Neither this crate nor the federation keeps a list of a
  * member's groups. The channel is never trusted with money: the federation pays out only on the
  * signatures of enough of the account's members.
+ *
+ * A deposit, a payout or a sweep is recorded when the call that starts it returns. If the
+ * application stops before that, the federation can still carry it out, and the activity then
+ * lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
+ * account's [`balance`](Multisig::balance) before starting it again.
  *
  * Like every other facade's, a call that needs the federation fails with
  * [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The two that do not
@@ -13529,10 +13585,12 @@ export class Multisig extends UniffiAbstractObject implements MultisigLike {
   /**
    * Approves `proposal`, as this member of `group`.
    *
-   * Show the member the proposal's [`amount`](Proposal::amount) and account before calling
-   * this: an approval is a signature that lets the payment through once enough members have
-   * given theirs. The proposal is checked first, so a proposal whose contents do not match what
-   * it says it pays is refused rather than signed.
+   * Show the member the proposal's [`proposer`](Proposal::proposer), who the payment goes to,
+   * its [`amount`](Proposal::amount) and its account before calling this: an approval is a
+   * signature that lets the payment through once enough members have given theirs. Another
+   * member can hand out a proposal of their own in place of the one expected, and the proposer
+   * is what tells them apart. The proposal is checked first, so a proposal whose contents do
+   * not match what it says it pays is refused rather than signed.
    *
    * # Errors
    *
@@ -13805,25 +13863,30 @@ export class Multisig extends UniffiAbstractObject implements MultisigLike {
   }
 
   /**
-   * Proposes paying `amount` out of `account` to this member.
+   * Proposes paying `amount` out of `account` to this member of `group`.
    *
    * Nothing moves yet, and nothing is sent anywhere: hand the returned proposal to the other
    * members to [`approve`](Multisig::approve), then [`execute`](Multisig::execute) it with
-   * their approvals. The payment goes to the member who proposed it, whoever executes it, and
-   * [`sweep`](Multisig::sweep) then moves it into that member's ecash balance.
+   * their approvals. The proposal is signed with this member's key for `group`, and names this
+   * member as its [`proposer`](Proposal::proposer). The payment goes to the proposer, whoever
+   * executes it, and [`sweep`](Multisig::sweep) then moves it into the proposer's ecash
+   * balance.
    *
    * A proposal does not stay valid for ever: the federation refuses one executed too long after
    * it was made, and the payout then ends [`Failed`](MultisigTransferState::Failed).
    *
    * # Errors
    *
-   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount or one in a different
-   * denomination from the account's, [`NotSupported`](crate::ErrorCode::NotSupported) for an
-   * account in a denomination this federation does not hold,
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a zero amount
+   * or one in a different denomination from the account's, and when this member's key for
+   * `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
    * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
    * [`FederationClosed`](crate::ErrorCode::FederationClosed).
    */
   async propose(
+    group: string,
     account: MultisigAccountLike,
     amount: MultisigAmount,
     asyncOpts_?: { signal: AbortSignal },
@@ -13833,6 +13896,7 @@ export class Multisig extends UniffiAbstractObject implements MultisigLike {
       /*rustFutureFunc:*/ () => {
         return nativeModule().uniffi_fedimint_sdk_fn_method_multisig_propose(
           uniffiTypeMultisigObjectFactory.clonePointer(this),
+          FfiConverterString.lower(group, nativeModule().rustbuffer_alloc),
           FfiConverterTypeMultisigAccount.lower(
             account,
             nativeModule().rustbuffer_alloc,
@@ -22420,7 +22484,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_multisig_approve() !==
-    58429
+    1418
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_multisig_approve',
@@ -22468,7 +22532,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_multisig_propose() !==
-    40918
+    16680
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_multisig_propose',
@@ -22871,8 +22935,16 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_proposal_proposer() !==
+    20360
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_proposer',
+    )
+  }
+  if (
     nativeModule().uniffi_fedimint_sdk_checksum_constructor_proposal_parse() !==
-    1981
+    47889
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_constructor_proposal_parse',

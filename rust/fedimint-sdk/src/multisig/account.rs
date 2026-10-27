@@ -396,17 +396,26 @@ impl TryFrom<AmountWire> for MultisigAmount {
     }
 }
 
+/// Three distinct member key pairs, sorted by their public keys: the secret keys 1, 2 and 3.
+#[cfg(test)]
+pub(crate) fn test_keypairs() -> [fedimint_core::secp256k1::Keypair; 3] {
+    let mut pairs = [1u8, 2, 3].map(|n| {
+        let mut secret = [0u8; 32];
+        secret[31] = n;
+        fedimint_core::secp256k1::Keypair::from_seckey_slice(
+            fedimint_core::secp256k1::SECP256K1,
+            &secret,
+        )
+        .expect("a valid secret key")
+    });
+    pairs.sort_by_key(|pair| MemberKey::from_upstream(pair.public_key()));
+    pairs
+}
+
 /// Three valid, distinct keys, sorted: the curve points G, 2G and 3G.
 #[cfg(test)]
 pub(crate) fn test_keys() -> [MemberKey; 3] {
-    let mut keys = [
-        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
-        "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
-    ]
-    .map(|key| key.parse::<MemberKey>().expect("a valid key"));
-    keys.sort();
-    keys
+    test_keypairs().map(|pair| MemberKey::from_upstream(pair.public_key()))
 }
 
 #[cfg(test)]

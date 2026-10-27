@@ -780,6 +780,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_proposal_proposer: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_constructor_proposal_parse: {
       args: [],
       ret: FfiType.UInt16,
@@ -1391,7 +1396,12 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_fn_method_multisig_propose: {
-      args: [FfiType.Handle, FfiType.Handle, FfiType.RustBuffer],
+      args: [
+        FfiType.Handle,
+        FfiType.RustBuffer,
+        FfiType.Handle,
+        FfiType.RustBuffer,
+      ],
       ret: FfiType.Handle,
       hasRustCallStatus: false,
     },
@@ -1641,6 +1651,11 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_method_proposal_policy: {
+      args: [FfiType.Handle],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_method_proposal_proposer: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
       hasRustCallStatus: true,
@@ -2611,6 +2626,7 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_proposal_amount(): number
   uniffi_fedimint_sdk_checksum_method_proposal_display(): number
   uniffi_fedimint_sdk_checksum_method_proposal_policy(): number
+  uniffi_fedimint_sdk_checksum_method_proposal_proposer(): number
   uniffi_fedimint_sdk_checksum_constructor_proposal_parse(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_await_final(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_id(): number
@@ -3016,6 +3032,7 @@ interface NativeModuleInterface {
   ): bigint
   uniffi_fedimint_sdk_fn_method_multisig_propose(
     uniffiSelf: bigint,
+    group: Uint8Array,
     account: bigint,
     amount: Uint8Array,
   ): bigint
@@ -3185,6 +3202,10 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
   uniffi_fedimint_sdk_fn_method_proposal_policy(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  uniffi_fedimint_sdk_fn_method_proposal_proposer(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array

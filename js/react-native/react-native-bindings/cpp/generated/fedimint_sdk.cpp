@@ -468,7 +468,7 @@ RustBuffer uniffi_fedimint_sdk_fn_method_multisig_denominations(
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_member_key(
     /*handle*/ uint64_t ptr, RustBuffer group);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_propose(
-    /*handle*/ uint64_t ptr,
+    /*handle*/ uint64_t ptr, RustBuffer group,
     /*handle*/ uint64_t account, RustBuffer amount);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigaccount(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
@@ -504,6 +504,8 @@ RustBuffer uniffi_fedimint_sdk_fn_method_proposal_amount(
 RustBuffer uniffi_fedimint_sdk_fn_method_proposal_display(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_proposal_policy(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_proposer(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_onchain(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
@@ -899,6 +901,7 @@ uint16_t uniffi_fedimint_sdk_checksum_method_proposal_account_id();
 uint16_t uniffi_fedimint_sdk_checksum_method_proposal_amount();
 uint16_t uniffi_fedimint_sdk_checksum_method_proposal_display();
 uint16_t uniffi_fedimint_sdk_checksum_method_proposal_policy();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_proposer();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_send();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_deposits();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_quote();
@@ -4330,7 +4333,7 @@ NativeFedimintSdk::NativeFedimintSdk(
           rt,
           jsi::PropNameID::forAscii(
               rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_propose"),
-          3,
+          4,
           [this](jsi::Runtime &rt, const jsi::Value &thisVal,
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_propose(
@@ -4522,6 +4525,17 @@ NativeFedimintSdk::NativeFedimintSdk(
           [this](jsi::Runtime &rt, const jsi::Value &thisVal,
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_policy(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_proposer(
                 rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_fn_clone_onchain"] =
@@ -7282,6 +7296,18 @@ NativeFedimintSdk::NativeFedimintSdk(
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this
                 ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_policy(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_proposer(
                     rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"] =
@@ -11585,10 +11611,12 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_propose(
   auto value = uniffi_fedimint_sdk_fn_method_multisig_propose(
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[0]),
-      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
-                                                        args[1]),
       uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
-                                                         args[2]));
+                                                         args[1]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[2]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[3]));
 
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
@@ -11845,6 +11873,22 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_policy(
   RustCallStatus status =
       uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
   auto value = uniffi_fedimint_sdk_fn_method_proposal_policy(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_proposer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_proposer(
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[0]),
       &status);
@@ -14402,6 +14446,14 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_policy(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_proposal_policy();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_proposer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_proposer();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
