@@ -1283,7 +1283,7 @@ impl SdkBuilder {
     }
 
     /// Adds an [`Extension`](crate::Extension) to the instance: client modules this crate does
-    /// not ship, and code that runs each time a federation comes up.
+    /// not ship, and code that runs each time a federation starts a client.
     ///
     /// Call it once per extension, in any order. Nothing is checked here:
     /// [`SdkBuilder::build`] refuses a module kind added twice, before it opens the storage.
@@ -1757,7 +1757,7 @@ pub(crate) struct SdkInner {
     pub(crate) connectors: ConnectorRegistry,
     /// The canonical module init registry, cloned per federation.
     pub(crate) module_inits: ClientModuleInitRegistry,
-    /// What `SdkBuilder::extension` registered, told about every federation that comes up.
+    /// What `SdkBuilder::extension` registered, told about every client a federation starts.
     #[cfg(feature = "extension-api")]
     pub(crate) extensions: Vec<Arc<dyn crate::Extension>>,
     /// The instance seed, in the form `fedimint-client` wants it. Every federation is handed this

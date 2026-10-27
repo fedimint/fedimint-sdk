@@ -1232,6 +1232,165 @@ async fn recovery_restores_a_wallet_with_history() {
     reopened.shutdown().await.expect("the instance shuts down");
 }
 
+/// Works on each client it is told about the way an extension is asked to: a task on the
+/// client's own task group, which ends when the SDK stops that client.
+#[cfg(feature = "extension-api")]
+struct ClientWatcher {
+    /// One entry for each client it was told about, in order: whether its task has ended.
+    ended: std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
+}
+
+#[cfg(feature = "extension-api")]
+impl fedimint_sdk::Extension for ClientWatcher {
+    fn client_started(
+        &self,
+        _federation: &fedimint_sdk::Federation,
+        client: &fedimint_client::ClientHandleArc,
+    ) {
+        let mut index = 0;
+        self.ended.send_modify(|ended| {
+            index = ended.len();
+            ended.push(false);
+        });
+        let ended = Ended {
+            ended: self.ended.clone(),
+            index,
+        };
+        client
+            .task_group()
+            .spawn_cancellable("client watcher", async move {
+                let _ended = ended;
+                std::future::pending::<()>().await;
+            });
+    }
+}
+
+/// Notes that the work on a client ended when it is dropped, which is how a task group's shutdown
+/// ends the work spawned on it.
+#[cfg(feature = "extension-api")]
+struct Ended {
+    ended: std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
+    index: usize,
+}
+
+#[cfg(feature = "extension-api")]
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.ended.send_modify(|ended| ended[self.index] = true);
+    }
+}
+
+/// Waits for the clients `ended` reports to match `expected`, failing the test after a minute.
+#[cfg(feature = "extension-api")]
+async fn clients_settle(
+    ended: &std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
+    what: &str,
+    expected: impl Fn(&[bool]) -> bool,
+) {
+    let mut updates = ended.subscribe();
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        updates.wait_for(|ended| expected(ended)),
+    )
+    .await;
+    let Ok(settled) = waited else {
+        panic!("timed out waiting for {what}: {:?}", *ended.borrow());
+    };
+    settled.expect("the extension is still alive");
+}
+
+#[cfg(feature = "extension-api")]
+#[tokio::test(flavor = "multi_thread")]
+async fn extensions_follow_the_client_through_a_recovery() {
+    let devimint = devimint!();
+    if devimint.shape == "mixed" {
+        eprintln!("skipping: the mixed shape is covered by its own test");
+        return;
+    }
+    let invite: fedimint_sdk::InviteCode = devimint
+        .invite
+        .parse()
+        .expect("devimint's invite code parses");
+    let only_the_last_runs = |ended: &[bool]| {
+        ended
+            .split_last()
+            .is_some_and(|(last, earlier)| !last && earlier.iter().all(|ended| *ended))
+    };
+
+    // Instance A joins plainly: one client, told about once, whose work ends with the instance.
+    let ended_a = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
+    let storage_a = tempfile::tempdir().expect("a temporary directory");
+    let sdk_a = Sdk::builder()
+        .storage(Storage::at(storage_a.path().to_str().expect("a utf-8 path")).expect("valid"))
+        .extension(std::sync::Arc::new(ClientWatcher {
+            ended: ended_a.clone(),
+        }))
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+    let federation_a = sdk_a.join(&invite).await.expect("the federation joins");
+    assert_eq!(
+        *ended_a.borrow(),
+        vec![false],
+        "the joined client is announced once"
+    );
+    let mnemonic = sdk_a.export_mnemonic();
+    sdk_a.shutdown().await.expect("the instance shuts down");
+    clients_settle(&ended_a, "the work on A's client to end", |ended| {
+        ended == [true]
+    })
+    .await;
+    drop(federation_a);
+    drop(sdk_a);
+
+    // Instance B recovers the same seed. Whatever clients the recovery goes through, once it is
+    // done the work on every retired one has ended and the work on the one in place runs.
+    let ended_b = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
+    let storage_b = tempfile::tempdir().expect("a temporary directory");
+    let sdk_b = Sdk::builder()
+        .storage(Storage::at(storage_b.path().to_str().expect("a utf-8 path")).expect("valid"))
+        .mnemonic(mnemonic)
+        .extension(std::sync::Arc::new(ClientWatcher {
+            ended: ended_b.clone(),
+        }))
+        .build()
+        .await
+        .expect("an instance opens on a fresh directory");
+    let recovery = sdk_b.recover(&invite).await.expect("the recovery starts");
+    let id = recovery.federation.id();
+    let last = recovery
+        .progress
+        .await_final()
+        .await
+        .expect("the recovery finishes");
+    assert_eq!(last, fedimint_sdk::RecoveryState::Done);
+    clients_settle(
+        &ended_b,
+        "only the work on the recovered client to run",
+        only_the_last_runs,
+    )
+    .await;
+    // A v1 mint cannot be used until its recovery ends, so a v1 recovery always ends by swapping
+    // in a fresh client, which the extension is told about in turn.
+    if devimint.shape == "v1" {
+        assert!(
+            ended_b.borrow().len() >= 2,
+            "the client the recovery swapped in is announced"
+        );
+    }
+
+    // The work that still runs is the live client's: closing the federation ends it.
+    sdk_b
+        .close_federation(&id)
+        .await
+        .expect("the federation closes");
+    clients_settle(&ended_b, "the work on B's client to end", |ended| {
+        ended.iter().all(|ended| *ended)
+    })
+    .await;
+    sdk_b.shutdown().await.expect("the instance shuts down");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn recovery_locks_the_federation_while_it_runs() {
     use fedimint_sdk::{Amount, FederationStatus, RecoveryState};

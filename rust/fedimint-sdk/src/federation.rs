@@ -323,12 +323,14 @@ impl Federation {
     /// its own modules through.
     ///
     /// What this returns is a clone of the handle, not a lease on the federation: holding it does
-    /// not keep the federation open. A close, an erase or [`Sdk::shutdown`](crate::Sdk::shutdown)
-    /// stops the client's tasks and then waits a short while for every clone to be dropped; one
-    /// that is still held after that makes the call fail with
-    /// [`Internal`](crate::ErrorCode::Internal) and leaves the federation recorded as running. So
-    /// ask for a handle for each piece of work, drop it as soon as that work is done, and give up
-    /// any wait once the client's task group is told to shut down
+    /// not keep the federation open. When the SDK stops the client, on a close, an erase,
+    /// [`Sdk::shutdown`](crate::Sdk::shutdown) or a swap for a fresh client (see
+    /// [`Extension::client_started`](crate::Extension::client_started)), it tells the client's
+    /// tasks to stop and then waits a short while for every clone to be dropped. A clone still
+    /// held after that keeps the client from shutting down cleanly, and the close, erase or
+    /// shutdown then fails with [`Internal`](crate::ErrorCode::Internal), once the federation has
+    /// already stopped. So ask for a handle for each piece of work, drop it as soon as that work
+    /// is done, and give up any wait once the client's task group is told to shut down
     /// (`client.task_group().make_handle().make_shutdown_rx()`).
     ///
     /// # Errors
@@ -568,6 +570,10 @@ pub(crate) struct FederationInner {
 struct SettleMarker {
     current: u64,
     running: Option<u64>,
+    /// The client identity the instance's extensions were last told about, so each client is
+    /// announced to them once; see [`FederationInner::tell_extensions`].
+    #[cfg(feature = "extension-api")]
+    told: Option<u64>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -1346,6 +1352,49 @@ impl FederationInner {
         settle.current += 1;
     }
 
+    /// Tells every extension of the instance about the client in place right now, unless they
+    /// were already told about that one.
+    ///
+    /// Called at the end of every bring-up and after every swap of the client, with the client
+    /// lock released, since what an extension starts from here asks for the client. A bring-up
+    /// whose recovery swaps the client before the bring-up ends reaches this twice for one
+    /// client, which is why the identity told about is remembered.
+    #[cfg(feature = "extension-api")]
+    pub(crate) async fn tell_extensions(self: &Arc<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        let Some(sdk) = self.sdk.upgrade() else {
+            return;
+        };
+        // Taken under the client lock, so the identity marked told is the client's handed out.
+        let client = {
+            let Ok(guard) = self.client(false).await else {
+                return;
+            };
+            if !self.mark_told() {
+                return;
+            }
+            guard.handle()
+        };
+        let handle = Federation::new(self.clone());
+        for extension in &sdk.extensions {
+            extension.client_started(&handle, &client);
+        }
+    }
+
+    /// Whether the extensions are yet to be told about the client in place right now, marking it
+    /// told.
+    #[cfg(feature = "extension-api")]
+    fn mark_told(&self) -> bool {
+        let mut settle = self.lock_settle();
+        if settle.told == Some(settle.current) {
+            return false;
+        }
+        settle.told = Some(settle.current);
+        true
+    }
+
     /// Locks the settle marker, recovering from a poisoned lock the way the plain `RwLock`s on
     /// this type already do: a panic while it was held must not turn every later settle decision
     /// into a panic of its own, and the marker guards no invariant a half-written value could
@@ -1365,17 +1414,6 @@ impl FederationInner {
     /// a federation with no client.
     #[cfg(test)]
     pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
-        FederationInner::detached_in(Weak::new(), db, open)
-    }
-
-    /// [`detached`](FederationInner::detached), belonging to `sdk`: for a test of what a
-    /// federation reads off its instance.
-    #[cfg(test)]
-    pub(crate) fn detached_in(
-        sdk: Weak<SdkInner>,
-        db: Database,
-        open: bool,
-    ) -> Arc<FederationInner> {
         use fedimint_core::PeerId;
         use fedimint_core::invite_code::InviteCode;
         use fedimint_core::util::SafeUrl;
@@ -1390,7 +1428,7 @@ impl FederationInner {
         let id = config::FederationId::dummy();
         let federation = FederationInner::new(
             id,
-            sdk,
+            Weak::new(),
             db,
             FederationRecord {
                 invite: InviteCode::new(
@@ -1660,15 +1698,11 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             "could not record the on-chain deposits this federation's wallet found",
         );
     }
-    // Last, so an extension picking up its own work finds the SDK's records already repaired.
-    // Every bring-up path ends here, which is what makes this the one place to call from.
+    // Told last, so an extension picking up its own work finds the SDK's records repaired. A
+    // client that a recovery already swapped in on the way here was told about by that swap, and
+    // is not told about again.
     #[cfg(feature = "extension-api")]
-    if let Some(sdk) = federation.sdk.upgrade() {
-        let handle = Federation::new(federation.clone());
-        for extension in &sdk.extensions {
-            extension.federation_opened(&handle);
-        }
-    }
+    federation.tell_extensions().await;
 }
 
 // `FederationInner` gets no `Drop`. Dropping the last `Sdk` clone outside a tokio runtime must not
@@ -2852,60 +2886,20 @@ mod tests {
         assert_eq!(federation.recovery_progress_of(attempt), None);
     }
 
-    /// Records the federations it is told came up.
     #[cfg(feature = "extension-api")]
-    #[derive(Default)]
-    struct RecordingExtension {
-        opened: std::sync::Mutex<Vec<crate::FederationId>>,
-    }
+    #[test]
+    fn extensions_are_told_once_about_each_client() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
 
-    #[cfg(feature = "extension-api")]
-    impl crate::Extension for RecordingExtension {
-        fn federation_opened(&self, federation: &Federation) {
-            self.opened
-                .lock()
-                .expect("not poisoned")
-                .push(federation.id());
-        }
-    }
+        // A recovery's swap and the end of the bring-up it happened in both reach for the
+        // extensions with one client.
+        assert!(federation.mark_told());
+        assert!(!federation.mark_told(), "one client is announced once");
 
-    #[cfg(feature = "extension-api")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn extensions_are_told_about_each_federation_that_comes_up() {
-        let extension = Arc::new(RecordingExtension::default());
-        let sdk = crate::Sdk::builder()
-            .storage(crate::Storage::in_memory())
-            .extension(extension.clone())
-            .build()
-            .await
-            .expect("an instance opens");
-        let opened = || extension.opened.lock().expect("not poisoned").clone();
-
-        // Bring-up ends in `reconcile_on_open` on every path, and a federation with no client
-        // behind it still gets there: its reconciliation fails, which is logged, not fatal.
-        let running = FederationInner::detached_in(
-            Arc::downgrade(sdk.inner()),
-            federation_namespace(&in_memory_root(), [1u8; 32]),
-            true,
-        );
-        reconcile_on_open(&running).await;
-        assert_eq!(
-            opened(),
-            vec![crate::FederationId::from_upstream(running.id)]
-        );
-
-        // A quarantined federation also passes through `reconcile_on_open`, and is not open.
-        let closed = FederationInner::detached_in(
-            Arc::downgrade(sdk.inner()),
-            federation_namespace(&in_memory_root(), [2u8; 32]),
-            false,
-        );
-        reconcile_on_open(&closed).await;
-        assert_eq!(
-            opened().len(),
-            1,
-            "a federation that is not open is not announced"
-        );
+        // The client a later swap puts in place is announced in turn.
+        federation.bump_client_identity();
+        assert!(federation.mark_told(), "a fresh client is announced");
     }
 
     #[cfg(feature = "extension-api")]

@@ -38,7 +38,7 @@ RFC this crate implements.
 With the `extension-api` feature, off by default, another crate can add
 client modules this one does not ship. `SdkBuilder::extension` registers an
 `Extension`: its modules run in every federation whose configuration has a
-module of their kind, it is told each time a federation comes up, and
+module of their kind, it is told each time a federation starts a client, and
 `Federation::client` hands it the running client to reach its modules
 through. An extension works with fedimint's own types, so it has to be built
 against the exact fedimint release this crate requires, and this part of the
