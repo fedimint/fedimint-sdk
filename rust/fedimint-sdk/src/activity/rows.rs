@@ -5,8 +5,10 @@ use crate::operation::Driver;
 use crate::{
     ActivityStatus, Amount, DetailedOperationState, Direction, EcashReceiveDetails,
     EcashReceiveState, EcashSendDetails, EcashSendState, Error, ErrorCode, LnReceiveDetails,
-    LnReceiveState, LnSendDetails, LnSendState, OnchainReceiveDetails, OnchainReceiveState,
-    OnchainSendDetails, OnchainSendState, OperationDetails, OperationState, RecoveryState, Result,
+    LnReceiveState, LnSendDetails, LnSendState, MultisigAmount, MultisigDepositDetails,
+    MultisigDepositState, MultisigSweepDetails, MultisigSweepState, MultisigTransferDetails,
+    MultisigTransferState, OnchainReceiveDetails, OnchainReceiveState, OnchainSendDetails,
+    OnchainSendState, OperationDetails, OperationState, RecoveryState, Result,
 };
 
 /// The three numbers a row carries, as the table on [`ActivityItem`](crate::ActivityItem) fixes
@@ -111,6 +113,38 @@ impl Bucket for RecoveryState {
     }
 }
 
+impl Bucket for MultisigDepositState {
+    fn bucket(&self) -> ActivityStatus {
+        match self {
+            MultisigDepositState::Created | MultisigDepositState::Accepted => {
+                ActivityStatus::Pending
+            }
+            MultisigDepositState::Done => ActivityStatus::Success,
+            MultisigDepositState::Failed { .. } => ActivityStatus::Failed,
+        }
+    }
+}
+
+impl Bucket for MultisigTransferState {
+    fn bucket(&self) -> ActivityStatus {
+        match self {
+            MultisigTransferState::Created => ActivityStatus::Pending,
+            MultisigTransferState::Done => ActivityStatus::Success,
+            MultisigTransferState::Failed { .. } => ActivityStatus::Failed,
+        }
+    }
+}
+
+impl Bucket for MultisigSweepState {
+    fn bucket(&self) -> ActivityStatus {
+        match self {
+            MultisigSweepState::Created | MultisigSweepState::Accepted => ActivityStatus::Pending,
+            MultisigSweepState::Done => ActivityStatus::Success,
+            MultisigSweepState::Failed { .. } => ActivityStatus::Failed,
+        }
+    }
+}
+
 /// The figures a details record yields, exactly as the table on
 /// [`ActivityItem`](crate::ActivityItem) says.
 pub(super) trait Accounted: OperationDetails {
@@ -177,6 +211,45 @@ impl Accounted for OnchainReceiveDetails {
     }
 }
 
+impl Accounted for MultisigDepositDetails {
+    /// Outgoing: the deposit leaves this wallet's balance for the account. The fee for spending
+    /// the ecash is not recorded, so it is `None` rather than a guess.
+    fn figures(&self) -> Figures {
+        Figures {
+            amount: Some(self.amount),
+            fee: None,
+            direction: Some(Direction::Outgoing),
+        }
+    }
+}
+
+impl Accounted for MultisigTransferDetails {
+    /// No direction and no fee: the payment moves value between two accounts of the federation,
+    /// neither of them this wallet's balance. A fiat amount has no [`Amount`] to report.
+    fn figures(&self) -> Figures {
+        Figures {
+            amount: match &self.amount {
+                MultisigAmount::Btc { amount } => Some(*amount),
+                MultisigAmount::Fiat { .. } => None,
+            },
+            fee: None,
+            direction: None,
+        }
+    }
+}
+
+impl Accounted for MultisigSweepDetails {
+    /// Incoming: the payouts come into this wallet's balance. The fee for issuing the ecash is
+    /// not recorded, so it is `None` rather than a guess.
+    fn figures(&self) -> Figures {
+        Figures {
+            amount: Some(self.amount),
+            fee: None,
+            direction: Some(Direction::Incoming),
+        }
+    }
+}
+
 /// A state type whose rows the page walk can build: its bucket, and the figures of the record
 /// its kind persists.
 pub(super) trait Row: Bucket {
@@ -225,6 +298,24 @@ impl Row for RecoveryState {
     /// its driver is `Internal` by contract, and no caller can reach it.
     fn figures(_driver: &dyn Driver<RecoveryState>, _details: &str) -> Result<Figures> {
         Ok(Figures::NONE)
+    }
+}
+
+impl Row for MultisigDepositState {
+    fn figures(driver: &dyn Driver<MultisigDepositState>, details: &str) -> Result<Figures> {
+        detailed(driver, details)
+    }
+}
+
+impl Row for MultisigTransferState {
+    fn figures(driver: &dyn Driver<MultisigTransferState>, details: &str) -> Result<Figures> {
+        detailed(driver, details)
+    }
+}
+
+impl Row for MultisigSweepState {
+    fn figures(driver: &dyn Driver<MultisigSweepState>, details: &str) -> Result<Figures> {
+        detailed(driver, details)
     }
 }
 
@@ -630,6 +721,99 @@ mod tests {
             Figures {
                 amount: claimed.gross_deposited.to_amount(),
                 fee: claimed.fee,
+                direction: Some(Direction::Incoming),
+            }
+        );
+    }
+
+    #[test]
+    fn multisig_states_land_in_their_documented_buckets() {
+        let failed = || String::from("refused");
+        assert_eq!(
+            MultisigDepositState::Accepted.bucket(),
+            ActivityStatus::Pending
+        );
+        assert_eq!(MultisigDepositState::Done.bucket(), ActivityStatus::Success);
+        assert_eq!(
+            MultisigDepositState::Failed { reason: failed() }.bucket(),
+            ActivityStatus::Failed
+        );
+        assert_eq!(
+            MultisigTransferState::Created.bucket(),
+            ActivityStatus::Pending
+        );
+        assert_eq!(
+            MultisigTransferState::Done.bucket(),
+            ActivityStatus::Success
+        );
+        assert_eq!(
+            MultisigTransferState::Failed { reason: failed() }.bucket(),
+            ActivityStatus::Failed
+        );
+        assert_eq!(
+            MultisigSweepState::Accepted.bucket(),
+            ActivityStatus::Pending
+        );
+        assert_eq!(MultisigSweepState::Done.bucket(), ActivityStatus::Success);
+        assert_eq!(
+            MultisigSweepState::Failed { reason: failed() }.bucket(),
+            ActivityStatus::Failed
+        );
+    }
+
+    #[test]
+    fn multisig_details_yield_what_moved_this_balance_and_which_way() {
+        let account_id = "ab".repeat(32).parse().expect("a valid id");
+        let created_at = Timestamp::from_epoch_millis(1_700_000_000_000);
+
+        let deposit = MultisigDepositDetails {
+            account_id,
+            amount: Amount::from_msats(10_000),
+            created_at,
+        };
+        assert_eq!(
+            deposit.figures(),
+            Figures {
+                amount: Some(Amount::from_msats(10_000)),
+                fee: None,
+                direction: Some(Direction::Outgoing),
+            }
+        );
+
+        // A payout moves value between two accounts, neither of them this balance.
+        let btc = MultisigTransferDetails {
+            account_id,
+            amount: MultisigAmount::Btc {
+                amount: Amount::from_msats(4_000),
+            },
+            created_at,
+        };
+        assert_eq!(
+            btc.figures(),
+            Figures {
+                amount: Some(Amount::from_msats(4_000)),
+                fee: None,
+                direction: None,
+            }
+        );
+        let fiat = MultisigTransferDetails {
+            amount: MultisigAmount::Fiat {
+                minor_units: 100,
+                currency: "USD".to_owned(),
+            },
+            ..btc
+        };
+        assert_eq!(fiat.figures(), Figures::NONE);
+
+        let sweep = MultisigSweepDetails {
+            amount: Amount::from_msats(4_000),
+            created_at,
+        };
+        assert_eq!(
+            sweep.figures(),
+            Figures {
+                amount: Some(Amount::from_msats(4_000)),
+                fee: None,
                 direction: Some(Direction::Incoming),
             }
         );

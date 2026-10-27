@@ -175,7 +175,7 @@ describe('seed', () => {
 
 describe('parsing', () => {
   sdkTest(
-    'an invalid invite code and invalid notes fail with InvalidInput',
+    'an invalid invite code, notes, proposal or approval fails with InvalidInput',
     async ({ session }) => {
       await expect(
         session.InviteCode.parse('not-an-invite'),
@@ -184,6 +184,18 @@ describe('parsing', () => {
         code: ErrorCode.InvalidInput,
       })
       await expect(session.Notes.parse('not-notes')).rejects.toMatchObject({
+        name: 'SdkError',
+        code: ErrorCode.InvalidInput,
+      })
+      await expect(
+        session.Proposal.parse('not-a-proposal'),
+      ).rejects.toMatchObject({
+        name: 'SdkError',
+        code: ErrorCode.InvalidInput,
+      })
+      await expect(
+        session.Approval.parse('not-an-approval'),
+      ).rejects.toMatchObject({
         name: 'SdkError',
         code: ErrorCode.InvalidInput,
       })

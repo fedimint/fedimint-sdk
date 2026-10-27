@@ -44,6 +44,11 @@ through. An extension works with fedimint's own types, so it has to be built
 against the exact fedimint release this crate requires, and this part of the
 API is not covered by this crate's semver.
 
+An extension can also back the `Multisig` facade, accounts that a group's
+members pay out of together, by providing a `MultisigBackend`. This crate
+defines the facade and ships no module behind it, so without such an
+extension `Federation::multisig` is `None`.
+
 ## Releases
 
 The crate is published as `fedimint-sdk` on crates.io, and its release notes

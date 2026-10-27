@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use crate::{
-    Amount, AnyOperation, BalanceUpdates, Ecash, Federation, Lightning, Onchain, OperationId,
-    Result,
+    Amount, AnyOperation, BalanceUpdates, Ecash, Federation, Lightning, Multisig, Onchain,
+    OperationId, Result,
 };
 
-// The UniFFI view of `Federation::ecash`/`lightning`/`onchain`/`operation`, under their real names
-// but different Rust identifiers so they can wrap each object in `Arc`: a UniFFI object nested in
-// `Option`/`Result<Option<_>>` has to cross as `Arc<T>`.
+// The UniFFI view of `Federation::ecash`/`lightning`/`onchain`/`multisig`/`operation`, under their
+// real names but different Rust identifiers so they can wrap each object in `Arc`: a UniFFI object
+// nested in `Option`/`Result<Option<_>>` has to cross as `Arc<T>`.
 #[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
 #[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Federation {
@@ -29,6 +29,12 @@ impl Federation {
     #[uniffi::method(name = "onchain")]
     pub fn ffi_onchain(&self) -> Option<Arc<Onchain>> {
         self.onchain().map(Arc::new)
+    }
+
+    /// See [`Federation::multisig`].
+    #[uniffi::method(name = "multisig")]
+    pub fn ffi_multisig(&self) -> Option<Arc<Multisig>> {
+        self.multisig().map(Arc::new)
     }
 
     /// See [`Federation::operation`].

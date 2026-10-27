@@ -36,7 +36,8 @@ use crate::db::OperationRecord;
 use crate::federation::FederationInner;
 use crate::{
     EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
-    OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
+    MultisigDepositState, MultisigSweepState, MultisigTransferState, OnchainReceiveState,
+    OnchainSendState, OperationId, RecoveryState, Result,
 };
 
 // The sealing module for `OperationState` and `OperationDetails`. `pub(crate)` so the facade
@@ -708,7 +709,7 @@ async fn until_closed<T>(
 /// is not supported; and [`raw_kind`](AnyOperation::raw_kind) gives the
 /// persisted discriminator verbatim, for logs and bug reports.
 ///
-/// The seven `as_*` accessors return `Some` only when the kind matches and
+/// The `as_*` accessors return `Some` only when the kind matches and
 /// the operation is supported, and `None` otherwise, without distinguishing
 /// a plain kind mismatch from an unsupported record of the matching kind:
 /// use [`support`](AnyOperation::support) or
@@ -924,6 +925,46 @@ impl AnyOperation {
             _ => None,
         }
     }
+
+    /// Recovers a typed handle if this is a deposit into a multisig account.
+    ///
+    /// `None` for any other kind, for a record this build cannot interpret,
+    /// and for a record of *this* kind whose typed state this build cannot
+    /// observe; see the type documentation for how to tell those apart.
+    pub fn as_multisig_deposit(&self) -> Option<Operation<MultisigDepositState>> {
+        match driver_for(self.inner.kind)? {
+            ErasedDriver::MultisigDeposit(driver) => {
+                self.typed(OperationKind::MultisigDeposit, driver)
+            }
+            _ => None,
+        }
+    }
+
+    /// Recovers a typed handle if this is a payment out of a multisig account.
+    ///
+    /// `None` for any other kind, for a record this build cannot interpret,
+    /// and for a record of *this* kind whose typed state this build cannot
+    /// observe; see the type documentation for how to tell those apart.
+    pub fn as_multisig_transfer(&self) -> Option<Operation<MultisigTransferState>> {
+        match driver_for(self.inner.kind)? {
+            ErasedDriver::MultisigTransfer(driver) => {
+                self.typed(OperationKind::MultisigTransfer, driver)
+            }
+            _ => None,
+        }
+    }
+
+    /// Recovers a typed handle if this is a sweep of multisig payouts.
+    ///
+    /// `None` for any other kind, for a record this build cannot interpret,
+    /// and for a record of *this* kind whose typed state this build cannot
+    /// observe; see the type documentation for how to tell those apart.
+    pub fn as_multisig_sweep(&self) -> Option<Operation<MultisigSweepState>> {
+        match driver_for(self.inner.kind)? {
+            ErasedDriver::MultisigSweep(driver) => self.typed(OperationKind::MultisigSweep, driver),
+            _ => None,
+        }
+    }
 }
 
 impl AnyOperation {
@@ -1049,6 +1090,15 @@ pub enum OperationKind {
     /// Restoring a wallet from its seed, tracked by
     /// [`RecoveryState`](crate::RecoveryState).
     Recovery,
+    /// A deposit into a multisig account, tracked by
+    /// [`MultisigDepositState`](crate::MultisigDepositState).
+    MultisigDeposit,
+    /// A payment out of a multisig account, tracked by
+    /// [`MultisigTransferState`](crate::MultisigTransferState).
+    MultisigTransfer,
+    /// Moving multisig payouts into the ecash balance, tracked by
+    /// [`MultisigSweepState`](crate::MultisigSweepState).
+    MultisigSweep,
     /// An operation this SDK version cannot interpret.
     ///
     /// Persisted operations outlive the version that created them: an
@@ -1141,7 +1191,10 @@ impl OperationKind {
             | OperationKind::LnReceive
             | OperationKind::OnchainSend
             | OperationKind::OnchainReceive
-            | OperationKind::Recovery => READABLE_STATE_SCHEMA,
+            | OperationKind::Recovery
+            | OperationKind::MultisigDeposit
+            | OperationKind::MultisigTransfer
+            | OperationKind::MultisigSweep => READABLE_STATE_SCHEMA,
             OperationKind::Unknown => 0,
         }
     }
@@ -1237,11 +1290,17 @@ pub(crate) mod kinds {
     pub(crate) const ONCHAIN_RECEIVE: &str = "onchain_receive";
     /// Restoring a wallet from its seed.
     pub(crate) const RECOVERY: &str = "recovery";
+    /// A deposit into a multisig account.
+    pub(crate) const MULTISIG_DEPOSIT: &str = "multisig_deposit";
+    /// A payment out of a multisig account.
+    pub(crate) const MULTISIG_TRANSFER: &str = "multisig_transfer";
+    /// Moving multisig payouts into the ecash balance.
+    pub(crate) const MULTISIG_SWEEP: &str = "multisig_sweep";
 
     /// Every tag above, so a test can walk every kind this build writes.
     ///
     /// A tag added above and not added here is a tag no test in this module ever exercises.
-    pub(crate) const ALL: [&str; 7] = [
+    pub(crate) const ALL: [&str; 10] = [
         ECASH_SEND,
         ECASH_RECEIVE,
         LN_SEND,
@@ -1249,6 +1308,9 @@ pub(crate) mod kinds {
         ONCHAIN_SEND,
         ONCHAIN_RECEIVE,
         RECOVERY,
+        MULTISIG_DEPOSIT,
+        MULTISIG_TRANSFER,
+        MULTISIG_SWEEP,
     ];
 }
 
@@ -1266,6 +1328,9 @@ pub(crate) fn kind_of_tag(tag: &str) -> OperationKind {
         kinds::ONCHAIN_SEND => OperationKind::OnchainSend,
         kinds::ONCHAIN_RECEIVE => OperationKind::OnchainReceive,
         kinds::RECOVERY => OperationKind::Recovery,
+        kinds::MULTISIG_DEPOSIT => OperationKind::MultisigDeposit,
+        kinds::MULTISIG_TRANSFER => OperationKind::MultisigTransfer,
+        kinds::MULTISIG_SWEEP => OperationKind::MultisigSweep,
         _ => OperationKind::Unknown,
     }
 }
@@ -1490,10 +1555,10 @@ pub(crate) struct Backfilled {
     pub(crate) final_state: Option<String>,
 }
 
-/// A driver for one of the seven kinds, with its state type recovered by matching.
+/// A driver for one of the kinds, with its state type recovered by matching.
 ///
 /// [`driver_for`] is one function over the whole kind vocabulary, so it has one return type,
-/// while a [`Driver<S>`](Driver) is generic in the state enum it observes and the seven state
+/// while a [`Driver<S>`](Driver) is generic in the state enum it observes and the state
 /// enums share nothing a trait object could name. This enum is the join: the caller knows which
 /// variant the kind it asked about must be, and a variant that does not match is the same `None`
 /// as no driver at all.
@@ -1512,6 +1577,12 @@ pub(crate) enum ErasedDriver {
     OnchainReceive(Arc<dyn Driver<OnchainReceiveState>>),
     /// Observes [`RecoveryState`](crate::RecoveryState).
     Recovery(Arc<dyn Driver<RecoveryState>>),
+    /// Observes [`MultisigDepositState`](crate::MultisigDepositState).
+    MultisigDeposit(Arc<dyn Driver<MultisigDepositState>>),
+    /// Observes [`MultisigTransferState`](crate::MultisigTransferState).
+    MultisigTransfer(Arc<dyn Driver<MultisigTransferState>>),
+    /// Observes [`MultisigSweepState`](crate::MultisigSweepState).
+    MultisigSweep(Arc<dyn Driver<MultisigSweepState>>),
 }
 
 /// The driver this build observes `kind` with, if it has one.
@@ -1532,9 +1603,9 @@ pub(crate) enum ErasedDriver {
 pub(crate) fn driver_for(kind: OperationKind) -> Option<ErasedDriver> {
     match kind {
         // One arm per `OperationKind` variant, written by the facade that owns that kind: ecash,
-        // lightning, on-chain and recovery. No wildcard: a variant added to `OperationKind` does
-        // not compile until its driver is named here, which is what lets `support` promise that
-        // `Observable` means a typed handle.
+        // lightning, on-chain, recovery and multisig. No wildcard: a variant added to
+        // `OperationKind` does not compile until its driver is named here, which is what lets
+        // `support` promise that `Observable` means a typed handle.
         OperationKind::EcashSend => Some(ErasedDriver::EcashSend(Arc::new(
             crate::ecash::EcashSendDriver,
         ))),
@@ -1555,6 +1626,15 @@ pub(crate) fn driver_for(kind: OperationKind) -> Option<ErasedDriver> {
         ))),
         OperationKind::Recovery => Some(ErasedDriver::Recovery(Arc::new(
             crate::recovery::RecoveryDriver,
+        ))),
+        OperationKind::MultisigDeposit => Some(ErasedDriver::MultisigDeposit(Arc::new(
+            crate::multisig::MultisigDepositDriver::default(),
+        ))),
+        OperationKind::MultisigTransfer => Some(ErasedDriver::MultisigTransfer(Arc::new(
+            crate::multisig::MultisigTransferDriver::default(),
+        ))),
+        OperationKind::MultisigSweep => Some(ErasedDriver::MultisigSweep(Arc::new(
+            crate::multisig::MultisigSweepDriver::default(),
         ))),
         // No driver, by construction: an unrecognised kind has nothing to observe.
         OperationKind::Unknown => None,
@@ -1863,7 +1943,7 @@ impl Backfiller for EcashBackfiller {
 /// A driver for a real kind, so the type-erased accessors can be exercised end to end.
 ///
 /// The engine's own behaviour is covered against `ProbeState`; this exists to check the wiring
-/// from a persisted tag to a typed handle, which needs one of the seven public state enums.
+/// from a persisted tag to a typed handle, which needs one of the public state enums.
 //
 // At file scope rather than inside `mod tests`, because `driver_for` above returns it and
 // `federation.rs`'s tests use it too, and a `mod tests` is private to its own file.
@@ -2497,7 +2577,7 @@ mod tests {
 
     /// Every kind this build knows, in the order [`AnyOperation`] declares
     /// its accessors.
-    const KNOWN_KINDS: [OperationKind; 7] = [
+    const KNOWN_KINDS: [OperationKind; 10] = [
         OperationKind::EcashSend,
         OperationKind::EcashReceive,
         OperationKind::LnSend,
@@ -2505,6 +2585,9 @@ mod tests {
         OperationKind::OnchainSend,
         OperationKind::OnchainReceive,
         OperationKind::Recovery,
+        OperationKind::MultisigDeposit,
+        OperationKind::MultisigTransfer,
+        OperationKind::MultisigSweep,
     ];
 
     /// A raw record carrying the given tag and schema version.
@@ -2535,6 +2618,12 @@ mod tests {
         let _: fn(&AnyOperation) -> Option<Operation<OnchainReceiveState>> =
             AnyOperation::as_onchain_receive;
         let _: fn(&AnyOperation) -> Option<Operation<RecoveryState>> = AnyOperation::as_recovery;
+        let _: fn(&AnyOperation) -> Option<Operation<MultisigDepositState>> =
+            AnyOperation::as_multisig_deposit;
+        let _: fn(&AnyOperation) -> Option<Operation<MultisigTransferState>> =
+            AnyOperation::as_multisig_transfer;
+        let _: fn(&AnyOperation) -> Option<Operation<MultisigSweepState>> =
+            AnyOperation::as_multisig_sweep;
         // And every one of them is a real kind, never the reading of one.
         for kind in KNOWN_KINDS {
             assert_ne!(kind, OperationKind::Unknown);
@@ -2771,7 +2860,7 @@ mod tests {
 
     #[test]
     fn every_tag_this_build_writes_reads_back_as_its_kind() {
-        // `kinds::ALL` and `KNOWN_KINDS` are declared in the same order as the seven `as_*`
+        // `kinds::ALL` and `KNOWN_KINDS` are declared in the same order as the `as_*`
         // accessors, so zipping them pairs each tag with the kind it must read back as.
         for (tag, kind) in kinds::ALL.into_iter().zip(KNOWN_KINDS) {
             assert_eq!(kind_of_tag(tag), kind, "{tag}");

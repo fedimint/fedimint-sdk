@@ -2,12 +2,14 @@
 //!
 //! Behind the `extension-api` feature, off by default.
 
+use std::sync::Arc;
+
 use fedimint_client::ClientHandleArc;
 use fedimint_client::module_init::DynClientModuleInit;
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_core::util::BoxFuture;
 
-use crate::Federation;
+use crate::{Federation, MultisigBackend};
 
 /// What another crate plugs into an [`Sdk`](crate::Sdk) instance: client modules this crate does
 /// not ship, and work that runs on each client a federation starts.
@@ -67,5 +69,17 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
         client: &ClientHandleArc,
     ) -> BoxFuture<'static, ()> {
         Box::pin(std::future::ready(()))
+    }
+
+    /// The module the [`Multisig`](crate::Multisig) facade runs on, if this extension provides
+    /// one.
+    ///
+    /// Asked once, by [`SdkBuilder::build`](crate::SdkBuilder::build); an instance has one
+    /// multisig backend at most, and a second one fails that build with
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput). The facade is then available on every
+    /// federation whose configuration has a module of the backend's
+    /// [`module_kind`](MultisigBackend::module_kind).
+    fn multisig(&self) -> Option<Arc<dyn MultisigBackend>> {
+        None
     }
 }

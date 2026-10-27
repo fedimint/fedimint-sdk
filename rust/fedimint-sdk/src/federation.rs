@@ -13,12 +13,13 @@ use fedimint_core::util::FmtCompact as _;
 use futures::StreamExt;
 
 use crate::db::{FederationRecord, StoredStatus};
+use crate::multisig::MultisigBackend;
 use crate::operation::{Driver, Operation, OperationInner, OperationState, kinds};
 use crate::sdk::SdkInner;
 use crate::{
     ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
-    FederationStatus, InviteCode, Lightning, Meta, Network, Onchain, OperationId, RecoveryProgress,
-    Result,
+    FederationStatus, InviteCode, Lightning, Meta, Multisig, Network, Onchain, OperationId,
+    RecoveryProgress, Result,
 };
 
 /// A handle to one federation this SDK instance has joined.
@@ -193,11 +194,13 @@ impl Federation {
     ///
     /// Reported as plain booleans so an application can decide what to
     /// render before the user touches anything. It answers the same
-    /// question as the three facade accessors below and exists alongside
+    /// question as the facade accessors below and exists alongside
     /// them for the case where a screen needs to know about several
     /// capabilities at once without taking handles it will not use.
     pub fn capabilities(&self) -> Capabilities {
-        self.inner.record().capabilities.into()
+        let mut capabilities: Capabilities = self.inner.record().capabilities.into();
+        capabilities.multisig = self.inner.multisig_backend().is_some();
+        capabilities
     }
 }
 
@@ -237,6 +240,19 @@ impl Federation {
         self.capabilities()
             .onchain
             .then(|| Onchain::new(self.inner.clone()))
+    }
+
+    /// The multisig facade, or `None` if this build carries no module that
+    /// backs it or this federation does not run that module.
+    ///
+    /// This crate defines the facade but ships no module behind it: a build
+    /// that carries one adds it through the `extension-api` feature. See
+    /// [`Federation::ecash`] for why this is an `Option`, and what a closed
+    /// federation's facade does.
+    pub fn multisig(&self) -> Option<Multisig> {
+        self.inner
+            .multisig_backend()
+            .map(|backend| Multisig::new(self.inner.clone(), backend))
     }
 
     /// Looks up an operation by id, whatever kind it is.
@@ -361,8 +377,8 @@ impl Federation {
 /// `#[non_exhaustive]` like every data type here: a federation gaining a
 /// new kind of capability must be an additive change, not a breaking one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// A plain record of three bools: every field is FFI-safe as-is. Behind the
-// `uniffi` feature.
+// A plain record of bools: every field is FFI-safe as-is. Behind the `uniffi`
+// feature.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct Capabilities {
@@ -372,6 +388,8 @@ pub struct Capabilities {
     pub lightning: bool,
     /// Whether [`Federation::onchain`] is available.
     pub onchain: bool,
+    /// Whether [`Federation::multisig`] is available.
+    pub multisig: bool,
 }
 
 /// One independent subscription to a federation's balance.
@@ -556,6 +574,11 @@ pub(crate) struct FederationInner {
     /// for it happen under this lock, so two lookups on it racing over two claims of one deposit
     /// can never both record it. A federation opened in this one's place has a lock of its own.
     deposit_records: tokio::sync::Mutex<()>,
+    /// Every module kind the configuration declared when this federation last came up, empty
+    /// until it has. What decides whether a multisig backend serves it: unlike the three
+    /// capabilities on the record, that depends on the build as well as on the configuration,
+    /// so it is not stored.
+    module_kinds: std::sync::RwLock<Vec<String>>,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -618,6 +641,7 @@ impl FederationInner {
             settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
             deposit_records: tokio::sync::Mutex::new(()),
+            module_kinds: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -755,6 +779,27 @@ impl FederationInner {
         );
         *write_lock(&self.status) = status;
         self.closed.send_replace(!open);
+    }
+
+    /// Records the module kinds the configuration declares, read when the federation comes up.
+    pub(crate) fn set_module_kinds(&self, kinds: Vec<String>) {
+        *write_lock(&self.module_kinds) = kinds;
+    }
+
+    /// The multisig backend that serves this federation, if this build has one and the
+    /// federation runs its module.
+    pub(crate) fn multisig_backend(&self) -> Option<Arc<dyn MultisigBackend>> {
+        #[cfg(feature = "extension-api")]
+        {
+            let backend = self.sdk.upgrade()?.multisig.clone()?;
+            let kind = backend.module_kind();
+            read_lock(&self.module_kinds)
+                .contains(&kind)
+                .then_some(backend)
+        }
+        // No backend is ever installed without the feature that installs one.
+        #[cfg(not(feature = "extension-api"))]
+        None
     }
 
     /// The listing record for this federation.
@@ -1418,6 +1463,17 @@ impl FederationInner {
     /// a federation with no client.
     #[cfg(test)]
     pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
+        FederationInner::detached_in(Weak::new(), db, open)
+    }
+
+    /// [`detached`](FederationInner::detached), belonging to `sdk`: for a test of what a
+    /// federation reads off its instance.
+    #[cfg(test)]
+    pub(crate) fn detached_in(
+        sdk: Weak<SdkInner>,
+        db: Database,
+        open: bool,
+    ) -> Arc<FederationInner> {
         use fedimint_core::PeerId;
         use fedimint_core::invite_code::InviteCode;
         use fedimint_core::util::SafeUrl;
@@ -1432,7 +1488,7 @@ impl FederationInner {
         let id = config::FederationId::dummy();
         let federation = FederationInner::new(
             id,
-            Weak::new(),
+            sdk,
             db,
             FederationRecord {
                 invite: InviteCode::new(
@@ -1712,6 +1768,13 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     // still covers a federation that is later reopened successfully.
     if !federation.is_open() {
         return;
+    }
+    // First, so that what a module kind decides (whether `Federation::multisig` is there) is
+    // settled before anyone is told this federation came up. Read from the client the bring-up
+    // just opened, so a configuration that changed since the last run is the one read.
+    if let Ok(client) = federation.client(false).await {
+        let kinds = crate::modules::module_kinds(&client.config().await);
+        federation.set_module_kinds(kinds);
     }
     if let Err(err) = federation.reconcile_operations().await {
         tracing::warn!(
@@ -2229,7 +2292,8 @@ mod tests {
             crate::Capabilities {
                 ecash: true,
                 lightning: true,
-                onchain: true
+                onchain: true,
+                multisig: false,
             }
         );
         assert_eq!(
@@ -3015,5 +3079,69 @@ mod tests {
             .await
             .expect_err("there is no client to hand out");
         assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    /// Backs multisig with a backend that is never reached.
+    #[cfg(feature = "extension-api")]
+    struct MultisigExtension;
+
+    #[cfg(feature = "extension-api")]
+    impl crate::Extension for MultisigExtension {
+        fn multisig(&self) -> Option<Arc<dyn crate::MultisigBackend>> {
+            Some(Arc::new(crate::multisig::UnreachableBackend))
+        }
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_is_offered_where_the_backends_module_runs() {
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .extension(Arc::new(MultisigExtension))
+            .build()
+            .await
+            .expect("an instance opens");
+        let inner = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        let federation = Federation::new(inner.clone());
+
+        // Until it comes up, no configuration has been read.
+        assert!(federation.multisig().is_none());
+        assert!(!federation.capabilities().multisig);
+
+        inner.set_module_kinds(vec!["mint".to_owned()]);
+        assert!(federation.multisig().is_none(), "the module is not run");
+        assert!(!federation.capabilities().multisig);
+
+        inner.set_module_kinds(vec![
+            "mint".to_owned(),
+            crate::multisig::UnreachableBackend::MODULE.to_owned(),
+        ]);
+        assert!(federation.multisig().is_some());
+        assert!(federation.capabilities().multisig);
+        // The other capabilities still come from the record.
+        assert!(federation.capabilities().ecash);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_is_not_offered_without_a_backend() {
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .build()
+            .await
+            .expect("an instance opens");
+        let inner = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        inner.set_module_kinds(vec![crate::multisig::UnreachableBackend::MODULE.to_owned()]);
+        let federation = Federation::new(inner);
+        assert!(federation.multisig().is_none());
+        assert!(!federation.capabilities().multisig);
     }
 }

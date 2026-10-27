@@ -48,10 +48,12 @@ cargo-args = ["--config", 'env.ROCKSDB_LIB_DIR="/nonexistent"']
 # fallback runtime is current-thread and the first RocksDB transaction aborts the process.
 uniffi = ["dep:uniffi", "dep:async-compat", "dep:uniffi-runtime-wasm"]
 # `SdkBuilder::extension`, `Extension` and `Federation::client`: how another crate adds client
-# modules this one does not ship. Off by default. The one place fedimint's own types are part of
-# the public API (the client handle, module inits), which the rule against foreign types below
-# otherwise forbids, so an extension must be built against the exact fedimint release this crate
-# requires, and this part of the API is not covered by this crate's semver.
+# modules this one does not ship. With them, `MultisigBackend` and what a backend needs to build
+# and read the facade's values: how an extension puts a module behind the `Multisig` facade.
+# Off by default. The one place fedimint's own types are part of the public API (the client,
+# module inits, keys, operation ids), which the rule against foreign types below otherwise
+# forbids, so an extension must be built against the exact fedimint release this crate requires,
+# and this part of the API is not covered by this crate's semver.
 extension-api = []
 
 [dependencies]
