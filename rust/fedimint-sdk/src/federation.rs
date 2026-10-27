@@ -317,6 +317,29 @@ impl Federation {
     }
 }
 
+#[cfg(feature = "extension-api")]
+impl Federation {
+    /// The federation's running fedimint client, for an [`Extension`](crate::Extension) to reach
+    /// its own modules through.
+    ///
+    /// What this returns is a clone of the handle, not a lease on the federation: holding it does
+    /// not keep the federation open. A close, an erase or [`Sdk::shutdown`](crate::Sdk::shutdown)
+    /// stops the client's tasks and then waits a short while for every clone to be dropped; one
+    /// that is still held after that makes the call fail with
+    /// [`Internal`](crate::ErrorCode::Internal) and leaves the federation recorded as running. So
+    /// ask for a handle for each piece of work, drop it as soon as that work is done, and give up
+    /// any wait once the client's task group is told to shut down
+    /// (`client.task_group().make_handle().make_shutdown_rx()`).
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation is not
+    /// running.
+    pub async fn client(&self) -> Result<ClientHandleArc> {
+        Ok(self.inner.client(false).await?.handle())
+    }
+}
+
 impl Federation {
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
@@ -1342,6 +1365,17 @@ impl FederationInner {
     /// a federation with no client.
     #[cfg(test)]
     pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
+        FederationInner::detached_in(Weak::new(), db, open)
+    }
+
+    /// [`detached`](FederationInner::detached), belonging to `sdk`: for a test of what a
+    /// federation reads off its instance.
+    #[cfg(test)]
+    pub(crate) fn detached_in(
+        sdk: Weak<SdkInner>,
+        db: Database,
+        open: bool,
+    ) -> Arc<FederationInner> {
         use fedimint_core::PeerId;
         use fedimint_core::invite_code::InviteCode;
         use fedimint_core::util::SafeUrl;
@@ -1356,7 +1390,7 @@ impl FederationInner {
         let id = config::FederationId::dummy();
         let federation = FederationInner::new(
             id,
-            Weak::new(),
+            sdk,
             db,
             FederationRecord {
                 invite: InviteCode::new(
@@ -1625,6 +1659,15 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             error = %err,
             "could not record the on-chain deposits this federation's wallet found",
         );
+    }
+    // Last, so an extension picking up its own work finds the SDK's records already repaired.
+    // Every bring-up path ends here, which is what makes this the one place to call from.
+    #[cfg(feature = "extension-api")]
+    if let Some(sdk) = federation.sdk.upgrade() {
+        let handle = Federation::new(federation.clone());
+        for extension in &sdk.extensions {
+            extension.federation_opened(&handle);
+        }
     }
 }
 
@@ -2807,5 +2850,74 @@ mod tests {
 
         federation.reset_recovery_progress();
         assert_eq!(federation.recovery_progress_of(attempt), None);
+    }
+
+    /// Records the federations it is told came up.
+    #[cfg(feature = "extension-api")]
+    #[derive(Default)]
+    struct RecordingExtension {
+        opened: std::sync::Mutex<Vec<crate::FederationId>>,
+    }
+
+    #[cfg(feature = "extension-api")]
+    impl crate::Extension for RecordingExtension {
+        fn federation_opened(&self, federation: &Federation) {
+            self.opened
+                .lock()
+                .expect("not poisoned")
+                .push(federation.id());
+        }
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extensions_are_told_about_each_federation_that_comes_up() {
+        let extension = Arc::new(RecordingExtension::default());
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .extension(extension.clone())
+            .build()
+            .await
+            .expect("an instance opens");
+        let opened = || extension.opened.lock().expect("not poisoned").clone();
+
+        // Bring-up ends in `reconcile_on_open` on every path, and a federation with no client
+        // behind it still gets there: its reconciliation fails, which is logged, not fatal.
+        let running = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        reconcile_on_open(&running).await;
+        assert_eq!(
+            opened(),
+            vec![crate::FederationId::from_upstream(running.id)]
+        );
+
+        // A quarantined federation also passes through `reconcile_on_open`, and is not open.
+        let closed = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [2u8; 32]),
+            false,
+        );
+        reconcile_on_open(&closed).await;
+        assert_eq!(
+            opened().len(),
+            1,
+            "a federation that is not open is not announced"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_federation_without_a_client_hands_none_out() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = Federation::new(FederationInner::detached(db, true));
+
+        let err = federation
+            .client()
+            .await
+            .expect_err("there is no client to hand out");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 }

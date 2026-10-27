@@ -47,6 +47,12 @@ cargo-args = ["--config", 'env.ROCKSDB_LIB_DIR="/nonexistent"']
 # `dep:async-compat` is what turns that entry (and its `multi-thread` feature) on: left out, the
 # fallback runtime is current-thread and the first RocksDB transaction aborts the process.
 uniffi = ["dep:uniffi", "dep:async-compat", "dep:uniffi-runtime-wasm"]
+# `SdkBuilder::extension`, `Extension` and `Federation::client`: how another crate adds client
+# modules this one does not ship. Off by default. The one place fedimint's own types are part of
+# the public API (the client handle, module inits), which the rule against foreign types below
+# otherwise forbids, so an extension must be built against the exact fedimint release this crate
+# requires, and this part of the API is not covered by this crate's semver.
+extension-api = []
 
 [dependencies]
 # Every fedimint crate below is required at one exact version, the same for
