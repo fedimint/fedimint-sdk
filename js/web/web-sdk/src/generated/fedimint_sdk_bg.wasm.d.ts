@@ -281,6 +281,7 @@ export const uniffi_fedimint_sdk_checksum_method_proposal_account_id: () => numb
 export const uniffi_fedimint_sdk_checksum_method_proposal_amount: () => number
 export const uniffi_fedimint_sdk_checksum_method_proposal_display: () => number
 export const uniffi_fedimint_sdk_checksum_method_proposal_policy: () => number
+export const uniffi_fedimint_sdk_checksum_method_proposal_proposer: () => number
 export const uniffi_fedimint_sdk_checksum_method_recoveryoperation_await_final: () => number
 export const uniffi_fedimint_sdk_checksum_method_recoveryoperation_id: () => number
 export const uniffi_fedimint_sdk_checksum_method_recoveryoperation_state: () => number
@@ -817,8 +818,9 @@ export const uniffi_fedimint_sdk_fn_method_multisig_member_key: (
 ) => bigint
 export const uniffi_fedimint_sdk_fn_method_multisig_propose: (
   a: bigint,
-  b: bigint,
-  c: number,
+  b: number,
+  c: bigint,
+  d: number,
 ) => bigint
 export const uniffi_fedimint_sdk_fn_method_multisig_sweep: (a: bigint) => bigint
 export const uniffi_fedimint_sdk_fn_method_multisigaccount_id: (
@@ -963,6 +965,11 @@ export const uniffi_fedimint_sdk_fn_method_proposal_display: (
   c: number,
 ) => void
 export const uniffi_fedimint_sdk_fn_method_proposal_policy: (
+  a: number,
+  b: bigint,
+  c: number,
+) => void
+export const uniffi_fedimint_sdk_fn_method_proposal_proposer: (
   a: number,
   b: bigint,
   c: number,
@@ -1369,12 +1376,51 @@ export const __ubrn_alloc: (a: number, b: number) => number
 export const __ubrn_free: (a: number, b: number, c: number) => void
 export const __ubrn_install_panic_hook: () => void
 export const __ubrn_set_panic_log: (a: number) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent_____: (
+  a: number,
+  b: number,
+  c: any,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent____Output_______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________1_: (
+  a: number,
+  b: number,
+) => void
 export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______1_: (
   a: number,
   b: number,
   c: any,
 ) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________1_: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______7_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________4_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____: (
+  a: number,
+  b: number,
+  c: any,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output_______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_: (
+  a: number,
+  b: number,
+  c: any,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________2_: (
   a: number,
   b: number,
 ) => void
@@ -1383,6 +1429,38 @@ export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______
   b: number,
 ) => void
 export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__Fn_____Output________1_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output_______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__Fn_____Output_______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________2_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______6_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________3_: (
   a: number,
   b: number,
 ) => void
@@ -1400,77 +1478,6 @@ export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______
   b: number,
 ) => void
 export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________1_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output_______: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______6_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________3_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______7_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________4_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________2_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____: (
-  a: number,
-  b: number,
-  c: any,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output_______: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__Fn_____Output_______: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent_____: (
-  a: number,
-  b: number,
-  c: any,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent____Output_______: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_: (
-  a: number,
-  b: number,
-  c: any,
-) => void
-export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________2_: (
   a: number,
   b: number,
 ) => void

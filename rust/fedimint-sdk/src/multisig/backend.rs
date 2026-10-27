@@ -2,6 +2,7 @@
 
 use fedimint_client::Client;
 use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_core::secp256k1::{Message, schnorr};
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_core::util::{BoxFuture, BoxStream};
 
@@ -38,7 +39,9 @@ use crate::{
 /// - waits for nothing before it is first polled, so that asking for it costs one bounded read;
 /// - holds no clone of the client, so it never keeps the federation from closing.
 ///
-/// A stream that ends without a final state is asked for again.
+/// A stream that ends without a final state is asked for again. An operation that has not ended
+/// when the application stops is followed again only by a build with a backend for the same
+/// module.
 pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     /// The kind of the module this backend runs on.
     fn module_kind(&self) -> String;
@@ -50,6 +53,15 @@ pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     ///
     /// The same `group` always gives the same key, and different groups give unrelated keys.
     fn member_key(&self, client: &Client, group: &str) -> Result<MemberKey>;
+
+    /// This member's signature over `message`, as the member of `group`: a BIP-340 Schnorr
+    /// signature by the secret key behind [`member_key`](MultisigBackend::member_key) for
+    /// `group`.
+    ///
+    /// The facade signs every proposal it makes this way, so that the other members can tell who
+    /// made it. `message` is a digest under a domain of the facade's own, so the signature is good
+    /// for nothing the module signs.
+    fn sign(&self, client: &Client, group: &str, message: Message) -> Result<schnorr::Signature>;
 
     /// What `account` holds, in its denomination.
     ///
@@ -73,7 +85,9 @@ pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     /// What the module needs signed to pay `amount` out of `account` to this member.
     ///
     /// Whatever this returns is carried in the [`Proposal`], and read back with
-    /// [`Proposal::payload`]. `amount` is not zero and in the account's denomination.
+    /// [`Proposal::payload`]. `amount` is not zero and in the account's denomination, and this
+    /// member is one of the account's members, who signs the proposal with
+    /// [`sign`](MultisigBackend::sign).
     fn propose<'a>(
         &'a self,
         client: &'a Client,
@@ -86,7 +100,8 @@ pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     /// Checks first that the proposal's payload pays what its account and amount say, since
     /// those are what the member is shown and agrees to. Whatever this returns is carried in the
     /// [`Approval`], and read back with [`Approval::payload`]. The facade has already checked that
-    /// this member's key for `group` is one of the account's members.
+    /// this member's key for `group` is one of the account's members, and that the proposal's
+    /// [`proposer`](Proposal::proposer), another of them, signed it.
     fn approve(&self, client: &Client, group: &str, proposal: &Proposal) -> Result<Vec<u8>>;
 
     /// Starts paying out `proposal`, with `approvals`.

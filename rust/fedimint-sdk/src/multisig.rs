@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use fedimint_core::bitcoin::hashes::Hash;
+use fedimint_core::secp256k1::Message;
+
 use crate::federation::FederationInner;
 use crate::operation::{DetailedOperationState, OperationDetails, OperationState, kinds, sealed};
 use crate::{Amount, Error, ErrorCode, Operation, Result, Timestamp};
@@ -34,9 +37,9 @@ pub use proposal::{Approval, Proposal};
 /// 2. [`account`](Multisig::account) turns the policy into its [`MultisigAccount`], the same one
 ///    for every member.
 /// 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
-/// 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose). The
-///    other members each [`approve`](Multisig::approve) it, and once enough have, anyone
-///    [`execute`](Multisig::execute)s it with their approvals.
+/// 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
+///    signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
+///    have, anyone [`execute`](Multisig::execute)s it with their approvals.
 /// 5. An executed proposal pays the member who proposed it. That member's
 ///    [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
 ///
@@ -44,6 +47,11 @@ pub use proposal::{Approval, Proposal};
 /// it has, and keeps the group's policy. Neither this crate nor the federation keeps a list of a
 /// member's groups. The channel is never trusted with money: the federation pays out only on the
 /// signatures of enough of the account's members.
+///
+/// A deposit, a payout or a sweep is recorded when the call that starts it returns. If the
+/// application stops before that, the federation can still carry it out, and the activity then
+/// lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
+/// account's [`balance`](Multisig::balance) before starting it again.
 ///
 /// Like every other facade's, a call that needs the federation fails with
 /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The two that do not
@@ -118,10 +126,12 @@ impl Multisig {
 
     /// Approves `proposal`, as this member of `group`.
     ///
-    /// Show the member the proposal's [`amount`](Proposal::amount) and account before calling
-    /// this: an approval is a signature that lets the payment through once enough members have
-    /// given theirs. The proposal is checked first, so a proposal whose contents do not match what
-    /// it says it pays is refused rather than signed.
+    /// Show the member the proposal's [`proposer`](Proposal::proposer), who the payment goes to,
+    /// its [`amount`](Proposal::amount) and its account before calling this: an approval is a
+    /// signature that lets the payment through once enough members have given theirs. Another
+    /// member can hand out a proposal of their own in place of the one expected, and the proposer
+    /// is what tells them apart. The proposal is checked first, so a proposal whose contents do
+    /// not match what it says it pays is refused rather than signed.
     ///
     /// # Errors
     ///
@@ -134,53 +144,74 @@ impl Multisig {
         check_group(group)?;
         self.check_module(proposal)?;
         let client = self.inner.federation.client(false).await?;
-        let member = self.inner.backend.member_key(&client, group)?;
-        if !proposal.account().members().contains(&member) {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                "this member's key for that group is not in the proposal's policy",
-            ));
-        }
+        let member = self.member_of(&client, group, &proposal.account())?;
         let payload = self.inner.backend.approve(&client, group, proposal)?;
         Ok(Approval::new(proposal.digest(), member, payload))
     }
 
-    /// Proposes paying `amount` out of `account` to this member.
+    /// Proposes paying `amount` out of `account` to this member of `group`.
     ///
     /// Nothing moves yet, and nothing is sent anywhere: hand the returned proposal to the other
     /// members to [`approve`](Multisig::approve), then [`execute`](Multisig::execute) it with
-    /// their approvals. The payment goes to the member who proposed it, whoever executes it, and
-    /// [`sweep`](Multisig::sweep) then moves it into that member's ecash balance.
+    /// their approvals. The proposal is signed with this member's key for `group`, and names this
+    /// member as its [`proposer`](Proposal::proposer). The payment goes to the proposer, whoever
+    /// executes it, and [`sweep`](Multisig::sweep) then moves it into the proposer's ecash
+    /// balance.
     ///
     /// A proposal does not stay valid for ever: the federation refuses one executed too long after
     /// it was made, and the payout then ends [`Failed`](MultisigTransferState::Failed).
     ///
     /// # Errors
     ///
-    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a zero amount or one in a different
-    /// denomination from the account's, [`NotSupported`](crate::ErrorCode::NotSupported) for an
-    /// account in a denomination this federation does not hold,
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a zero amount
+    /// or one in a different denomination from the account's, and when this member's key for
+    /// `group` is not one of the account's members (a different group name, most often),
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+    /// federation does not hold,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn propose(
         &self,
+        group: &str,
         account: &MultisigAccount,
         amount: MultisigAmount,
     ) -> Result<Proposal> {
+        check_group(group)?;
         proposal::check_amount(account, &amount)?;
         self.check_denomination(account.denomination())?;
         let client = self.inner.federation.client(false).await?;
+        let proposer = self.member_of(&client, group, account)?;
         let payload = self
             .inner
             .backend
             .propose(&client, account, &amount)
             .await?;
-        Ok(Proposal::new(
-            self.inner.backend.module_kind(),
+        let module = self.inner.backend.module_kind();
+        let digest = Proposal::digest_of(&module, account, &amount, proposer, &payload);
+        let signature = self.inner.backend.sign(
+            &client,
+            group,
+            Message::from_digest(digest.to_byte_array()),
+        )?;
+        // Checked here as the parse checks it, so a backend that signs with the wrong key fails
+        // the member who proposes rather than every member asked to approve.
+        Proposal::signed(
+            module,
             account.clone(),
             amount,
+            proposer,
             payload,
-        ))
+            signature,
+        )
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "the multisig module did not sign the proposal: {}",
+                    err.message
+                ),
+            )
+        })
     }
 }
 
@@ -345,6 +376,23 @@ impl Multisig {
                 backend,
             }),
         }
+    }
+
+    /// This member's key for `group`, which has to be one of `account`'s members.
+    fn member_of(
+        &self,
+        client: &fedimint_client::Client,
+        group: &str,
+        account: &MultisigAccount,
+    ) -> Result<MemberKey> {
+        let member = self.inner.backend.member_key(client, group)?;
+        if !account.members().contains(&member) {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "this member's key for that group is not one of the account's members",
+            ));
+        }
+        Ok(member)
     }
 
     /// Refuses a denomination the backend does not hold accounts in.
@@ -580,6 +628,15 @@ impl MultisigBackend for UnreachableBackend {
         Err(UnreachableBackend::reached())
     }
 
+    fn sign(
+        &self,
+        _client: &fedimint_client::Client,
+        _group: &str,
+        _message: Message,
+    ) -> Result<fedimint_core::secp256k1::schnorr::Signature> {
+        Err(UnreachableBackend::reached())
+    }
+
     fn balance<'a>(
         &'a self,
         _client: &'a fedimint_client::Client,
@@ -669,7 +726,7 @@ impl MultisigBackend for UnreachableBackend {
 mod tests {
     use super::*;
     use crate::db::{federation_namespace, in_memory_root};
-    use crate::multisig::account::test_keys;
+    use crate::multisig::account::{test_keypairs, test_keys};
 
     /// The facade over a federation with no client, open or closed.
     fn multisig(open: bool) -> Multisig {
@@ -683,15 +740,24 @@ mod tests {
         Policy::new(vec![a, b, c], 2, denomination)
     }
 
+    /// The first test member's proposal, made for the backend of `module`.
     fn proposal(module: &str, account: &MultisigAccount) -> Proposal {
-        Proposal::new(
+        let [pair, ..] = test_keypairs();
+        let proposer = MemberKey::from_upstream(pair.public_key());
+        let amount = MultisigAmount::Btc {
+            amount: Amount::from_msats(1_000),
+        };
+        let digest = Proposal::digest_of(module, account, &amount, proposer, &[]);
+        let signature = pair.sign_schnorr(Message::from_digest(digest.to_byte_array()));
+        Proposal::signed(
             module.to_owned(),
             account.clone(),
-            MultisigAmount::Btc {
-                amount: Amount::from_msats(1_000),
-            },
+            amount,
+            proposer,
             Vec::new(),
+            signature,
         )
+        .expect("a member's own proposal")
     }
 
     #[test]
@@ -721,6 +787,7 @@ mod tests {
 
         let err = multisig
             .propose(
+                "group",
                 &account,
                 MultisigAmount::Btc {
                     amount: Amount::from_msats(0),
@@ -732,6 +799,7 @@ mod tests {
 
         let err = multisig
             .propose(
+                "group",
                 &account,
                 MultisigAmount::Fiat {
                     minor_units: 100,
@@ -751,6 +819,17 @@ mod tests {
             .expect("a valid policy");
 
         let err = multisig.member_key("").await.expect_err("no name");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        let err = multisig
+            .propose(
+                "",
+                &account,
+                MultisigAmount::Btc {
+                    amount: Amount::from_msats(1_000),
+                },
+            )
+            .await
+            .expect_err("no name");
         assert_eq!(err.code, ErrorCode::InvalidInput);
         let err = multisig
             .approve("", &proposal(UnreachableBackend::MODULE, &account))
