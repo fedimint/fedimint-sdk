@@ -1,5 +1,5 @@
 //! How the crate's value types cross the boundary: every `custom_type!` conversion, one per type,
-//! in the order `types/` declares them.
+//! in the order `types/` declares them, and then the multisig facade's own.
 //!
 //! Each of these is a real type whose FFI shape is a primitive — a string or an integer — so
 //! nothing about it needs to sit beside its definition: the type keeps its own parsing and
@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::{
-    Address, Amount, Bolt11Invoice, Cursor, FederationId, GatewayId, OperationId, Preimage, Sats,
-    Timestamp, Txid,
+    Address, Amount, Bolt11Invoice, Cursor, FederationId, GatewayId, MemberKey, MultisigAccountId,
+    OperationId, Preimage, Sats, Timestamp, Txid,
 };
 
 uniffi::custom_type!(Address, String, {
@@ -78,4 +78,14 @@ uniffi::custom_type!(MetaMap, HashMap<String, String>, {
     remote,
     lower: |m| m.into_iter().collect(),
     try_lift: |h| Ok(h.into_iter().collect()),
+});
+
+uniffi::custom_type!(MemberKey, String, {
+    lower: |key| key.to_string(),
+    try_lift: |s| s.parse::<MemberKey>().map_err(Into::into),
+});
+
+uniffi::custom_type!(MultisigAccountId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<MultisigAccountId>().map_err(Into::into),
 });

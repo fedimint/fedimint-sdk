@@ -38,6 +38,24 @@ export class Notes {
   }
 }
 
+export class Proposal {
+  static parsed: string[] = []
+
+  static parse(proposal: string): Proposal {
+    Proposal.parsed.push(proposal)
+    return new Proposal()
+  }
+}
+
+export class Approval {
+  static parsed: string[] = []
+
+  static parse(approval: string): Approval {
+    Approval.parsed.push(approval)
+    return new Approval()
+  }
+}
+
 export class Sdk {
   static instances: Sdk[] = []
   static failNext: Error | undefined

@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { openSdk } from '../index'
-import { InviteCode, Mnemonic, Notes, Sdk } from './bindings-stub'
+import {
+  Approval,
+  InviteCode,
+  Mnemonic,
+  Notes,
+  Proposal,
+  Sdk,
+} from './bindings-stub'
 
 describe('openSdk', () => {
   beforeEach(() => {
@@ -11,6 +18,8 @@ describe('openSdk', () => {
     Mnemonic.generated = 0
     InviteCode.parsed = []
     Notes.parsed = []
+    Proposal.parsed = []
+    Approval.parsed = []
   })
 
   it('creates the SDK over the directory with no mnemonic when none is given', async () => {
@@ -32,10 +41,14 @@ describe('openSdk', () => {
     const session = await openSdk({ dataDir: '/data/fedimint' })
     session.InviteCode.parse('fed11...')
     session.Notes.parse('notes...')
+    session.Proposal.parse('msproposal...')
+    session.Approval.parse('msapproval...')
     session.Mnemonic.fromWords(['a'])
     session.Mnemonic.generate()
     expect(InviteCode.parsed).toEqual(['fed11...'])
     expect(Notes.parsed).toEqual(['notes...'])
+    expect(Proposal.parsed).toEqual(['msproposal...'])
+    expect(Approval.parsed).toEqual(['msapproval...'])
     expect(Mnemonic.fromWordsCalls).toEqual([['a']])
     expect(Mnemonic.generated).toBe(1)
   })

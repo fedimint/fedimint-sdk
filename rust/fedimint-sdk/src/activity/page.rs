@@ -160,6 +160,9 @@ async fn row(
         ErasedDriver::OnchainSend(driver) => typed(inner, driver, kind).await,
         ErasedDriver::OnchainReceive(driver) => typed(inner, driver, kind).await,
         ErasedDriver::Recovery(driver) => typed(inner, driver, kind).await,
+        ErasedDriver::MultisigDeposit(driver) => typed(inner, driver, kind).await,
+        ErasedDriver::MultisigTransfer(driver) => typed(inner, driver, kind).await,
+        ErasedDriver::MultisigSweep(driver) => typed(inner, driver, kind).await,
     }
 }
 

@@ -1,10 +1,12 @@
 import { WorkerSession } from './client'
 import type { WorkerLike } from './client'
 import type {
+  Approval,
   InviteCode,
   Mnemonic,
   MnemonicLike,
   Notes,
+  Proposal,
   SdkLike,
 } from './generated/fedimint_sdk'
 import type { Proxied, ProxiedValue } from './types'
@@ -22,6 +24,12 @@ export {
   LightningRoute_Tags,
   LnReceiveState_Tags,
   LnSendState_Tags,
+  MultisigAmount,
+  MultisigAmount_Tags,
+  MultisigDenomination,
+  MultisigDepositState_Tags,
+  MultisigSweepState_Tags,
+  MultisigTransferState_Tags,
   Network,
   OnchainReceiveState_Tags,
   OnchainSendState_Tags,
@@ -55,6 +63,8 @@ export interface SdkSession {
   sdk: Proxied<SdkLike>
   InviteCode: { parse: Static<typeof InviteCode.parse> }
   Notes: { parse: Static<typeof Notes.parse> }
+  Proposal: { parse: Static<typeof Proposal.parse> }
+  Approval: { parse: Static<typeof Approval.parse> }
   Mnemonic: {
     fromWords: Static<typeof Mnemonic.fromWords>
     generate: Static<typeof Mnemonic.generate>
@@ -100,6 +110,12 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
         parse: statik('InviteCode', 'parse') as Static<typeof InviteCode.parse>,
       },
       Notes: { parse: statik('Notes', 'parse') as Static<typeof Notes.parse> },
+      Proposal: {
+        parse: statik('Proposal', 'parse') as Static<typeof Proposal.parse>,
+      },
+      Approval: {
+        parse: statik('Approval', 'parse') as Static<typeof Approval.parse>,
+      },
       Mnemonic: {
         fromWords: statik('Mnemonic', 'fromWords') as Static<
           typeof Mnemonic.fromWords
