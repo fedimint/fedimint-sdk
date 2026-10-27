@@ -1360,7 +1360,7 @@ final class DemoModel: ObservableObject {
             let operation: OnchainReceiveOperation
             do {
                 var found = try await deposits.next()
-                while try await found.details().address != address {
+                while !Task.isCancelled, try await found.details().address != address {
                     found = try await deposits.next()
                 }
                 operation = found
