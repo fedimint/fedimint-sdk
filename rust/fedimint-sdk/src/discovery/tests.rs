@@ -26,6 +26,30 @@ async fn test_discover_federations_empty_relays_fails() {
     assert_eq!(res.unwrap_err().code, ErrorCode::InvalidInput);
 }
 
+#[tokio::test]
+async fn test_discover_federations_single_malformed_url_returns_invalid_input() {
+    let res = discover_federations(DiscoverySource::Nostr {
+        relays: vec!["not-a-valid-url".to_string()],
+    })
+    .await;
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("malformed relay URL"));
+}
+
+#[tokio::test]
+async fn test_discover_federations_single_invalid_scheme_returns_invalid_input() {
+    let res = discover_federations(DiscoverySource::Nostr {
+        relays: vec!["http://127.0.0.1:8080".to_string()],
+    })
+    .await;
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("scheme must be ws:// or wss://"));
+}
+
 fn make_signed_test_event(
     fed_id: &str,
     invite: &str,
@@ -279,6 +303,81 @@ fn test_aggregate_discovered_events_all_failures() {
     ];
     let err = aggregate_discovered_events(results).unwrap_err();
     assert_eq!(err.code, ErrorCode::FederationUnreachable);
+}
+
+#[test]
+fn test_aggregate_discovered_events_preserves_single_invalid_input() {
+    let results: Vec<Result<Vec<RawNip87Event>>> = vec![Err(Error::new(
+        ErrorCode::InvalidInput,
+        "Discovery error: malformed relay URL",
+    ))];
+    let err = aggregate_discovered_events(results).unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("malformed relay URL"));
+}
+
+#[test]
+fn test_aggregate_discovered_events_preserves_single_timeout() {
+    let results: Vec<Result<Vec<RawNip87Event>>> = vec![Err(Error::new(
+        ErrorCode::Timeout,
+        "Discovery error: relay timed out after 5s",
+    ))];
+    let err = aggregate_discovered_events(results).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Timeout);
+    assert!(err.message.contains("timed out after 5s"));
+}
+
+#[test]
+fn test_aggregate_discovered_events_precedence_invalid_input_over_timeout_and_unreachable() {
+    let results: Vec<Result<Vec<RawNip87Event>>> = vec![
+        Err(Error::new(
+            ErrorCode::FederationUnreachable,
+            "connection refused",
+        )),
+        Err(Error::new(ErrorCode::Timeout, "timed out after 5s")),
+        Err(Error::new(
+            ErrorCode::InvalidInput,
+            "Discovery error: malformed relay URL",
+        )),
+    ];
+    let err = aggregate_discovered_events(results).unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("malformed relay URL"));
+}
+
+#[test]
+fn test_aggregate_discovered_events_precedence_timeout_over_unreachable() {
+    let results: Vec<Result<Vec<RawNip87Event>>> = vec![
+        Err(Error::new(
+            ErrorCode::FederationUnreachable,
+            "connection refused",
+        )),
+        Err(Error::new(ErrorCode::Timeout, "timed out after 5s")),
+    ];
+    let err = aggregate_discovered_events(results).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Timeout);
+}
+
+#[test]
+fn test_aggregate_discovered_events_all_timeouts() {
+    let results: Vec<Result<Vec<RawNip87Event>>> = vec![
+        Err(Error::new(ErrorCode::Timeout, "relay 1 timed out")),
+        Err(Error::new(ErrorCode::Timeout, "relay 2 timed out")),
+    ];
+    let err = aggregate_discovered_events(results).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Timeout);
+}
+
+#[test]
+fn test_aggregate_discovered_events_mixed_success_with_invalid_input() {
+    let ev = make_test_raw_event(CODE_FEDERATION_ID, CODE);
+    let results = vec![
+        Err(Error::new(ErrorCode::InvalidInput, "bad relay url")),
+        Ok(vec![ev]),
+    ];
+    let feds = aggregate_discovered_events(results)
+        .expect("should succeed if at least one relay responds despite invalid url");
+    assert_eq!(feds.len(), 1);
 }
 
 #[test]

@@ -435,11 +435,23 @@ impl Sdk {
     /// [`invite`](crate::DiscoveredFederation::invite) field and feed it to
     /// [`Sdk::preview`] or [`Sdk::join`].
     ///
+    /// # Nostr Discovery Policy & Limitations
+    ///
+    /// When querying [`DiscoverySource::Nostr`](crate::DiscoverySource::Nostr), the SDK
+    /// fetches a single snapshot of up to 100 newest raw NIP-87 events per relay. It does
+    /// not perform multi-page historical continuation or backfill. If an open relay has more
+    /// than 100 newer events that lack valid federation announcements, older valid
+    /// announcements will not be requested. Callers should provide multiple curated relays
+    /// to ensure discovery resilience.
+    ///
     /// # Errors
     ///
-    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when no Nostr relays are provided.
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when no Nostr relays are provided,
+    /// or when all relay queries fail and at least one relay URL is malformed.
+    /// [`Timeout`](crate::ErrorCode::Timeout) when all queries failed, none returned
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput), and at least one timed out.
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) when all
-    /// specified relays fail to respond.
+    /// specified relays fail to connect or terminate without responding.
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the SDK instance
     /// has shut down.
     pub async fn discover_federations(

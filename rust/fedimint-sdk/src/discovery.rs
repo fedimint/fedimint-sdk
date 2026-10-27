@@ -10,6 +10,28 @@ use crate::types::discovery::{DiscoverySource, RawNip87Event};
 use crate::{DiscoveredFederation, Error, ErrorCode, FederationId, Result};
 
 /// Discovers federations from the requested source (Dev fixture or Nostr relays).
+///
+/// # Nostr Discovery Policy & Limitations
+///
+/// When using [`DiscoverySource::Nostr`], discovery queries a single-shot snapshot of the
+/// newest 100 raw kind-38173 events per relay (`limit: 100`). It does not perform recursive
+/// pagination or historical backfill. If an open relay contains more than 100 newer events
+/// that lack valid federation announcements, older valid announcements will not be requested.
+///
+/// To mitigate relay crowdout and malicious spam, callers should query multiple curated or
+/// reputable relays. Aggregation deduplicates valid announcements across relays and retains
+/// the newest valid announcement per federation.
+///
+/// # Errors
+///
+/// When querying Nostr relays, partial success returns the discovered federations.
+/// If all relays fail:
+/// - [`InvalidInput`](ErrorCode::InvalidInput) if no relays were specified, or if any
+///   relay URL was malformed.
+/// - [`Timeout`](ErrorCode::Timeout) if all queries failed, none returned
+///   [`InvalidInput`](ErrorCode::InvalidInput), and at least one timed out.
+/// - [`FederationUnreachable`](ErrorCode::FederationUnreachable) if all relays failed to
+///   connect or terminated without responding.
 pub async fn discover_federations(source: DiscoverySource) -> Result<Vec<DiscoveredFederation>> {
     match source {
         DiscoverySource::Dev => Ok(vec![DiscoveredFederation::dev()]),
@@ -46,6 +68,7 @@ fn aggregate_discovered_events(
     use crate::InviteCode;
     let mut all_federations: HashMap<(FederationId, InviteCode), AggregatedEntry> = HashMap::new();
     let mut any_success = false;
+    let mut errors = Vec::new();
 
     for res in results {
         match res {
@@ -76,15 +99,13 @@ fn aggregate_discovered_events(
             }
             Err(e) => {
                 tracing::warn!(target: "fedimint_sdk", error = %e, "Failed to query Nostr relay");
+                errors.push(e);
             }
         }
     }
 
     if !any_success {
-        return Err(Error::new(
-            ErrorCode::FederationUnreachable,
-            "Discovery error: all Nostr relays failed to respond",
-        ));
+        return Err(select_aggregate_error(errors));
     }
 
     let mut federations: Vec<DiscoveredFederation> = all_federations
@@ -97,6 +118,36 @@ fn aggregate_discovered_events(
             .then_with(|| a.invite.to_string().cmp(&b.invite.to_string()))
     });
     Ok(federations)
+}
+
+fn select_aggregate_error(errors: Vec<Error>) -> Error {
+    if errors.is_empty() {
+        return Error::new(
+            ErrorCode::FederationUnreachable,
+            "Discovery error: all Nostr relays failed to respond",
+        );
+    }
+    if errors.len() == 1 {
+        return errors.into_iter().next().unwrap();
+    }
+    // Deterministic precedence for mixed failures:
+    // 1. InvalidInput (caller configuration problem takes top precedence)
+    // 2. Timeout (all queries failed, none returned InvalidInput, and at least one timed out)
+    // 3. FederationUnreachable (network connection / communication failure)
+    // 4. Any other error
+    if let Some(err) = errors.iter().find(|e| e.code == ErrorCode::InvalidInput) {
+        return err.clone();
+    }
+    if let Some(err) = errors.iter().find(|e| e.code == ErrorCode::Timeout) {
+        return err.clone();
+    }
+    if let Some(err) = errors
+        .iter()
+        .find(|e| e.code == ErrorCode::FederationUnreachable)
+    {
+        return err.clone();
+    }
+    errors.into_iter().next().unwrap()
 }
 
 /// The Nostr subscription identifier sent to relays.
