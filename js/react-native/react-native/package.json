@@ -45,16 +45,16 @@
     "react-native": ">=0.78.0"
   },
   "devDependencies": {
-    "@expo/config-plugins": "^54.0.4",
+    "@expo/config-plugins": "^58.0.10",
     "@fedimint/react-native-bindings": "workspace:*",
-    "@types/node": "^22.19.11",
-    "@types/react": ">=19.2.14",
+    "@types/node": "^26.6.5",
+    "@types/react": ">=19.3.0",
     "@types/react-test-renderer": "^19.1.0",
-    "expo-module-scripts": "^5.0.8",
-    "react": ">=19.2.4",
-    "react-native-builder-bob": "^0.40.18",
-    "react-test-renderer": "19.1.0",
-    "typescript": "^6.0.3"
+    "expo-module-scripts": "^56.0.3",
+    "react": ">=19.3.1",
+    "react-native-builder-bob": "^0.44.1",
+    "react-test-renderer": "19.3.1",
+    "typescript": "^7.0.2"
   },
   "react-native-builder-bob": {
     "source": "src",

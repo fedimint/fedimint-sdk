@@ -6,13 +6,13 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "appium": "^3.6.0",
+    "appium": "^3.8.0",
     "appium-uiautomator2-driver": "^8.5.0",
-    "webdriverio": "^9.31.2"
+    "webdriverio": "^10.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.19.11",
+    "@types/node": "^26.6.5",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
