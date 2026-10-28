@@ -244,7 +244,7 @@ jobs:
       # Where scripts/nix-build-ios-lib.sh leaves them and the script below
       # looks for them.
       - name: 'Download the Apple libraries'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.ios-native.outputs.slices-artifact }}
           path: rust/fedimint-sdk/target/
@@ -258,7 +258,7 @@ jobs:
             scripts/assemble-rn-ios-xcframework.sh
 
       - name: 'Upload the xcframework'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: react-native-xcframework
           path: ${{ env.XCFRAMEWORK }}/
@@ -286,7 +286,7 @@ jobs:
       # Laid out like the store path of `.#fedimint-sdk-android-jni`, which is
       # what scripts/generate-sdk-rn-bindings.sh takes.
       - name: 'Download the Android libraries'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.android-native.outputs.jni-artifact }}
           path: ${{ runner.temp }}/sdk-android-jni/jniLibs/
@@ -315,7 +315,7 @@ jobs:
           fi
 
       - name: 'Download the xcframework'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-xcframework
           path: ${{ env.XCFRAMEWORK }}/
@@ -343,7 +343,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: 'Upload the tarballs'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: react-native-tarballs
           path: ${{ runner.temp }}/tarballs/*.tgz
@@ -387,7 +387,7 @@ jobs:
           cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: 'Download the tarballs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-tarballs
           path: ${{ runner.temp }}/tarballs
@@ -429,7 +429,7 @@ jobs:
           persist-credentials: false
 
       - name: 'Download the tarballs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-tarballs
           path: ${{ runner.temp }}/tarballs
@@ -487,12 +487,12 @@ jobs:
           persist-credentials: false
 
       - name: 'Set up Node'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
       - name: 'Download the tarballs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-tarballs
           path: ${{ runner.temp }}/tarballs
@@ -528,12 +528,12 @@ jobs:
       # that would write a placeholder token, and npm would fall back to it,
       # with a misleading error, should the token exchange ever fail.
       - name: 'Set up Node'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
       - name: 'Download the tarballs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-tarballs
           path: ${{ runner.temp }}/tarballs
@@ -546,7 +546,7 @@ jobs:
 
       # What npm serves, with its SHA-256 sums, for the GitHub Release.
       - name: 'Upload the published tarballs'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: react-native-published
           path: |
@@ -574,7 +574,7 @@ jobs:
           persist-credentials: false
 
       - name: 'Download the published tarballs'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: react-native-published
           path: ${{ runner.temp }}/published
