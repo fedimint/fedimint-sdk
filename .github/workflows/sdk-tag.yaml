@@ -11,10 +11,12 @@ name: SDK Tag
 # package.json files in js/react-native and js/web/web-sdk/package.json), and
 # it tags a component only when all of these hold for it:
 #
-#   * its version changed in that push, and has no release tag yet;
-#   * the version it changed from was released, that is, has a tag. That is
-#     exactly what merging a sdk-version-bump.yaml pull request looks like.
-#     Any other version change, such as the one that first set up releases,
+#   * its version changed in that push, to one that has no release tag yet and
+#     is not 0.0.0, which stands for a component that is not released yet.
+#     That is what merging a sdk-version-bump.yaml pull request looks like,
+#     for the first release of a component as for any other;
+#   * the version it changed from can be read. A push that adds a version file
+#     or fixes an unreadable one, such as the one that first set up releases,
 #     only leaves a note in the log, and nothing is released by surprise;
 #   * the release checks pass: the version is newer than every release tag of
 #     every component and every version on the registry the component is
@@ -29,11 +31,10 @@ name: SDK Tag
 #
 # A manual run (Actions → SDK Tag → Run workflow, on main) names a group of
 # components and tags those of them that have no tag for the version they have
-# now, without the first two conditions. That is how a component's first
-# release is started, and a release whose automatic run was skipped or failed.
-# The first release has to be started right after the merge, before anything
-# else is merged, because components released together are tagged on one
-# commit.
+# now, without the first two conditions. That is how a release whose automatic
+# run was skipped or failed is started. A release that the log says to start
+# by hand has to be started right after the merge, before anything else is
+# merged, because components released together are tagged on one commit.
 #
 # The tags are annotated, with the version's notes as their message, so each
 # release is recorded in git itself. A tag pushed with the workflow's own

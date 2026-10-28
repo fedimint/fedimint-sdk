@@ -5565,6 +5565,36 @@ expect_equal "the tag of the Web SDK reached the remote in one push" "refs/tags/
 expect_equal "gh started the release of the Web SDK on its tag, with publishing on" \
     "workflow run web-sdk-release.yaml --ref $new_web -f publish=true" "$(gh_calls)"
 
+# The first release of a component: the Web SDK is at 0.0.0 with no tag, and the merge of the bump
+# that gives it the next version tags it and starts its release like any other.
+fresh_registries
+fresh_gh
+r="$(repo 0.1.0-beta.1 < <(notes_for 0.1.0-beta.2 0.1.0-beta.1))"
+for component in rust android react-native; do
+    release_tag "$r" "$component" 0.1.0-beta.1
+done
+put "$r" web 0.0.0
+commit_all "$r" "the web SDK is not released yet"
+origin="$(mktemp -d "$WORK/origin.XXXX")"
+git init -q --bare "$origin"
+git -C "$r" remote add origin "$origin"
+git -C "$r" push -q origin main --tags
+before="$(git -C "$r" rev-parse HEAD)"
+put "$r" web 0.1.0-beta.2
+commit_all "$r" "bump web"
+git -C "$r" push -q origin main
+record_pushes "$origin"
+tag_job "$r" push "$before" ""
+expect_equal "after the bump of the first release of the Web SDK both steps succeed" "0 0" \
+    "$DECIDE_STATUS $TAG_STATUS"
+expect_equal "the first step outputs the Web SDK for its first release" "web" "$DECIDED"
+expect_equal "the tag of the first release reached the remote in one push" "refs/tags/$new_web" \
+    "$(pushes_of "$origin")"
+expect_equal "the tag of the first release is on the commit of the push" \
+    "$(git -C "$r" rev-parse HEAD)" "$(git -C "$origin" rev-parse "refs/tags/$new_web^{commit}")"
+expect_equal "gh started the first release of the Web SDK on its tag, with publishing on" \
+    "workflow run web-sdk-release.yaml --ref $new_web -f publish=true" "$(gh_calls)"
+
 # A push that bumped no version: no tag, no call of gh, and the first step succeeds. The second
 # step is skipped by its condition.
 tag_repo
@@ -5738,14 +5768,14 @@ released_repo() {
     echo "$dir"
 }
 
-# What `pending` says on stderr about the component $1 whose earlier version was never released,
-# or could not be read: $2 is why, in the words of the note. The first release of such a component
-# is started by running the tag workflow by hand, and it has to be run before anything else is
-# merged, because a version is tagged on one commit.
-unreleased_note() {
-    local note="$1: $2, so this is not a version bump after a release; the tag workflow has to be"
-    echo "$note run by hand for $1 now, before anything else is merged, because components" \
-        "released together are tagged on one commit"
+# What `pending` says on stderr about the component $1 whose earlier version could not be read: $2
+# is why, in the words of the note. The release of such a component is started by running the tag
+# workflow by hand, and it has to be run before anything else is merged, because a version is
+# tagged on one commit.
+unreadable_note() {
+    local note="$1: $2, so this is not taken for a version bump; the tag workflow has to be run by"
+    echo "$note hand for $1 now, before anything else is merged, because components released" \
+        "together are tagged on one commit"
 }
 
 fresh_registries
@@ -5785,7 +5815,8 @@ expect_split "pending lists only the components that changed" $'rust\nreact-nati
     "$rel" pending "$old"
 expect_unasked "pending asks neither npm nor crates.io"
 
-# A version that changed from one that was never released is not a bump after a release.
+# A version that changed from one that was never released is a bump as well, such as a second bump
+# after the tag workflow refused the version of the first.
 fresh_registries
 for component in rust android react-native web; do
     r="$(repo 0.1.0-beta.1 < <(finished_notes))"
@@ -5793,10 +5824,8 @@ for component in rust android react-native web; do
     old="$(git -C "$r" rev-parse HEAD)"
     "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 "$component"
     commit_all "$r" "bump $component"
-    notice="$(unreleased_note "$component" \
-        "the version changed from 0.1.0-beta.1, which was never released, to 0.1.0-beta.2")"
-    expect_split "pending prints a notice, not $component, when it changed from an unreleased one" \
-        "" "$notice" -- "$rel" pending "$old"
+    expect_split "pending lists $component, bumped from a version that was never released" \
+        "$component" "" -- "$rel" pending "$old"
 done
 
 # A version that is tagged already.
@@ -5809,8 +5838,7 @@ release_tag "$r" android 0.1.0-beta.2
 expect_split "pending prints nothing and says so when the new version is tagged" "" \
     "android-sdk-v0.1.0-beta.2 already exists; nothing to release" -- "$rel" pending "$old"
 
-# Only a tag records a release: a branch named like the tag of the new version does not, and a
-# branch named like the tag of the old version does not make it released.
+# Only a tag records a release: a branch named like the tag of the new version does not.
 r="$(released_repo)"
 rel="$r/scripts/sdk-release.sh"
 old="$(git -C "$r" rev-parse HEAD)"
@@ -5819,40 +5847,35 @@ commit_all "$r" "bump rust"
 git -C "$r" branch rust-sdk-v0.2.0
 expect_split "pending lists a component whose new version only has a branch named like its tag" \
     "rust" "" -- "$rel" pending "$old"
-git -C "$r" tag -d rust-sdk-v0.1.0-beta.1 >/dev/null
-git -C "$r" branch rust-sdk-v0.1.0-beta.1 "$old"
-notice="$(unreleased_note rust \
-    "the version changed from 0.1.0-beta.1, which was never released, to 0.2.0")"
-expect_split "pending does not take a branch named like the old tag for its release" "" \
-    "$notice" -- "$rel" pending "$old"
 
-# One of each, in the order of the components.
+# One of each, in the order of the components: bumped from a release, bumped from a version that
+# was never released, tagged already, and set to 0.0.0.
 r="$(released_repo)"
 rel="$r/scripts/sdk-release.sh"
 old="$(git -C "$r" rev-parse HEAD)"
 git -C "$r" tag -d android-sdk-v0.1.0-beta.1 >/dev/null
 "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust android react-native
+put "$r" web 0.0.0
 commit_all "$r" "bump every component"
 release_tag "$r" react-native 0.1.0-beta.2
-notice="$(unreleased_note android \
-    "the version changed from 0.1.0-beta.1, which was never released, to 0.1.0-beta.2")"
-expect_split "pending sorts the components that changed into the three cases" "rust" \
-    "$notice"$'\n'"react-native-sdk-v0.1.0-beta.2 already exists; nothing to release" -- \
-    "$rel" pending "$old"
+notice="react-native-sdk-v0.1.0-beta.2 already exists; nothing to release"
+notice="$notice"$'\n'"web: at 0.0.0 and not released yet; nothing to tag"
+expect_split "pending sorts the components that changed into the four cases" $'rust\nandroid' \
+    "$notice" -- "$rel" pending "$old"
 
 # The commit must exist.
 expect_fail "pending refuses a commit that does not exist" \
     "no commit nonexistent in this checkout" -- "$rel" pending nonexistent
 
-# A version that cannot be read at the commit is one that was never released: the component is
-# left out with a note, and the others are listed as usual. A push must not fail for a component
-# that had no version yet, or one outside the grammar, such as the one that first sets them up.
+# A version that cannot be read at the commit is not taken for a bump: the component is left out
+# with a note, and the others are listed as usual. A push must not fail for a component that had
+# no version yet, or one outside the grammar, such as the one that first sets them up.
 git -C "$r" rm -q "$CARGO_TOML"
 commit_all "$r" "drop the crate's manifest"
 gone="$(git -C "$r" rev-parse HEAD)"
 put_file "$r" "$CARGO_TOML" 0.1.0-beta.2
 commit_all "$r" "restore the crate's manifest"
-notice="$(unreleased_note rust "its earlier version could not be read (no $CARGO_TOML at $gone)")"
+notice="$(unreadable_note rust "its earlier version could not be read (no $CARGO_TOML at $gone)")"
 expect_split "pending notes a version file that is missing at the commit, and succeeds" "" \
     "$notice" -- "$rel" pending "$gone"
 
@@ -5867,7 +5890,7 @@ put "$r" rust 0.1.0-beta.2
 commit_all "$r" "bump every component"
 reason="[package] version is 0.1.0-alpha.1 in $CARGO_TOML at $old;"
 reason="$reason a version must be X.Y.Z-beta.N or X.Y.Z"
-notice="$(unreleased_note rust "its earlier version could not be read ($reason)")"
+notice="$(unreadable_note rust "its earlier version could not be read ($reason)")"
 run_split "$rel" pending "$old"
 expect_equal "pending succeeds when the earlier version of a component is outside the grammar" \
     0 "$STATUS"
@@ -5889,7 +5912,7 @@ old="$(git -C "$r" rev-parse HEAD)"
 put "$r" react-native 0.1.0-beta.2
 "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust android
 commit_all "$r" "bump every component"
-notice="$(unreleased_note react-native \
+notice="$(unreadable_note react-native \
     "its earlier version could not be read (no $WRAPPER_MANIFEST at $old)")"
 run_split "$rel" pending "$old"
 expect_equal "pending succeeds when the earlier commit lacks a React Native manifest" 0 "$STATUS"
@@ -5908,7 +5931,7 @@ old="$(git -C "$r" rev-parse HEAD)"
 commit_all "$r" "bring the manifests together"
 disagreement="the React Native packages disagree: $BINDINGS_MANIFEST is 0.2.0"
 disagreement="$disagreement but $WRAPPER_MANIFEST is 0.1.0-beta.1 at $old"
-notice="$(unreleased_note react-native "its earlier version could not be read ($disagreement)")"
+notice="$(unreadable_note react-native "its earlier version could not be read ($disagreement)")"
 expect_split "pending notes manifests that disagreed at the commit, and succeeds" "" "$notice" -- \
     "$rel" pending "$old"
 
@@ -5941,10 +5964,8 @@ commit_all "$r" "the web SDK at 0.0.0"
 old="$(git -C "$r" rev-parse HEAD)"
 "$r/scripts/sdk-version.sh" set 0.1.0-beta.2 rust web
 commit_all "$r" "bump the crate and the web SDK"
-notice="$(unreleased_note web \
-    "the version changed from 0.0.0, which was never released, to 0.1.0-beta.2")"
-expect_split "pending keeps the run-by-hand note for a component that leaves 0.0.0" "rust" \
-    "$notice" -- "$rel" pending "$old"
+expect_split "pending lists a component that leaves 0.0.0, for its first release" $'rust\nweb' \
+    "" -- "$rel" pending "$old"
 
 # The push that first sets up the versions: none of them is there at the commit before.
 fresh_registries
@@ -5958,12 +5979,12 @@ done
 commit_all "$r" "no version files"
 old="$(git -C "$r" rev-parse HEAD)"
 git -C "$r" revert --no-edit HEAD >/dev/null
-notice="$(unreleased_note rust "its earlier version could not be read (no $CARGO_TOML at $old)")"
-notice="$notice"$'\n'"$(unreleased_note android \
+notice="$(unreadable_note rust "its earlier version could not be read (no $CARGO_TOML at $old)")"
+notice="$notice"$'\n'"$(unreadable_note android \
     "its earlier version could not be read (no $CATALOG at $old)")"
-notice="$notice"$'\n'"$(unreleased_note react-native \
+notice="$notice"$'\n'"$(unreadable_note react-native \
     "its earlier version could not be read (no $BINDINGS_MANIFEST at $old)")"
-notice="$notice"$'\n'"$(unreleased_note web \
+notice="$notice"$'\n'"$(unreadable_note web \
     "its earlier version could not be read (no $WEB_MANIFEST at $old)")"
 expect_split "pending releases nothing by surprise in the push that first sets up the versions" \
     "" "$notice" -- "$rel" pending "$old"

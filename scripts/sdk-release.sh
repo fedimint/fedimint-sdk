@@ -96,17 +96,18 @@
 #
 # `pending` is for the workflow that tags releases after a push to main. It prints, in the order
 # of the components, each one whose version in the tree differs from its version at <commit>,
-# the commit before the push, when the new version has no release tag yet and the old one has:
-# a version bump after a release. For a version that changed from one that was never released
-# this is not so, and the same holds for one that cannot be read at <commit> (it is missing there,
-# or outside the grammar, or the React Native manifests disagree): nothing is released by
-# surprise, so it prints nothing for that component but a note on stderr. The note says that the
-# tag workflow has to be run by hand for it now, before anything else is merged, because
-# components released together are tagged on one commit. It also notes on stderr a new version
-# that is tagged already, and says nothing of a component that did not change. A component whose
-# version in the tree is 0.0.0 is never printed, and not given that note either: if its version
-# changed, a line on stderr says that it is at 0.0.0 and not released yet. A <commit> that is not
-# in the checkout fails, and so does a version that cannot be read in the tree.
+# the commit before the push, when the new version has no release tag yet: a version bump. That
+# includes the first release of a component, whose version changed from 0.0.0, and a bump from a
+# version that was never released, such as one the tag workflow refused. A component whose
+# version cannot be read at <commit> (it is missing there, or outside the grammar, or the React
+# Native manifests disagree) is not taken for a bump, so it prints nothing for it but a note on
+# stderr. The note says that the tag workflow has to be run by hand for it now, before anything
+# else is merged, because components released together are tagged on one commit. It also notes on
+# stderr a new version that is tagged already, and says nothing of a component that did not
+# change. A component whose version in the tree is 0.0.0 is never printed, and not given that note
+# either: if its version changed, a line on stderr says that it is at 0.0.0 and not released yet.
+# A <commit> that is not in the checkout fails, and so does a version that cannot be read in the
+# tree.
 #
 # `untagged` is the same filter for a run of the tag workflow by hand, which names the components
 # to tag: it prints those with no release tag for their version, and says on stderr that the tag
@@ -535,10 +536,9 @@ check_tree() {
             "fix the problems above"
 }
 
-# Prints the components, in the order of COMPONENTS, whose version changed since the commit $1 from
-# a released version to one that has no release tag yet. On stderr it says why it leaves out each
-# of the other components whose version changed. A version that cannot be read at the commit is
-# taken for one that was never released.
+# Prints the components, in the order of COMPONENTS, whose version changed since the commit $1 to
+# one that has no release tag yet and is not 0.0.0. On stderr it says why it leaves out each of the
+# other components whose version changed, or whose version cannot be read at the commit.
 pending() {
     local commit="$1" component old new prefix why result=""
     git -C "$ROOT" rev-parse -q --verify "$commit^{commit}" >/dev/null ||
@@ -548,21 +548,20 @@ pending() {
         prefix="$(component_tag_prefix "$component")"
         if old="$("$VERSION_SCRIPT" current "$component" --at "$commit" 2>&1)"; then
             [[ "$new" != "$old" ]] || continue
-            why="the version changed from $old, which was never released, to $new"
+            why=""
         else
             why="its earlier version could not be read ($old)"
-            old=""
         fi
         if [[ "$new" == "$UNRELEASED" ]]; then
             echo "$component: at $UNRELEASED and not released yet; nothing to tag" >&2
         elif has_tag "$prefix$new"; then
             echo "$prefix$new already exists; nothing to release" >&2
-        elif [[ -n "$old" ]] && has_tag "$prefix$old"; then
+        elif [[ -z "$why" ]]; then
             result="${result:+$result$'\n'}$component"
         else
-            echo "$component: $why, so this is not a version bump after a release; the tag" \
-                "workflow has to be run by hand for $component now, before anything else is" \
-                "merged, because components released together are tagged on one commit" >&2
+            echo "$component: $why, so this is not taken for a version bump; the tag workflow" \
+                "has to be run by hand for $component now, before anything else is merged," \
+                "because components released together are tagged on one commit" >&2
         fi
     done
     [[ -z "$result" ]] || echo "$result"
