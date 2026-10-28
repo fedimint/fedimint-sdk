@@ -73,7 +73,9 @@ workflow:
    emulator, where it opens the SDK and generates a mnemonic;
 6. publishes both tarballs to npm, bindings first, once a reviewer of the `npm` environment has
    approved the job;
-7. creates the GitHub Release from the version's section of [`CHANGELOG.md`](CHANGELOG.md), with
+7. checks the documentation site in [`docs/`](../../docs) and deploys it to sdk.fedimint.org,
+   through [`docs.yaml`](../../.github/workflows/docs.yaml);
+8. creates the GitHub Release from the version's section of [`CHANGELOG.md`](CHANGELOG.md), with
    both tarballs and their checksums attached.
 
 A release is refused if the tag is not a `react-native-sdk-v*` tag that names the version the

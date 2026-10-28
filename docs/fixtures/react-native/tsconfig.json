@@ -1,0 +1,19 @@
+{
+  "//": "Matches how a React Native app compiles. The 'source' condition reads the packages' TypeScript sources, so a check never runs against a stale build.",
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["esnext", "dom"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "customConditions": ["source"]
+  },
+  "include": ["*/step-*/**/*.ts", "*/step-*/**/*.tsx"]
+}

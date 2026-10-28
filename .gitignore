@@ -204,3 +204,7 @@ js/examples/react-native/**/fastlane/test_output
 # Written by scripts/rn-android-example.sh when it starts Metro itself.
 js/examples/*/metro.log
 
+
+# docs/: generated from the pages (tools/extract_snippets.py, tools/build_llms.py)
+docs/fixtures/react-native/*/
+docs/public/react-native/

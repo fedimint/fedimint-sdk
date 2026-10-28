@@ -1,0 +1,146 @@
+name: Docs
+
+# Checks the documentation site in docs/ and the agent skills in skills/:
+#
+#   * the tools that build and check the pages pass their tests;
+#   * every install command on the React Native pages pins docs/react-native/VERSION, and
+#     VERSION is not older than the newest react-native-sdk-v* release tag;
+#   * every code block on the pages is extracted to a file, and the files type-check against
+#     this repository's own React Native packages;
+#   * the site builds, with no dead link.
+#
+# VERSION may be newer than every tag: the pages can document a release that is still to
+# come. It must never fall behind one. Nothing updates it on its own; when this fails, run
+# `python3 tools/set_version.py <version>` from docs/ and open a pull request with the result.
+#
+# It runs on a pull request that touches the docs, the skills or the React Native packages.
+#
+# It also deploys the site to GitHub Pages (sdk.fedimint.org), and only in two ways:
+#
+#   * react-native-sdk-release.yaml calls it with `deploy` after the npm publish, on the release
+#     tag. The pages then never name a version that is not on npm, and a release that leaves
+#     them behind fails the checks above before anything is deployed. A release tag is not a
+#     trigger here: sdk-tag.yaml pushes tags with the workflow token, which starts no workflow,
+#     and a tag pushed by hand already runs the release, which calls this.
+#   * A manual run on main with `deploy` ticked, for a docs-only fix between releases.
+#
+# The deploy publishes in the `github-pages` environment, so that environment's deployment
+# rules must allow both main and `react-native-sdk-v*` tags.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy the site to GitHub Pages (only from main)'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      deploy:
+        description: 'Deploy the site to GitHub Pages once the checks pass'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'skills/**'
+      - 'js/react-native/**'
+      - '.github/workflows/docs.yaml'
+
+# A pull request's newer push cancels its older run. Every other run gets a group of its own,
+# so nothing a release calls is ever cancelled; the deploy job queues on `pages` instead. The
+# group is spelled out rather than built from `github.workflow`, which in a called workflow is
+# the caller's name and would share the caller's group.
+concurrency:
+  group: docs-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    name: 'Test the tools and check the version'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: docs
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 'Fetch the release tags'
+        run: git fetch --no-tags --depth=1 origin '+refs/tags/react-native-sdk-v*:refs/tags/react-native-sdk-v*'
+
+      - name: 'Test the tools'
+        run: python3 -m unittest discover -s tests
+
+      - name: 'Check the pages and VERSION against the newest release'
+        run: python3 tools/set_version.py --check
+
+  pages:
+    name: 'Check the code on the pages and build the site'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The fixtures link to js/react-native/*, whose dependencies come from the js/ workspace.
+      - name: 'Install the js workspace'
+        uses: ./.github/actions/install-deps
+
+      - name: 'Install the fixture project'
+        working-directory: docs/fixtures/react-native
+        run: npm ci --no-audit --no-fund
+
+      - name: 'Extract the code blocks from the pages, and type-check them'
+        working-directory: docs/fixtures/react-native
+        run: npm run check
+
+      - name: 'Install the site'
+        run: pnpm --dir docs install --frozen-lockfile
+
+      - name: 'Build the site'
+        run: pnpm --dir docs build
+
+      - name: 'Upload the site for GitHub Pages'
+        if: >-
+          inputs.deploy && (github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/react-native-sdk-v'))
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/.vitepress/dist
+
+  # The only job that writes anything. Deploys queue one after another rather than cancel each
+  # other, so a release's deploy is never dropped for a later one.
+  deploy:
+    name: 'Deploy the site to GitHub Pages'
+    needs: [tools, pages]
+    if: >-
+      inputs.deploy && (github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/react-native-sdk-v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      # What GitHub Pages checks the deployment's origin with.
+      id-token: write
+
+    steps:
+      - name: 'Deploy'
+        id: deployment
+        uses: actions/deploy-pages@v5

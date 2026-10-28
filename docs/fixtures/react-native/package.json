@@ -1,0 +1,22 @@
+{
+  "name": "fedimint-react-native-guide-fixtures",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Compiles every code block the React Native pages promise. The page directories are generated from docs/react-native/*.md by docs/tools/extract_snippets.py and are not committed. The two @fedimint packages link to this repository's own packages, so the pages are checked against the code they will ship with.",
+  "scripts": {
+    "extract": "python3 ../../tools/extract_snippets.py",
+    "check": "npm run extract && npm run typecheck",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fedimint/react-native": "file:../../../js/react-native/react-native",
+    "@fedimint/react-native-bindings": "file:../../../js/react-native/react-native-bindings",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-fs": "2.20.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

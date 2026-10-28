@@ -1,0 +1,4 @@
+# The docs site is its own pnpm project, outside the js/ workspace: it builds pages, not
+# packages. pnpm 10 and later read allowBuilds here. esbuild is Vite's bundler.
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,16 @@
+{
+  "name": "fedimint-sdk-docs",
+  "private": true,
+  "type": "module",
+  "description": "The Fedimint SDK documentation site. Each SDK has a folder: react-native/ today.",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "python3 tools/build_llms.py && vitepress dev",
+    "build": "python3 tools/build_llms.py && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4",
+    "vue": "3.5.44"
+  }
+}

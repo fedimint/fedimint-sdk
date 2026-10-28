@@ -555,6 +555,21 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # The documentation site, from the tagged commit, once the packages it
+  # tells people to install are on npm. docs.yaml checks the pages first and
+  # deploys nothing if they fall behind this version.
+  docs:
+    name: 'Docs'
+    needs: publish
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
+    uses: ./.github/workflows/docs.yaml
+    with:
+      deploy: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
   # The tag's page: the version's section of js/react-native/CHANGELOG.md as
   # the notes, and what was published. A beta is marked as a pre-release.
   # Running a release again updates the release instead of failing on it.
