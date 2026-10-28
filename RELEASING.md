@@ -103,10 +103,8 @@ A beta is always either continued (`beta`) or released (`release`). There is no 
    runs `scripts/sdk-release.sh check-tree` on every pull request that changes a version or a
    `CHANGELOG.md`.
 4. Merge it. Merging starts the release: the **SDK Tag** workflow runs when a push to `main`
-   changes a file that holds a version. For each component whose version the push changed from a
-   released one, it tags the merge commit and starts that component's release workflow on the
-   tag. A component that has never been released is not tagged (see "The first release of a
-   component").
+   changes a file that holds a version. For each component whose version the push changed, it
+   tags the merge commit and starts that component's release workflow on the tag.
 5. Follow the release workflows under Actions. Each one stops before it publishes and asks a
    reviewer of its environment to approve: check that the run is on the tag of the release
    you merged, then approve. The rest needs nothing by hand:
@@ -215,18 +213,10 @@ and not only into the title, because the title is not what lands. Write both in 
 ### The first release of a component
 
 A component that has never been released is at `0.0.0` in the tree until a version bump includes
-it. The bump gives it the next version of the line, and its notes say only
-`The first release of the <title>.` The merge tags a component only if the version it changed
-from was released, so the first release of a component is not tagged by the merge, and adding a
-component to the tree releases nothing by surprise. The pull request lists such components, and
-the log of the tag job names each one it left out.
-
-Start the first release of such a component by running **SDK Tag** by hand (Actions → SDK Tag →
-Run workflow, on `main`, with `components` set to the component or to a group that holds it)
-right after the version bump is merged, before anything else is merged. Components released
-together are tagged on one commit, and a version is never tagged on two commits. A commit merged
-in between would put the tag on a later commit than the tags the merge made for the other
-components. The release rules would refuse it, and the component would need the next version.
+it, so adding a component to the tree releases nothing. The bump gives it the next version of the
+line, and its notes say only `The first release of the <title>.` From there on its release is
+like any other: the merge tags it with the other components of the bump and starts its release
+workflow. What it publishes to may need setting up first, as for the web SDK.
 
 ### The first release of the web SDK
 
@@ -251,8 +241,8 @@ npm (a member of the `@fedimint` scope) does this:
 
 The repository needs the settings that "What the releases rely on" lists for the web SDK as well:
 the `npm` environment has to accept `web-sdk-v*` tags, and the `web-sdk-v*` tag ruleset has to
-exist. Then run the version bump for `web`, or for a group that holds it, and run SDK Tag by hand
-for it right after the merge, as above.
+exist. Then run the version bump for `web`, or for a group that holds it, and merge it within the
+two days of step 2.
 
 ## When something goes wrong
 
@@ -309,8 +299,7 @@ for it right after the merge, as above.
   and nothing is released. Bump again for those components, which gives them the next version of
   the line, and move the notes of the version that was not released into the section of the new
   one: the bump writes that section above the old one and leaves the old one in place. The merge
-  of this second bump changes a version that was never released, so run SDK Tag by hand for the
-  components right after it (see "The first release of a component").
+  of this second bump tags them as usual.
 - **A version bump whose release went out was reverted.** Do not revert such a bump: the tree
   then says an older version than the release tags. The pull request check accepts that, as the
   older version has its tag, but the next bump of the same kind is refused because its version is

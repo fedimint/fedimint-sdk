@@ -44,10 +44,8 @@ name: SDK Version Bump
 #
 # Merging the pull request starts the release: sdk-tag.yaml then tags the
 # merge commit for each component that got the version and starts that
-# component's release workflow on it. A component that has never been
-# released is not tagged by surprise: the pull request lists it, and
-# sdk-tag.yaml is run by hand for it right after the merge, before anything
-# else is merged. Whether a release is published is decided after that, by the
+# component's release workflow on it, the first release of a component
+# included. Whether a release is published is decided after that, by the
 # required reviewers of the environment its component publishes in
 # (`crates-io`, `maven-central` or `npm`). RELEASING.md, at the repository
 # root, describes the whole process.
@@ -192,18 +190,16 @@ jobs:
           bumped=""
           notes=""
           tags=""
-          unreleased=""
           left_out=""
           while IFS= read -r component; do
             from="$(scripts/sdk-version.sh current "$component" --at HEAD)"
             bumped+="- $(component_title "$component"): \`$from\` to \`$NEXT\`"$'\n'
             notes+="- \`$(component_changelog "$component")\`"$'\n'
-            tag="\`$(component_tag_prefix "$component")$NEXT\`"
-            # The merge does not tag a component that has no release:
-            # sdk-tag.yaml leaves its first release to a run by hand.
+            tags="${tags:+$tags, }\`$(component_tag_prefix "$component")$NEXT\`"
+            # A component that has no release yet gets the notes of a first
+            # release, which leave no commits out.
             latest="$(scripts/sdk-release.sh latest "$component")"
             if [[ -n "$latest" ]]; then
-              tags="${tags:+$tags, }$tag"
               # The commits that got no entry in its notes, for whoever reads
               # them. GitHub limits a pull request body to 65536 characters, so
               # no more than 50 of each component are listed.
@@ -220,8 +216,6 @@ jobs:
                 fi
                 left_out+="</details>"$'\n\n'
               fi
-            else
-              unreleased+="- $(component_title "$component"): $tag"$'\n'
             fi
           done <<<"$names"
           body="$(
@@ -245,28 +239,10 @@ jobs:
             echo "$review"
             echo
             printf '%s' "$left_out"
-            if [[ -z "$unreleased" ]]; then
-              echo "**Merging this starts the release of \`$NEXT\`** of those components. The SDK" \
-                "Tag workflow tags the merge commit ($tags) and starts each component's release" \
-                "workflow on its tag. Each release then waits for a reviewer of its environment" \
-                "to approve the job that publishes."
-            else
-              if [[ -n "$tags" ]]; then
-                echo "**Merging this starts the release of \`$NEXT\`** of the components that" \
-                  "were released before. The SDK Tag workflow tags the merge commit ($tags) and" \
-                  "starts each component's release workflow on its tag. Each release then waits" \
-                  "for a reviewer of its environment to approve the job that publishes."
-                echo
-              fi
-              echo "**The merge does not tag these components, because they have never been" \
-                "released:**"
-              echo
-              printf '%s' "$unreleased"
-              echo
-              echo "Run the SDK Tag workflow by hand for them right after merging, before" \
-                "anything else is merged: components released together are tagged on one" \
-                "commit."
-            fi
+            echo "**Merging this starts the release of \`$NEXT\`** of those components. The SDK" \
+              "Tag workflow tags the merge commit ($tags) and starts each component's release" \
+              "workflow on its tag. Each release then waits for a reviewer of its environment" \
+              "to approve the job that publishes."
             echo
             echo "Opened by the SDK Version Bump workflow, whose token does not start other" \
               "workflows. If a required check is waiting, close and reopen this pull request to" \
