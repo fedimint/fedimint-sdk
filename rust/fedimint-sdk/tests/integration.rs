@@ -1232,8 +1232,8 @@ async fn recovery_restores_a_wallet_with_history() {
     reopened.shutdown().await.expect("the instance shuts down");
 }
 
-/// Works on each client it is told about the way an extension is asked to: a task on the
-/// client's own task group, which ends when the SDK stops that client.
+/// Hands back work on each client it is told about that holds the client and never ends on its
+/// own, so only the SDK stopping it ends it.
 #[cfg(feature = "extension-api")]
 struct ClientWatcher {
     /// One entry for each client it was told about, in order: whether its task has ended.
@@ -1246,7 +1246,7 @@ impl fedimint_sdk::Extension for ClientWatcher {
         &self,
         _federation: &fedimint_sdk::Federation,
         client: &fedimint_client::ClientHandleArc,
-    ) {
+    ) -> fedimint_core::util::BoxFuture<'static, ()> {
         let mut index = 0;
         self.ended.send_modify(|ended| {
             index = ended.len();
@@ -1256,17 +1256,16 @@ impl fedimint_sdk::Extension for ClientWatcher {
             ended: self.ended.clone(),
             index,
         };
-        client
-            .task_group()
-            .spawn_cancellable("client watcher", async move {
-                let _ended = ended;
-                std::future::pending::<()>().await;
-            });
+        let client = client.clone();
+        Box::pin(async move {
+            let _ended = ended;
+            let _client = client;
+            std::future::pending::<()>().await;
+        })
     }
 }
 
-/// Notes that the work on a client ended when it is dropped, which is how a task group's shutdown
-/// ends the work spawned on it.
+/// Notes that the work on a client ended when it is dropped, which is how the SDK ends it.
 #[cfg(feature = "extension-api")]
 struct Ended {
     ended: std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
@@ -1277,6 +1276,35 @@ struct Ended {
 impl Drop for Ended {
     fn drop(&mut self) {
         self.ended.send_modify(|ended| ended[self.index] = true);
+    }
+}
+
+/// Opens an instance on `location` with a [`ClientWatcher`] reporting to `ended`, once whatever
+/// held the location has let go of it, failing the test after a minute.
+#[cfg(feature = "extension-api")]
+async fn reopen(
+    location: &str,
+    ended: &std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
+) -> Sdk {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let opened = Sdk::builder()
+            .storage(Storage::at(location).expect("valid"))
+            .extension(std::sync::Arc::new(ClientWatcher {
+                ended: ended.clone(),
+            }))
+            .build()
+            .await;
+        match opened {
+            Ok(sdk) => return sdk,
+            Err(err)
+                if err.code == ErrorCode::StorageInUse
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(err) => panic!("the location did not open again: {err:?}"),
+        }
     }
 }
 
@@ -1317,11 +1345,12 @@ async fn extensions_follow_the_client_through_a_recovery() {
             .is_some_and(|(last, earlier)| !last && earlier.iter().all(|ended| *ended))
     };
 
-    // Instance A joins plainly: one client, told about once, whose work ends with the instance.
+    // Instance A joins plainly: one client, told about once.
     let ended_a = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let storage_a = tempfile::tempdir().expect("a temporary directory");
+    let location_a = storage_a.path().to_str().expect("a utf-8 path");
     let sdk_a = Sdk::builder()
-        .storage(Storage::at(storage_a.path().to_str().expect("a utf-8 path")).expect("valid"))
+        .storage(Storage::at(location_a).expect("valid"))
         .extension(std::sync::Arc::new(ClientWatcher {
             ended: ended_a.clone(),
         }))
@@ -1335,13 +1364,31 @@ async fn extensions_follow_the_client_through_a_recovery() {
         "the joined client is announced once"
     );
     let mnemonic = sdk_a.export_mnemonic();
-    sdk_a.shutdown().await.expect("the instance shuts down");
+
+    // The application lets go of every handle without shutting down. The work still holds the
+    // client, yet it ends, and the location opens again.
+    drop(federation_a);
+    drop(sdk_a);
     clients_settle(&ended_a, "the work on A's client to end", |ended| {
         ended == [true]
     })
     .await;
-    drop(federation_a);
-    drop(sdk_a);
+    let ended_reopened = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
+    let reopened = reopen(location_a, &ended_reopened).await;
+    clients_settle(
+        &ended_reopened,
+        "the client the build brought back to be announced",
+        |ended| ended == [false],
+    )
+    .await;
+    reopened.shutdown().await.expect("the instance shuts down");
+    clients_settle(
+        &ended_reopened,
+        "the work to end with the instance's shutdown",
+        |ended| ended == [true],
+    )
+    .await;
+    drop(reopened);
 
     // Instance B recovers the same seed. Whatever clients the recovery goes through, once it is
     // done the work on every retired one has ended and the work on the one in place runs.

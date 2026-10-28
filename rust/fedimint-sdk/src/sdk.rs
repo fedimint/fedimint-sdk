@@ -1283,7 +1283,7 @@ impl SdkBuilder {
     }
 
     /// Adds an [`Extension`](crate::Extension) to the instance: client modules this crate does
-    /// not ship, and code that runs each time a federation starts a client.
+    /// not ship, and work that runs on each client a federation starts.
     ///
     /// Call it once per extension, in any order. Nothing is checked here:
     /// [`SdkBuilder::build`] refuses a module kind added twice, before it opens the storage.

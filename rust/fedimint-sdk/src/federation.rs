@@ -331,7 +331,9 @@ impl Federation {
     /// shutdown then fails with [`Internal`](crate::ErrorCode::Internal), once the federation has
     /// already stopped. So ask for a handle for each piece of work, drop it as soon as that work
     /// is done, and give up any wait once the client's task group is told to shut down
-    /// (`client.task_group().make_handle().make_shutdown_rx()`).
+    /// (`client.task_group().make_handle().make_shutdown_rx()`). Work that holds the client for
+    /// longer belongs in what [`Extension::client_started`](crate::Extension::client_started)
+    /// returns, which the SDK stops with the client.
     ///
     /// # Errors
     ///
@@ -1356,7 +1358,7 @@ impl FederationInner {
     /// were already told about that one.
     ///
     /// Called at the end of every bring-up and after every swap of the client, with the client
-    /// lock released, since what an extension starts from here asks for the client. A bring-up
+    /// lock released, since the work an extension returns may ask for the client. A bring-up
     /// whose recovery swaps the client before the bring-up ends reaches this twice for one
     /// client, which is why the identity told about is remembered.
     #[cfg(feature = "extension-api")]
@@ -1379,7 +1381,9 @@ impl FederationInner {
         };
         let handle = Federation::new(self.clone());
         for extension in &sdk.extensions {
-            extension.client_started(&handle, &client);
+            let work = extension.client_started(&handle, &client);
+            let client_stop = client.task_group().make_handle().make_shutdown_rx();
+            run_extension_work(work, client_stop, sdk.shutdown_watch());
         }
     }
 
@@ -1619,6 +1623,36 @@ where
             "the wait on this federation's client did not finish",
         ))
     })
+}
+
+/// Runs an extension's work on a client until it ends, `client_stop` fires, or the instance is shut
+/// down or dropped, whichever comes first.
+///
+/// `client_stop` is the client's own task-group shutdown token, which a close, a swap and
+/// `Sdk::shutdown` all fire before asking for the handle back, and `instance` is the instance's
+/// shutdown watch, so the instance is held weakly. Its going away ends the work for the reason
+/// the recovery watcher gives: an application that lets go of every handle without shutting down
+/// must get its storage back, and the work may be holding the client, and with it the store.
+///
+/// The work runs on a task of its own rather than on the client's task group because it may hold
+/// the client's last handle. Dropping that handle shuts the client down by joining every task of
+/// the group, and a task of the group doing it would wait on itself.
+#[cfg(feature = "extension-api")]
+pub(crate) fn run_extension_work<S>(
+    work: fedimint_core::util::BoxFuture<'static, ()>,
+    client_stop: S,
+    mut instance: tokio::sync::watch::Receiver<bool>,
+) where
+    S: Future<Output = ()> + MaybeSend + 'static,
+{
+    fedimint_core::task::spawn("sdk-extension-work", async move {
+        tokio::select! {
+            () = work => {}
+            () = client_stop => {}
+            // Resolves on shutdown, and with an error once the instance is dropped.
+            _ = instance.wait_for(|shut| *shut) => {}
+        }
+    });
 }
 
 /// Shuts a client down, waiting for its workers.
@@ -2900,6 +2934,74 @@ mod tests {
         // The client a later swap puts in place is announced in turn.
         federation.bump_client_identity();
         assert!(federation.mark_told(), "a fresh client is announced");
+    }
+
+    /// Runs extension work that holds `handle` for as long as it runs and never ends on its own.
+    #[cfg(feature = "extension-api")]
+    fn run_work_holding(
+        handle: &std::sync::Arc<()>,
+        client_stop: tokio::sync::watch::Receiver<bool>,
+        instance: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let held = handle.clone();
+        let work = Box::pin(async move {
+            let _held = held;
+            futures::future::pending::<()>().await;
+        });
+        run_extension_work(work, told_to_stop(client_stop), instance);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_is_dropped() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        fedimint_core::runtime::sleep(core::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            std::sync::Arc::strong_count(&handle),
+            2,
+            "the work runs until something stops it"
+        );
+
+        // What dropping the last handle on an instance does to its shutdown watch.
+        drop(instance);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance was dropped"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_shuts_down() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        instance.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance shut down"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_its_client_is_told_to_stop() {
+        let handle = std::sync::Arc::new(());
+        let (client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (_instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        client_stop.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after it was told to stop"
+        );
     }
 
     #[cfg(feature = "extension-api")]

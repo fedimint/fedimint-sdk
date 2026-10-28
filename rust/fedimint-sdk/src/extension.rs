@@ -5,11 +5,12 @@
 use fedimint_client::ClientHandleArc;
 use fedimint_client::module_init::DynClientModuleInit;
 use fedimint_core::task::{MaybeSend, MaybeSync};
+use fedimint_core::util::BoxFuture;
 
 use crate::Federation;
 
 /// What another crate plugs into an [`Sdk`](crate::Sdk) instance: client modules this crate does
-/// not ship, and code that runs each time a federation starts a client.
+/// not ship, and work that runs on each client a federation starts.
 ///
 /// Register one with [`SdkBuilder::extension`](crate::SdkBuilder::extension). Its modules then
 /// run in every federation whose configuration has a module of their kind, alongside the ones
@@ -46,15 +47,25 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// cannot be used before its recovery ends is missing from the client, and is there in the
     /// client that replaces it.
     ///
-    /// This is the place to start the extension's work on `client`, and to pick up its own
-    /// unfinished work. Spawn that work on the client's task group
-    /// (`client.task_group().spawn_cancellable(..)`): the SDK shuts the task group down when it
-    /// stops the client, which ends the work, and the replacement client, if there is one, comes
-    /// through here again. Keep no clone of `client` past that work, for the reasons given under
-    /// [`Federation::client`].
+    /// What it returns is the extension's work on `client`, picking up its own unfinished work
+    /// included, and the SDK runs it. The work may hold `client` for as long as it runs. The SDK
+    /// drops it, finished or not, when it stops the client and when the instance is shut down
+    /// or dropped, and the replacement client, if there is one, comes through here again.
+    ///
+    /// Keep no clone of `client` anywhere else. One that outlives the client keeps it from
+    /// shutting down cleanly, as [`Federation::client`] explains, and one held by work the SDK
+    /// does not run also keeps the instance's storage claimed once the application has dropped
+    /// the instance, until that work ends.
     ///
     /// It is called while the instance holds the lock that orders its lifecycle calls, so it must
     /// return without waiting for anything. Calling [`Sdk::join`](crate::Sdk::join), for
     /// instance, or any other lifecycle call from here and waiting for it would wait for ever.
-    fn client_started(&self, federation: &Federation, client: &ClientHandleArc) {}
+    /// The work it returns runs apart from that lock, and may wait.
+    fn client_started(
+        &self,
+        federation: &Federation,
+        client: &ClientHandleArc,
+    ) -> BoxFuture<'static, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
