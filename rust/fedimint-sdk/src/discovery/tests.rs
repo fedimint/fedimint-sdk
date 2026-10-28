@@ -191,6 +191,24 @@ fn test_parse_relay_ignore_message() {
         "x".repeat(MAX_MESSAGE_BYTES + 1)
     );
     assert_eq!(parse_relay_message(&oversized_msg), RelayAction::Ignore);
+
+    let mut events = Vec::new();
+    let mut received_eose = false;
+    let mut pages_queried = 0;
+    let mut raw_events_in_page = 0;
+    let mut oldest_created_at_in_page = None;
+    let outcome = process_relay_message_frame_with_pagination(
+        &oversized_msg,
+        &mut events,
+        &mut received_eose,
+        &mut pages_queried,
+        &mut raw_events_in_page,
+        &mut oldest_created_at_in_page,
+    );
+    assert_eq!(outcome, FrameOutcome::Continue);
+    assert_eq!(raw_events_in_page, 0);
+    assert_eq!(events.len(), 0);
+    assert_eq!(oldest_created_at_in_page, None);
 }
 
 #[test]
@@ -680,7 +698,7 @@ fn test_pagination_state_triggers_next_page_when_raw_limit_hit() {
     assert_eq!(events.len(), 0);
     assert_eq!(oldest_created_at_in_page, Some(1901));
 
-    // EOSE frame should trigger NextPage with until = 1900
+    // EOSE frame should trigger NextPage with until = 1901 (inclusive)
     let eose_frame = format!(r#"["EOSE", "{SUB_ID}"]"#);
     let outcome = process_relay_message_frame_with_pagination(
         &eose_frame,
@@ -690,7 +708,7 @@ fn test_pagination_state_triggers_next_page_when_raw_limit_hit() {
         &mut raw_events_in_page,
         &mut oldest_created_at_in_page,
     );
-    assert_eq!(outcome, FrameOutcome::NextPage { until: 1900 });
+    assert_eq!(outcome, FrameOutcome::NextPage { until: 1901 });
     assert_eq!(pages_queried, 1);
     assert_eq!(raw_events_in_page, 0);
 }
@@ -718,14 +736,14 @@ async fn test_query_single_relay_bounded_backfill_recovers_announcement_behind_c
             .await
             .unwrap();
 
-        // Client should send CLOSE then second REQ with until = 1000
+        // Client should send CLOSE then second REQ with until = 1001 (inclusive)
         let close1 = ws.next().await.unwrap().unwrap();
         assert!(close1.to_text().unwrap().contains("CLOSE"));
 
         let req2 = ws.next().await.unwrap().unwrap();
         let req2_text = req2.to_text().unwrap();
         assert!(req2_text.contains("REQ"));
-        assert!(req2_text.contains(r#""until":1000"#));
+        assert!(req2_text.contains(r#""until":1001"#));
 
         // Page 2: Send 1 valid event (created_at = 900) followed by EOSE
         let valid_ev = make_signed_test_event(
@@ -752,6 +770,133 @@ async fn test_query_single_relay_bounded_backfill_recovers_announcement_behind_c
         .expect("backfill should successfully recover valid announcement behind crowdout");
     assert_eq!(res.len(), 1);
     assert_eq!(res[0].created_at, Some(900));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_bounded_backfill_recovers_announcement_tied_at_boundary() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (url, server) = spawn_mock_relay(|mut ws| async move {
+        // Page 1: Receive first REQ
+        let req1 = ws.next().await.unwrap().unwrap();
+        assert!(req1.to_text().unwrap().contains("REQ"));
+
+        // Send 99 spam events (created_at = 2000 down to 1002)
+        for i in 0..(MAX_EVENTS - 1) {
+            let ts = 2000 - i as u64;
+            let spam_event = format!(
+                r#"["EVENT", "{SUB_ID}", {{"id": "spam_{i}", "kind": 38173, "created_at": {ts}, "tags": [], "content": "spam"}}]"#
+            );
+            ws.send(Message::text(spam_event)).await.unwrap();
+        }
+
+        // 100th event is spam at boundary timestamp 1001
+        let spam_boundary = format!(
+            r#"["EVENT", "{SUB_ID}", {{"id": "spam_boundary_1001", "kind": 38173, "created_at": 1001, "tags": [], "content": "spam"}}]"#
+        );
+        ws.send(Message::text(spam_boundary.clone())).await.unwrap();
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        // Client should send CLOSE then second REQ with until = 1001 (inclusive)
+        let close1 = ws.next().await.unwrap().unwrap();
+        assert!(close1.to_text().unwrap().contains("CLOSE"));
+
+        let req2 = ws.next().await.unwrap().unwrap();
+        let req2_text = req2.to_text().unwrap();
+        assert!(req2_text.contains("REQ"));
+        assert!(req2_text.contains(r#""until":1001"#));
+
+        // Page 2: Send duplicate boundary spam event first
+        ws.send(Message::text(spam_boundary)).await.unwrap();
+
+        // Followed by valid announcement tied at timestamp 1001 (101st event overall)
+        let valid_ev = make_signed_test_event(
+            CODE_FEDERATION_ID,
+            CODE,
+            1001,
+            r#"{"name": "Boundary Tied Fed"}"#,
+        );
+        ws.send(Message::text(make_signed_event_frame(&valid_ev)))
+            .await
+            .unwrap();
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        // Client should send final CLOSE
+        let close2 = ws.next().await.unwrap().unwrap();
+        assert!(close2.to_text().unwrap().contains("CLOSE"));
+    })
+    .await;
+
+    let res = query_single_relay(url)
+        .await
+        .expect("backfill should successfully recover announcement tied at boundary");
+    assert_eq!(res.len(), 1);
+    assert_eq!(res[0].created_at, Some(1001));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(not(target_family = "wasm"))]
+async fn test_query_single_relay_deduplicates_overlapping_events_across_pages() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (url, server) = spawn_mock_relay(|mut ws| async move {
+        // Page 1: Receive first REQ
+        let req1 = ws.next().await.unwrap().unwrap();
+        assert!(req1.to_text().unwrap().contains("REQ"));
+
+        let valid_ev = make_signed_test_event(
+            CODE_FEDERATION_ID,
+            CODE,
+            1001,
+            r#"{"name": "Shared Fed"}"#,
+        );
+        // Page 1: 1 valid event at 1001, plus 99 spam events at 1001
+        ws.send(Message::text(make_signed_event_frame(&valid_ev)))
+            .await
+            .unwrap();
+        for i in 0..(MAX_EVENTS - 1) {
+            let spam_event = format!(
+                r#"["EVENT", "{SUB_ID}", {{"id": "spam_{i}", "kind": 38173, "created_at": 1001, "tags": [], "content": "spam"}}]"#
+            );
+            ws.send(Message::text(spam_event)).await.unwrap();
+        }
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        // Page 2: Client sends CLOSE and second REQ with until = 1001
+        let close1 = ws.next().await.unwrap().unwrap();
+        assert!(close1.to_text().unwrap().contains("CLOSE"));
+
+        let req2 = ws.next().await.unwrap().unwrap();
+        assert!(req2.to_text().unwrap().contains(r#""until":1001"#));
+
+        // Re-send the same valid event on Page 2
+        ws.send(Message::text(make_signed_event_frame(&valid_ev)))
+            .await
+            .unwrap();
+        ws.send(Message::text(format!(r#"["EOSE", "{SUB_ID}"]"#)))
+            .await
+            .unwrap();
+
+        let close2 = ws.next().await.unwrap().unwrap();
+        assert!(close2.to_text().unwrap().contains("CLOSE"));
+    })
+    .await;
+
+    let res = query_single_relay(url)
+        .await
+        .expect("overlapping events across pages should be deduplicated");
+    assert_eq!(res.len(), 1, "identical valid event must not be duplicated");
     server.await.unwrap();
 }
 

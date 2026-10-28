@@ -234,6 +234,9 @@ pub(crate) enum FrameOutcome {
 }
 
 fn inspect_raw_event_frame(text: &str) -> Option<Option<u64>> {
+    if text.len() > MAX_MESSAGE_BYTES {
+        return None;
+    }
     let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(text) else {
         return None;
     };
@@ -257,6 +260,10 @@ pub(crate) fn process_relay_message_frame_with_pagination(
     raw_events_in_page: &mut usize,
     oldest_created_at_in_page: &mut Option<u64>,
 ) -> FrameOutcome {
+    if text.len() > MAX_MESSAGE_BYTES {
+        return FrameOutcome::Continue;
+    }
+
     if let Some(ts_opt) = inspect_raw_event_frame(text) {
         *raw_events_in_page += 1;
         if let Some(ts) = ts_opt {
@@ -267,9 +274,11 @@ pub(crate) fn process_relay_message_frame_with_pagination(
 
     match parse_relay_message(text) {
         RelayAction::Event(ev) => {
-            events.push(ev);
-            if events.len() >= MAX_EVENTS {
-                return FrameOutcome::Finished;
+            if !events.iter().any(|existing| existing.id == ev.id) {
+                events.push(ev);
+                if events.len() >= MAX_EVENTS {
+                    return FrameOutcome::Finished;
+                }
             }
             FrameOutcome::Continue
         }
@@ -282,11 +291,11 @@ pub(crate) fn process_relay_message_frame_with_pagination(
                 return FrameOutcome::Finished;
             }
 
-            let Some(oldest_ts) = (*oldest_created_at_in_page).filter(|&ts| ts > 0) else {
+            let Some(oldest_ts) = *oldest_created_at_in_page else {
                 return FrameOutcome::Finished;
             };
 
-            let until = oldest_ts.saturating_sub(1);
+            let until = oldest_ts;
             *pages_queried += 1;
             *raw_events_in_page = 0;
             *oldest_created_at_in_page = None;
