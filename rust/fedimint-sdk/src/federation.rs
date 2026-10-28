@@ -1424,6 +1424,11 @@ impl FederationInner {
             }
             guard.handle()
         };
+        // Whether `Federation::multisig` is there depends on the module kinds, which
+        // `reconcile_on_open` records too, but a recovery that ends while the federation comes
+        // up swaps the client and gets here first. Only a backend an extension provides makes
+        // the kinds matter, which is why recording them here is behind the same feature.
+        self.set_module_kinds(crate::modules::module_kinds(&client.config().await));
         let handle = Federation::new(self.clone());
         for extension in &sdk.extensions {
             let work = extension.client_started(&handle, &client);

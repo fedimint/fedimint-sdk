@@ -29,6 +29,17 @@
 use std::io::{Read, Write};
 
 use fedimint_sdk::{ErrorCode, ErrorDetails, Sdk, Storage};
+#[cfg(feature = "extension-api")]
+use {
+    fedimint_client::Client,
+    fedimint_core::core::OperationId,
+    fedimint_core::secp256k1::{Message, schnorr},
+    fedimint_core::util::{BoxFuture, BoxStream},
+    fedimint_sdk::{
+        Approval, MemberKey, MultisigAccount, MultisigAmount, MultisigDenomination,
+        MultisigDepositState, MultisigSweepState, MultisigTransferState, Proposal,
+    },
+};
 
 /// Everything devimint hands this process. `None` when not running under devimint.
 #[derive(Debug)]
@@ -1246,7 +1257,7 @@ impl fedimint_sdk::Extension for ClientWatcher {
         &self,
         _federation: &fedimint_sdk::Federation,
         client: &fedimint_client::ClientHandleArc,
-    ) -> fedimint_core::util::BoxFuture<'static, ()> {
+    ) -> BoxFuture<'static, ()> {
         let mut index = 0;
         self.ended.send_modify(|ended| {
             index = ended.len();
@@ -1276,6 +1287,166 @@ struct Ended {
 impl Drop for Ended {
     fn drop(&mut self) {
         self.ended.send_modify(|ended| ended[self.index] = true);
+    }
+}
+
+/// Provides a [`MintBackend`] for the multisig facade, and notes for each client it is told about
+/// whether the federation offered multisig by then.
+#[cfg(feature = "extension-api")]
+struct MultisigWatcher {
+    backend: std::sync::Arc<MintBackend>,
+    /// One entry for each client it was told about, in order: whether multisig was offered.
+    offered: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+#[cfg(feature = "extension-api")]
+impl fedimint_sdk::Extension for MultisigWatcher {
+    fn client_started(
+        &self,
+        federation: &fedimint_sdk::Federation,
+        _client: &fedimint_client::ClientHandleArc,
+    ) -> BoxFuture<'static, ()> {
+        let offered = federation.multisig().is_some() && federation.capabilities().multisig;
+        self.offered.lock().expect("not poisoned").push(offered);
+        Box::pin(std::future::ready(()))
+    }
+
+    fn multisig(&self) -> Option<std::sync::Arc<dyn fedimint_sdk::MultisigBackend>> {
+        Some(self.backend.clone())
+    }
+}
+
+/// A multisig backend on the mint module, which every federation devimint stands up runs. It does
+/// nothing: the tests only need the facade offered, and never call it.
+#[cfg(feature = "extension-api")]
+struct MintBackend {
+    kind: &'static str,
+}
+
+#[cfg(feature = "extension-api")]
+impl MintBackend {
+    /// The backend for the mint of a federation of devimint's `shape`.
+    fn of(shape: &str) -> MintBackend {
+        let kind = match shape {
+            "v1" => "mint",
+            "v2" => "mintv2",
+            _ => panic!("no single mint in the {shape} shape"),
+        };
+        MintBackend { kind }
+    }
+}
+
+/// What every call into a [`MintBackend`] fails with.
+#[cfg(feature = "extension-api")]
+fn does_nothing() -> fedimint_sdk::Error {
+    fedimint_sdk::Error::new(ErrorCode::Internal, "this backend does nothing")
+}
+
+#[cfg(feature = "extension-api")]
+impl fedimint_sdk::MultisigBackend for MintBackend {
+    fn module_kind(&self) -> String {
+        self.kind.to_owned()
+    }
+
+    fn denominations(&self) -> Vec<MultisigDenomination> {
+        Vec::new()
+    }
+
+    fn member_key(&self, _client: &Client, _group: &str) -> fedimint_sdk::Result<MemberKey> {
+        Err(does_nothing())
+    }
+
+    fn sign(
+        &self,
+        _client: &Client,
+        _group: &str,
+        _message: Message,
+    ) -> fedimint_sdk::Result<schnorr::Signature> {
+        Err(does_nothing())
+    }
+
+    fn balance<'a>(
+        &'a self,
+        _client: &'a Client,
+        _account: &'a MultisigAccount,
+    ) -> BoxFuture<'a, fedimint_sdk::Result<MultisigAmount>> {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn deposit<'a>(
+        &'a self,
+        _client: &'a Client,
+        _account: &'a MultisigAccount,
+        _amount: fedimint_sdk::Amount,
+    ) -> BoxFuture<'a, fedimint_sdk::Result<OperationId>> {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn propose<'a>(
+        &'a self,
+        _client: &'a Client,
+        _account: &'a MultisigAccount,
+        _amount: &'a MultisigAmount,
+    ) -> BoxFuture<'a, fedimint_sdk::Result<Vec<u8>>> {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn approve(
+        &self,
+        _client: &Client,
+        _group: &str,
+        _proposal: &Proposal,
+    ) -> fedimint_sdk::Result<Vec<u8>> {
+        Err(does_nothing())
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _client: &'a Client,
+        _proposal: &'a Proposal,
+        _approvals: &'a [Approval],
+    ) -> BoxFuture<'a, fedimint_sdk::Result<OperationId>> {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn sweep<'a>(
+        &'a self,
+        _client: &'a Client,
+    ) -> BoxFuture<'a, fedimint_sdk::Result<Option<fedimint_sdk::MultisigSweep>>> {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn deposit_updates<'a>(
+        &'a self,
+        _client: &'a Client,
+        _id: OperationId,
+    ) -> BoxFuture<
+        'a,
+        fedimint_sdk::Result<BoxStream<'static, fedimint_sdk::Result<MultisigDepositState>>>,
+    > {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn transfer_updates<'a>(
+        &'a self,
+        _client: &'a Client,
+        _id: OperationId,
+    ) -> BoxFuture<
+        'a,
+        fedimint_sdk::Result<BoxStream<'static, fedimint_sdk::Result<MultisigTransferState>>>,
+    > {
+        Box::pin(async { Err(does_nothing()) })
+    }
+
+    fn sweep_updates<'a>(
+        &'a self,
+        _client: &'a Client,
+        _id: OperationId,
+    ) -> BoxFuture<
+        'a,
+        fedimint_sdk::Result<BoxStream<'static, fedimint_sdk::Result<MultisigSweepState>>>,
+    > {
+        Box::pin(async { Err(does_nothing()) })
     }
 }
 
@@ -1347,12 +1518,17 @@ async fn extensions_follow_the_client_through_a_recovery() {
 
     // Instance A joins plainly: one client, told about once.
     let ended_a = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
+    let offered_a = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let storage_a = tempfile::tempdir().expect("a temporary directory");
     let location_a = storage_a.path().to_str().expect("a utf-8 path");
     let sdk_a = Sdk::builder()
         .storage(Storage::at(location_a).expect("valid"))
         .extension(std::sync::Arc::new(ClientWatcher {
             ended: ended_a.clone(),
+        }))
+        .extension(std::sync::Arc::new(MultisigWatcher {
+            backend: std::sync::Arc::new(MintBackend::of(&devimint.shape)),
+            offered: offered_a.clone(),
         }))
         .build()
         .await
@@ -1362,6 +1538,11 @@ async fn extensions_follow_the_client_through_a_recovery() {
         *ended_a.borrow(),
         vec![false],
         "the joined client is announced once"
+    );
+    assert_eq!(
+        *offered_a.lock().expect("not poisoned"),
+        vec![true],
+        "multisig is offered by the time the joined client is announced"
     );
     let mnemonic = sdk_a.export_mnemonic();
 
@@ -1393,12 +1574,17 @@ async fn extensions_follow_the_client_through_a_recovery() {
     // Instance B recovers the same seed. Whatever clients the recovery goes through, once it is
     // done the work on every retired one has ended and the work on the one in place runs.
     let ended_b = std::sync::Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
+    let offered_b = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let storage_b = tempfile::tempdir().expect("a temporary directory");
     let sdk_b = Sdk::builder()
         .storage(Storage::at(storage_b.path().to_str().expect("a utf-8 path")).expect("valid"))
         .mnemonic(mnemonic)
         .extension(std::sync::Arc::new(ClientWatcher {
             ended: ended_b.clone(),
+        }))
+        .extension(std::sync::Arc::new(MultisigWatcher {
+            backend: std::sync::Arc::new(MintBackend::of(&devimint.shape)),
+            offered: offered_b.clone(),
         }))
         .build()
         .await
@@ -1425,6 +1611,18 @@ async fn extensions_follow_the_client_through_a_recovery() {
             "the client the recovery swapped in is announced"
         );
     }
+    // Every client the recovery went through, the one it swapped in included, was announced with
+    // multisig already offered.
+    let offered_b_now = offered_b.lock().expect("not poisoned").clone();
+    assert_eq!(
+        offered_b_now.len(),
+        ended_b.borrow().len(),
+        "both extensions are told about the same clients"
+    );
+    assert!(
+        offered_b_now.iter().all(|offered| *offered),
+        "multisig is offered by the time each client is announced: {offered_b_now:?}"
+    );
 
     // The work that still runs is the live client's: closing the federation ends it.
     sdk_b
