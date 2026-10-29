@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-sdk"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.4"
 dependencies = [
  "async-compat",
  "async-trait",
