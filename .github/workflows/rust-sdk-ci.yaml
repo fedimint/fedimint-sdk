@@ -1,8 +1,8 @@
 name: Rust SDK Continuous Integration
 
 # Continuous integration for the fedimint-sdk crate: build, test, clippy
-# (default + `--features uniffi`), rustfmt, doc, and the wasm-target check,
-# with and without `--features uniffi`.
+# (default, `--features uniffi` and `--features extension-api`), rustfmt, doc,
+# and the wasm-target check, with and without `--features uniffi`.
 # The `--features uniffi` clippy is the cheap Android-surface gate: it
 # compiles the `#[uniffi::export]` blocks and type derives on the host, no
 # cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
@@ -275,6 +275,10 @@ jobs:
         # transaction. See `async_compat_runtime` in src/lib.rs.
         run: cargo test --locked --lib --features uniffi async_compat
 
+      - name: 'Test the extension API'
+        # Off by default, so the default test run above compiles none of it.
+        run: cargo test --locked --lib --features extension-api
+
   check:
     name: 'Run clippy, fmt, docs and wasm'
     needs: changes
@@ -315,8 +319,16 @@ jobs:
       - name: 'Check clippy (uniffi feature)'
         run: cargo clippy --locked --lib --features uniffi -- -D warnings
 
+      - name: 'Check clippy (extension-api feature)'
+        run: cargo clippy --locked --all-targets --features extension-api -- -D warnings
+
       - name: 'Check docs'
         run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: 'Check docs (extension-api feature)'
+        run: cargo doc --no-deps --locked --features extension-api
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -328,6 +340,9 @@ jobs:
         # Android build of it is also what js/react-native/react-native-bindings is generated
         # from.
         run: cargo check --locked --target wasm32-unknown-unknown --features uniffi
+
+      - name: 'Check wasm (extension-api feature)'
+        run: cargo check --locked --target wasm32-unknown-unknown --features extension-api
 
   # The one check of this workflow for branch protection to require. It runs on
   # every pull request and merge group whatever they touched, so the check

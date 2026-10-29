@@ -317,6 +317,33 @@ impl Federation {
     }
 }
 
+#[cfg(feature = "extension-api")]
+impl Federation {
+    /// The federation's running fedimint client, for an [`Extension`](crate::Extension) to reach
+    /// its own modules through.
+    ///
+    /// What this returns is a clone of the handle, not a lease on the federation: holding it does
+    /// not keep the federation open. When the SDK stops the client, on a close, an erase,
+    /// [`Sdk::shutdown`](crate::Sdk::shutdown) or a swap for a fresh client (see
+    /// [`Extension::client_started`](crate::Extension::client_started)), it tells the client's
+    /// tasks to stop and then waits a short while for every clone to be dropped. A clone still
+    /// held after that keeps the client from shutting down cleanly, and the close, erase or
+    /// shutdown then fails with [`Internal`](crate::ErrorCode::Internal), once the federation has
+    /// already stopped. So ask for a handle for each piece of work, drop it as soon as that work
+    /// is done, and give up any wait once the client's task group is told to shut down
+    /// (`client.task_group().make_handle().make_shutdown_rx()`). Work that holds the client for
+    /// longer belongs in what [`Extension::client_started`](crate::Extension::client_started)
+    /// returns, which the SDK stops with the client.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation is not
+    /// running.
+    pub async fn client(&self) -> Result<ClientHandleArc> {
+        Ok(self.inner.client(false).await?.handle())
+    }
+}
+
 impl Federation {
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
@@ -545,6 +572,10 @@ pub(crate) struct FederationInner {
 struct SettleMarker {
     current: u64,
     running: Option<u64>,
+    /// The client identity the instance's extensions were last told about, so each client is
+    /// announced to them once; see [`FederationInner::tell_extensions`].
+    #[cfg(feature = "extension-api")]
+    told: Option<u64>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -1323,6 +1354,51 @@ impl FederationInner {
         settle.current += 1;
     }
 
+    /// Tells every extension of the instance about the client in place right now, unless they
+    /// were already told about that one.
+    ///
+    /// Called at the end of every bring-up and after every swap of the client, with the client
+    /// lock released, since the work an extension returns may ask for the client. A bring-up
+    /// whose recovery swaps the client before the bring-up ends reaches this twice for one
+    /// client, which is why the identity told about is remembered.
+    #[cfg(feature = "extension-api")]
+    pub(crate) async fn tell_extensions(self: &Arc<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        let Some(sdk) = self.sdk.upgrade() else {
+            return;
+        };
+        // Taken under the client lock, so the identity marked told is the client's handed out.
+        let client = {
+            let Ok(guard) = self.client(false).await else {
+                return;
+            };
+            if !self.mark_told() {
+                return;
+            }
+            guard.handle()
+        };
+        let handle = Federation::new(self.clone());
+        for extension in &sdk.extensions {
+            let work = extension.client_started(&handle, &client);
+            let client_stop = client.task_group().make_handle().make_shutdown_rx();
+            run_extension_work(work, client_stop, sdk.shutdown_watch());
+        }
+    }
+
+    /// Whether the extensions are yet to be told about the client in place right now, marking it
+    /// told.
+    #[cfg(feature = "extension-api")]
+    fn mark_told(&self) -> bool {
+        let mut settle = self.lock_settle();
+        if settle.told == Some(settle.current) {
+            return false;
+        }
+        settle.told = Some(settle.current);
+        true
+    }
+
     /// Locks the settle marker, recovering from a poisoned lock the way the plain `RwLock`s on
     /// this type already do: a panic while it was held must not turn every later settle decision
     /// into a panic of its own, and the marker guards no invariant a half-written value could
@@ -1549,6 +1625,36 @@ where
     })
 }
 
+/// Runs an extension's work on a client until it ends, `client_stop` fires, or the instance is shut
+/// down or dropped, whichever comes first.
+///
+/// `client_stop` is the client's own task-group shutdown token, which a close, a swap and
+/// `Sdk::shutdown` all fire before asking for the handle back, and `instance` is the instance's
+/// shutdown watch, so the instance is held weakly. Its going away ends the work for the reason
+/// the recovery watcher gives: an application that lets go of every handle without shutting down
+/// must get its storage back, and the work may be holding the client, and with it the store.
+///
+/// The work runs on a task of its own rather than on the client's task group because it may hold
+/// the client's last handle. Dropping that handle shuts the client down by joining every task of
+/// the group, and a task of the group doing it would wait on itself.
+#[cfg(feature = "extension-api")]
+pub(crate) fn run_extension_work<S>(
+    work: fedimint_core::util::BoxFuture<'static, ()>,
+    client_stop: S,
+    mut instance: tokio::sync::watch::Receiver<bool>,
+) where
+    S: Future<Output = ()> + MaybeSend + 'static,
+{
+    fedimint_core::task::spawn("sdk-extension-work", async move {
+        tokio::select! {
+            () = work => {}
+            () = client_stop => {}
+            // Resolves on shutdown, and with an error once the instance is dropped.
+            _ = instance.wait_for(|shut| *shut) => {}
+        }
+    });
+}
+
 /// Shuts a client down, waiting for its workers.
 ///
 /// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
@@ -1626,6 +1732,11 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             "could not record the on-chain deposits this federation's wallet found",
         );
     }
+    // Told last, so an extension picking up its own work finds the SDK's records repaired. A
+    // client that a recovery already swapped in on the way here was told about by that swap, and
+    // is not told about again.
+    #[cfg(feature = "extension-api")]
+    federation.tell_extensions().await;
 }
 
 // `FederationInner` gets no `Drop`. Dropping the last `Sdk` clone outside a tokio runtime must not
@@ -2807,5 +2918,102 @@ mod tests {
 
         federation.reset_recovery_progress();
         assert_eq!(federation.recovery_progress_of(attempt), None);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[test]
+    fn extensions_are_told_once_about_each_client() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+
+        // A recovery's swap and the end of the bring-up it happened in both reach for the
+        // extensions with one client.
+        assert!(federation.mark_told());
+        assert!(!federation.mark_told(), "one client is announced once");
+
+        // The client a later swap puts in place is announced in turn.
+        federation.bump_client_identity();
+        assert!(federation.mark_told(), "a fresh client is announced");
+    }
+
+    /// Runs extension work that holds `handle` for as long as it runs and never ends on its own.
+    #[cfg(feature = "extension-api")]
+    fn run_work_holding(
+        handle: &std::sync::Arc<()>,
+        client_stop: tokio::sync::watch::Receiver<bool>,
+        instance: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let held = handle.clone();
+        let work = Box::pin(async move {
+            let _held = held;
+            futures::future::pending::<()>().await;
+        });
+        run_extension_work(work, told_to_stop(client_stop), instance);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_is_dropped() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        fedimint_core::runtime::sleep(core::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            std::sync::Arc::strong_count(&handle),
+            2,
+            "the work runs until something stops it"
+        );
+
+        // What dropping the last handle on an instance does to its shutdown watch.
+        drop(instance);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance was dropped"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_shuts_down() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        instance.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance shut down"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_its_client_is_told_to_stop() {
+        let handle = std::sync::Arc::new(());
+        let (client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (_instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        client_stop.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after it was told to stop"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_federation_without_a_client_hands_none_out() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = Federation::new(FederationInner::detached(db, true));
+
+        let err = federation
+            .client()
+            .await
+            .expect_err("there is no client to hand out");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 }
