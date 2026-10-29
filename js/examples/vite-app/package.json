@@ -1,0 +1,25 @@
+{
+  "name": "vite-app-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "clean:deep": "pnpm run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@fedimint/web-sdk": "workspace:*",
+    "react": ">=19.2.4",
+    "react-dom": ">=19.2.4"
+  },
+  "devDependencies": {
+    "@types/react": ">=19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0"
+  }
+}
