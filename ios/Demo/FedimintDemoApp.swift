@@ -7,6 +7,10 @@ import SwiftUI
 /// one this SDK's `uniffi` feature exports; none of it is hand-written glue.
 @main
 struct FedimintDemoApp: App {
+    init() {
+        Typeface.assertRegistered()
+        NavigationAppearance.apply()
+    }
     var body: some Scene {
         WindowGroup {
             ContentView()
