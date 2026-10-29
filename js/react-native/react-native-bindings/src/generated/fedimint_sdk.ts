@@ -224,6 +224,21 @@ export enum OperationKind {
    */
   Recovery,
   /**
+   * A deposit into a multisig account, tracked by
+   * [`MultisigDepositState`](crate::MultisigDepositState).
+   */
+  MultisigDeposit,
+  /**
+   * A payment out of a multisig account, tracked by
+   * [`MultisigTransferState`](crate::MultisigTransferState).
+   */
+  MultisigTransfer,
+  /**
+   * Moving multisig payouts into the ecash balance, tracked by
+   * [`MultisigSweepState`](crate::MultisigSweepState).
+   */
+  MultisigSweep,
+  /**
    * An operation this SDK version cannot interpret.
    *
    * Persisted operations outlive the version that created them: an
@@ -266,6 +281,12 @@ const FfiConverterTypeOperationKind = (() => {
         case 7:
           return OperationKind.Recovery
         case 8:
+          return OperationKind.MultisigDeposit
+        case 9:
+          return OperationKind.MultisigTransfer
+        case 10:
+          return OperationKind.MultisigSweep
+        case 11:
           return OperationKind.Unknown
         default:
           throw new UniffiInternalError.UnexpectedEnumCase()
@@ -287,8 +308,14 @@ const FfiConverterTypeOperationKind = (() => {
           return c.writeI32(6)
         case OperationKind.Recovery:
           return c.writeI32(7)
-        case OperationKind.Unknown:
+        case OperationKind.MultisigDeposit:
           return c.writeI32(8)
+        case OperationKind.MultisigTransfer:
+          return c.writeI32(9)
+        case OperationKind.MultisigSweep:
+          return c.writeI32(10)
+        case OperationKind.Unknown:
+          return c.writeI32(11)
       }
     }
     allocationSize(value: TypeName): number {
@@ -408,6 +435,12 @@ const FfiConverterTypeDirection = (() => {
  * | [`OnchainReceiveState::Failed`](crate::OnchainReceiveState::Failed) | [`Failed`](Self::Failed) |
  * | [`RecoveryState::Done`](crate::RecoveryState::Done) | [`Success`](Self::Success) |
  * | [`RecoveryState::Failed`](crate::RecoveryState::Failed) | [`Failed`](Self::Failed) |
+ * | [`MultisigDepositState::Done`](crate::MultisigDepositState::Done) | [`Success`](Self::Success) |
+ * | [`MultisigDepositState::Failed`](crate::MultisigDepositState::Failed) | [`Failed`](Self::Failed) |
+ * | [`MultisigTransferState::Done`](crate::MultisigTransferState::Done) | [`Success`](Self::Success) |
+ * | [`MultisigTransferState::Failed`](crate::MultisigTransferState::Failed) | [`Failed`](Self::Failed) |
+ * | [`MultisigSweepState::Done`](crate::MultisigSweepState::Done) | [`Success`](Self::Success) |
+ * | [`MultisigSweepState::Failed`](crate::MultisigSweepState::Failed) | [`Failed`](Self::Failed) |
  *
  * The one placement that is a judgement rather than a reading is
  * [`LnReceiveState::Expired`](crate::LnReceiveState::Expired). An invoice
@@ -626,6 +659,9 @@ const FfiConverterTypeActivityStatus = (() => {
  * | [`OnchainSend`](OperationKind::OnchainSend) | amount bound for the destination address | all federation-side funding costs, aggregated (peg-out, network, mint funding, change, dust) |
  * | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
  * | [`Recovery`](OperationKind::Recovery) | `None`, nothing was transferred | `None` |
+ * | [`MultisigDeposit`](OperationKind::MultisigDeposit) | amount put into the account | `None`, not recorded |
+ * | [`MultisigTransfer`](OperationKind::MultisigTransfer) | amount paid out of the account, `None` when it is fiat; no direction, as it moves value between two accounts and not this balance | `None` |
+ * | [`MultisigSweep`](OperationKind::MultisigSweep) | payouts moved into the balance | `None`, not recorded |
  * | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
  *
  * ## The identity describes what was attempted
@@ -957,6 +993,10 @@ export type Capabilities = {
    * Whether [`Federation::onchain`] is available.
    */
   onchain: boolean
+  /**
+   * Whether [`Federation::multisig`] is available.
+   */
+  multisig: boolean
 }
 
 /**
@@ -984,18 +1024,21 @@ const FfiConverterTypeCapabilities = (() => {
         ecash: FfiConverterBool.readFromCursor(c),
         lightning: FfiConverterBool.readFromCursor(c),
         onchain: FfiConverterBool.readFromCursor(c),
+        multisig: FfiConverterBool.readFromCursor(c),
       }
     }
     writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       FfiConverterBool.writeIntoCursor(value.ecash, c)
       FfiConverterBool.writeIntoCursor(value.lightning, c)
       FfiConverterBool.writeIntoCursor(value.onchain, c)
+      FfiConverterBool.writeIntoCursor(value.multisig, c)
     }
     allocationSize(value: TypeName): number {
       return (
         FfiConverterBool.allocationSize(value.ecash) +
         FfiConverterBool.allocationSize(value.lightning) +
-        FfiConverterBool.allocationSize(value.onchain)
+        FfiConverterBool.allocationSize(value.onchain) +
+        FfiConverterBool.allocationSize(value.multisig)
       )
     }
   }
@@ -5294,6 +5337,361 @@ const FfiConverterTypeLnSendDetails = (() => {
  * Typealias from the type name used in the UDL file to the builtin type.  This
  * is needed because the UDL type name is used in function/method signatures.
  */
+export type MultisigAccountId = string
+// FfiConverter for MultisigAccountId, a type alias for string.
+const FfiConverterTypeMultisigAccountId = FfiConverterString
+
+/**
+ * What a [`Multisig::deposit`] is, as opposed to where it has got to.
+ *
+ * Every field is fixed when the deposit is made.
+ */
+export type MultisigDepositDetails = {
+  /**
+   * The account deposited into.
+   */
+  accountId: MultisigAccountId
+  /**
+   * How much went into the account. The fee for spending the ecash it came from is on top.
+   */
+  amount: Amount
+  /**
+   * When the deposit was made, by this device's clock.
+   */
+  createdAt: Timestamp
+}
+
+/**
+ * Generated factory for {@link MultisigDepositDetails} record objects.
+ */
+export const MultisigDepositDetails = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<
+      MultisigDepositDetails,
+      ReturnType<typeof defaults>
+    >(defaults)
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () =>
+      Object.freeze(defaults()) as Partial<MultisigDepositDetails>,
+  })
+})()
+
+const FfiConverterTypeMultisigDepositDetails = (() => {
+  type TypeName = MultisigDepositDetails
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      return {
+        accountId: FfiConverterTypeMultisigAccountId.readFromCursor(c),
+        amount: FfiConverterTypeAmount.readFromCursor(c),
+        createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      FfiConverterTypeMultisigAccountId.writeIntoCursor(value.accountId, c)
+      FfiConverterTypeAmount.writeIntoCursor(value.amount, c)
+      FfiConverterTypeTimestamp.writeIntoCursor(value.createdAt, c)
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeMultisigAccountId.allocationSize(value.accountId) +
+        FfiConverterTypeAmount.allocationSize(value.amount) +
+        FfiConverterTypeTimestamp.allocationSize(value.createdAt)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * What a [`Multisig::sweep`] is, as opposed to where it has got to.
+ *
+ * Every field is fixed when the sweep starts.
+ */
+export type MultisigSweepDetails = {
+  /**
+   * How much the sweep moves into the ecash balance, before the fee for issuing it.
+   */
+  amount: Amount
+  /**
+   * When the sweep started, by this device's clock.
+   */
+  createdAt: Timestamp
+}
+
+/**
+ * Generated factory for {@link MultisigSweepDetails} record objects.
+ */
+export const MultisigSweepDetails = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<
+      MultisigSweepDetails,
+      ReturnType<typeof defaults>
+    >(defaults)
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<MultisigSweepDetails>,
+  })
+})()
+
+const FfiConverterTypeMultisigSweepDetails = (() => {
+  type TypeName = MultisigSweepDetails
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      return {
+        amount: FfiConverterTypeAmount.readFromCursor(c),
+        createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      FfiConverterTypeAmount.writeIntoCursor(value.amount, c)
+      FfiConverterTypeTimestamp.writeIntoCursor(value.createdAt, c)
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeAmount.allocationSize(value.amount) +
+        FfiConverterTypeTimestamp.allocationSize(value.createdAt)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
+// Enum: MultisigAmount
+export enum MultisigAmount_Tags {
+  Btc = 'Btc',
+  Fiat = 'Fiat',
+}
+/**
+ * An amount in a multisig account's own denomination.
+ *
+ * What [`Multisig::balance`](crate::Multisig::balance) reports and what
+ * [`Multisig::propose`](crate::Multisig::propose) pays out. Money going *into* an account is
+ * always taken from the ecash balance, so a deposit is a plain [`Amount`] whatever the account
+ * holds its value in.
+ */
+
+type MultisigAmount_Btc_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigAmount'
+  tag: MultisigAmount_Tags.Btc
+  inner: Readonly<{ amount: Amount }>
+}
+
+type MultisigAmount_Fiat_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigAmount'
+  tag: MultisigAmount_Tags.Fiat
+  inner: Readonly<{ minorUnits: bigint; currency: string }>
+}
+export type MultisigAmount =
+  | MultisigAmount_Btc_interface
+  | MultisigAmount_Fiat_interface
+
+export const MultisigAmount = (() => {
+  /**
+   * An amount of bitcoin.
+   */
+  class Btc_ extends UniffiEnum implements MultisigAmount_Btc_interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigAmount'
+    readonly tag = MultisigAmount_Tags.Btc
+    readonly inner: Readonly<{ amount: Amount }>
+    constructor(inner: { amount: Amount }) {
+      super('MultisigAmount', 'Btc')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { amount: Amount }): Btc_ {
+      return new Btc_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Btc_ {
+      return obj.tag === MultisigAmount_Tags.Btc
+    }
+  }
+  /**
+   * An amount of a fiat currency.
+   */
+  class Fiat_ extends UniffiEnum implements MultisigAmount_Fiat_interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigAmount'
+    readonly tag = MultisigAmount_Tags.Fiat
+    readonly inner: Readonly<{ minorUnits: bigint; currency: string }>
+    constructor(inner: { minorUnits: bigint; currency: string }) {
+      super('MultisigAmount', 'Fiat')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { minorUnits: bigint; currency: string }): Fiat_ {
+      return new Fiat_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Fiat_ {
+      return obj.tag === MultisigAmount_Tags.Fiat
+    }
+  }
+
+  function instanceOf(obj: any): obj is MultisigAmount {
+    return obj[uniffiTypeNameSymbol] === 'MultisigAmount'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Btc: Btc_,
+    Fiat: Fiat_,
+  })
+})()
+
+// FfiConverter for enum MultisigAmount
+const FfiConverterTypeMultisigAmount = (() => {
+  type TypeName = MultisigAmount
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new MultisigAmount.Btc({
+            amount: FfiConverterTypeAmount.readFromCursor(c),
+          })
+        case 2:
+          return new MultisigAmount.Fiat({
+            minorUnits: FfiConverterUInt64.readFromCursor(c),
+            currency: FfiConverterString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case MultisigAmount_Tags.Btc: {
+          c.writeI32(1)
+          const inner = value.inner
+          FfiConverterTypeAmount.writeIntoCursor(inner.amount, c)
+          return
+        }
+        case MultisigAmount_Tags.Fiat: {
+          c.writeI32(2)
+          const inner = value.inner
+          FfiConverterUInt64.writeIntoCursor(inner.minorUnits, c)
+          FfiConverterString.writeIntoCursor(inner.currency, c)
+          return
+        }
+        default:
+          // Throwing from here means that MultisigAmount_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case MultisigAmount_Tags.Btc: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterTypeAmount.allocationSize(inner.amount)
+          return size
+        }
+        case MultisigAmount_Tags.Fiat: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterUInt64.allocationSize(inner.minorUnits)
+          size += FfiConverterString.allocationSize(inner.currency)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * What a [`Multisig::execute`] is, as opposed to where it has got to.
+ *
+ * Every field is fixed when the proposal is executed.
+ */
+export type MultisigTransferDetails = {
+  /**
+   * The account paid out of.
+   */
+  accountId: MultisigAccountId
+  /**
+   * How much the proposal pays, in the account's denomination.
+   */
+  amount: MultisigAmount
+  /**
+   * When the proposal was executed, by this device's clock.
+   */
+  createdAt: Timestamp
+}
+
+/**
+ * Generated factory for {@link MultisigTransferDetails} record objects.
+ */
+export const MultisigTransferDetails = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<
+      MultisigTransferDetails,
+      ReturnType<typeof defaults>
+    >(defaults)
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () =>
+      Object.freeze(defaults()) as Partial<MultisigTransferDetails>,
+  })
+})()
+
+const FfiConverterTypeMultisigTransferDetails = (() => {
+  type TypeName = MultisigTransferDetails
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      return {
+        accountId: FfiConverterTypeMultisigAccountId.readFromCursor(c),
+        amount: FfiConverterTypeMultisigAmount.readFromCursor(c),
+        createdAt: FfiConverterTypeTimestamp.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      FfiConverterTypeMultisigAccountId.writeIntoCursor(value.accountId, c)
+      FfiConverterTypeMultisigAmount.writeIntoCursor(value.amount, c)
+      FfiConverterTypeTimestamp.writeIntoCursor(value.createdAt, c)
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeMultisigAccountId.allocationSize(value.accountId) +
+        FfiConverterTypeMultisigAmount.allocationSize(value.amount) +
+        FfiConverterTypeTimestamp.allocationSize(value.createdAt)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * Typealias from the type name used in the UDL file to the builtin type.  This
+ * is needed because the UDL type name is used in function/method signatures.
+ */
 export type Address = string
 // FfiConverter for Address, a type alias for string.
 const FfiConverterTypeAddress = FfiConverterString
@@ -5794,6 +6192,129 @@ const FfiConverterTypeOnchainSendFeeBreakdown = (() => {
         FfiConverterTypeAmount.allocationSize(value.walletOutput) +
         FfiConverterTypeAmount.allocationSize(value.funding) +
         FfiConverterTypeAmount.allocationSize(value.change)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * Typealias from the type name used in the UDL file to the builtin type.  This
+ * is needed because the UDL type name is used in function/method signatures.
+ */
+export type MemberKey = string
+// FfiConverter for MemberKey, a type alias for string.
+const FfiConverterTypeMemberKey = FfiConverterString
+
+/**
+ * What a multisig account holds its value in.
+ */
+export enum MultisigDenomination {
+  /**
+   * Bitcoin, counted in millisatoshi.
+   */
+  Btc,
+  /**
+   * A fiat currency, held at a stable value: the account's bitcoin is converted at the
+   * federation's exchange rate whenever it moves.
+   */
+  Fiat,
+}
+
+const FfiConverterTypeMultisigDenomination = (() => {
+  type TypeName = MultisigDenomination
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return MultisigDenomination.Btc
+        case 2:
+          return MultisigDenomination.Fiat
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value) {
+        case MultisigDenomination.Btc:
+          return c.writeI32(1)
+        case MultisigDenomination.Fiat:
+          return c.writeI32(2)
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return 4
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * Who a multisig group's members are, and how many of them it takes to move its money.
+ *
+ * The members agree on a policy among themselves, out of band: each adds its own key from
+ * [`Multisig::member_key`](crate::Multisig::member_key), and the application keeps the result.
+ * [`Multisig::account`](crate::Multisig::account) turns a policy into the account it describes,
+ * locally: the federation learns about the account only when value first moves into it, and
+ * every member who holds the same policy derives the same account.
+ *
+ * The order of [`members`](Policy::members) does not matter: two policies with the same members
+ * in a different order describe the same account.
+ */
+export type Policy = {
+  /**
+   * Every member's key, each exactly once.
+   */
+  members: Array<MemberKey>
+  /**
+   * How many members have to approve a payment out of the account: at least one, and no more
+   * than there are members.
+   */
+  threshold: number
+  /**
+   * What the account holds its value in.
+   */
+  denomination: MultisigDenomination
+}
+
+/**
+ * Generated factory for {@link Policy} record objects.
+ */
+export const Policy = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<Policy, ReturnType<typeof defaults>>(defaults)
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<Policy>,
+  })
+})()
+
+const FfiConverterTypePolicy = (() => {
+  type TypeName = Policy
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      return {
+        members: FfiConverterSequenceTypeMemberKey.readFromCursor(c),
+        threshold: FfiConverterUInt32.readFromCursor(c),
+        denomination: FfiConverterTypeMultisigDenomination.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      FfiConverterSequenceTypeMemberKey.writeIntoCursor(value.members, c)
+      FfiConverterUInt32.writeIntoCursor(value.threshold, c)
+      FfiConverterTypeMultisigDenomination.writeIntoCursor(
+        value.denomination,
+        c,
+      )
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterSequenceTypeMemberKey.allocationSize(value.members) +
+        FfiConverterUInt32.allocationSize(value.threshold) +
+        FfiConverterTypeMultisigDenomination.allocationSize(value.denomination)
       )
     }
   }
@@ -10043,6 +10564,3673 @@ const uniffiTypeMetaObjectFactory: UniffiObjectFactory<MetaLike> = (() => {
 })()
 const FfiConverterTypeMeta = new FfiConverterObject(uniffiTypeMetaObjectFactory)
 
+/**
+ * A multisig account: the account a [`Policy`] describes.
+ *
+ * Obtained from [`Multisig::account`](crate::Multisig::account), which checks the policy, or
+ * read off a [`Proposal`](crate::Proposal). Keep the policy rather than this value: an account is
+ * derived from its policy, locally, whenever it is needed.
+ */
+export interface MultisigAccountLike {
+  /**
+   * This account's id.
+   */
+  id(): MultisigAccountId
+  /**
+   * The policy this account was derived from, with its members sorted.
+   */
+  policy(): Policy
+}
+/**
+ * @deprecated Use `MultisigAccountLike` instead.
+ */
+export type MultisigAccountInterface = MultisigAccountLike
+
+/**
+ * A multisig account: the account a [`Policy`] describes.
+ *
+ * Obtained from [`Multisig::account`](crate::Multisig::account), which checks the policy, or
+ * read off a [`Proposal`](crate::Proposal). Keep the policy rather than this value: an account is
+ * derived from its policy, locally, whenever it is needed.
+ */
+export class MultisigAccount
+  extends UniffiAbstractObject
+  implements MultisigAccountLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigAccount'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigAccountObjectFactory.bless(pointer)
+  }
+
+  /**
+   * This account's id.
+   */
+  id(): MultisigAccountId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+          uniffiTypeMultisigAccountObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMultisigAccountId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The policy this account was derived from, with its members sorted.
+   */
+  policy(): Policy {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+          uniffiTypeMultisigAccountObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypePolicy.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeMultisigAccountObjectFactory.pointer(this)
+      uniffiTypeMultisigAccountObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigAccountObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigAccount {
+    return uniffiTypeMultisigAccountObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeMultisigAccountObjectFactory: UniffiObjectFactory<MultisigAccountLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigAccountLike {
+        const instance = Object.create(MultisigAccount.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigAccount'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigaccount_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigAccountLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigAccountLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigaccount(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigaccount(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigAccountLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigAccount'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigAccount = new FfiConverterObject(
+  uniffiTypeMultisigAccountObjectFactory,
+)
+
+/**
+ * A payment out of a multisig account, waiting for its members' approvals.
+ *
+ * Made by [`Multisig::propose`](crate::Multisig::propose), which pays the proposing member, and
+ * handed to the other members over whatever channel the application has: its own server, a chat,
+ * a QR code. Each member who agrees answers with an [`Approval`] from
+ * [`Multisig::approve`](crate::Multisig::approve), and once the account's threshold is met anyone
+ * holding the proposal and the approvals executes it with
+ * [`Multisig::execute`](crate::Multisig::execute).
+ *
+ * Nothing here is trusted on its word: the channel can be anyone's. The member who made a
+ * proposal signs it, and the payment goes to that member, its [`proposer`](Proposal::proposer).
+ * The parse checks that signature, so a proposal cannot be passed off under another member's
+ * name, or altered. Every approval is a signature the federation checks against the account's
+ * policy, so a forged approval cannot move money either.
+ *
+ * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
+ * `msproposal` followed by lowercase base32. The parse checks the structure, that the policy
+ * describes an account, and that one of its members signed the proposal, not the approvals it
+ * will collect.
+ */
+export interface ProposalLike {
+  /**
+   * The id of the account the payment comes out of.
+   */
+  accountId(): MultisigAccountId
+  /**
+   * How much the payment is for, in the account's denomination.
+   */
+  amount(): MultisigAmount
+  /**
+   * The proposal in its printed form, to hand to the other members.
+   */
+  display(): string
+  /**
+   * The policy of the account the payment comes out of.
+   */
+  policy(): Policy
+  /**
+   * The member who made the proposal, and who the payment goes to.
+   *
+   * Signed by that member, so it is who made the proposal. A member of the account can still
+   * hand out a proposal of their own in place of the one the others expect, and this is what
+   * tells the two apart: show it before asking a member to approve.
+   */
+  proposer(): MemberKey
+}
+/**
+ * @deprecated Use `ProposalLike` instead.
+ */
+export type ProposalInterface = ProposalLike
+
+/**
+ * A payment out of a multisig account, waiting for its members' approvals.
+ *
+ * Made by [`Multisig::propose`](crate::Multisig::propose), which pays the proposing member, and
+ * handed to the other members over whatever channel the application has: its own server, a chat,
+ * a QR code. Each member who agrees answers with an [`Approval`] from
+ * [`Multisig::approve`](crate::Multisig::approve), and once the account's threshold is met anyone
+ * holding the proposal and the approvals executes it with
+ * [`Multisig::execute`](crate::Multisig::execute).
+ *
+ * Nothing here is trusted on its word: the channel can be anyone's. The member who made a
+ * proposal signs it, and the payment goes to that member, its [`proposer`](Proposal::proposer).
+ * The parse checks that signature, so a proposal cannot be passed off under another member's
+ * name, or altered. Every approval is a signature the federation checks against the account's
+ * policy, so a forged approval cannot move money either.
+ *
+ * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
+ * `msproposal` followed by lowercase base32. The parse checks the structure, that the policy
+ * describes an account, and that one of its members signed the proposal, not the approvals it
+ * will collect.
+ */
+export class Proposal extends UniffiAbstractObject implements ProposalLike {
+  readonly [uniffiTypeNameSymbol] = 'Proposal'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] = uniffiTypeProposalObjectFactory.bless(pointer)
+  }
+
+  /**
+   * Parses a proposal from its printed form.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, for one that is not
+   * signed by a member of its account, and for one written by a newer version of this SDK than
+   * this one reads.
+   */
+  static parse(proposal: string): ProposalLike /*throws*/ {
+    return FfiConverterTypeProposal.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+            FfiConverterString.lower(proposal, nativeModule().rustbuffer_alloc),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  /**
+   * The id of the account the payment comes out of.
+   */
+  accountId(): MultisigAccountId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_proposal_account_id(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMultisigAccountId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * How much the payment is for, in the account's denomination.
+   */
+  amount(): MultisigAmount {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_proposal_amount(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMultisigAmount.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The proposal in its printed form, to hand to the other members.
+   */
+  display(): string {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_proposal_display(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterString.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The policy of the account the payment comes out of.
+   */
+  policy(): Policy {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_proposal_policy(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypePolicy.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The member who made the proposal, and who the payment goes to.
+   *
+   * Signed by that member, so it is who made the proposal. A member of the account can still
+   * hand out a proposal of their own in place of the one the others expect, and this is what
+   * tells the two apart: show it before asking a member to approve.
+   */
+  proposer(): MemberKey {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer(
+          uniffiTypeProposalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMemberKey.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeProposalObjectFactory.pointer(this)
+      uniffiTypeProposalObjectFactory.freePointer(pointer)
+      uniffiTypeProposalObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is Proposal {
+    return uniffiTypeProposalObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeProposalObjectFactory: UniffiObjectFactory<ProposalLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): ProposalLike {
+        const instance = Object.create(Proposal.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'Proposal'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_proposal_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: ProposalLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: ProposalLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_proposal(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_proposal(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is ProposalLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'Proposal'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeProposal = new FfiConverterObject(
+  uniffiTypeProposalObjectFactory,
+)
+
+/**
+ * One member's approval of a [`Proposal`].
+ *
+ * Made by [`Multisig::approve`](crate::Multisig::approve) and handed back to whoever collects
+ * approvals for [`Multisig::execute`](crate::Multisig::execute). It approves exactly one
+ * proposal, and carries the member's signature over it.
+ *
+ * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
+ * `msapproval` followed by lowercase base32. The parse checks the structure, not the signature:
+ * that is the federation's job.
+ */
+export interface ApprovalLike {
+  /**
+   * Whether this approves `proposal`, and not some other one.
+   */
+  approves(proposal: ProposalLike): boolean
+  /**
+   * The approval in its printed form, to hand to whoever executes the proposal.
+   */
+  display(): string
+  /**
+   * The key of the member who approved.
+   */
+  member(): MemberKey
+}
+/**
+ * @deprecated Use `ApprovalLike` instead.
+ */
+export type ApprovalInterface = ApprovalLike
+
+/**
+ * One member's approval of a [`Proposal`].
+ *
+ * Made by [`Multisig::approve`](crate::Multisig::approve) and handed back to whoever collects
+ * approvals for [`Multisig::execute`](crate::Multisig::execute). It approves exactly one
+ * proposal, and carries the member's signature over it.
+ *
+ * It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
+ * `msapproval` followed by lowercase base32. The parse checks the structure, not the signature:
+ * that is the federation's job.
+ */
+export class Approval extends UniffiAbstractObject implements ApprovalLike {
+  readonly [uniffiTypeNameSymbol] = 'Approval'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] = uniffiTypeApprovalObjectFactory.bless(pointer)
+  }
+
+  /**
+   * Parses an approval from its printed form.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, and for one
+   * written by a newer version of this SDK than this one reads.
+   */
+  static parse(approval: string): ApprovalLike /*throws*/ {
+    return FfiConverterTypeApproval.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_constructor_approval_parse(
+            FfiConverterString.lower(approval, nativeModule().rustbuffer_alloc),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  /**
+   * Whether this approves `proposal`, and not some other one.
+   */
+  approves(proposal: ProposalLike): boolean {
+    return FfiConverterBool.lift(
+      uniffiCaller.rustCall(
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_approval_approves(
+            uniffiTypeApprovalObjectFactory.clonePointer(this),
+            FfiConverterTypeProposal.lower(
+              proposal,
+              nativeModule().rustbuffer_alloc,
+            ),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  /**
+   * The approval in its printed form, to hand to whoever executes the proposal.
+   */
+  display(): string {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_approval_display(
+          uniffiTypeApprovalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterString.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The key of the member who approved.
+   */
+  member(): MemberKey {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_approval_member(
+          uniffiTypeApprovalObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeMemberKey.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeApprovalObjectFactory.pointer(this)
+      uniffiTypeApprovalObjectFactory.freePointer(pointer)
+      uniffiTypeApprovalObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is Approval {
+    return uniffiTypeApprovalObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeApprovalObjectFactory: UniffiObjectFactory<ApprovalLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): ApprovalLike {
+        const instance = Object.create(Approval.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'Approval'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_approval_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: ApprovalLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: ApprovalLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_approval(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_approval(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is ApprovalLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'Approval'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeApproval = new FfiConverterObject(
+  uniffiTypeApprovalObjectFactory,
+)
+
+// Enum: MultisigDepositState
+export enum MultisigDepositState_Tags {
+  Created = 'Created',
+  Accepted = 'Accepted',
+  Done = 'Done',
+  Failed = 'Failed',
+}
+/**
+ * The progress of a [`Multisig::deposit`].
+ */
+
+type MultisigDepositState_Created_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigDepositState'
+  tag: MultisigDepositState_Tags.Created
+}
+
+type MultisigDepositState_Accepted_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigDepositState'
+  tag: MultisigDepositState_Tags.Accepted
+}
+
+type MultisigDepositState_Done_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigDepositState'
+  tag: MultisigDepositState_Tags.Done
+}
+
+type MultisigDepositState_Failed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigDepositState'
+  tag: MultisigDepositState_Tags.Failed
+  inner: Readonly<{ reason: string }>
+}
+export type MultisigDepositState =
+  | MultisigDepositState_Created_interface
+  | MultisigDepositState_Accepted_interface
+  | MultisigDepositState_Done_interface
+  | MultisigDepositState_Failed_interface
+
+export const MultisigDepositState = (() => {
+  /**
+   * The deposit has been submitted to the federation.
+   */
+  class Created_
+    extends UniffiEnum
+    implements MultisigDepositState_Created_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigDepositState'
+    readonly tag = MultisigDepositState_Tags.Created
+    constructor() {
+      super('MultisigDepositState', 'Created')
+    }
+
+    static new(): Created_ {
+      return new Created_()
+    }
+
+    static instanceOf(obj: any): obj is Created_ {
+      return obj.tag === MultisigDepositState_Tags.Created
+    }
+  }
+  /**
+   * The federation accepted the deposit: the account holds it. The change from the ecash this
+   * paid with is still being issued.
+   */
+  class Accepted_
+    extends UniffiEnum
+    implements MultisigDepositState_Accepted_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigDepositState'
+    readonly tag = MultisigDepositState_Tags.Accepted
+    constructor() {
+      super('MultisigDepositState', 'Accepted')
+    }
+
+    static new(): Accepted_ {
+      return new Accepted_()
+    }
+
+    static instanceOf(obj: any): obj is Accepted_ {
+      return obj.tag === MultisigDepositState_Tags.Accepted
+    }
+  }
+  /**
+   * Final: the account holds the deposit, and the change is back in the ecash balance.
+   */
+  class Done_
+    extends UniffiEnum
+    implements MultisigDepositState_Done_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigDepositState'
+    readonly tag = MultisigDepositState_Tags.Done
+    constructor() {
+      super('MultisigDepositState', 'Done')
+    }
+
+    static new(): Done_ {
+      return new Done_()
+    }
+
+    static instanceOf(obj: any): obj is Done_ {
+      return obj.tag === MultisigDepositState_Tags.Done
+    }
+  }
+  /**
+   * Final: the deposit did not go through.
+   */
+  class Failed_
+    extends UniffiEnum
+    implements MultisigDepositState_Failed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigDepositState'
+    readonly tag = MultisigDepositState_Tags.Failed
+    readonly inner: Readonly<{ reason: string }>
+    constructor(inner: { reason: string }) {
+      super('MultisigDepositState', 'Failed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { reason: string }): Failed_ {
+      return new Failed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Failed_ {
+      return obj.tag === MultisigDepositState_Tags.Failed
+    }
+  }
+
+  function instanceOf(obj: any): obj is MultisigDepositState {
+    return obj[uniffiTypeNameSymbol] === 'MultisigDepositState'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Created: Created_,
+    Accepted: Accepted_,
+    Done: Done_,
+    Failed: Failed_,
+  })
+})()
+
+// FfiConverter for enum MultisigDepositState
+const FfiConverterTypeMultisigDepositState = (() => {
+  type TypeName = MultisigDepositState
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new MultisigDepositState.Created()
+        case 2:
+          return new MultisigDepositState.Accepted()
+        case 3:
+          return new MultisigDepositState.Done()
+        case 4:
+          return new MultisigDepositState.Failed({
+            reason: FfiConverterString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case MultisigDepositState_Tags.Created: {
+          c.writeI32(1)
+          return
+        }
+        case MultisigDepositState_Tags.Accepted: {
+          c.writeI32(2)
+          return
+        }
+        case MultisigDepositState_Tags.Done: {
+          c.writeI32(3)
+          return
+        }
+        case MultisigDepositState_Tags.Failed: {
+          c.writeI32(4)
+          const inner = value.inner
+          FfiConverterString.writeIntoCursor(inner.reason, c)
+          return
+        }
+        default:
+          // Throwing from here means that MultisigDepositState_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case MultisigDepositState_Tags.Created: {
+          return 4
+        }
+        case MultisigDepositState_Tags.Accepted: {
+          return 4
+        }
+        case MultisigDepositState_Tags.Done: {
+          return 4
+        }
+        case MultisigDepositState_Tags.Failed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterString.allocationSize(inner.reason)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export interface MultisigDepositOperationUpdatesLike {
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  next(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigDepositState | undefined>
+}
+/**
+ * @deprecated Use `MultisigDepositOperationUpdatesLike` instead.
+ */
+export type MultisigDepositOperationUpdatesInterface =
+  MultisigDepositOperationUpdatesLike
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export class MultisigDepositOperationUpdates
+  extends UniffiAbstractObject
+  implements MultisigDepositOperationUpdatesLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigDepositOperationUpdates'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigDepositOperationUpdatesObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  async next(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigDepositState | undefined> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+            uniffiTypeMultisigDepositOperationUpdatesObjectFactory.clonePointer(
+              this,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterOptionalTypeMultisigDepositState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigDepositOperationUpdatesObjectFactory.pointer(this)
+      uniffiTypeMultisigDepositOperationUpdatesObjectFactory.freePointer(
+        pointer,
+      )
+      uniffiTypeMultisigDepositOperationUpdatesObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigDepositOperationUpdates {
+    return uniffiTypeMultisigDepositOperationUpdatesObjectFactory.isConcreteType(
+      obj_,
+    )
+  }
+}
+
+const uniffiTypeMultisigDepositOperationUpdatesObjectFactory: UniffiObjectFactory<MultisigDepositOperationUpdatesLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigDepositOperationUpdatesLike {
+        const instance = Object.create(
+          MultisigDepositOperationUpdates.prototype,
+        )
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigDepositOperationUpdates'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigdepositoperationupdates_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigDepositOperationUpdatesLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigDepositOperationUpdatesLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigDepositOperationUpdatesLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigDepositOperationUpdates'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigDepositOperationUpdates = new FfiConverterObject(
+  uniffiTypeMultisigDepositOperationUpdatesObjectFactory,
+)
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export interface MultisigDepositOperationLike {
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigDepositState>
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  details(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigDepositDetails>
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  state(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigDepositState>
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigDepositOperationUpdatesLike
+}
+/**
+ * @deprecated Use `MultisigDepositOperationLike` instead.
+ */
+export type MultisigDepositOperationInterface = MultisigDepositOperationLike
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export class MultisigDepositOperation
+  extends UniffiAbstractObject
+  implements MultisigDepositOperationLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigDepositOperation'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigDepositOperationObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  async awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigDepositState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+            uniffiTypeMultisigDepositOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigDepositState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  async details(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigDepositDetails> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+            uniffiTypeMultisigDepositOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigDepositDetails.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+          uniffiTypeMultisigDepositOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeOperationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  async state(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigDepositState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+            uniffiTypeMultisigDepositOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigDepositState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigDepositOperationUpdatesLike {
+    return FfiConverterTypeMultisigDepositOperationUpdates.lift(
+      uniffiCaller.rustCall(
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+            uniffiTypeMultisigDepositOperationObjectFactory.clonePointer(this),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigDepositOperationObjectFactory.pointer(this)
+      uniffiTypeMultisigDepositOperationObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigDepositOperationObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigDepositOperation {
+    return uniffiTypeMultisigDepositOperationObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeMultisigDepositOperationObjectFactory: UniffiObjectFactory<MultisigDepositOperationLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigDepositOperationLike {
+        const instance = Object.create(MultisigDepositOperation.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigDepositOperation'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigdepositoperation_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigDepositOperationLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigDepositOperationLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigDepositOperationLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigDepositOperation'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigDepositOperation = new FfiConverterObject(
+  uniffiTypeMultisigDepositOperationObjectFactory,
+)
+
+// Enum: MultisigTransferState
+export enum MultisigTransferState_Tags {
+  Created = 'Created',
+  Done = 'Done',
+  Failed = 'Failed',
+}
+/**
+ * The progress of a [`Multisig::execute`]: a payment out of a multisig account to the member who
+ * proposed it.
+ */
+
+type MultisigTransferState_Created_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigTransferState'
+  tag: MultisigTransferState_Tags.Created
+}
+
+type MultisigTransferState_Done_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigTransferState'
+  tag: MultisigTransferState_Tags.Done
+}
+
+type MultisigTransferState_Failed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigTransferState'
+  tag: MultisigTransferState_Tags.Failed
+  inner: Readonly<{ reason: string }>
+}
+export type MultisigTransferState =
+  | MultisigTransferState_Created_interface
+  | MultisigTransferState_Done_interface
+  | MultisigTransferState_Failed_interface
+
+export const MultisigTransferState = (() => {
+  /**
+   * The payment has been submitted to the federation.
+   */
+  class Created_
+    extends UniffiEnum
+    implements MultisigTransferState_Created_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigTransferState'
+    readonly tag = MultisigTransferState_Tags.Created
+    constructor() {
+      super('MultisigTransferState', 'Created')
+    }
+
+    static new(): Created_ {
+      return new Created_()
+    }
+
+    static instanceOf(obj: any): obj is Created_ {
+      return obj.tag === MultisigTransferState_Tags.Created
+    }
+  }
+  /**
+   * Final: the federation paid it. The proposer collects it with
+   * [`Multisig::sweep`].
+   */
+  class Done_
+    extends UniffiEnum
+    implements MultisigTransferState_Done_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigTransferState'
+    readonly tag = MultisigTransferState_Tags.Done
+    constructor() {
+      super('MultisigTransferState', 'Done')
+    }
+
+    static new(): Done_ {
+      return new Done_()
+    }
+
+    static instanceOf(obj: any): obj is Done_ {
+      return obj.tag === MultisigTransferState_Tags.Done
+    }
+  }
+  /**
+   * Final: the federation refused it.
+   */
+  class Failed_
+    extends UniffiEnum
+    implements MultisigTransferState_Failed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigTransferState'
+    readonly tag = MultisigTransferState_Tags.Failed
+    readonly inner: Readonly<{ reason: string }>
+    constructor(inner: { reason: string }) {
+      super('MultisigTransferState', 'Failed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { reason: string }): Failed_ {
+      return new Failed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Failed_ {
+      return obj.tag === MultisigTransferState_Tags.Failed
+    }
+  }
+
+  function instanceOf(obj: any): obj is MultisigTransferState {
+    return obj[uniffiTypeNameSymbol] === 'MultisigTransferState'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Created: Created_,
+    Done: Done_,
+    Failed: Failed_,
+  })
+})()
+
+// FfiConverter for enum MultisigTransferState
+const FfiConverterTypeMultisigTransferState = (() => {
+  type TypeName = MultisigTransferState
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new MultisigTransferState.Created()
+        case 2:
+          return new MultisigTransferState.Done()
+        case 3:
+          return new MultisigTransferState.Failed({
+            reason: FfiConverterString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case MultisigTransferState_Tags.Created: {
+          c.writeI32(1)
+          return
+        }
+        case MultisigTransferState_Tags.Done: {
+          c.writeI32(2)
+          return
+        }
+        case MultisigTransferState_Tags.Failed: {
+          c.writeI32(3)
+          const inner = value.inner
+          FfiConverterString.writeIntoCursor(inner.reason, c)
+          return
+        }
+        default:
+          // Throwing from here means that MultisigTransferState_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case MultisigTransferState_Tags.Created: {
+          return 4
+        }
+        case MultisigTransferState_Tags.Done: {
+          return 4
+        }
+        case MultisigTransferState_Tags.Failed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterString.allocationSize(inner.reason)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export interface MultisigTransferOperationUpdatesLike {
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  next(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigTransferState | undefined>
+}
+/**
+ * @deprecated Use `MultisigTransferOperationUpdatesLike` instead.
+ */
+export type MultisigTransferOperationUpdatesInterface =
+  MultisigTransferOperationUpdatesLike
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export class MultisigTransferOperationUpdates
+  extends UniffiAbstractObject
+  implements MultisigTransferOperationUpdatesLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigTransferOperationUpdates'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigTransferOperationUpdatesObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  async next(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigTransferState | undefined> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
+            uniffiTypeMultisigTransferOperationUpdatesObjectFactory.clonePointer(
+              this,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterOptionalTypeMultisigTransferState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigTransferOperationUpdatesObjectFactory.pointer(this)
+      uniffiTypeMultisigTransferOperationUpdatesObjectFactory.freePointer(
+        pointer,
+      )
+      uniffiTypeMultisigTransferOperationUpdatesObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigTransferOperationUpdates {
+    return uniffiTypeMultisigTransferOperationUpdatesObjectFactory.isConcreteType(
+      obj_,
+    )
+  }
+}
+
+const uniffiTypeMultisigTransferOperationUpdatesObjectFactory: UniffiObjectFactory<MultisigTransferOperationUpdatesLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigTransferOperationUpdatesLike {
+        const instance = Object.create(
+          MultisigTransferOperationUpdates.prototype,
+        )
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigTransferOperationUpdates'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigtransferoperationupdates_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigTransferOperationUpdatesLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigTransferOperationUpdatesLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigTransferOperationUpdatesLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigTransferOperationUpdates'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigTransferOperationUpdates = new FfiConverterObject(
+  uniffiTypeMultisigTransferOperationUpdatesObjectFactory,
+)
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export interface MultisigTransferOperationLike {
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigTransferState>
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  details(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigTransferDetails>
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  state(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigTransferState>
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigTransferOperationUpdatesLike
+}
+/**
+ * @deprecated Use `MultisigTransferOperationLike` instead.
+ */
+export type MultisigTransferOperationInterface = MultisigTransferOperationLike
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export class MultisigTransferOperation
+  extends UniffiAbstractObject
+  implements MultisigTransferOperationLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigTransferOperation'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigTransferOperationObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  async awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigTransferState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+            uniffiTypeMultisigTransferOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigTransferState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  async details(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigTransferDetails> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+            uniffiTypeMultisigTransferOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigTransferDetails.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+          uniffiTypeMultisigTransferOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeOperationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  async state(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigTransferState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+            uniffiTypeMultisigTransferOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigTransferState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigTransferOperationUpdatesLike {
+    return FfiConverterTypeMultisigTransferOperationUpdates.lift(
+      uniffiCaller.rustCall(
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+            uniffiTypeMultisigTransferOperationObjectFactory.clonePointer(this),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigTransferOperationObjectFactory.pointer(this)
+      uniffiTypeMultisigTransferOperationObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigTransferOperationObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigTransferOperation {
+    return uniffiTypeMultisigTransferOperationObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeMultisigTransferOperationObjectFactory: UniffiObjectFactory<MultisigTransferOperationLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigTransferOperationLike {
+        const instance = Object.create(MultisigTransferOperation.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigTransferOperation'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigtransferoperation_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigTransferOperationLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigTransferOperationLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigTransferOperationLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigTransferOperation'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigTransferOperation = new FfiConverterObject(
+  uniffiTypeMultisigTransferOperationObjectFactory,
+)
+
+// Enum: MultisigSweepState
+export enum MultisigSweepState_Tags {
+  Created = 'Created',
+  Accepted = 'Accepted',
+  Done = 'Done',
+  Failed = 'Failed',
+}
+/**
+ * The progress of a [`Multisig::sweep`].
+ */
+
+type MultisigSweepState_Created_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigSweepState'
+  tag: MultisigSweepState_Tags.Created
+}
+
+type MultisigSweepState_Accepted_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigSweepState'
+  tag: MultisigSweepState_Tags.Accepted
+}
+
+type MultisigSweepState_Done_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigSweepState'
+  tag: MultisigSweepState_Tags.Done
+}
+
+type MultisigSweepState_Failed_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'MultisigSweepState'
+  tag: MultisigSweepState_Tags.Failed
+  inner: Readonly<{ reason: string }>
+}
+export type MultisigSweepState =
+  | MultisigSweepState_Created_interface
+  | MultisigSweepState_Accepted_interface
+  | MultisigSweepState_Done_interface
+  | MultisigSweepState_Failed_interface
+
+export const MultisigSweepState = (() => {
+  /**
+   * The sweep has been submitted to the federation.
+   */
+  class Created_
+    extends UniffiEnum
+    implements MultisigSweepState_Created_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigSweepState'
+    readonly tag = MultisigSweepState_Tags.Created
+    constructor() {
+      super('MultisigSweepState', 'Created')
+    }
+
+    static new(): Created_ {
+      return new Created_()
+    }
+
+    static instanceOf(obj: any): obj is Created_ {
+      return obj.tag === MultisigSweepState_Tags.Created
+    }
+  }
+  /**
+   * The federation accepted it, and is issuing the ecash.
+   */
+  class Accepted_
+    extends UniffiEnum
+    implements MultisigSweepState_Accepted_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigSweepState'
+    readonly tag = MultisigSweepState_Tags.Accepted
+    constructor() {
+      super('MultisigSweepState', 'Accepted')
+    }
+
+    static new(): Accepted_ {
+      return new Accepted_()
+    }
+
+    static instanceOf(obj: any): obj is Accepted_ {
+      return obj.tag === MultisigSweepState_Tags.Accepted
+    }
+  }
+  /**
+   * Final: the swept value is in the ecash balance.
+   */
+  class Done_ extends UniffiEnum implements MultisigSweepState_Done_interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigSweepState'
+    readonly tag = MultisigSweepState_Tags.Done
+    constructor() {
+      super('MultisigSweepState', 'Done')
+    }
+
+    static new(): Done_ {
+      return new Done_()
+    }
+
+    static instanceOf(obj: any): obj is Done_ {
+      return obj.tag === MultisigSweepState_Tags.Done
+    }
+  }
+  /**
+   * Final: the sweep did not go through, and what was waiting is still waiting.
+   */
+  class Failed_
+    extends UniffiEnum
+    implements MultisigSweepState_Failed_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'MultisigSweepState'
+    readonly tag = MultisigSweepState_Tags.Failed
+    readonly inner: Readonly<{ reason: string }>
+    constructor(inner: { reason: string }) {
+      super('MultisigSweepState', 'Failed')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { reason: string }): Failed_ {
+      return new Failed_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Failed_ {
+      return obj.tag === MultisigSweepState_Tags.Failed
+    }
+  }
+
+  function instanceOf(obj: any): obj is MultisigSweepState {
+    return obj[uniffiTypeNameSymbol] === 'MultisigSweepState'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Created: Created_,
+    Accepted: Accepted_,
+    Done: Done_,
+    Failed: Failed_,
+  })
+})()
+
+// FfiConverter for enum MultisigSweepState
+const FfiConverterTypeMultisigSweepState = (() => {
+  type TypeName = MultisigSweepState
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new MultisigSweepState.Created()
+        case 2:
+          return new MultisigSweepState.Accepted()
+        case 3:
+          return new MultisigSweepState.Done()
+        case 4:
+          return new MultisigSweepState.Failed({
+            reason: FfiConverterString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case MultisigSweepState_Tags.Created: {
+          c.writeI32(1)
+          return
+        }
+        case MultisigSweepState_Tags.Accepted: {
+          c.writeI32(2)
+          return
+        }
+        case MultisigSweepState_Tags.Done: {
+          c.writeI32(3)
+          return
+        }
+        case MultisigSweepState_Tags.Failed: {
+          c.writeI32(4)
+          const inner = value.inner
+          FfiConverterString.writeIntoCursor(inner.reason, c)
+          return
+        }
+        default:
+          // Throwing from here means that MultisigSweepState_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case MultisigSweepState_Tags.Created: {
+          return 4
+        }
+        case MultisigSweepState_Tags.Accepted: {
+          return 4
+        }
+        case MultisigSweepState_Tags.Done: {
+          return 4
+        }
+        case MultisigSweepState_Tags.Failed: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterString.allocationSize(inner.reason)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export interface MultisigSweepOperationUpdatesLike {
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  next(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigSweepState | undefined>
+}
+/**
+ * @deprecated Use `MultisigSweepOperationUpdatesLike` instead.
+ */
+export type MultisigSweepOperationUpdatesInterface =
+  MultisigSweepOperationUpdatesLike
+
+/**
+ * The UniFFI view of one `OperationUpdates<S>` instantiation, behind a lock so `next`'s
+ * `&mut self` can cross as `&self`.
+ */
+export class MultisigSweepOperationUpdates
+  extends UniffiAbstractObject
+  implements MultisigSweepOperationUpdatesLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigSweepOperationUpdates'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigSweepOperationUpdatesObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`OperationUpdates::next`](crate::OperationUpdates::next).
+   */
+  async next(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigSweepState | undefined> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+            uniffiTypeMultisigSweepOperationUpdatesObjectFactory.clonePointer(
+              this,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterOptionalTypeMultisigSweepState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigSweepOperationUpdatesObjectFactory.pointer(this)
+      uniffiTypeMultisigSweepOperationUpdatesObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigSweepOperationUpdatesObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigSweepOperationUpdates {
+    return uniffiTypeMultisigSweepOperationUpdatesObjectFactory.isConcreteType(
+      obj_,
+    )
+  }
+}
+
+const uniffiTypeMultisigSweepOperationUpdatesObjectFactory: UniffiObjectFactory<MultisigSweepOperationUpdatesLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigSweepOperationUpdatesLike {
+        const instance = Object.create(MultisigSweepOperationUpdates.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigSweepOperationUpdates'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigsweepoperationupdates_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigSweepOperationUpdatesLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigSweepOperationUpdatesLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigSweepOperationUpdatesLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigSweepOperationUpdates'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigSweepOperationUpdates = new FfiConverterObject(
+  uniffiTypeMultisigSweepOperationUpdatesObjectFactory,
+)
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export interface MultisigSweepOperationLike {
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigSweepState>
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  details(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigSweepDetails>
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  state(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigSweepState>
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigSweepOperationUpdatesLike
+}
+/**
+ * @deprecated Use `MultisigSweepOperationLike` instead.
+ */
+export type MultisigSweepOperationInterface = MultisigSweepOperationLike
+
+/**
+ * The UniFFI view of one `Operation<S>` instantiation: an opaque object wrapping the real
+ * handle, forwarding every method.
+ */
+export class MultisigSweepOperation
+  extends UniffiAbstractObject
+  implements MultisigSweepOperationLike
+{
+  readonly [uniffiTypeNameSymbol] = 'MultisigSweepOperation'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeMultisigSweepOperationObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`Operation::await_final`](crate::Operation::await_final).
+   */
+  async awaitFinal(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigSweepState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+            uniffiTypeMultisigSweepOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigSweepState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::details`](crate::Operation::details).
+   */
+  async details(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigSweepDetails> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+            uniffiTypeMultisigSweepOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigSweepDetails.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::id`](crate::Operation::id).
+   */
+  id(): OperationId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+          uniffiTypeMultisigSweepOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeOperationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Operation::state`](crate::Operation::state).
+   */
+  async state(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigSweepState> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+            uniffiTypeMultisigSweepOperationObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigSweepState.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Operation::updates`](crate::Operation::updates).
+   */
+  updates(): MultisigSweepOperationUpdatesLike {
+    return FfiConverterTypeMultisigSweepOperationUpdates.lift(
+      uniffiCaller.rustCall(
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+            uniffiTypeMultisigSweepOperationObjectFactory.clonePointer(this),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer =
+        uniffiTypeMultisigSweepOperationObjectFactory.pointer(this)
+      uniffiTypeMultisigSweepOperationObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigSweepOperationObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is MultisigSweepOperation {
+    return uniffiTypeMultisigSweepOperationObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeMultisigSweepOperationObjectFactory: UniffiObjectFactory<MultisigSweepOperationLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigSweepOperationLike {
+        const instance = Object.create(MultisigSweepOperation.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'MultisigSweepOperation'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisigsweepoperation_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigSweepOperationLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigSweepOperationLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigSweepOperationLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'MultisigSweepOperation'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisigSweepOperation = new FfiConverterObject(
+  uniffiTypeMultisigSweepOperationObjectFactory,
+)
+
+/**
+ * The multisig facade for one federation.
+ *
+ * Obtained from [`Federation::multisig`](crate::Federation::multisig), which returns `None`
+ * unless this build carries a module that backs it and the federation runs that module.
+ *
+ * A multisig account belongs to a group: several members, each with a key, and a threshold of
+ * how many of them it takes to pay anything out. The account is described by its [`Policy`] and
+ * needs no setting up on the federation: it exists from the first deposit. The flow:
+ *
+ * 1. Each member takes its key for the group from [`member_key`](Multisig::member_key), and the
+ * members agree on a [`Policy`]: who is in, and the threshold.
+ * 2. [`account`](Multisig::account) turns the policy into its [`MultisigAccount`], the same one
+ * for every member.
+ * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
+ * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
+ * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals.
+ * 5. An executed proposal pays the member who proposed it. That member's
+ * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
+ *
+ * The application moves keys, proposals and approvals between the members, over whatever channel
+ * it has, and keeps the group's policy. Neither this crate nor the federation keeps a list of a
+ * member's groups. The channel is never trusted with money: the federation pays out only on the
+ * signatures of enough of the account's members.
+ *
+ * A deposit, a payout or a sweep is recorded when the call that starts it returns. If the
+ * application stops before that, the federation can still carry it out, and the activity then
+ * lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
+ * account's [`balance`](Multisig::balance) before starting it again.
+ *
+ * Like every other facade's, a call that needs the federation fails with
+ * [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The two that do not
+ * need it keep answering: [`account`](Multisig::account), which is computed locally, and
+ * [`denominations`](Multisig::denominations).
+ */
+export interface MultisigLike {
+  /**
+   * See [`Multisig::account`].
+   */
+  account(policy: Policy) /*throws*/ : MultisigAccountLike
+  /**
+   * Approves `proposal`, as this member of `group`.
+   *
+   * Show the member the proposal's [`proposer`](Proposal::proposer), who the payment goes to,
+   * its [`amount`](Proposal::amount) and its account before calling this: an approval is a
+   * signature that lets the payment through once enough members have given theirs. Another
+   * member can hand out a proposal of their own in place of the one expected, and the proposer
+   * is what tells them apart. The proposal is checked first, so a proposal whose contents do
+   * not match what it says it pays is refused rather than signed.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a proposal made
+   * for another kind of module, for one that does not pay what it says, and when this member's
+   * key for `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  approve(
+    group: string,
+    proposal: ProposalLike,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<ApprovalLike>
+  /**
+   * What `account` holds, in its denomination.
+   *
+   * Read from the federation, so it can be shown to any member, and to anyone else who knows
+   * the policy. An account nothing was ever deposited into holds zero.
+   *
+   * # Errors
+   *
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
+   * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  balance(
+    account: MultisigAccountLike,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<MultisigAmount>
+  /**
+   * The denominations an account can be held in on this federation.
+   *
+   * [`account`](Multisig::account) refuses a policy in any other one with
+   * [`NotSupported`](crate::ErrorCode::NotSupported).
+   */
+  denominations(): Array<MultisigDenomination>
+  /**
+   * See [`Multisig::deposit`].
+   */
+  deposit(
+    account: MultisigAccountLike,
+    amount: Amount,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<MultisigDepositOperationLike>
+  /**
+   * See [`Multisig::execute`].
+   */
+  execute(
+    proposal: ProposalLike,
+    approvals: Array<ApprovalLike>,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<MultisigTransferOperationLike>
+  /**
+   * This member's key for `group`.
+   *
+   * `group` is any name the application gives the group, the same on every member's device.
+   * The same group always gives the same key, from this seed, and different groups give
+   * unrelated keys, so that two groups cannot be linked through a shared key. Restoring the
+   * seed restores every key.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`,
+   * [`NotSupported`](crate::ErrorCode::NotSupported) if the federation no longer runs the
+   * module, and [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  memberKey(
+    group: string,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<MemberKey>
+  /**
+   * Proposes paying `amount` out of `account` to this member of `group`.
+   *
+   * Nothing moves yet, and nothing is sent anywhere: hand the returned proposal to the other
+   * members to [`approve`](Multisig::approve), then [`execute`](Multisig::execute) it with
+   * their approvals. The proposal is signed with this member's key for `group`, and names this
+   * member as its [`proposer`](Proposal::proposer). The payment goes to the proposer, whoever
+   * executes it, and [`sweep`](Multisig::sweep) then moves it into the proposer's ecash
+   * balance.
+   *
+   * A proposal does not stay valid for ever: the federation refuses one executed too long after
+   * it was made, and the payout then ends [`Failed`](MultisigTransferState::Failed).
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a zero amount
+   * or one in a different denomination from the account's, and when this member's key for
+   * `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
+   * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  propose(
+    group: string,
+    account: MultisigAccountLike,
+    amount: MultisigAmount,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<ProposalLike>
+  /**
+   * See [`Multisig::sweep`].
+   */
+  sweep(asyncOpts_?: {
+    signal: AbortSignal
+  }) /*throws*/ : Promise<MultisigSweepOperationLike | undefined>
+}
+/**
+ * @deprecated Use `MultisigLike` instead.
+ */
+export type MultisigInterface = MultisigLike
+
+/**
+ * The multisig facade for one federation.
+ *
+ * Obtained from [`Federation::multisig`](crate::Federation::multisig), which returns `None`
+ * unless this build carries a module that backs it and the federation runs that module.
+ *
+ * A multisig account belongs to a group: several members, each with a key, and a threshold of
+ * how many of them it takes to pay anything out. The account is described by its [`Policy`] and
+ * needs no setting up on the federation: it exists from the first deposit. The flow:
+ *
+ * 1. Each member takes its key for the group from [`member_key`](Multisig::member_key), and the
+ * members agree on a [`Policy`]: who is in, and the threshold.
+ * 2. [`account`](Multisig::account) turns the policy into its [`MultisigAccount`], the same one
+ * for every member.
+ * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
+ * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
+ * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals.
+ * 5. An executed proposal pays the member who proposed it. That member's
+ * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
+ *
+ * The application moves keys, proposals and approvals between the members, over whatever channel
+ * it has, and keeps the group's policy. Neither this crate nor the federation keeps a list of a
+ * member's groups. The channel is never trusted with money: the federation pays out only on the
+ * signatures of enough of the account's members.
+ *
+ * A deposit, a payout or a sweep is recorded when the call that starts it returns. If the
+ * application stops before that, the federation can still carry it out, and the activity then
+ * lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
+ * account's [`balance`](Multisig::balance) before starting it again.
+ *
+ * Like every other facade's, a call that needs the federation fails with
+ * [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The two that do not
+ * need it keep answering: [`account`](Multisig::account), which is computed locally, and
+ * [`denominations`](Multisig::denominations).
+ */
+export class Multisig extends UniffiAbstractObject implements MultisigLike {
+  readonly [uniffiTypeNameSymbol] = 'Multisig'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] = uniffiTypeMultisigObjectFactory.bless(pointer)
+  }
+
+  /**
+   * See [`Multisig::account`].
+   */
+  account(policy: Policy): MultisigAccountLike /*throws*/ {
+    return FfiConverterTypeMultisigAccount.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_account(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterTypePolicy.lower(
+              policy,
+              nativeModule().rustbuffer_alloc,
+            ),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  /**
+   * Approves `proposal`, as this member of `group`.
+   *
+   * Show the member the proposal's [`proposer`](Proposal::proposer), who the payment goes to,
+   * its [`amount`](Proposal::amount) and its account before calling this: an approval is a
+   * signature that lets the payment through once enough members have given theirs. Another
+   * member can hand out a proposal of their own in place of the one expected, and the proposer
+   * is what tells them apart. The proposal is checked first, so a proposal whose contents do
+   * not match what it says it pays is refused rather than signed.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a proposal made
+   * for another kind of module, for one that does not pay what it says, and when this member's
+   * key for `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  async approve(
+    group: string,
+    proposal: ProposalLike,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<ApprovalLike> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_approve(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterString.lower(group, nativeModule().rustbuffer_alloc),
+            FfiConverterTypeProposal.lower(
+              proposal,
+              nativeModule().rustbuffer_alloc,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_poll_u64,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_u64,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_u64,
+        /*freeFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_free_u64,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        /*liftFunc:*/ FfiConverterTypeApproval.lift.bind(
+          FfiConverterTypeApproval,
+        ),
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * What `account` holds, in its denomination.
+   *
+   * Read from the federation, so it can be shown to any member, and to anyone else who knows
+   * the policy. An account nothing was ever deposited into holds zero.
+   *
+   * # Errors
+   *
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
+   * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  async balance(
+    account: MultisigAccountLike,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<MultisigAmount> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_balance(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterTypeMultisigAccount.lower(
+              account,
+              nativeModule().rustbuffer_alloc,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMultisigAmount.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * The denominations an account can be held in on this federation.
+   *
+   * [`account`](Multisig::account) refuses a policy in any other one with
+   * [`NotSupported`](crate::ErrorCode::NotSupported).
+   */
+  denominations(): Array<MultisigDenomination> {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_denominations(
+          uniffiTypeMultisigObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterSequenceTypeMultisigDenomination.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Multisig::deposit`].
+   */
+  async deposit(
+    account: MultisigAccountLike,
+    amount: Amount,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<MultisigDepositOperationLike> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_deposit(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterTypeMultisigAccount.lower(
+              account,
+              nativeModule().rustbuffer_alloc,
+            ),
+            FfiConverterTypeAmount.lower(
+              amount,
+              nativeModule().rustbuffer_alloc,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_poll_u64,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_u64,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_u64,
+        /*freeFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_free_u64,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        /*liftFunc:*/ FfiConverterTypeMultisigDepositOperation.lift.bind(
+          FfiConverterTypeMultisigDepositOperation,
+        ),
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Multisig::execute`].
+   */
+  async execute(
+    proposal: ProposalLike,
+    approvals: Array<ApprovalLike>,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<MultisigTransferOperationLike> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_execute(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterTypeProposal.lower(
+              proposal,
+              nativeModule().rustbuffer_alloc,
+            ),
+            FfiConverterSequenceTypeApproval.lower(
+              approvals,
+              nativeModule().rustbuffer_alloc,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_poll_u64,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_u64,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_u64,
+        /*freeFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_free_u64,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        /*liftFunc:*/ FfiConverterTypeMultisigTransferOperation.lift.bind(
+          FfiConverterTypeMultisigTransferOperation,
+        ),
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * This member's key for `group`.
+   *
+   * `group` is any name the application gives the group, the same on every member's device.
+   * The same group always gives the same key, from this seed, and different groups give
+   * unrelated keys, so that two groups cannot be linked through a shared key. Restoring the
+   * seed restores every key.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`,
+   * [`NotSupported`](crate::ErrorCode::NotSupported) if the federation no longer runs the
+   * module, and [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  async memberKey(
+    group: string,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<MemberKey> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_member_key(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterString.lower(group, nativeModule().rustbuffer_alloc),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterTypeMemberKey.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * Proposes paying `amount` out of `account` to this member of `group`.
+   *
+   * Nothing moves yet, and nothing is sent anywhere: hand the returned proposal to the other
+   * members to [`approve`](Multisig::approve), then [`execute`](Multisig::execute) it with
+   * their approvals. The proposal is signed with this member's key for `group`, and names this
+   * member as its [`proposer`](Proposal::proposer). The payment goes to the proposer, whoever
+   * executes it, and [`sweep`](Multisig::sweep) then moves it into the proposer's ecash
+   * balance.
+   *
+   * A proposal does not stay valid for ever: the federation refuses one executed too long after
+   * it was made, and the payout then ends [`Failed`](MultisigTransferState::Failed).
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a zero amount
+   * or one in a different denomination from the account's, and when this member's key for
+   * `group` is not one of the account's members (a different group name, most often),
+   * [`NotSupported`](crate::ErrorCode::NotSupported) for an account in a denomination this
+   * federation does not hold,
+   * [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable), and
+   * [`FederationClosed`](crate::ErrorCode::FederationClosed).
+   */
+  async propose(
+    group: string,
+    account: MultisigAccountLike,
+    amount: MultisigAmount,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<ProposalLike> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_propose(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+            FfiConverterString.lower(group, nativeModule().rustbuffer_alloc),
+            FfiConverterTypeMultisigAccount.lower(
+              account,
+              nativeModule().rustbuffer_alloc,
+            ),
+            FfiConverterTypeMultisigAmount.lower(
+              amount,
+              nativeModule().rustbuffer_alloc,
+            ),
+          )
+        },
+        /*pollFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_poll_u64,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_u64,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_u64,
+        /*freeFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_free_u64,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        /*liftFunc:*/ FfiConverterTypeProposal.lift.bind(
+          FfiConverterTypeProposal,
+        ),
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  /**
+   * See [`Multisig::sweep`].
+   */
+  async sweep(asyncOpts_?: {
+    signal: AbortSignal
+  }): Promise<MultisigSweepOperationLike | undefined> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined
+    try {
+      return await uniffiRustCallAsync(
+        /*rustCaller:*/ uniffiCaller,
+        /*rustFutureFunc:*/ () => {
+          return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_multisig_sweep(
+            uniffiTypeMultisigObjectFactory.clonePointer(this),
+          )
+        },
+        /*pollFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+        /*cancelFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+        /*completeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+        /*freeFunc:*/ nativeModule()
+          .ubrn_ffi_fedimint_sdk_rust_future_free_rust_buffer,
+        // Async returns always go through the JS-side converter: the
+        // FFI symbol returns the future handle (u64), and the user-level
+        // RustBuffer comes back via the shared `rust_future_complete_*`
+        // export. The bytes the runtime hands back must be deserialized
+        // here using the per-callable return-type converter.
+        // Borrowed view over foreign memory: the call site owns the free,
+        // as on the sync paths. Unconditional — a no-op where buffers are
+        // already JS-owned.
+        /*liftFunc:*/ (__rb) => {
+          try {
+            return FfiConverterOptionalTypeMultisigSweepOperation.lift(__rb)
+          } finally {
+            nativeModule().rustbuffer_free(__rb)
+          }
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+        /*asyncOpts:*/ asyncOpts_,
+        /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+      )
+    } catch (__error: any) {
+      if (uniffiIsDebug && __error instanceof Error) {
+        __error.stack = __stack
+      }
+      throw __error
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeMultisigObjectFactory.pointer(this)
+      uniffiTypeMultisigObjectFactory.freePointer(pointer)
+      uniffiTypeMultisigObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is Multisig {
+    return uniffiTypeMultisigObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeMultisigObjectFactory: UniffiObjectFactory<MultisigLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): MultisigLike {
+        const instance = Object.create(Multisig.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'Multisig'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_multisig_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed()
+      },
+
+      pointer(obj_: MultisigLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: MultisigLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_clone_multisig(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_fedimint_sdk_fn_free_multisig(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is MultisigLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'Multisig'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeMultisig = new FfiConverterObject(
+  uniffiTypeMultisigObjectFactory,
+)
+
 // Enum: OnchainReceiveState
 export enum OnchainReceiveState_Tags {
   Confirmed = 'Confirmed',
@@ -13690,7 +17878,7 @@ const FfiConverterTypeOperationSupport = (() => {
  * is not supported; and [`raw_kind`](AnyOperation::raw_kind) gives the
  * persisted discriminator verbatim, for logs and bug reports.
  *
- * The seven `as_*` accessors return `Some` only when the kind matches and
+ * The `as_*` accessors return `Some` only when the kind matches and
  * the operation is supported, and `None` otherwise, without distinguishing
  * a plain kind mismatch from an unsupported record of the matching kind:
  * use [`support`](AnyOperation::support) or
@@ -13723,6 +17911,18 @@ export interface AnyOperationLike {
    * See [`AnyOperation::as_ln_send`].
    */
   asLnSend(): LnSendOperationLike | undefined
+  /**
+   * See [`AnyOperation::as_multisig_deposit`].
+   */
+  asMultisigDeposit(): MultisigDepositOperationLike | undefined
+  /**
+   * See [`AnyOperation::as_multisig_sweep`].
+   */
+  asMultisigSweep(): MultisigSweepOperationLike | undefined
+  /**
+   * See [`AnyOperation::as_multisig_transfer`].
+   */
+  asMultisigTransfer(): MultisigTransferOperationLike | undefined
   /**
    * See [`AnyOperation::as_onchain_receive`].
    */
@@ -13848,7 +18048,7 @@ export type AnyOperationInterface = AnyOperationLike
  * is not supported; and [`raw_kind`](AnyOperation::raw_kind) gives the
  * persisted discriminator verbatim, for logs and bug reports.
  *
- * The seven `as_*` accessors return `Some` only when the kind matches and
+ * The `as_*` accessors return `Some` only when the kind matches and
  * the operation is supported, and `None` otherwise, without distinguishing
  * a plain kind mismatch from an unsupported record of the matching kind:
  * use [`support`](AnyOperation::support) or
@@ -13954,6 +18154,66 @@ export class AnyOperation
     )
     try {
       return FfiConverterOptionalTypeLnSendOperation.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`AnyOperation::as_multisig_deposit`].
+   */
+  asMultisigDeposit(): MultisigDepositOperationLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+          uniffiTypeAnyOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeMultisigDepositOperation.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`AnyOperation::as_multisig_sweep`].
+   */
+  asMultisigSweep(): MultisigSweepOperationLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+          uniffiTypeAnyOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeMultisigSweepOperation.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`AnyOperation::as_multisig_transfer`].
+   */
+  asMultisigTransfer(): MultisigTransferOperationLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
+          uniffiTypeAnyOperationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeMultisigTransferOperation.lift(__rb)
     } finally {
       nativeModule().rustbuffer_free(__rb)
     }
@@ -14394,7 +18654,7 @@ export interface FederationLike {
    *
    * Reported as plain booleans so an application can decide what to
    * render before the user touches anything. It answers the same
-   * question as the three facade accessors below and exists alongside
+   * question as the facade accessors below and exists alongside
    * them for the case where a screen needs to know about several
    * capabilities at once without taking handles it will not use.
    */
@@ -14426,6 +18686,10 @@ export interface FederationLike {
    * missing facade.
    */
   meta(): MetaLike
+  /**
+   * See [`Federation::multisig`].
+   */
+  multisig(): MultisigLike | undefined
   /**
    * The federation's human-readable name, when its configuration
    * declares one.
@@ -14709,7 +18973,7 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
    *
    * Reported as plain booleans so an application can decide what to
    * render before the user touches anything. It answers the same
-   * question as the three facade accessors below and exists alongside
+   * question as the facade accessors below and exists alongside
    * them for the case where a screen needs to know about several
    * capabilities at once without taking handles it will not use.
    */
@@ -14829,6 +19093,26 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
         /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
       ),
     )
+  }
+
+  /**
+   * See [`Federation::multisig`].
+   */
+  multisig(): MultisigLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_method_federation_multisig(
+          uniffiTypeFederationObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeMultisig.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
   }
 
   /**
@@ -17556,6 +21840,11 @@ const FfiConverterOptionalTypeLnReceiveState = new FfiConverterOptional(
 const FfiConverterOptionalTypeOnchainReceiveFeeBreakdown =
   new FfiConverterOptional(FfiConverterTypeOnchainReceiveFeeBreakdown)
 
+// FfiConverter for Array<MemberKey>
+const FfiConverterSequenceTypeMemberKey = new FfiConverterArray(
+  FfiConverterTypeMemberKey,
+)
+
 // FfiConverter for number | undefined
 const FfiConverterOptionalUInt32 = new FfiConverterOptional(FfiConverterUInt32)
 
@@ -17582,6 +21871,41 @@ const FfiConverterOptionalTypeLightning = new FfiConverterOptional(
 // FfiConverter for ConsensusMetadata | undefined
 const FfiConverterOptionalTypeConsensusMetadata = new FfiConverterOptional(
   FfiConverterTypeConsensusMetadata,
+)
+
+// FfiConverter for Array<MultisigDenomination>
+const FfiConverterSequenceTypeMultisigDenomination = new FfiConverterArray(
+  FfiConverterTypeMultisigDenomination,
+)
+
+// FfiConverter for MultisigDepositState | undefined
+const FfiConverterOptionalTypeMultisigDepositState = new FfiConverterOptional(
+  FfiConverterTypeMultisigDepositState,
+)
+
+// FfiConverter for Array<ApprovalLike>
+const FfiConverterSequenceTypeApproval = new FfiConverterArray(
+  FfiConverterTypeApproval,
+)
+
+// FfiConverter for MultisigTransferState | undefined
+const FfiConverterOptionalTypeMultisigTransferState = new FfiConverterOptional(
+  FfiConverterTypeMultisigTransferState,
+)
+
+// FfiConverter for MultisigSweepState | undefined
+const FfiConverterOptionalTypeMultisigSweepState = new FfiConverterOptional(
+  FfiConverterTypeMultisigSweepState,
+)
+
+// FfiConverter for MultisigSweepOperationLike | undefined
+const FfiConverterOptionalTypeMultisigSweepOperation = new FfiConverterOptional(
+  FfiConverterTypeMultisigSweepOperation,
+)
+
+// FfiConverter for MultisigLike | undefined
+const FfiConverterOptionalTypeMultisig = new FfiConverterOptional(
+  FfiConverterTypeMultisig,
 )
 
 // FfiConverter for OnchainReceiveState | undefined
@@ -17618,6 +21942,14 @@ const FfiConverterOptionalTypeLnReceiveOperation = new FfiConverterOptional(
 const FfiConverterOptionalTypeLnSendOperation = new FfiConverterOptional(
   FfiConverterTypeLnSendOperation,
 )
+
+// FfiConverter for MultisigDepositOperationLike | undefined
+const FfiConverterOptionalTypeMultisigDepositOperation =
+  new FfiConverterOptional(FfiConverterTypeMultisigDepositOperation)
+
+// FfiConverter for MultisigTransferOperationLike | undefined
+const FfiConverterOptionalTypeMultisigTransferOperation =
+  new FfiConverterOptional(FfiConverterTypeMultisigTransferOperation)
 
 // FfiConverter for OnchainReceiveOperationLike | undefined
 const FfiConverterOptionalTypeOnchainReceiveOperation =
@@ -17736,6 +22068,30 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit() !==
+    33706
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep() !==
+    38610
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer() !==
+    39331
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer',
+    )
+  }
+  if (
     nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_receive() !==
     56021
   ) {
@@ -17797,6 +22153,38 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_anyoperation_supported_kind',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_approval_approves() !==
+    40760
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_approval_approves',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_approval_display() !==
+    35864
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_approval_display',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_approval_member() !==
+    62732
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_approval_member',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_constructor_approval_parse() !==
+    7895
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_constructor_approval_parse',
     )
   }
   if (
@@ -18033,7 +22421,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_federation_capabilities() !==
-    44324
+    13842
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_capabilities',
@@ -18077,6 +22465,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_meta',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_federation_multisig() !==
+    7238
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_federation_multisig',
     )
   }
   if (
@@ -18366,6 +22762,238 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_account() !==
+    32155
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_account',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_approve() !==
+    1418
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_approve',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_balance() !==
+    51739
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_balance',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_denominations() !==
+    8420
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_denominations',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_deposit() !==
+    62014
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_deposit',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_execute() !==
+    21987
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_execute',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_member_key() !==
+    15979
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_member_key',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_propose() !==
+    16680
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_propose',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisig_sweep() !==
+    65518
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisig_sweep',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_id() !==
+    22371
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigaccount_id',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_policy() !==
+    4649
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigaccount_policy',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final() !==
+    1302
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details() !==
+    9397
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id() !==
+    50176
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state() !==
+    47888
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates() !==
+    61396
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next() !==
+    53764
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final() !==
+    24352
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details() !==
+    35951
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id() !==
+    7545
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state() !==
+    6260
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates() !==
+    33283
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next() !==
+    13817
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final() !==
+    45773
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details() !==
+    32115
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id() !==
+    57403
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state() !==
+    36557
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates() !==
+    55951
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next() !==
+    59366
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next',
+    )
+  }
+  if (
     nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_notes_display() !==
     13241
   ) {
@@ -18566,6 +23194,54 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_proposal_account_id() !==
+    39082
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_account_id',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_proposal_amount() !==
+    3792
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_amount',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_proposal_display() !==
+    30058
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_display',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_proposal_policy() !==
+    19429
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_policy',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer() !==
+    20360
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_proposal_proposer',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_constructor_proposal_parse() !==
+    47889
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_constructor_proposal_parse',
+    )
+  }
+  if (
     nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperation_await_final() !==
     28673
   ) {
@@ -18735,6 +23411,7 @@ export default Object.freeze({
     FfiConverterTypeAddress,
     FfiConverterTypeAmount,
     FfiConverterTypeAnyOperation,
+    FfiConverterTypeApproval,
     FfiConverterTypeBalanceUpdates,
     FfiConverterTypeBolt11Invoice,
     FfiConverterTypeCapabilities,
@@ -18778,9 +23455,27 @@ export default Object.freeze({
     FfiConverterTypeLnSendOperation,
     FfiConverterTypeLnSendOperationUpdates,
     FfiConverterTypeLnSendState,
+    FfiConverterTypeMemberKey,
     FfiConverterTypeMeta,
     FfiConverterTypeMetaMap,
     FfiConverterTypeMnemonic,
+    FfiConverterTypeMultisig,
+    FfiConverterTypeMultisigAccount,
+    FfiConverterTypeMultisigAccountId,
+    FfiConverterTypeMultisigAmount,
+    FfiConverterTypeMultisigDenomination,
+    FfiConverterTypeMultisigDepositDetails,
+    FfiConverterTypeMultisigDepositOperation,
+    FfiConverterTypeMultisigDepositOperationUpdates,
+    FfiConverterTypeMultisigDepositState,
+    FfiConverterTypeMultisigSweepDetails,
+    FfiConverterTypeMultisigSweepOperation,
+    FfiConverterTypeMultisigSweepOperationUpdates,
+    FfiConverterTypeMultisigSweepState,
+    FfiConverterTypeMultisigTransferDetails,
+    FfiConverterTypeMultisigTransferOperation,
+    FfiConverterTypeMultisigTransferOperationUpdates,
+    FfiConverterTypeMultisigTransferState,
     FfiConverterTypeNetwork,
     FfiConverterTypeNotes,
     FfiConverterTypeOnchain,
@@ -18799,7 +23494,9 @@ export default Object.freeze({
     FfiConverterTypeOperationId,
     FfiConverterTypeOperationKind,
     FfiConverterTypeOperationSupport,
+    FfiConverterTypePolicy,
     FfiConverterTypePreimage,
+    FfiConverterTypeProposal,
     FfiConverterTypeRawErrorDetails,
     FfiConverterTypeRawOperationKind,
     FfiConverterTypeRecoveryHandle,

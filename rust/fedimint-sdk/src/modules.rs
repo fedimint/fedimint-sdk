@@ -33,6 +33,51 @@ pub(crate) fn module_inits() -> ClientModuleInitRegistry {
     inits
 }
 
+/// [`module_inits`] with every module the extensions add, or the refusal that names a kind added
+/// twice.
+#[cfg(feature = "extension-api")]
+pub(crate) fn module_inits_with(
+    extensions: &[std::sync::Arc<dyn crate::Extension>],
+) -> Result<ClientModuleInitRegistry> {
+    let mut inits = module_inits();
+    for extension in extensions {
+        inits = with_new_kinds(&inits, extension.module_inits())?;
+    }
+    Ok(inits)
+}
+
+/// `inits` with each of `added`, or the refusal that names the first kind `inits` already has.
+///
+/// A new registry rather than `ModuleInitRegistry::attach` on this one, for two reasons:
+/// `attach` panics on a duplicate kind, which a release build turns into an abort, and it wants
+/// the init `Send + Sync`, which a `DynClientModuleInit` is not on wasm.
+#[cfg(feature = "extension-api")]
+fn with_new_kinds(
+    inits: &ClientModuleInitRegistry,
+    added: Vec<fedimint_client::module_init::DynClientModuleInit>,
+) -> Result<ClientModuleInitRegistry> {
+    use fedimint_client::module_init::DynClientModuleInit;
+    use fedimint_core::core::ModuleKind;
+    use fedimint_core::module::IDynCommonModuleInit;
+
+    fn kind_of(init: &DynClientModuleInit) -> ModuleKind {
+        AsRef::<dyn IDynCommonModuleInit + Send + Sync>::as_ref(init).module_kind()
+    }
+
+    let mut all: Vec<DynClientModuleInit> = inits.iter().map(|(_, init)| init.clone()).collect();
+    for init in added {
+        let kind = kind_of(&init);
+        if all.iter().any(|present| kind_of(present) == kind) {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!("an extension adds the module kind {kind}, which is already registered"),
+            ));
+        }
+        all.push(init);
+    }
+    Ok(ModuleInitRegistry::from(all))
+}
+
 /// The one connector registry an instance shares with every federation it opens.
 ///
 /// `ConnectorRegistry` has no `Default` on any target; it is `Clone` and internally reference
@@ -106,6 +151,9 @@ pub(crate) fn capabilities_of(kinds: &[String]) -> Capabilities {
         ecash: has("mint") || has("mintv2"),
         lightning: has("ln") || has("lnv2"),
         onchain: has("wallet") || has("walletv2"),
+        // A multisig module is never one this crate ships; whether one serves this federation
+        // is `FederationInner::multisig_backend`'s answer, not the configuration's.
+        multisig: false,
     }
 }
 
@@ -319,7 +367,8 @@ mod tests {
             Capabilities {
                 ecash: true,
                 lightning: true,
-                onchain: true
+                onchain: true,
+                multisig: false
             }
         );
         assert_eq!(
@@ -327,7 +376,8 @@ mod tests {
             Capabilities {
                 ecash: true,
                 lightning: true,
-                onchain: true
+                onchain: true,
+                multisig: false
             }
         );
         assert_eq!(
@@ -335,7 +385,8 @@ mod tests {
             Capabilities {
                 ecash: false,
                 lightning: false,
-                onchain: false
+                onchain: false,
+                multisig: false
             }
         );
         assert_eq!(
@@ -343,7 +394,8 @@ mod tests {
             Capabilities {
                 ecash: true,
                 lightning: false,
-                onchain: false
+                onchain: false,
+                multisig: false
             }
         );
     }
@@ -356,6 +408,40 @@ mod tests {
             present,
             vec!["ln", "lnv2", "meta", "mint", "mintv2", "wallet", "walletv2"]
         );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[test]
+    fn an_extension_module_of_a_new_kind_is_attached() {
+        use fedimint_client::module_init::DynClientModuleInit;
+
+        let inits = with_new_kinds(
+            &ModuleInitRegistry::new(),
+            vec![DynClientModuleInit::from(
+                fedimint_mint_client::MintClientInit,
+            )],
+        )
+        .expect("a kind the registry does not have is attached");
+        let present: Vec<String> = inits.kinds().iter().map(ToString::to_string).collect();
+        assert_eq!(present, vec!["mint"]);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[test]
+    fn an_extension_module_of_a_registered_kind_is_refused() {
+        use fedimint_client::module_init::DynClientModuleInit;
+
+        // `ModuleInitRegistry::attach` panics on a duplicate kind, and a release build aborts on
+        // a panic, so the refusal has to come first.
+        let err = with_new_kinds(
+            &module_inits(),
+            vec![DynClientModuleInit::from(
+                fedimint_mint_client::MintClientInit,
+            )],
+        )
+        .expect_err("a kind the SDK ships is refused");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        assert!(err.message.contains("mint"), "{}", err.message);
     }
 
     #[test]

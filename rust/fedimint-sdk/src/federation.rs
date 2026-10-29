@@ -13,12 +13,13 @@ use fedimint_core::util::FmtCompact as _;
 use futures::StreamExt;
 
 use crate::db::{FederationRecord, StoredStatus};
+use crate::multisig::MultisigBackend;
 use crate::operation::{Driver, Operation, OperationInner, OperationState, kinds};
 use crate::sdk::SdkInner;
 use crate::{
     ActivityPage, Amount, AnyOperation, Cursor, Ecash, FederationId, FederationInfo,
-    FederationStatus, InviteCode, Lightning, Meta, Network, Onchain, OperationId, RecoveryProgress,
-    Result,
+    FederationStatus, InviteCode, Lightning, Meta, Multisig, Network, Onchain, OperationId,
+    RecoveryProgress, Result,
 };
 
 /// A handle to one federation this SDK instance has joined.
@@ -193,11 +194,13 @@ impl Federation {
     ///
     /// Reported as plain booleans so an application can decide what to
     /// render before the user touches anything. It answers the same
-    /// question as the three facade accessors below and exists alongside
+    /// question as the facade accessors below and exists alongside
     /// them for the case where a screen needs to know about several
     /// capabilities at once without taking handles it will not use.
     pub fn capabilities(&self) -> Capabilities {
-        self.inner.record().capabilities.into()
+        let mut capabilities: Capabilities = self.inner.record().capabilities.into();
+        capabilities.multisig = self.inner.multisig_backend().is_some();
+        capabilities
     }
 }
 
@@ -237,6 +240,19 @@ impl Federation {
         self.capabilities()
             .onchain
             .then(|| Onchain::new(self.inner.clone()))
+    }
+
+    /// The multisig facade, or `None` if this build carries no module that
+    /// backs it or this federation does not run that module.
+    ///
+    /// This crate defines the facade but ships no module behind it: a build
+    /// that carries one adds it through the `extension-api` feature. See
+    /// [`Federation::ecash`] for why this is an `Option`, and what a closed
+    /// federation's facade does.
+    pub fn multisig(&self) -> Option<Multisig> {
+        self.inner
+            .multisig_backend()
+            .map(|backend| Multisig::new(self.inner.clone(), backend))
     }
 
     /// Looks up an operation by id, whatever kind it is.
@@ -317,6 +333,33 @@ impl Federation {
     }
 }
 
+#[cfg(feature = "extension-api")]
+impl Federation {
+    /// The federation's running fedimint client, for an [`Extension`](crate::Extension) to reach
+    /// its own modules through.
+    ///
+    /// What this returns is a clone of the handle, not a lease on the federation: holding it does
+    /// not keep the federation open. When the SDK stops the client, on a close, an erase,
+    /// [`Sdk::shutdown`](crate::Sdk::shutdown) or a swap for a fresh client (see
+    /// [`Extension::client_started`](crate::Extension::client_started)), it tells the client's
+    /// tasks to stop and then waits a short while for every clone to be dropped. A clone still
+    /// held after that keeps the client from shutting down cleanly, and the close, erase or
+    /// shutdown then fails with [`Internal`](crate::ErrorCode::Internal), once the federation has
+    /// already stopped. So ask for a handle for each piece of work, drop it as soon as that work
+    /// is done, and give up any wait once the client's task group is told to shut down
+    /// (`client.task_group().make_handle().make_shutdown_rx()`). Work that holds the client for
+    /// longer belongs in what [`Extension::client_started`](crate::Extension::client_started)
+    /// returns, which the SDK stops with the client.
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation is not
+    /// running.
+    pub async fn client(&self) -> Result<ClientHandleArc> {
+        Ok(self.inner.client(false).await?.handle())
+    }
+}
+
 impl Federation {
     /// Wraps shared federation state in a handle.
     pub(crate) fn new(inner: Arc<FederationInner>) -> Federation {
@@ -334,8 +377,8 @@ impl Federation {
 /// `#[non_exhaustive]` like every data type here: a federation gaining a
 /// new kind of capability must be an additive change, not a breaking one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// A plain record of three bools: every field is FFI-safe as-is. Behind the
-// `uniffi` feature.
+// A plain record of bools: every field is FFI-safe as-is. Behind the `uniffi`
+// feature.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct Capabilities {
@@ -345,6 +388,8 @@ pub struct Capabilities {
     pub lightning: bool,
     /// Whether [`Federation::onchain`] is available.
     pub onchain: bool,
+    /// Whether [`Federation::multisig`] is available.
+    pub multisig: bool,
 }
 
 /// One independent subscription to a federation's balance.
@@ -529,6 +574,11 @@ pub(crate) struct FederationInner {
     /// for it happen under this lock, so two lookups on it racing over two claims of one deposit
     /// can never both record it. A federation opened in this one's place has a lock of its own.
     deposit_records: tokio::sync::Mutex<()>,
+    /// Every module kind the configuration declared when this federation last came up, empty
+    /// until it has. What decides whether a multisig backend serves it: unlike the three
+    /// capabilities on the record, that depends on the build as well as on the configuration,
+    /// so it is not stored.
+    module_kinds: std::sync::RwLock<Vec<String>>,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -545,6 +595,10 @@ pub(crate) struct FederationInner {
 struct SettleMarker {
     current: u64,
     running: Option<u64>,
+    /// The client identity the instance's extensions were last told about, so each client is
+    /// announced to them once; see [`FederationInner::tell_extensions`].
+    #[cfg(feature = "extension-api")]
+    told: Option<u64>,
 }
 
 /// Whether a record is the placeholder `FederationInner::backfill_at`'s no-backfiller branch
@@ -587,6 +641,7 @@ impl FederationInner {
             settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
             deposit_records: tokio::sync::Mutex::new(()),
+            module_kinds: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -724,6 +779,27 @@ impl FederationInner {
         );
         *write_lock(&self.status) = status;
         self.closed.send_replace(!open);
+    }
+
+    /// Records the module kinds the configuration declares, read when the federation comes up.
+    pub(crate) fn set_module_kinds(&self, kinds: Vec<String>) {
+        *write_lock(&self.module_kinds) = kinds;
+    }
+
+    /// The multisig backend that serves this federation, if this build has one and the
+    /// federation runs its module.
+    pub(crate) fn multisig_backend(&self) -> Option<Arc<dyn MultisigBackend>> {
+        #[cfg(feature = "extension-api")]
+        {
+            let backend = self.sdk.upgrade()?.multisig.clone()?;
+            let kind = backend.module_kind();
+            read_lock(&self.module_kinds)
+                .contains(&kind)
+                .then_some(backend)
+        }
+        // No backend is ever installed without the feature that installs one.
+        #[cfg(not(feature = "extension-api"))]
+        None
     }
 
     /// The listing record for this federation.
@@ -1323,6 +1399,56 @@ impl FederationInner {
         settle.current += 1;
     }
 
+    /// Tells every extension of the instance about the client in place right now, unless they
+    /// were already told about that one.
+    ///
+    /// Called at the end of every bring-up and after every swap of the client, with the client
+    /// lock released, since the work an extension returns may ask for the client. A bring-up
+    /// whose recovery swaps the client before the bring-up ends reaches this twice for one
+    /// client, which is why the identity told about is remembered.
+    #[cfg(feature = "extension-api")]
+    pub(crate) async fn tell_extensions(self: &Arc<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        let Some(sdk) = self.sdk.upgrade() else {
+            return;
+        };
+        // Taken under the client lock, so the identity marked told is the client's handed out.
+        let client = {
+            let Ok(guard) = self.client(false).await else {
+                return;
+            };
+            if !self.mark_told() {
+                return;
+            }
+            guard.handle()
+        };
+        // Whether `Federation::multisig` is there depends on the module kinds, which
+        // `reconcile_on_open` records too, but a recovery that ends while the federation comes
+        // up swaps the client and gets here first. Only a backend an extension provides makes
+        // the kinds matter, which is why recording them here is behind the same feature.
+        self.set_module_kinds(crate::modules::module_kinds(&client.config().await));
+        let handle = Federation::new(self.clone());
+        for extension in &sdk.extensions {
+            let work = extension.client_started(&handle, &client);
+            let client_stop = client.task_group().make_handle().make_shutdown_rx();
+            run_extension_work(work, client_stop, sdk.shutdown_watch());
+        }
+    }
+
+    /// Whether the extensions are yet to be told about the client in place right now, marking it
+    /// told.
+    #[cfg(feature = "extension-api")]
+    fn mark_told(&self) -> bool {
+        let mut settle = self.lock_settle();
+        if settle.told == Some(settle.current) {
+            return false;
+        }
+        settle.told = Some(settle.current);
+        true
+    }
+
     /// Locks the settle marker, recovering from a poisoned lock the way the plain `RwLock`s on
     /// this type already do: a panic while it was held must not turn every later settle decision
     /// into a panic of its own, and the marker guards no invariant a half-written value could
@@ -1342,6 +1468,17 @@ impl FederationInner {
     /// a federation with no client.
     #[cfg(test)]
     pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
+        FederationInner::detached_in(Weak::new(), db, open)
+    }
+
+    /// [`detached`](FederationInner::detached), belonging to `sdk`: for a test of what a
+    /// federation reads off its instance.
+    #[cfg(test)]
+    pub(crate) fn detached_in(
+        sdk: Weak<SdkInner>,
+        db: Database,
+        open: bool,
+    ) -> Arc<FederationInner> {
         use fedimint_core::PeerId;
         use fedimint_core::invite_code::InviteCode;
         use fedimint_core::util::SafeUrl;
@@ -1356,7 +1493,7 @@ impl FederationInner {
         let id = config::FederationId::dummy();
         let federation = FederationInner::new(
             id,
-            Weak::new(),
+            sdk,
             db,
             FederationRecord {
                 invite: InviteCode::new(
@@ -1549,6 +1686,36 @@ where
     })
 }
 
+/// Runs an extension's work on a client until it ends, `client_stop` fires, or the instance is shut
+/// down or dropped, whichever comes first.
+///
+/// `client_stop` is the client's own task-group shutdown token, which a close, a swap and
+/// `Sdk::shutdown` all fire before asking for the handle back, and `instance` is the instance's
+/// shutdown watch, so the instance is held weakly. Its going away ends the work for the reason
+/// the recovery watcher gives: an application that lets go of every handle without shutting down
+/// must get its storage back, and the work may be holding the client, and with it the store.
+///
+/// The work runs on a task of its own rather than on the client's task group because it may hold
+/// the client's last handle. Dropping that handle shuts the client down by joining every task of
+/// the group, and a task of the group doing it would wait on itself.
+#[cfg(feature = "extension-api")]
+pub(crate) fn run_extension_work<S>(
+    work: fedimint_core::util::BoxFuture<'static, ()>,
+    client_stop: S,
+    mut instance: tokio::sync::watch::Receiver<bool>,
+) where
+    S: Future<Output = ()> + MaybeSend + 'static,
+{
+    fedimint_core::task::spawn("sdk-extension-work", async move {
+        tokio::select! {
+            () = work => {}
+            () = client_stop => {}
+            // Resolves on shutdown, and with an error once the instance is dropped.
+            _ = instance.wait_for(|shut| *shut) => {}
+        }
+    });
+}
+
 /// Shuts a client down, waiting for its workers.
 ///
 /// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
@@ -1607,6 +1774,13 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     if !federation.is_open() {
         return;
     }
+    // First, so that what a module kind decides (whether `Federation::multisig` is there) is
+    // settled before anyone is told this federation came up. Read from the client the bring-up
+    // just opened, so a configuration that changed since the last run is the one read.
+    if let Ok(client) = federation.client(false).await {
+        let kinds = crate::modules::module_kinds(&client.config().await);
+        federation.set_module_kinds(kinds);
+    }
     if let Err(err) = federation.reconcile_operations().await {
         tracing::warn!(
             target: "fedimint_sdk",
@@ -1626,6 +1800,11 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             "could not record the on-chain deposits this federation's wallet found",
         );
     }
+    // Told last, so an extension picking up its own work finds the SDK's records repaired. A
+    // client that a recovery already swapped in on the way here was told about by that swap, and
+    // is not told about again.
+    #[cfg(feature = "extension-api")]
+    federation.tell_extensions().await;
 }
 
 // `FederationInner` gets no `Drop`. Dropping the last `Sdk` clone outside a tokio runtime must not
@@ -2118,7 +2297,8 @@ mod tests {
             crate::Capabilities {
                 ecash: true,
                 lightning: true,
-                onchain: true
+                onchain: true,
+                multisig: false,
             }
         );
         assert_eq!(
@@ -2807,5 +2987,166 @@ mod tests {
 
         federation.reset_recovery_progress();
         assert_eq!(federation.recovery_progress_of(attempt), None);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[test]
+    fn extensions_are_told_once_about_each_client() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db, true);
+
+        // A recovery's swap and the end of the bring-up it happened in both reach for the
+        // extensions with one client.
+        assert!(federation.mark_told());
+        assert!(!federation.mark_told(), "one client is announced once");
+
+        // The client a later swap puts in place is announced in turn.
+        federation.bump_client_identity();
+        assert!(federation.mark_told(), "a fresh client is announced");
+    }
+
+    /// Runs extension work that holds `handle` for as long as it runs and never ends on its own.
+    #[cfg(feature = "extension-api")]
+    fn run_work_holding(
+        handle: &std::sync::Arc<()>,
+        client_stop: tokio::sync::watch::Receiver<bool>,
+        instance: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let held = handle.clone();
+        let work = Box::pin(async move {
+            let _held = held;
+            futures::future::pending::<()>().await;
+        });
+        run_extension_work(work, told_to_stop(client_stop), instance);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_is_dropped() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        fedimint_core::runtime::sleep(core::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            std::sync::Arc::strong_count(&handle),
+            2,
+            "the work runs until something stops it"
+        );
+
+        // What dropping the last handle on an instance does to its shutdown watch.
+        drop(instance);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance was dropped"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_the_instance_shuts_down() {
+        let handle = std::sync::Arc::new(());
+        let (_client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        instance.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after the instance shut down"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extension_work_ends_when_its_client_is_told_to_stop() {
+        let handle = std::sync::Arc::new(());
+        let (client_stop, client_stop_rx) = tokio::sync::watch::channel(false);
+        let (_instance, instance_rx) = tokio::sync::watch::channel(false);
+        run_work_holding(&handle, client_stop_rx, instance_rx);
+
+        client_stop.send_replace(true);
+        assert!(
+            handle_released(&handle).await,
+            "the work kept the client after it was told to stop"
+        );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_federation_without_a_client_hands_none_out() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = Federation::new(FederationInner::detached(db, true));
+
+        let err = federation
+            .client()
+            .await
+            .expect_err("there is no client to hand out");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+    }
+
+    /// Backs multisig with a backend that is never reached.
+    #[cfg(feature = "extension-api")]
+    struct MultisigExtension;
+
+    #[cfg(feature = "extension-api")]
+    impl crate::Extension for MultisigExtension {
+        fn multisig(&self) -> Option<Arc<dyn crate::MultisigBackend>> {
+            Some(Arc::new(crate::multisig::UnreachableBackend))
+        }
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_is_offered_where_the_backends_module_runs() {
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .extension(Arc::new(MultisigExtension))
+            .build()
+            .await
+            .expect("an instance opens");
+        let inner = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        let federation = Federation::new(inner.clone());
+
+        // Until it comes up, no configuration has been read.
+        assert!(federation.multisig().is_none());
+        assert!(!federation.capabilities().multisig);
+
+        inner.set_module_kinds(vec!["mint".to_owned()]);
+        assert!(federation.multisig().is_none(), "the module is not run");
+        assert!(!federation.capabilities().multisig);
+
+        inner.set_module_kinds(vec![
+            "mint".to_owned(),
+            crate::multisig::UnreachableBackend::MODULE.to_owned(),
+        ]);
+        assert!(federation.multisig().is_some());
+        assert!(federation.capabilities().multisig);
+        // The other capabilities still come from the record.
+        assert!(federation.capabilities().ecash);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_is_not_offered_without_a_backend() {
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .build()
+            .await
+            .expect("an instance opens");
+        let inner = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        inner.set_module_kinds(vec![crate::multisig::UnreachableBackend::MODULE.to_owned()]);
+        let federation = Federation::new(inner);
+        assert!(federation.multisig().is_none());
+        assert!(!federation.capabilities().multisig);
     }
 }

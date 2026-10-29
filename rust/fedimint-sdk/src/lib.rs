@@ -25,6 +25,10 @@
 //! requires at an exact version. The Kotlin, Swift and JavaScript SDKs are
 //! generated from this surface, behind the `uniffi` feature.
 //!
+//! [`Multisig`] is the one facade with no module behind it in this crate: a
+//! build that carries one adds it with the `extension-api` feature, and
+//! everywhere else [`Federation::multisig`] is `None`.
+//!
 //! # A worked example
 //!
 //! `examples/walkthrough.rs` is this same happy path, runnable end to end: it
@@ -157,8 +161,8 @@
 //!
 //! Not every federation runs every module. Rather than making an application
 //! find that out by attempting an operation and catching the failure,
-//! [`Federation::ecash`], [`Federation::lightning`] and
-//! [`Federation::onchain`] return `Option`, and
+//! [`Federation::ecash`], [`Federation::lightning`], [`Federation::onchain`]
+//! and [`Federation::multisig`] return `Option`, and
 //! [`Federation::capabilities`] reports the same information as plain
 //! booleans so a screen can be laid out before the user touches anything. An
 //! absent capability is an ordinary value to branch on.
@@ -359,6 +363,8 @@ mod apple;
 mod db;
 mod ecash;
 mod error;
+#[cfg(feature = "extension-api")]
+mod extension;
 mod federation;
 #[cfg(feature = "uniffi")]
 mod ffi;
@@ -369,6 +375,7 @@ mod lightning;
 mod logging;
 mod meta;
 mod modules;
+mod multisig;
 mod onchain;
 mod operation;
 mod recovery;
@@ -398,12 +405,21 @@ pub use error::{
     DetailEnvelope, Diagnostic, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails,
     Result,
 };
+#[cfg(feature = "extension-api")]
+pub use extension::Extension;
 pub use federation::{BalanceUpdates, Capabilities, Federation};
 pub use lightning::{
     Lightning, LightningRoute, LnFeeBreakdown, LnQuote, LnReceive, LnReceiveDetails,
     LnReceiveState, LnSendDetails, LnSendState,
 };
 pub use meta::{ConsensusMetadata, Meta};
+pub use multisig::{
+    Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId, MultisigAmount,
+    MultisigDenomination, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal,
+};
+#[cfg(feature = "extension-api")]
+pub use multisig::{MultisigBackend, MultisigSweep};
 pub use onchain::{
     Onchain, OnchainDeposits, OnchainQuote, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
     OnchainReceiveState, OnchainSendDetails, OnchainSendFeeBreakdown, OnchainSendState,

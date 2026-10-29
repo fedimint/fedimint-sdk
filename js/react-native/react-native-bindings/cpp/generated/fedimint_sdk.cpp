@@ -169,6 +169,8 @@ RustBuffer uniffi_fedimint_sdk_fn_method_federation_ecash(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_federation_lightning(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_federation_multisig(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_federation_onchain(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_federation_operation(
@@ -261,6 +263,82 @@ RustBuffer uniffi_fedimint_sdk_fn_method_lnsendoperation_id(
 void uniffi_fedimint_sdk_fn_free_lnsendoperationupdates(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_lnsendoperationupdates_next(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+    /*handle*/ uint64_t ptr);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+    /*handle*/ uint64_t ptr);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+    /*handle*/ uint64_t ptr);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
     /*handle*/ uint64_t ptr);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_onchainreceiveoperation(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
@@ -365,6 +443,70 @@ RustBuffer uniffi_fedimint_sdk_fn_method_meta_config_metadata(
     /*handle*/ uint64_t ptr);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_meta_get(
     /*handle*/ uint64_t ptr, RustBuffer key);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisig(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisig(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_account(
+    /*handle*/ uint64_t ptr, RustBuffer policy, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_deposit(
+    /*handle*/ uint64_t ptr,
+    /*handle*/ uint64_t account, uint64_t amount);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_execute(
+    /*handle*/ uint64_t ptr,
+    /*handle*/ uint64_t proposal, RustBuffer approvals);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_sweep(
+    /*handle*/ uint64_t ptr);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_approve(
+    /*handle*/ uint64_t ptr, RustBuffer group,
+    /*handle*/ uint64_t proposal);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_balance(
+    /*handle*/ uint64_t ptr,
+    /*handle*/ uint64_t account);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisig_denominations(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_member_key(
+    /*handle*/ uint64_t ptr, RustBuffer group);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_multisig_propose(
+    /*handle*/ uint64_t ptr, RustBuffer group,
+    /*handle*/ uint64_t account, RustBuffer amount);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_multisigaccount(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_multisigaccount(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_approval(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_approval(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_constructor_approval_parse(
+    RustBuffer approval, RustCallStatus *uniffi_out_err);
+int8_t uniffi_fedimint_sdk_fn_method_approval_approves(
+    /*handle*/ uint64_t ptr,
+    /*handle*/ uint64_t proposal, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_approval_display(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_approval_member(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_proposal(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+void uniffi_fedimint_sdk_fn_free_proposal(
+    /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+    RustBuffer proposal, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_account_id(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_amount(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_display(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_policy(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_proposal_proposer(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_clone_onchain(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
 void uniffi_fedimint_sdk_fn_free_onchain(
@@ -409,6 +551,12 @@ RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_send(
 RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_ln_receive(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_ln_send(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_anyoperation_as_onchain_receive(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
@@ -646,6 +794,7 @@ uint16_t uniffi_fedimint_sdk_checksum_method_federation_name();
 uint16_t uniffi_fedimint_sdk_checksum_method_federation_network();
 uint16_t uniffi_fedimint_sdk_checksum_method_federation_ecash();
 uint16_t uniffi_fedimint_sdk_checksum_method_federation_lightning();
+uint16_t uniffi_fedimint_sdk_checksum_method_federation_multisig();
 uint16_t uniffi_fedimint_sdk_checksum_method_federation_onchain();
 uint16_t uniffi_fedimint_sdk_checksum_method_federation_operation();
 uint16_t
@@ -676,6 +825,32 @@ uint16_t uniffi_fedimint_sdk_checksum_method_lnsendoperation_id();
 uint16_t uniffi_fedimint_sdk_checksum_method_lnsendoperation_state();
 uint16_t uniffi_fedimint_sdk_checksum_method_lnsendoperation_updates();
 uint16_t uniffi_fedimint_sdk_checksum_method_lnsendoperationupdates_next();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next();
 uint16_t
 uniffi_fedimint_sdk_checksum_method_onchainreceiveoperation_await_final();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchainreceiveoperation_details();
@@ -708,6 +883,25 @@ uint16_t uniffi_fedimint_sdk_checksum_method_meta_all();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_config_metadata();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_consensus_metadata();
 uint16_t uniffi_fedimint_sdk_checksum_method_meta_get();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_account();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_deposit();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_execute();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_sweep();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_approve();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_balance();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_denominations();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_member_key();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisig_propose();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigaccount_id();
+uint16_t uniffi_fedimint_sdk_checksum_method_multisigaccount_policy();
+uint16_t uniffi_fedimint_sdk_checksum_method_approval_approves();
+uint16_t uniffi_fedimint_sdk_checksum_method_approval_display();
+uint16_t uniffi_fedimint_sdk_checksum_method_approval_member();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_account_id();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_amount();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_display();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_policy();
+uint16_t uniffi_fedimint_sdk_checksum_method_proposal_proposer();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_send();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_deposits();
 uint16_t uniffi_fedimint_sdk_checksum_method_onchain_quote();
@@ -722,6 +916,10 @@ uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_send();
+uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit();
+uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep();
+uint16_t
+uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_receive();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_send();
 uint16_t uniffi_fedimint_sdk_checksum_method_anyoperation_as_recovery();
@@ -751,6 +949,8 @@ uint16_t uniffi_fedimint_sdk_checksum_method_invitecode_federation_id();
 uint16_t uniffi_fedimint_sdk_checksum_method_mnemonic_words();
 uint16_t uniffi_fedimint_sdk_checksum_method_notes_display();
 uint16_t uniffi_fedimint_sdk_checksum_method_notes_value();
+uint16_t uniffi_fedimint_sdk_checksum_constructor_approval_parse();
+uint16_t uniffi_fedimint_sdk_checksum_constructor_proposal_parse();
 uint16_t uniffi_fedimint_sdk_checksum_constructor_invitecode_parse();
 uint16_t uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words();
 uint16_t uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate();
@@ -2565,6 +2765,17 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_method_federation_lightning(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_federation_multisig"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_federation_multisig"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_federation_multisig(
+                rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_fn_method_federation_onchain"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -3083,6 +3294,369 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_fn_method_lnsendoperationupdates_next(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_"
+        "final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigdepositoperation_await_final"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigdepositoperation_details"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigdepositoperation_state"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigdepositoperation_updates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_clone_"
+                                        "multisigdepositoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_free_"
+                                        "multisigdepositoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_"
+        "next"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigdepositoperationupdates_next"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_"
+        "final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigsweepoperation_await_final"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigsweepoperation_details"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigsweepoperation_state"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigsweepoperation_updates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_clone_"
+                                        "multisigsweepoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_"
+        "next"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigsweepoperationupdates_next"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperation"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperation"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_"
+        "final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigtransferoperation_await_final"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_"
+        "details"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigtransferoperation_details"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigtransferoperation_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "multisigtransferoperation_state"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_"
+        "updates"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigtransferoperation_updates"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_clone_"
+                                        "multisigtransferoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_free_"
+                                        "multisigtransferoperationupdates"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_"
+        "next"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "multisigtransferoperationupdates_next"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
+                rt, thisVal, args, count);
+      });
   props["ubrn_uniffi_fedimint_sdk_fn_clone_onchainreceiveoperation"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -3643,6 +4217,327 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_method_meta_get(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisig"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_multisig"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_clone_multisig(rt, thisVal,
+                                                                   args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisig"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_multisig"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_multisig(rt, thisVal,
+                                                                  args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_account"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_account"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_account(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_deposit"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_deposit"),
+          3,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_deposit(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_execute"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_execute"),
+          3,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_execute(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_sweep"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_sweep"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_sweep(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_approve"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_approve"),
+          3,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_approve(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_balance"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_balance"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_balance(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_denominations"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_denominations"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisig_denominations(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_member_key"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_member_key"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_member_key(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisig_propose"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisig_propose"),
+          4,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisig_propose(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_multisigaccount"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_multisigaccount"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_clone_multisigaccount(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_multisigaccount"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_multisigaccount"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_multisigaccount(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_policy"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_policy"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_approval"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_approval"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_clone_approval(rt, thisVal,
+                                                                   args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_approval"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_approval"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_approval(rt, thisVal,
+                                                                  args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_constructor_approval_parse"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_constructor_approval_parse"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_constructor_approval_parse(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_approval_approves"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_approval_approves"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_approval_approves(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_approval_display"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_approval_display"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_approval_display(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_approval_member"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_approval_member"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_approval_member(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_clone_proposal"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_clone_proposal"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_clone_proposal(rt, thisVal,
+                                                                   args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_free_proposal"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_free_proposal"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_free_proposal(rt, thisVal,
+                                                                  args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_constructor_proposal_parse"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_constructor_proposal_parse"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_account_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_account_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_account_id(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_amount"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_amount"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_amount(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_display"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_display"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_display(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_policy"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_policy"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_policy(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_proposal_proposer(
+                rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_fn_clone_onchain"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -3894,6 +4789,42 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_ln_send(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "anyoperation_as_multisig_deposit"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                        "anyoperation_as_multisig_sweep"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_"
+        "transfer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_fn_method_"
+                                    "anyoperation_as_multisig_transfer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
+                rt, thisVal, args, count);
+      });
   props["ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_onchain_receive"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -5224,6 +6155,19 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_checksum_method_federation_lightning(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_federation_multisig"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_federation_multisig"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_federation_multisig(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_federation_onchain"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -5554,6 +6498,228 @@ NativeFedimintSdk::NativeFedimintSdk(
             ->cpp_uniffi_fedimint_sdk_checksum_method_lnsendoperationupdates_next(
                 rt, thisVal, args, count);
       });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_"
+        "await_final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperation_await_final"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_"
+        "details"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperation_details"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_"
+        "id"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperation_id"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_"
+        "state"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperation_state"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_"
+        "updates"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperation_updates"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_"
+        "multisigdepositoperationupdates_next"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt,
+                                    "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigdepositoperationupdates_next"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_"
+        "final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigsweepoperation_await_final"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_"
+        "details"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigsweepoperation_details"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_"
+                                        "method_multisigsweepoperation_id"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_"
+        "state"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigsweepoperation_state"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_"
+        "updates"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigsweepoperation_updates"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_"
+        "multisigsweepoperationupdates_next"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt,
+                                    "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigsweepoperationupdates_next"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_"
+        "await_final"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperation_await_final"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_"
+        "details"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperation_details"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_"
+        "id"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperation_id"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_"
+        "state"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperation_state"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_"
+        "updates"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperation_updates"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_"
+        "multisigtransferoperationupdates_next"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt,
+                                    "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "multisigtransferoperationupdates_next"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_onchainreceiveoperation_"
         "await_final"] = jsi::Function::createFromHostFunction(
       rt,
@@ -5914,6 +7080,236 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_checksum_method_meta_get(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_account"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_account"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_account(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_deposit"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_deposit"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_deposit(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_execute"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_execute"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_execute(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_sweep"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_sweep"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_checksum_method_multisig_sweep(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_approve"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_approve"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_approve(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_balance"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_balance"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_balance(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_denominations"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_"
+                                        "method_multisig_denominations"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_denominations(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_member_key"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_member_key"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_member_key(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisig_propose"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_multisig_propose"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisig_propose(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_id"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigaccount_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_policy"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_"
+                                        "method_multisigaccount_policy"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_multisigaccount_policy(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_approval_approves"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_approval_approves"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_approval_approves(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_approval_display"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_approval_display"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_approval_display(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_approval_member"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_approval_member"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_approval_member(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_account_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_account_id"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_account_id(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_amount"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_amount"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_amount(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_display"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_display"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_display(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_policy"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_policy"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_policy(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_proposal_proposer(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_onchain_send"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -6083,6 +7479,42 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_send(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_"
+        "deposit"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "anyoperation_as_multisig_deposit"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_"
+        "sweep"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "anyoperation_as_multisig_sweep"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_"
+        "transfer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_method_"
+                                    "anyoperation_as_multisig_transfer"),
+      0,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer(
+                rt, thisVal, args, count);
+      });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_"
         "receive"] = jsi::Function::createFromHostFunction(
       rt,
@@ -6433,6 +7865,32 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_checksum_method_notes_value(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_constructor_approval_parse"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_constructor_approval_parse"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_constructor_approval_parse(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_constructor_proposal_parse"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_constructor_proposal_parse"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_constructor_proposal_parse(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_constructor_invitecode_parse"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -6653,6 +8111,84 @@ NativeFedimintSdk::NativeFedimintSdk(
             ->cpp_uniffi_internal_fn_method_lnsendoperationupdates_ffi__bless_pointer(
                 rt, thisVal, args, count);
       });
+  props["ubrn_uniffi_internal_fn_method_multisigdepositoperation_ffi__bless_"
+        "pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt,
+                                "ubrn_uniffi_internal_fn_method_"
+                                "multisigdepositoperation_ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigdepositoperation_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_internal_fn_method_multisigdepositoperationupdates_ffi__"
+        "bless_pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(
+          rt, "ubrn_uniffi_internal_fn_method_multisigdepositoperationupdates_"
+              "ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigdepositoperationupdates_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_internal_fn_method_multisigsweepoperation_ffi__bless_"
+        "pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt,
+                                "ubrn_uniffi_internal_fn_method_"
+                                "multisigsweepoperation_ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigsweepoperation_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_internal_fn_method_multisigsweepoperationupdates_ffi__"
+        "bless_pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(
+          rt, "ubrn_uniffi_internal_fn_method_multisigsweepoperationupdates_"
+              "ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigsweepoperationupdates_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_internal_fn_method_multisigtransferoperation_ffi__bless_"
+        "pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(rt,
+                                "ubrn_uniffi_internal_fn_method_"
+                                "multisigtransferoperation_ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigtransferoperation_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
+  props["ubrn_uniffi_internal_fn_method_multisigtransferoperationupdates_ffi__"
+        "bless_pointer"] = jsi::Function::createFromHostFunction(
+      rt,
+      jsi::PropNameID::forAscii(
+          rt, "ubrn_uniffi_internal_fn_method_multisigtransferoperationupdates_"
+              "ffi__bless_pointer"),
+      1,
+      [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+             const jsi::Value *args, size_t count) -> jsi::Value {
+        return this
+            ->cpp_uniffi_internal_fn_method_multisigtransferoperationupdates_ffi__bless_pointer(
+                rt, thisVal, args, count);
+      });
   props["ubrn_uniffi_internal_fn_method_onchainreceiveoperation_ffi__bless_"
         "pointer"] = jsi::Function::createFromHostFunction(
       rt,
@@ -6764,6 +8300,54 @@ NativeFedimintSdk::NativeFedimintSdk(
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_internal_fn_method_meta_ffi__bless_pointer(
                 rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_internal_fn_method_multisig_ffi__bless_pointer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_internal_fn_method_multisig_ffi__bless_pointer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_internal_fn_method_multisig_ffi__bless_pointer(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_internal_fn_method_multisigaccount_ffi__bless_pointer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_internal_fn_method_"
+                                        "multisigaccount_ffi__bless_pointer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_internal_fn_method_multisigaccount_ffi__bless_pointer(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_internal_fn_method_approval_ffi__bless_pointer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_internal_fn_method_approval_ffi__bless_pointer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_internal_fn_method_approval_ffi__bless_pointer(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_internal_fn_method_proposal_ffi__bless_pointer"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_internal_fn_method_proposal_ffi__bless_pointer"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_internal_fn_method_proposal_ffi__bless_pointer(
+                    rt, thisVal, args, count);
           });
   props["ubrn_uniffi_internal_fn_method_onchain_ffi__bless_pointer"] =
       jsi::Function::createFromHostFunction(
@@ -7241,6 +8825,96 @@ jsi::Value NativeFedimintSdk::
   return jsi::Value(rt, obj);
 }
 jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigdepositoperation_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigdepositoperation(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigdepositoperationupdates_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigsweepoperation_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigsweepoperation(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigsweepoperationupdates_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigtransferoperation_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigtransferoperation(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigtransferoperationupdates_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
     cpp_uniffi_internal_fn_method_onchainreceiveoperation_ffi__bless_pointer(
         jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
         size_t count) {
@@ -7369,6 +9043,66 @@ NativeFedimintSdk::cpp_uniffi_internal_fn_method_meta_ffi__bless_pointer(
   auto static destructor = [](uint64_t p) {
     RustCallStatus status = {0};
     uniffi_fedimint_sdk_fn_free_meta(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_internal_fn_method_multisig_ffi__bless_pointer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisig(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_internal_fn_method_multisigaccount_ffi__bless_pointer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_multisigaccount(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_internal_fn_method_approval_ffi__bless_pointer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_approval(p, &status);
+  };
+  auto ptrObj =
+      std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+  auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+  return jsi::Value(rt, obj);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_internal_fn_method_proposal_ffi__bless_pointer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto pointer =
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+  auto static destructor = [](uint64_t p) {
+    RustCallStatus status = {0};
+    uniffi_fedimint_sdk_fn_free_proposal(p, &status);
   };
   auto ptrObj =
       std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
@@ -8037,6 +9771,22 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_federation_lightning(
                                                           value);
 }
 jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_federation_multisig(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_federation_multisig(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_federation_onchain(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -8622,6 +10372,424 @@ jsi::Value NativeFedimintSdk::
   auto value = uniffi_fedimint_sdk_fn_method_lnsendoperationupdates_next(
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+          uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                            args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+          uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                            args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+          uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                            args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
+          uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                            args[0]));
 
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
@@ -9293,6 +11461,443 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_meta_get(
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
 }
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_multisig(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisig(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_multisig(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisig(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_account(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_account(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_deposit(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_deposit(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[1]),
+      uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[2]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_execute(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_execute(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[1]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[2]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_sweep(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_sweep(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_approve(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_approve(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[2]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_balance(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_balance(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[1]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_denominations(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_denominations(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_member_key(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_member_key(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisig_propose(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_multisig_propose(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[2]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[3]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_multisigaccount(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_multisigaccount(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_multisigaccount(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_multisigaccount(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_approval(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_approval(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_approval(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_approval(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_constructor_approval_parse(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_constructor_approval_parse(
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_approval_approves(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_approval_approves(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[1]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging<int8_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_approval_display(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_approval_display(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_approval_member(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_approval_member(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_proposal(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_clone_proposal(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_free_proposal(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  uniffi_fedimint_sdk_fn_free_proposal(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return jsi::Value::undefined();
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_account_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_account_id(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_amount(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_amount(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_display(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_display(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_policy(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_policy(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_proposal_proposer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_proposal_proposer(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
 jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_clone_onchain(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -9597,6 +12202,54 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_ln_send(
   RustCallStatus status =
       uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
   auto value = uniffi_fedimint_sdk_fn_method_anyoperation_as_ln_send(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[0]),
       &status);
@@ -11007,6 +13660,14 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_federation_lightning(
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_federation_multisig(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_federation_multisig();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_federation_onchain(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -11231,6 +13892,167 @@ jsi::Value NativeFedimintSdk::
         size_t count) {
   auto value =
       uniffi_fedimint_sdk_checksum_method_lnsendoperationupdates_next();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
@@ -11484,6 +14306,158 @@ jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_meta_get(
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_account(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_account();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_deposit(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_deposit();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_execute(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_execute();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_sweep(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_sweep();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_approve(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_approve();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_balance(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_balance();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisig_denominations(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_denominations();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_member_key(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_member_key();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisig_propose(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisig_propose();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_multisigaccount_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisigaccount_id();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_multisigaccount_policy(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_multisigaccount_policy();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_approval_approves(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_approval_approves();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_approval_display(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_approval_display();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_approval_member(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_approval_member();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_account_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_account_id();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_amount(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_amount();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_display(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_display();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_policy(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_policy();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_proposal_proposer(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_proposal_proposer();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_onchain_send(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -11593,6 +14567,33 @@ jsi::Value NativeFedimintSdk::
         jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
         size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_send();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value =
+      uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
@@ -11829,6 +14830,22 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_notes_value(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_notes_value();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_constructor_approval_parse(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_constructor_approval_parse();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_constructor_proposal_parse(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_constructor_proposal_parse();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }

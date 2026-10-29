@@ -38,6 +38,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_send(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_receive(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_send(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_recovery(): number
@@ -46,6 +49,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_raw_kind(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_support(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_supported_kind(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_approval_approves(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_approval_display(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_approval_member(): number
+  ubrn_uniffi_fedimint_sdk_checksum_constructor_approval_parse(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_balanceupdates_next(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_ecash_quote(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_ecash_receive(): number
@@ -81,6 +88,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_invite_code(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_lightning(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_meta(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_federation_multisig(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_name(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_network(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_federation_onchain(): number
@@ -117,6 +125,35 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_mnemonic_words(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_account(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_approve(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_balance(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_denominations(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_deposit(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_execute(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_member_key(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_propose(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisig_sweep(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigaccount_policy(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_display(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_value(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
@@ -142,6 +179,12 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainsendoperation_state(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainsendoperation_updates(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchainsendoperationupdates_next(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_account_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_amount(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_display(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_policy(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer(): number
+  ubrn_uniffi_fedimint_sdk_checksum_constructor_proposal_parse(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperation_await_final(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperation_id(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperation_state(): number
@@ -182,6 +225,18 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
   ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_onchain_receive(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -214,6 +269,23 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_approval_approves(
+    uniffiSelf: bigint,
+    proposal: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number
+  ubrn_uniffi_fedimint_sdk_fn_method_approval_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_approval_member(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_constructor_approval_parse(
+    approval: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_balanceupdates_next(
     uniffiSelf: bigint,
   ): bigint
@@ -352,6 +424,10 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_federation_multisig(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
   ubrn_uniffi_fedimint_sdk_fn_method_federation_name(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -483,6 +559,113 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_constructor_mnemonic_generate(
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_account(
+    uniffiSelf: bigint,
+    policy: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_approve(
+    uniffiSelf: bigint,
+    group: Uint8Array,
+    proposal: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_balance(
+    uniffiSelf: bigint,
+    account: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_denominations(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_deposit(
+    uniffiSelf: bigint,
+    account: bigint,
+    amount: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_execute(
+    uniffiSelf: bigint,
+    proposal: bigint,
+    approvals: Uint8Array,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_member_key(
+    uniffiSelf: bigint,
+    group: Uint8Array,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_propose(
+    uniffiSelf: bigint,
+    group: Uint8Array,
+    account: bigint,
+    amount: Uint8Array,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisig_sweep(uniffiSelf: bigint): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
+    uniffiSelf: bigint,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
+    uniffiSelf: bigint,
+  ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_notes_display(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -571,6 +754,30 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_method_onchainsendoperationupdates_next(
     uniffiSelf: bigint,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_account_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_amount(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_policy(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_proposer(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_constructor_proposal_parse(
+    proposal: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_recoveryoperation_await_final(
     uniffiSelf: bigint,
   ): bigint
@@ -652,6 +859,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_free_anyoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_approval(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_approval(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
@@ -807,6 +1022,70 @@ interface NativeModuleInterface {
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisig(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisig(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigaccount(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigaccount(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
   ubrn_uniffi_fedimint_sdk_fn_clone_notes(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -868,6 +1147,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_free_onchainsendoperationupdates(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void
+  ubrn_uniffi_fedimint_sdk_fn_clone_proposal(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_free_proposal(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
@@ -1092,6 +1379,46 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject
   ubrn_uniffi_internal_fn_method_meta_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigaccount_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_proposal_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_approval_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigdepositoperationupdates_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigdepositoperation_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigtransferoperationupdates_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigtransferoperation_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigsweepoperationupdates_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisigsweepoperation_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
+  ubrn_uniffi_internal_fn_method_multisig_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject

@@ -363,6 +363,9 @@ pub(crate) async fn finish(
             return;
         }
     }
+    // What the extensions started for the client just retired ended with it.
+    #[cfg(feature = "extension-api")]
+    federation.tell_extensions().await;
     // The mutex this function's caller holds rules out anything else touching the client
     // between the swap above and this read, so the fresh client is always found here.
     let client = match federation.client(false).await {
