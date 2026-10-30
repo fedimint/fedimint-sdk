@@ -1,0 +1,37 @@
+package org.fedimint.demo.ui.common
+
+import java.text.NumberFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import org.fedimint.sdk.Amount
+import org.fedimint.sdk.Network
+import org.fedimint.sdk.Timestamp
+
+/** Whole sats with grouping, e.g. 12,345. The SDK counts in msats; sub-sat remainders are dropped. */
+fun formatSats(msats: Amount): String = NumberFormat.getIntegerInstance().format((msats / 1_000uL).toLong())
+
+/** Msats left over after whole sats, or null when there are none worth showing. */
+fun msatRemainder(msats: Amount): ULong? = (msats % 1_000uL).takeIf { it != 0uL }
+
+fun Network.label(): String = when (this) {
+    Network.BITCOIN -> "Bitcoin"
+    Network.TESTNET -> "Testnet"
+    Network.TESTNET4 -> "Testnet4"
+    Network.SIGNET -> "Signet"
+    Network.REGTEST -> "Regtest"
+}
+
+/** A full local date and time: for detail screens. */
+fun absoluteTime(ts: Timestamp): String =
+    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(ts.toLong()))
+
+/**
+ * A long id or code shortened to its ends, e.g. `02a1b2c3…e4f5a6b7`: enough
+ * to compare against another display of the same one. Short ones are left whole.
+ */
+fun shortId(id: String, keep: Int = 8): String =
+    if (id.length <= keep * 2 + 1) id else "${id.take(keep)}…${id.takeLast(keep)}"

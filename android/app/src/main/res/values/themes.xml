@@ -1,3 +1,8 @@
 <resources>
-    <style name="Theme.FedimintDemo" parent="Theme.Material3.DayNight.NoActionBar" />
+    <!-- Only what shows before Compose draws its first frame: no action bar, and a
+         window background in the right light/dark shade so launch doesn't flash.
+         The real theme is Compose's (ui/theme/Theme.kt). -->
+    <style name="Theme.FedimintWallet" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFF6F6F2</item>
+    </style>
 </resources>

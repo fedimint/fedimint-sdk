@@ -1,4 +1,4 @@
-package org.fedimint.demo
+package org.fedimint.demo.harness
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -10,11 +10,13 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import java.io.File
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fedimint.demo.R
 import org.fedimint.sdk.AnyOperation
 import org.fedimint.sdk.EcashReceiveState
 import org.fedimint.sdk.ErrorCode
@@ -51,8 +53,14 @@ private const val TESTNET_FEDERATION_CODE =
  *
  * Threading: each section reads its inputs on the main thread, runs the SDK
  * call on `Dispatchers.IO`, and writes its result back on the main thread.
+ *
+ * Debug builds only (src/debug), with its own launcher entry: the Appium suite
+ * in js/android/integration-tests drives this screen by its view ids, while the
+ * reference wallet (WalletActivity) is the app; see android/app/DECISION.md. It
+ * keeps its own data directory, so it never contends with the wallet for the
+ * storage lock and never touches the wallet's seed.
  */
-class MainActivity : AppCompatActivity() {
+class HarnessActivity : AppCompatActivity() {
 
     private var sdk: Sdk? = null
     private var federation: Federation? = null
@@ -86,7 +94,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_harness)
 
         walletStatus = findViewById(R.id.walletStatus)
         balance = findViewById(R.id.balance)
@@ -149,7 +157,7 @@ class MainActivity : AppCompatActivity() {
         section(R.id.walletResult) {
             if (sdk != null) return@section "already open"
             val mnemonic = if (words.isEmpty()) null else Mnemonic.fromWords(words)
-            val opened = createFedimintSdk(filesDir.path, mnemonic)
+            val opened = createFedimintSdk(File(filesDir, "harness").path, mnemonic)
             val existing = opened.federations().firstOrNull()
             withContext(Dispatchers.Main) {
                 sdk = opened

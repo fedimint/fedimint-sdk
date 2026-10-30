@@ -17,7 +17,7 @@ export class InviteCodeService extends AppiumTestBase {
 
     // The example app pre-fills its Join section with a known federation's invite
     // code. Reading it back from there rather than hardcoding one here keeps
-    // the code in a single place (MainActivity's TESTNET_FEDERATION_CODE).
+    // the code in a single place (HarnessActivity's TESTNET_FEDERATION_CODE).
     // A ScrollView only renders what is on screen, so scroll it into the tree
     // before reading rather than assuming a screen tall enough.
     await this.scrollToElement('invite')
