@@ -42,8 +42,13 @@ echo "APPIUM_HOME: $APPIUM_HOME"
 appium --version
 
 if ! appium driver list --installed 2>&1 | grep -qi uiautomator2; then
-  echo "Installing uiautomator2 driver..."
-  appium driver install uiautomator2
+  # The version js/pnpm-lock.yaml pins, read from where pnpm installed it next
+  # to appium. Without a version this takes the newest driver on npm, which may
+  # need a newer Appium than the one pnpm pins, and then the install fails.
+  DRIVER_PACKAGE="$(dirname "$(command -v appium)")/../appium-uiautomator2-driver/package.json"
+  DRIVER_VERSION="$(node -p 'require(process.argv[1]).version' "$DRIVER_PACKAGE")"
+  echo "Installing uiautomator2 driver $DRIVER_VERSION..."
+  appium driver install "uiautomator2@$DRIVER_VERSION"
 fi
 
 echo "Running uiautomator2 driver doctor..."
