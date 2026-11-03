@@ -63,6 +63,8 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// does not run also keeps the instance's storage claimed once the application has dropped
     /// the instance, until that work ends. The same goes for `federation`: a [`Federation`] kept
     /// in the extension's own state holds the storage claimed for as long as the extension lives.
+    /// Nor keep an [`Sdk`](crate::Sdk) of the instance: the instance holds its extensions, so it
+    /// would never be dropped, and its storage would stay claimed for good.
     ///
     /// It is called while the instance holds the lock that orders its lifecycle calls, so it must
     /// return without waiting for anything. Calling [`Sdk::join`](crate::Sdk::join), for

@@ -2,7 +2,7 @@ name: Rust SDK Continuous Integration
 
 # Continuous integration for the fedimint-sdk crate: build, test, clippy
 # (default, `--features uniffi`, `--features extension-api` and both features),
-# rustfmt, doc, and the wasm-target check, with and without `--features uniffi`.
+# rustfmt, doc, and the wasm-target check, with each feature and both.
 # The `--features uniffi` clippy is the cheap Android-surface gate: it
 # compiles the `#[uniffi::export]` blocks and type derives on the host, no
 # cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
@@ -347,6 +347,9 @@ jobs:
 
       - name: 'Check wasm (extension-api feature)'
         run: cargo check --locked --target wasm32-unknown-unknown --features extension-api
+
+      - name: 'Check wasm (uniffi and extension-api features)'
+        run: cargo check --locked --target wasm32-unknown-unknown --features uniffi,extension-api
 
   # The one check of this workflow for branch protection to require. It runs on
   # every pull request and merge group whatever they touched, so the check
