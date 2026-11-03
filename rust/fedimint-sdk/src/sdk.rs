@@ -2082,6 +2082,10 @@ impl SdkInner {
                 status,
                 None,
             ));
+            // Nothing brings it up, but its `multisig` answers from the configuration it last
+            // came up with, as its other facades answer from the record.
+            #[cfg(feature = "extension-api")]
+            federation.read_module_kinds().await;
             self.insert(federation.clone());
             self.announce(&federation);
             return;
@@ -2108,6 +2112,9 @@ impl SdkInner {
                 },
                 None,
             ));
+            // As for a closed federation above.
+            #[cfg(feature = "extension-api")]
+            federation.read_module_kinds().await;
             self.insert(federation.clone());
             self.announce(&federation);
             return;

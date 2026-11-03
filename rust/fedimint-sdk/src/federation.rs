@@ -248,7 +248,8 @@ impl Federation {
     /// This crate defines the facade but ships no module behind it: a build
     /// that carries one adds it through the `extension-api` feature. See
     /// [`Federation::ecash`] for why this is an `Option`, and what a closed
-    /// federation's facade does.
+    /// federation's facade does. A federation that is not running answers
+    /// from the configuration it last came up with.
     pub fn multisig(&self) -> Option<Multisig> {
         self.inner
             .multisig_backend()
@@ -840,6 +841,18 @@ impl FederationInner {
             .and_then(|sdk| sdk.multisig.clone())
             .filter(|backend| kinds.contains(&backend.module_kind()));
         *write_lock(&self.multisig) = backend;
+    }
+
+    /// Records the module kinds of the configuration the client keeps in the store, and with
+    /// them whether the instance's multisig backend serves this federation.
+    ///
+    /// Read from the store rather than from a running client, so a federation that is not
+    /// running answers from the configuration it last came up with.
+    #[cfg(feature = "extension-api")]
+    pub(crate) async fn read_module_kinds(&self) {
+        if let Some(config) = fedimint_client::Client::get_config_from_db(&self.db).await {
+            self.set_module_kinds(&crate::modules::module_kinds(&config));
+        }
     }
 
     /// The multisig backend that serves this federation, if this build has one and the
@@ -1785,14 +1798,11 @@ pub(crate) async fn shutdown_client(mut client: ClientHandleArc) -> Result<()> {
 // this pass did not.
 pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     // First, so that what a module kind decides (whether `Federation::multisig` is there) is
-    // settled before anyone is told this federation came up. Read from the configuration the
-    // client keeps in the store, which the bring-up just opened, so a configuration that changed
-    // since the last run is the one read. A quarantined federation has one there too, and its
-    // `multisig` answers from it as its other facades answer from the record.
+    // settled before anyone is told this federation came up. The bring-up just opened the client,
+    // which stored its configuration, so one that changed since the last run is the one read. A
+    // quarantined federation has one stored too.
     #[cfg(feature = "extension-api")]
-    if let Some(config) = fedimint_client::Client::get_config_from_db(&federation.db).await {
-        federation.set_module_kinds(&crate::modules::module_kinds(&config));
-    }
+    federation.read_module_kinds().await;
     // Every call site reaches this once `set_status` has already run, including the branch
     // `Sdk::restore` takes when opening the client itself failed: that federation is
     // `Quarantined`, not open, and has no client installed to back a scan of its operation log
@@ -3237,6 +3247,56 @@ mod tests {
 
         // A handle that outlives its instance still answers the same.
         drop(sdk);
+        assert!(federation.multisig().is_some());
+        assert!(federation.capabilities().multisig);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_federation_not_running_offers_multisig_from_its_stored_configuration() {
+        use std::collections::BTreeMap;
+
+        use fedimint_core::config::{ClientConfig, ClientModuleConfig, GlobalClientConfig};
+        use fedimint_core::core::ModuleKind;
+        use fedimint_core::encoding::DynRawFallback;
+        use fedimint_core::module::{CoreConsensusVersion, ModuleConsensusVersion};
+
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .extension(Arc::new(MultisigExtension))
+            .build()
+            .await
+            .expect("an instance opens");
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        // What a client keeps in the store: a configuration declaring the backend's module.
+        let config = ClientConfig {
+            global: GlobalClientConfig {
+                api_endpoints: BTreeMap::new(),
+                broadcast_public_keys: None,
+                consensus_version: CoreConsensusVersion::new(0, 0),
+                meta: BTreeMap::new(),
+            },
+            modules: BTreeMap::from([(
+                0,
+                ClientModuleConfig {
+                    kind: ModuleKind::clone_from_str(crate::multisig::UnreachableBackend::MODULE),
+                    version: ModuleConsensusVersion::new(0, 0),
+                    config: DynRawFallback::Raw {
+                        module_instance_id: 0,
+                        raw: Vec::new(),
+                    },
+                },
+            )]),
+        };
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&fedimint_client::db::ClientConfigKey, &config)
+            .await;
+        dbtx.commit_tx().await;
+        let inner = FederationInner::detached_in(Arc::downgrade(sdk.inner()), db, false);
+        let federation = Federation::new(inner.clone());
+        assert!(federation.multisig().is_none());
+
+        reconcile_on_open(&inner).await;
         assert!(federation.multisig().is_some());
         assert!(federation.capabilities().multisig);
     }
