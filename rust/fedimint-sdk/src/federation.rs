@@ -337,10 +337,54 @@ impl Federation {
     ///
     /// # Errors
     ///
-    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation is not
-    /// running.
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation has no
+    /// client: it is closed, quarantined or erased, or the instance has been shut down. A
+    /// federation that is still [`Recovering`](crate::FederationStatus::Recovering) has one.
+    #[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
     pub async fn client(&self) -> Result<ClientHandleArc> {
         Ok(self.inner.client(false).await?.handle())
+    }
+
+    /// Waits for the federation to be [`Running`](crate::FederationStatus::Running), which a
+    /// [`Recovering`](crate::FederationStatus::Recovering) one is once its recovery is done.
+    ///
+    /// For an extension's work on a recovering federation, which must not start operations until
+    /// then; see [`Extension::client_started`](crate::Extension::client_started).
+    ///
+    /// # Errors
+    ///
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) when the federation is closed,
+    /// quarantined or erased first, or the instance is shut down or dropped.
+    #[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
+    pub async fn await_running(&self) -> Result<()> {
+        let closed = || {
+            crate::Error::new(
+                crate::ErrorCode::FederationClosed,
+                "this federation stopped running",
+            )
+        };
+        // Every status change notifies this watch, not only one that opens or closes the
+        // federation. Subscribed before the status is read, so no change is missed in between.
+        let mut changes = self.inner.closed();
+        // Held weakly, as everything waiting on the instance is.
+        let mut instance = self
+            .inner
+            .sdk
+            .upgrade()
+            .ok_or_else(closed)?
+            .shutdown_watch();
+        loop {
+            match self.inner.status() {
+                FederationStatus::Running => return Ok(()),
+                FederationStatus::Recovering => {}
+                _ => return Err(closed()),
+            }
+            tokio::select! {
+                changed = changes.changed() => changed.map_err(|_| closed())?,
+                // Resolves on shutdown, and with an error once the instance is dropped.
+                _ = instance.wait_for(|shut| *shut) => return Err(closed()),
+            }
+        }
     }
 }
 
@@ -754,6 +798,8 @@ impl FederationInner {
             FederationStatus::Running | FederationStatus::Recovering
         );
         *write_lock(&self.status) = status;
+        // Notifies even when the federation stays open, which is how `Federation::await_running`
+        // learns that a recovery is done.
         self.closed.send_replace(!open);
     }
 
@@ -1418,6 +1464,17 @@ impl FederationInner {
     /// a federation with no client.
     #[cfg(test)]
     pub(crate) fn detached(db: Database, open: bool) -> Arc<FederationInner> {
+        FederationInner::detached_in(Weak::new(), db, open)
+    }
+
+    /// [`detached`](FederationInner::detached), belonging to `sdk`: for a test of what a
+    /// federation reads off its instance.
+    #[cfg(test)]
+    pub(crate) fn detached_in(
+        sdk: Weak<SdkInner>,
+        db: Database,
+        open: bool,
+    ) -> Arc<FederationInner> {
         use fedimint_core::PeerId;
         use fedimint_core::invite_code::InviteCode;
         use fedimint_core::util::SafeUrl;
@@ -1432,7 +1489,7 @@ impl FederationInner {
         let id = config::FederationId::dummy();
         let federation = FederationInner::new(
             id,
-            Weak::new(),
+            sdk,
             db,
             FederationRecord {
                 invite: InviteCode::new(
@@ -3002,6 +3059,60 @@ mod tests {
             handle_released(&handle).await,
             "the work kept the client after it was told to stop"
         );
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recovering_federation_is_awaited_until_it_runs_or_stops() {
+        use futures::FutureExt as _;
+
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .build()
+            .await
+            .expect("an instance opens");
+        let inner = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        let federation = Federation::new(inner.clone());
+        federation
+            .await_running()
+            .await
+            .expect("a running federation is running already");
+
+        inner.set_status(FederationStatus::Recovering);
+        let mut running = Box::pin(federation.await_running());
+        assert!(
+            running.as_mut().now_or_never().is_none(),
+            "still recovering"
+        );
+        inner.set_status(FederationStatus::Running);
+        running.await.expect("the recovery is done");
+
+        inner.set_status(FederationStatus::Recovering);
+        let mut running = Box::pin(federation.await_running());
+        assert!(
+            running.as_mut().now_or_never().is_none(),
+            "still recovering"
+        );
+        inner.set_status(FederationStatus::Closed);
+        let err = running.await.expect_err("closed before it ran");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
+
+        inner.set_status(FederationStatus::Recovering);
+        let mut running = Box::pin(federation.await_running());
+        assert!(
+            running.as_mut().now_or_never().is_none(),
+            "still recovering"
+        );
+        drop(sdk);
+        let err = tokio::time::timeout(core::time::Duration::from_secs(5), running)
+            .await
+            .expect("the wait ends with the instance")
+            .expect_err("the instance went away");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 
     #[cfg(feature = "extension-api")]

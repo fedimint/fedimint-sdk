@@ -32,6 +32,8 @@ exclude = ["/AGENTS.md"]
 # The public API is the same on every native target, so documenting one covers all of them.
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
+# The extension API is documented too, marked as needing its feature.
+features = ["extension-api"]
 cargo-args = ["--config", 'env.ROCKSDB_LIB_DIR="/nonexistent"']
 
 [features]

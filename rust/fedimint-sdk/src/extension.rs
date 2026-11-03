@@ -22,6 +22,7 @@ use crate::Federation;
 /// release this crate is built against: require this crate with `=`, and every fedimint crate at
 /// the version this crate's manifest requires. This part of the API follows that release rather
 /// than this crate's semver, and any release of this crate may change it.
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// Client modules to add to every federation's client, beside the ones this crate ships.
     ///
@@ -47,7 +48,7 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// cannot be used before its recovery ends is missing from the client, and is there in the
     /// client that replaces it. Work on a recovering federation must not start operations in a
     /// module either: the SDK marks the recovery done only once the client has no state machine
-    /// left running.
+    /// left running. [`Federation::await_running`] waits for that.
     ///
     /// What it returns is the extension's work on `client`, picking up its own unfinished work
     /// included, and the SDK runs it. The work may hold `client` for as long as it runs. The SDK

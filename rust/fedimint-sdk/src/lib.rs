@@ -330,6 +330,7 @@
     forbid(unsafe_code)
 )]
 #![cfg_attr(any(target_os = "android", target_vendor = "apple"), deny(unsafe_code))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
 // These attributes stay: dropping them does not surface leftover skeleton work, it surfaces

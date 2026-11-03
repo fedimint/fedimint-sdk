@@ -1288,6 +1288,7 @@ impl SdkBuilder {
     /// Call it once per extension, in any order. Nothing is checked here:
     /// [`SdkBuilder::build`] refuses a module kind added twice, before it opens the storage.
     #[cfg(feature = "extension-api")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
     pub fn extension(mut self, extension: Arc<dyn crate::Extension>) -> Self {
         self.extensions.push(extension);
         self
