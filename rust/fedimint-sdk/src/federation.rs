@@ -1759,9 +1759,9 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
             "could not record the on-chain deposits this federation's wallet found",
         );
     }
-    // Told last, so an extension picking up its own work finds the SDK's records repaired. A
-    // client that a recovery already swapped in on the way here was told about by that swap, and
-    // is not told about again.
+    // Told last, so an extension picking up its own work on a client this bring-up kept finds
+    // the SDK's records repaired. A client that a recovery already swapped in on the way here was
+    // told about by that swap, before this pass, and is not told about again.
     #[cfg(feature = "extension-api")]
     federation.tell_extensions().await;
 }

@@ -49,7 +49,9 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// cannot be used before its recovery ends is missing from the client, and is there in the
     /// client that replaces it. Work on a recovering federation must not start operations in a
     /// module either: the SDK marks the recovery done only once the client has no state machine
-    /// left running. [`Federation::await_running`] waits for that.
+    /// left running. [`Federation::await_running`] waits for that. A recovery usually ends by
+    /// replacing the client, which drops the work on the one it replaces, so that wait mostly
+    /// finishes in the work on the replacement rather than on the first client.
     ///
     /// What it returns is the extension's work on `client`, picking up its own unfinished work
     /// included, and the SDK runs it. The work may hold `client` for as long as it runs. The SDK
