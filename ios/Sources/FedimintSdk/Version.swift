@@ -34,4 +34,4 @@ public typealias SdkError = FedimintSdk.Error
 /// XCFramework.
 ///
 /// Written by `scripts/sdk-version.sh set` whenever the crate's version is set.
-public let fedimintSdkVersion = "0.1.0-beta.2"
+public let fedimintSdkVersion = "0.1.0-beta.4"

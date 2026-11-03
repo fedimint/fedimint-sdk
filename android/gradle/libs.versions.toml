@@ -17,7 +17,7 @@ lifecycle = "2.8.4"
 # The Android SDK's version, the one published to Maven Central. The SDK
 # Version Bump workflow sets it, so don't edit it by hand. RELEASING.md,
 # "Versions", has the rules. Snapshots do not use it.
-fedimintSdk = "0.1.0-beta.2"
+fedimintSdk = "0.1.0-beta.4"
 
 # Publishes :fedimint-sdk to Maven Central through the Sonatype Central
 # Portal (OSSRH is gone). 0.35.0 is the newest release that still supports
