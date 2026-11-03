@@ -33,6 +33,7 @@ impl MemberKey {
 }
 
 #[cfg(feature = "extension-api")]
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 impl MemberKey {
     /// The member key for `key`, for a [`MultisigBackend`](crate::MultisigBackend) handing one
     /// out.

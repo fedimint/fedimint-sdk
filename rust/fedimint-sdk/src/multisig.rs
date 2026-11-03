@@ -38,8 +38,10 @@ pub use proposal::{Approval, Proposal};
 ///    for every member.
 /// 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
 /// 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
-///    signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
-///    have, anyone [`execute`](Multisig::execute)s it with their approvals.
+///    signed as theirs. Each member who agrees [`approve`](Multisig::approve)s it, and once enough
+///    have, anyone [`execute`](Multisig::execute)s it with their approvals. The proposer's own
+///    approval counts toward the threshold like any other member's, and is not implied by the
+///    proposal: a proposer who agrees approves too.
 /// 5. An executed proposal pays the member who proposed it. That member's
 ///    [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
 ///
@@ -299,7 +301,8 @@ impl Multisig {
     /// is not a member, and fewer approvals than the account's threshold,
     /// [`NotSupported`](crate::ErrorCode::NotSupported) for a proposal in a denomination this
     /// federation does not hold, and when the federation cannot pay out of multisig accounts yet,
-    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
+    /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for this federation is
+    /// incomplete, [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Storage`](crate::ErrorCode::Storage) and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn execute(
@@ -312,7 +315,7 @@ impl Multisig {
         let approvals = proposal::approvals_for(proposal, approvals)?;
         let federation = &self.inner.federation;
         federation.ensure_open()?;
-        let client = federation.client(false).await?;
+        let client = federation.client(true).await?;
         let id = self
             .inner
             .backend
@@ -941,6 +944,37 @@ mod tests {
             .await
             .expect_err("fiat is not held");
         assert_eq!(err.code, ErrorCode::NotSupported);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recovering_federation_moves_no_money() {
+        let multisig = multisig(true);
+        multisig
+            .inner
+            .federation
+            .set_status(crate::FederationStatus::Recovering);
+        let account = multisig
+            .account(&policy(MultisigDenomination::Btc))
+            .expect("a valid policy");
+        let [a, b, _] = test_keys();
+        let ours = proposal(UnreachableBackend::MODULE, &account);
+        let approvals = [
+            Approval::new(ours.digest(), a, Vec::new()),
+            Approval::new(ours.digest(), b, Vec::new()),
+        ];
+
+        let err = multisig
+            .execute(&ours, &approvals)
+            .await
+            .expect_err("recovering");
+        assert_eq!(err.code, ErrorCode::Recovering);
+        let err = multisig
+            .deposit(&account, Amount::from_msats(1_000))
+            .await
+            .expect_err("recovering");
+        assert_eq!(err.code, ErrorCode::Recovering);
+        let err = multisig.sweep().await.expect_err("recovering");
+        assert_eq!(err.code, ErrorCode::Recovering);
     }
 
     #[tokio::test(flavor = "multi_thread")]

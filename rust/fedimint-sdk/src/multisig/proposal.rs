@@ -183,6 +183,7 @@ impl Proposal {
 }
 
 #[cfg(feature = "extension-api")]
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 impl Proposal {
     /// What the [`MultisigBackend`](crate::MultisigBackend) that made this proposal put in it,
     /// from [`MultisigBackend::propose`](crate::MultisigBackend::propose).
@@ -299,6 +300,7 @@ impl Approval {
 }
 
 #[cfg(feature = "extension-api")]
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 impl Approval {
     /// `member`'s approval of `proposal`, carrying `payload`.
     ///

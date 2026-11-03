@@ -1784,6 +1784,15 @@ pub(crate) async fn shutdown_client(mut client: ClientHandleArc) -> Result<()> {
 // rest of its history, and the per-id backfill in FederationInner::operation repairs whatever
 // this pass did not.
 pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
+    // First, so that what a module kind decides (whether `Federation::multisig` is there) is
+    // settled before anyone is told this federation came up. Read from the configuration the
+    // client keeps in the store, which the bring-up just opened, so a configuration that changed
+    // since the last run is the one read. A quarantined federation has one there too, and its
+    // `multisig` answers from it as its other facades answer from the record.
+    #[cfg(feature = "extension-api")]
+    if let Some(config) = fedimint_client::Client::get_config_from_db(&federation.db).await {
+        federation.set_module_kinds(&crate::modules::module_kinds(&config));
+    }
     // Every call site reaches this once `set_status` has already run, including the branch
     // `Sdk::restore` takes when opening the client itself failed: that federation is
     // `Quarantined`, not open, and has no client installed to back a scan of its operation log
@@ -1792,13 +1801,6 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     // still covers a federation that is later reopened successfully.
     if !federation.is_open() {
         return;
-    }
-    // First, so that what a module kind decides (whether `Federation::multisig` is there) is
-    // settled before anyone is told this federation came up. Read from the client the bring-up
-    // just opened, so a configuration that changed since the last run is the one read.
-    #[cfg(feature = "extension-api")]
-    if let Ok(client) = federation.client(false).await {
-        federation.set_module_kinds(&crate::modules::module_kinds(&client.config().await));
     }
     if let Err(err) = federation.reconcile_operations().await {
         tracing::warn!(

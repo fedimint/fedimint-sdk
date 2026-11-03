@@ -42,6 +42,7 @@ use crate::{
 /// A stream that ends without a final state is asked for again. An operation that has not ended
 /// when the application stops is followed again only by a build with a backend for the same
 /// module.
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     /// The kind of the module this backend runs on.
     fn module_kind(&self) -> String;
@@ -152,6 +153,7 @@ impl core::fmt::Debug for dyn MultisigBackend {
 
 /// A sweep a [`MultisigBackend`] started: its operation, and how much it moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
 pub struct MultisigSweep {
     pub(crate) operation: UpstreamOperationId,
     pub(crate) amount: Amount,

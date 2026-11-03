@@ -13398,8 +13398,10 @@ const FfiConverterTypeMultisigSweepOperation = new FfiConverterObject(
  * for every member.
  * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
  * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
- * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
- * have, anyone [`execute`](Multisig::execute)s it with their approvals.
+ * signed as theirs. Each member who agrees [`approve`](Multisig::approve)s it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals. The proposer's own
+ * approval counts toward the threshold like any other member's, and is not implied by the
+ * proposal: a proposer who agrees approves too.
  * 5. An executed proposal pays the member who proposed it. That member's
  * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
  *
@@ -13561,8 +13563,10 @@ export type MultisigInterface = MultisigLike
  * for every member.
  * 3. Anyone [`deposit`](Multisig::deposit)s into it from their ecash balance.
  * 4. A member who wants money out makes a [`Proposal`] with [`propose`](Multisig::propose),
- * signed as theirs. The other members each [`approve`](Multisig::approve) it, and once enough
- * have, anyone [`execute`](Multisig::execute)s it with their approvals.
+ * signed as theirs. Each member who agrees [`approve`](Multisig::approve)s it, and once enough
+ * have, anyone [`execute`](Multisig::execute)s it with their approvals. The proposer's own
+ * approval counts toward the threshold like any other member's, and is not implied by the
+ * proposal: a proposer who agrees approves too.
  * 5. An executed proposal pays the member who proposed it. That member's
  * [`sweep`](Multisig::sweep) moves what it was paid into its ecash balance.
  *
