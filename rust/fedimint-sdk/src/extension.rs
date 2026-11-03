@@ -39,8 +39,9 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// Called with each `client` one of the instance's federations starts: when the federation
     /// is joined or recovered, when it is reopened, when
     /// [`SdkBuilder::build`](crate::SdkBuilder::build) brings it back, and when the SDK replaces
-    /// its client, as it does when a recovery ends or is retried. It is called once for each
-    /// client.
+    /// its client, as it does when a recovery ends or is retried. It is called at most once for
+    /// each client: one the SDK replaces before the bring-up that started it has ended is never
+    /// announced.
     ///
     /// The federation is open when this is called, either
     /// [`Running`](crate::FederationStatus::Running) or still
@@ -58,7 +59,8 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     /// Keep no clone of `client` anywhere else. One that outlives the client keeps it from
     /// shutting down cleanly, as [`Federation::client`] explains, and one held by work the SDK
     /// does not run also keeps the instance's storage claimed once the application has dropped
-    /// the instance, until that work ends.
+    /// the instance, until that work ends. The same goes for `federation`: a [`Federation`] kept
+    /// in the extension's own state holds the storage claimed for as long as the extension lives.
     ///
     /// It is called while the instance holds the lock that orders its lifecycle calls, so it must
     /// return without waiting for anything. Calling [`Sdk::join`](crate::Sdk::join), for

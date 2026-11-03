@@ -1460,12 +1460,17 @@ impl SdkBuilder {
 
 impl core::fmt::Debug for SdkBuilder {
     /// Prints the builder with the mnemonic redacted: whether one is set
-    /// is visible, its contents never are.
+    /// is visible, its contents never are. With the extension API, it
+    /// also says how many extensions are registered.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SdkBuilder")
+        let mut builder = f.debug_struct("SdkBuilder");
+        builder
             .field("storage", &self.storage)
-            .field("mnemonic", &self.mnemonic.as_ref().map(|_| Redacted))
-            .finish()
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| Redacted));
+        // A count, since an extension has no `Debug` of its own.
+        #[cfg(feature = "extension-api")]
+        builder.field("extensions", &self.extensions.len());
+        builder.finish()
     }
 }
 
@@ -2425,10 +2430,11 @@ mod tests {
         let mnemonic = PHRASE.parse::<Mnemonic>().expect("a valid phrase");
         let rendered = format!("{:?}", Sdk::builder().mnemonic(mnemonic));
         assert!(!rendered.contains("abandon"));
-        assert_eq!(
-            rendered,
-            "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }"
-        );
+        #[cfg(not(feature = "extension-api"))]
+        let expected = "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }";
+        #[cfg(feature = "extension-api")]
+        let expected = "SdkBuilder { storage: None, mnemonic: Some(<redacted>), extensions: 0 }";
+        assert_eq!(rendered, expected);
     }
 
     #[test]
