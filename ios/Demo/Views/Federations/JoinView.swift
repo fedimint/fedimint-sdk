@@ -72,8 +72,10 @@ struct JoinView: View {
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) {
             Button {
-                joining = true
-                recovering ? model.recover() : model.join()
+                // Only for a join that started: one refused in the frame the
+                // button lags would otherwise leave this set, and the next
+                // Preview to finish would close the screen.
+                if recovering ? model.recover() : model.join() { joining = true }
             } label: {
                 BusyLabel(title: recovering ? "Join and recover" : "Join", busy: model.isWorking(.join))
             }

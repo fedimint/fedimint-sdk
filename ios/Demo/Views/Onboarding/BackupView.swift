@@ -75,9 +75,7 @@ struct BackupView: View {
                 .foregroundStyle(Palette.muted)
             Button("Show recovery phrase") { model.toggleSeed() }
                 .buttonStyle(.secondary)
-            // Why the phrase stayed hidden: no passcode, or authentication
-            // declined.
-            if let reason = model.results[.wallet], model.seed == nil {
+            if let reason = model.seedFailure {
                 Text(reason)
                     .font(Typeface.footnote)
                     .foregroundStyle(Palette.danger)

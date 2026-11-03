@@ -15,9 +15,6 @@ struct BackupFlow: View {
                     VerifyView(words: model.seedWords, finish: finish)
                 }
         }
-        // The open that led here left "wallet opened" in this line; from here on
-        // it is for why the phrase stayed hidden.
-        .onAppear { model.results[.wallet] = nil }
     }
 
     /// Hides the phrase on the way out, so the words do not stay in memory
@@ -43,7 +40,6 @@ struct RecoveryPhraseSheet: View {
                     }
                 }
         }
-        .onAppear { model.results[.wallet] = nil }
         // Every way off the sheet, Close and swiping it away alike, so the
         // phrase is never still revealed the next time it opens.
         .onDisappear { model.hideSeed() }

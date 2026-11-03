@@ -44,9 +44,10 @@ struct HomeView: View {
         // before its "recovered" state could be seen.
         .navigationDestination(isPresented: $showingRecovery) { RecoveryView(model: model) }
         .navigationDestination(for: ActivityItem.self) { OperationDetailView(model: model, item: $0) }
-        .task(id: model.federationName) {
-            // Once per federation: later loads are a pull or a tap, so a
-            // redraw never goes back to the SDK behind the user's back.
+        .task(id: model.attachments) {
+            // Once per attach, which empties the list, even one that reattaches
+            // the same federation: later loads are a pull or a tap, so a redraw
+            // never goes back to the SDK behind the user's back.
             if model.hasFederation, model.activityItems.isEmpty { model.activity() }
         }
     }

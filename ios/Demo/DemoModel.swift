@@ -61,6 +61,10 @@ final class DemoModel: ObservableObject {
     /// authentication.
     @Published private(set) var seedWords: [String] = []
 
+    /// Why the phrase stayed hidden: no passcode, or authentication declined.
+    /// Its own line, not `results[.wallet]`, which a balance refresh writes to.
+    @Published private(set) var seedFailure: String?
+
     // What the screens that lay values out themselves need, rather than the
     // sentences in `results`. All of it belongs to the attached federation and
     // is reset by `attach`.
@@ -297,12 +301,13 @@ final class DemoModel: ObservableObject {
         }
         guard sdk != nil else { return }
 
+        seedFailure = nil
         let generation = revealGeneration
         Task {
             let context = LAContext()
             var unavailable: NSError?
             guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &unavailable) else {
-                results[.wallet] = "set a device passcode to view the seed"
+                seedFailure = "set a device passcode to view the seed"
                 return
             }
             do {
@@ -310,7 +315,10 @@ final class DemoModel: ObservableObject {
                     .deviceOwnerAuthentication,
                     localizedReason: "Show the wallet's recovery phrase")
             } catch {
-                results[.wallet] = "seed stays hidden: \(error.localizedDescription)"
+                // Not once the screen has gone, or it would greet the next one.
+                if generation == revealGeneration {
+                    seedFailure = "seed stays hidden: \(error.localizedDescription)"
+                }
                 return
             }
             // Hidden while the prompt was up, such as the sheet showing it
@@ -337,6 +345,7 @@ final class DemoModel: ObservableObject {
         revealGeneration += 1
         seed = nil
         seedWords = []
+        seedFailure = nil
     }
     private var revealGeneration = 0
 
@@ -387,8 +396,11 @@ final class DemoModel: ObservableObject {
     /// Joins the pasted federation, or reattaches if this storage already joined
     /// it: `.alreadyJoined` is the cue to look the running federation up by the
     /// id the invite code carries.
-    func join() {
-        guard !isSending, !isWorking(.join) else { return }
+    ///
+    /// Whether the join started; Join waits for its result only if it did.
+    @discardableResult
+    func join() -> Bool {
+        guard !isSending, !isWorking(.join) else { return false }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -412,13 +424,17 @@ final class DemoModel: ObservableObject {
             self.attach(joined)
             return "\(verb) \(joined.id())\n\(joined.name() ?? "(unnamed)") on \(joined.network())"
         }
+        return true
     }
 
     /// Joins with a seed-recovery rescan instead of a plain join: the path for a
     /// restored seed that already holds funds here. Spends and receives are
     /// refused until the rescan completes.
-    func recover() {
-        guard !isSending, !isWorking(.join) else { return }
+    ///
+    /// Whether the recovery started, as for `join`.
+    @discardableResult
+    func recover() -> Bool {
+        guard !isSending, !isWorking(.join) else { return false }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
@@ -450,6 +466,7 @@ final class DemoModel: ObservableObject {
             }
             return header
         }
+        return true
     }
 
     // MARK: - Lightning in
