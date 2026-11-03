@@ -236,7 +236,7 @@ jobs:
           cp --no-preserve=mode sdk-wasm/lib/fedimint_sdk.wasm "$RUNNER_TEMP/module/"
 
       - name: 'Upload the module'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-sdk-module
           path: ${{ runner.temp }}/module/fedimint_sdk.wasm
@@ -267,7 +267,7 @@ jobs:
             pnpm --dir js install --frozen-lockfile
 
       - name: 'Download the module'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-sdk-module
           path: ${{ runner.temp }}/module
@@ -305,7 +305,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: 'Upload the tarball'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-sdk-tarball
           path: ${{ runner.temp }}/tarball/*.tgz
@@ -341,7 +341,7 @@ jobs:
             pnpm --dir js install --frozen-lockfile
 
       - name: 'Download the tarball'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-sdk-tarball
           path: ${{ runner.temp }}/tarball
@@ -367,12 +367,12 @@ jobs:
           persist-credentials: false
 
       - name: 'Set up Node'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
       - name: 'Download the tarball'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-sdk-tarball
           path: ${{ runner.temp }}/tarball
@@ -408,12 +408,12 @@ jobs:
       # that would write a placeholder token, and npm would fall back to it,
       # with a misleading error, should the token exchange ever fail.
       - name: 'Set up Node'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
       - name: 'Download the tarball'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-sdk-tarball
           path: ${{ runner.temp }}/tarball
@@ -425,7 +425,7 @@ jobs:
 
       # What npm serves, with its SHA-256 sum, for the GitHub Release.
       - name: 'Upload the published tarball'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-sdk-published
           path: |
@@ -453,7 +453,7 @@ jobs:
           persist-credentials: false
 
       - name: 'Download the published tarball'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-sdk-published
           path: ${{ runner.temp }}/published
