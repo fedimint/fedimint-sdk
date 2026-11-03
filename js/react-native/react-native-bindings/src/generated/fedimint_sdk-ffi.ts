@@ -182,6 +182,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_proposal_account_id(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_proposal_amount(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_proposal_display(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_proposal_federation(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_proposal_policy(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_proposal_proposer(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_proposal_parse(): number
@@ -763,6 +764,10 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
   ubrn_uniffi_fedimint_sdk_fn_method_proposal_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_proposal_federation(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array

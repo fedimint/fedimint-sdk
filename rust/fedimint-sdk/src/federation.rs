@@ -618,11 +618,13 @@ pub(crate) struct FederationInner {
     /// for it happen under this lock, so two lookups on it racing over two claims of one deposit
     /// can never both record it. A federation opened in this one's place has a lock of its own.
     deposit_records: tokio::sync::Mutex<()>,
-    /// Every module kind the configuration declared when this federation last came up, empty
-    /// until it has. What decides whether a multisig backend serves it: unlike the three
-    /// capabilities on the record, that depends on the build as well as on the configuration,
-    /// so it is not stored.
-    module_kinds: std::sync::RwLock<Vec<String>>,
+    /// The instance's multisig backend, when the configuration declared its module kind as this
+    /// federation last came up, and `None` until it has. Unlike the three capabilities on the
+    /// record, it depends on the build as well as on the configuration, so it is not stored. It
+    /// is kept here rather than looked up on the instance, so a handle that outlives the
+    /// instance answers the same.
+    #[cfg(feature = "extension-api")]
+    multisig: std::sync::RwLock<Option<Arc<dyn MultisigBackend>>>,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -685,7 +687,8 @@ impl FederationInner {
             settle: std::sync::Mutex::new(SettleMarker::default()),
             reclaim_starts: tokio::sync::Mutex::new(()),
             deposit_records: tokio::sync::Mutex::new(()),
-            module_kinds: std::sync::RwLock::new(Vec::new()),
+            #[cfg(feature = "extension-api")]
+            multisig: std::sync::RwLock::new(None),
         }
     }
 
@@ -827,22 +830,23 @@ impl FederationInner {
         self.closed.send_replace(!open);
     }
 
-    /// Records the module kinds the configuration declares, read when the federation comes up.
-    pub(crate) fn set_module_kinds(&self, kinds: Vec<String>) {
-        *write_lock(&self.module_kinds) = kinds;
+    /// Records the module kinds the configuration declares, read when the federation comes up,
+    /// and with them whether the instance's multisig backend serves it.
+    #[cfg(feature = "extension-api")]
+    pub(crate) fn set_module_kinds(&self, kinds: &[String]) {
+        let backend = self
+            .sdk
+            .upgrade()
+            .and_then(|sdk| sdk.multisig.clone())
+            .filter(|backend| kinds.contains(&backend.module_kind()));
+        *write_lock(&self.multisig) = backend;
     }
 
     /// The multisig backend that serves this federation, if this build has one and the
     /// federation runs its module.
     pub(crate) fn multisig_backend(&self) -> Option<Arc<dyn MultisigBackend>> {
         #[cfg(feature = "extension-api")]
-        {
-            let backend = self.sdk.upgrade()?.multisig.clone()?;
-            let kind = backend.module_kind();
-            read_lock(&self.module_kinds)
-                .contains(&kind)
-                .then_some(backend)
-        }
+        return read_lock(&self.multisig).clone();
         // No backend is ever installed without the feature that installs one.
         #[cfg(not(feature = "extension-api"))]
         None
@@ -1472,9 +1476,8 @@ impl FederationInner {
         };
         // Whether `Federation::multisig` is there depends on the module kinds, which
         // `reconcile_on_open` records too, but a recovery that ends while the federation comes
-        // up swaps the client and gets here first. Only a backend an extension provides makes
-        // the kinds matter, which is why recording them here is behind the same feature.
-        self.set_module_kinds(crate::modules::module_kinds(&client.config().await));
+        // up swaps the client and gets here first.
+        self.set_module_kinds(&crate::modules::module_kinds(&client.config().await));
         let handle = Federation::new(self.clone());
         for extension in &sdk.extensions {
             let work = extension.client_started(&handle, &client);
@@ -1793,9 +1796,9 @@ pub(crate) async fn reconcile_on_open(federation: &Arc<FederationInner>) {
     // First, so that what a module kind decides (whether `Federation::multisig` is there) is
     // settled before anyone is told this federation came up. Read from the client the bring-up
     // just opened, so a configuration that changed since the last run is the one read.
+    #[cfg(feature = "extension-api")]
     if let Ok(client) = federation.client(false).await {
-        let kinds = crate::modules::module_kinds(&client.config().await);
-        federation.set_module_kinds(kinds);
+        federation.set_module_kinds(&crate::modules::module_kinds(&client.config().await));
     }
     if let Err(err) = federation.reconcile_operations().await {
         tracing::warn!(
@@ -3217,11 +3220,11 @@ mod tests {
         assert!(federation.multisig().is_none());
         assert!(!federation.capabilities().multisig);
 
-        inner.set_module_kinds(vec!["mint".to_owned()]);
+        inner.set_module_kinds(&["mint".to_owned()]);
         assert!(federation.multisig().is_none(), "the module is not run");
         assert!(!federation.capabilities().multisig);
 
-        inner.set_module_kinds(vec![
+        inner.set_module_kinds(&[
             "mint".to_owned(),
             crate::multisig::UnreachableBackend::MODULE.to_owned(),
         ]);
@@ -3229,6 +3232,11 @@ mod tests {
         assert!(federation.capabilities().multisig);
         // The other capabilities still come from the record.
         assert!(federation.capabilities().ecash);
+
+        // A handle that outlives its instance still answers the same.
+        drop(sdk);
+        assert!(federation.multisig().is_some());
+        assert!(federation.capabilities().multisig);
     }
 
     #[cfg(feature = "extension-api")]
@@ -3244,7 +3252,7 @@ mod tests {
             federation_namespace(&in_memory_root(), [1u8; 32]),
             true,
         );
-        inner.set_module_kinds(vec![crate::multisig::UnreachableBackend::MODULE.to_owned()]);
+        inner.set_module_kinds(&[crate::multisig::UnreachableBackend::MODULE.to_owned()]);
         let federation = Federation::new(inner);
         assert!(federation.multisig().is_none());
         assert!(!federation.capabilities().multisig);

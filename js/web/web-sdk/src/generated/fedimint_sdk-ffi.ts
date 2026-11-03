@@ -775,6 +775,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_proposal_federation: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_proposal_policy: {
       args: [],
       ret: FfiType.UInt16,
@@ -1646,6 +1651,11 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_method_proposal_display: {
+      args: [FfiType.Handle],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_method_proposal_federation: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
       hasRustCallStatus: true,
@@ -2625,6 +2635,7 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_proposal_account_id(): number
   uniffi_fedimint_sdk_checksum_method_proposal_amount(): number
   uniffi_fedimint_sdk_checksum_method_proposal_display(): number
+  uniffi_fedimint_sdk_checksum_method_proposal_federation(): number
   uniffi_fedimint_sdk_checksum_method_proposal_policy(): number
   uniffi_fedimint_sdk_checksum_method_proposal_proposer(): number
   uniffi_fedimint_sdk_checksum_constructor_proposal_parse(): number
@@ -3198,6 +3209,10 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
   uniffi_fedimint_sdk_fn_method_proposal_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  uniffi_fedimint_sdk_fn_method_proposal_federation(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array

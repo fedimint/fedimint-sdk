@@ -98,9 +98,8 @@ impl Multisig {
     ///
     /// # Errors
     ///
-    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`,
-    /// [`NotSupported`](crate::ErrorCode::NotSupported) if the federation no longer runs the
-    /// module, and [`FederationClosed`](crate::ErrorCode::FederationClosed).
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, and
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn member_key(&self, group: &str) -> Result<MemberKey> {
         check_group(group)?;
         let client = self.inner.federation.client(false).await?;
@@ -136,13 +135,15 @@ impl Multisig {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for an empty `group`, for a proposal made
-    /// for another kind of module, for one that does not pay what it says, and when this member's
-    /// key for `group` is not one of the account's members (a different group name, most often),
-    /// [`NotSupported`](crate::ErrorCode::NotSupported), and
+    /// for another kind of module or on another federation, for one that does not pay what it
+    /// says, and when this member's key for `group` is not one of the account's members (a
+    /// different group name, most often), [`NotSupported`](crate::ErrorCode::NotSupported) for a
+    /// proposal in a denomination this federation does not hold, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn approve(&self, group: &str, proposal: &Proposal) -> Result<Approval> {
         check_group(group)?;
-        self.check_module(proposal)?;
+        self.check_origin(proposal)?;
+        self.check_denomination(proposal.account().denomination())?;
         let client = self.inner.federation.client(false).await?;
         let member = self.member_of(&client, group, &proposal.account())?;
         let payload = self.inner.backend.approve(&client, group, proposal)?;
@@ -186,8 +187,9 @@ impl Multisig {
             .backend
             .propose(&client, account, &amount)
             .await?;
+        let federation = self.inner.federation.id;
         let module = self.inner.backend.module_kind();
-        let digest = Proposal::digest_of(&module, account, &amount, proposer, &payload);
+        let digest = Proposal::digest_of(federation, &module, account, &amount, proposer, &payload);
         let signature = self.inner.backend.sign(
             &client,
             group,
@@ -196,6 +198,7 @@ impl Multisig {
         // Checked here as the parse checks it, so a backend that signs with the wrong key fails
         // the member who proposes rather than every member asked to approve.
         Proposal::signed(
+            federation,
             module,
             account.clone(),
             amount,
@@ -292,9 +295,10 @@ impl Multisig {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a proposal made for another kind of
-    /// module, an approval of a different proposal or from someone who is not a member, and fewer
-    /// approvals than the account's threshold, [`NotSupported`](crate::ErrorCode::NotSupported)
-    /// when the federation cannot pay out of multisig accounts yet,
+    /// module or on another federation, an approval of a different proposal or from someone who
+    /// is not a member, and fewer approvals than the account's threshold,
+    /// [`NotSupported`](crate::ErrorCode::NotSupported) for a proposal in a denomination this
+    /// federation does not hold, and when the federation cannot pay out of multisig accounts yet,
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Storage`](crate::ErrorCode::Storage) and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
@@ -303,7 +307,8 @@ impl Multisig {
         proposal: &Proposal,
         approvals: &[Approval],
     ) -> Result<Operation<MultisigTransferState>> {
-        self.check_module(proposal)?;
+        self.check_origin(proposal)?;
+        self.check_denomination(proposal.account().denomination())?;
         let approvals = proposal::approvals_for(proposal, approvals)?;
         let federation = &self.inner.federation;
         federation.ensure_open()?;
@@ -406,20 +411,27 @@ impl Multisig {
         ))
     }
 
-    /// Refuses a proposal another kind of backend made, which this one cannot read.
-    fn check_module(&self, proposal: &Proposal) -> Result<()> {
+    /// Refuses a proposal another kind of backend made, which this one cannot read, or one made
+    /// on another federation.
+    fn check_origin(&self, proposal: &Proposal) -> Result<()> {
         let module = self.inner.backend.module_kind();
-        if proposal.module() == module {
-            return Ok(());
+        if proposal.module() != module {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "the proposal was made for the {} module, and this federation's multisig runs \
+                     on {module}",
+                    proposal.module()
+                ),
+            ));
         }
-        Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "the proposal was made for the {} module, and this federation's multisig runs on \
-                 {module}",
-                proposal.module()
-            ),
-        ))
+        if proposal.federation().inner() != self.inner.federation.id {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the proposal was made on another federation",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -724,6 +736,9 @@ impl MultisigBackend for UnreachableBackend {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
+    use fedimint_core::bitcoin::hashes::sha256;
+    use fedimint_core::config;
+
     use super::*;
     use crate::db::{federation_namespace, in_memory_root};
     use crate::multisig::account::{test_keypairs, test_keys};
@@ -740,16 +755,34 @@ mod tests {
         Policy::new(vec![a, b, c], 2, denomination)
     }
 
-    /// The first test member's proposal, made for the backend of `module`.
+    /// The first test member's proposal, made on the federation the tests' facade runs on, for
+    /// the backend of `module`.
     fn proposal(module: &str, account: &MultisigAccount) -> Proposal {
+        proposal_on(config::FederationId::dummy(), module, account)
+    }
+
+    /// The first test member's proposal of a small amount out of `account`, made on `federation`
+    /// for the backend of `module`.
+    fn proposal_on(
+        federation: config::FederationId,
+        module: &str,
+        account: &MultisigAccount,
+    ) -> Proposal {
         let [pair, ..] = test_keypairs();
         let proposer = MemberKey::from_upstream(pair.public_key());
-        let amount = MultisigAmount::Btc {
-            amount: Amount::from_msats(1_000),
+        let amount = match account.denomination() {
+            MultisigDenomination::Btc => MultisigAmount::Btc {
+                amount: Amount::from_msats(1_000),
+            },
+            MultisigDenomination::Fiat => MultisigAmount::Fiat {
+                minor_units: 100,
+                currency: "USD".to_owned(),
+            },
         };
-        let digest = Proposal::digest_of(module, account, &amount, proposer, &[]);
+        let digest = Proposal::digest_of(federation, module, account, &amount, proposer, &[]);
         let signature = pair.sign_schnorr(Message::from_digest(digest.to_byte_array()));
         Proposal::signed(
+            federation,
             module.to_owned(),
             account.clone(),
             amount,
@@ -865,6 +898,49 @@ mod tests {
             .await
             .expect_err("one approval of the two needed");
         assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_proposal_made_on_another_federation_is_refused_up_front() {
+        let multisig = multisig(true);
+        let account = multisig
+            .account(&policy(MultisigDenomination::Btc))
+            .expect("a valid policy");
+        let elsewhere = proposal_on(
+            config::FederationId(sha256::Hash::hash(b"another federation")),
+            UnreachableBackend::MODULE,
+            &account,
+        );
+
+        let err = multisig
+            .approve("group", &elsewhere)
+            .await
+            .expect_err("made on another federation");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        let err = multisig
+            .execute(&elsewhere, &[])
+            .await
+            .expect_err("made on another federation");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_proposal_in_a_denomination_the_backend_does_not_hold_is_refused_up_front() {
+        let multisig = multisig(true);
+        let fiat =
+            MultisigAccount::derive(&policy(MultisigDenomination::Fiat)).expect("a valid policy");
+        let proposal = proposal(UnreachableBackend::MODULE, &fiat);
+
+        let err = multisig
+            .approve("group", &proposal)
+            .await
+            .expect_err("fiat is not held");
+        assert_eq!(err.code, ErrorCode::NotSupported);
+        let err = multisig
+            .execute(&proposal, &[])
+            .await
+            .expect_err("fiat is not held");
+        assert_eq!(err.code, ErrorCode::NotSupported);
     }
 
     #[tokio::test(flavor = "multi_thread")]

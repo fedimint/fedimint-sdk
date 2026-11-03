@@ -207,8 +207,10 @@ pub struct ActivityItem {
     /// [`Success`](ActivityStatus::Success) row:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) credited `amount - fee`. A row with
-    /// no direction has no identity to reconcile, and both figures are
-    /// `None`.
+    /// no direction has no identity to reconcile. Its figures are `None`,
+    /// except that a [`MultisigTransfer`](OperationKind::MultisigTransfer)
+    /// reports the amount it moved between two accounts, none of which
+    /// touched this balance.
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
     pub status: ActivityStatus,

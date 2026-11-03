@@ -142,6 +142,14 @@ pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<MultisigSweepState>>>>;
 }
 
+impl core::fmt::Debug for dyn MultisigBackend {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MultisigBackend")
+            .field("module", &self.module_kind())
+            .finish()
+    }
+}
+
 /// A sweep a [`MultisigBackend`] started: its operation, and how much it moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultisigSweep {
