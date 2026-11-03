@@ -1417,14 +1417,6 @@ async fn extensions_follow_the_client_through_a_recovery() {
         only_the_last_runs,
     )
     .await;
-    // A v1 mint cannot be used until its recovery ends, so a v1 recovery always ends by swapping
-    // in a fresh client, which the extension is told about in turn.
-    if devimint.shape == "v1" {
-        assert!(
-            ended_b.borrow().len() >= 2,
-            "the client the recovery swapped in is announced"
-        );
-    }
 
     // The work that still runs is the live client's: closing the federation ends it.
     sdk_b

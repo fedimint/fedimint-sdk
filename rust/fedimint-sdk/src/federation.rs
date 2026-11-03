@@ -1625,36 +1625,6 @@ where
     })
 }
 
-/// Runs an extension's work on a client until it ends, `client_stop` fires, or the instance is shut
-/// down or dropped, whichever comes first.
-///
-/// `client_stop` is the client's own task-group shutdown token, which a close, a swap and
-/// `Sdk::shutdown` all fire before asking for the handle back, and `instance` is the instance's
-/// shutdown watch, so the instance is held weakly. Its going away ends the work for the reason
-/// the recovery watcher gives: an application that lets go of every handle without shutting down
-/// must get its storage back, and the work may be holding the client, and with it the store.
-///
-/// The work runs on a task of its own rather than on the client's task group because it may hold
-/// the client's last handle. Dropping that handle shuts the client down by joining every task of
-/// the group, and a task of the group doing it would wait on itself.
-#[cfg(feature = "extension-api")]
-pub(crate) fn run_extension_work<S>(
-    work: fedimint_core::util::BoxFuture<'static, ()>,
-    client_stop: S,
-    mut instance: tokio::sync::watch::Receiver<bool>,
-) where
-    S: Future<Output = ()> + MaybeSend + 'static,
-{
-    fedimint_core::task::spawn("sdk-extension-work", async move {
-        tokio::select! {
-            () = work => {}
-            () = client_stop => {}
-            // Resolves on shutdown, and with an error once the instance is dropped.
-            _ = instance.wait_for(|shut| *shut) => {}
-        }
-    });
-}
-
 /// Shuts a client down, waiting for its workers.
 ///
 /// `ClientHandle::shutdown` consumes the handle, so it needs the last reference. A clone that is
@@ -1851,6 +1821,36 @@ pub(crate) fn read_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockRead
 pub(crate) fn write_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Runs an extension's work on a client until it ends, `client_stop` fires, or the instance is shut
+/// down or dropped, whichever comes first.
+///
+/// `client_stop` is the client's own task-group shutdown token, which a close, a swap and
+/// `Sdk::shutdown` all fire before asking for the handle back, and `instance` is the instance's
+/// shutdown watch, so the instance is held weakly. Its going away ends the work for the reason
+/// the recovery watcher gives: an application that lets go of every handle without shutting down
+/// must get its storage back, and the work may be holding the client, and with it the store.
+///
+/// The work runs on a task of its own rather than on the client's task group because it may hold
+/// the client's last handle. Dropping that handle shuts the client down by joining every task of
+/// the group, and a task of the group doing it would wait on itself.
+#[cfg(feature = "extension-api")]
+fn run_extension_work<S>(
+    work: fedimint_core::util::BoxFuture<'static, ()>,
+    client_stop: S,
+    mut instance: tokio::sync::watch::Receiver<bool>,
+) where
+    S: Future<Output = ()> + MaybeSend + 'static,
+{
+    fedimint_core::task::spawn("sdk-extension-work", async move {
+        tokio::select! {
+            () = work => {}
+            () = client_stop => {}
+            // Resolves on shutdown, and with an error once the instance is dropped.
+            _ = instance.wait_for(|shut| *shut) => {}
+        }
+    });
 }
 
 /// Where one balance subscription has got to.
