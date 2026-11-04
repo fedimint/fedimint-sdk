@@ -9,7 +9,7 @@ Join a federation, hold ecash, send and receive it, and restore from seed words,
 {.subtitle}
 
 ```sh no-check [terminal]
-npm install --save-exact @fedimint/react-native@0.1.0-beta.2 @fedimint/react-native-bindings@0.1.0-beta.2
+npm install --save-exact @fedimint/react-native@0.1.0-beta.4 @fedimint/react-native-bindings@0.1.0-beta.4
 cd ios && pod install
 ```
 

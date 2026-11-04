@@ -19,7 +19,7 @@ This page is the short path. It joins Fedi Testnet, a test federation on signet,
 Add both packages at the same exact version. Your app must list both, because autolinking links only the packages your app names. The packages ship prebuilt native libraries, so nothing compiles at install. The screen below also uses `react-native-fs` to find the documents folder.
 
 ```sh [install.sh]
-npm install --save-exact @fedimint/react-native@0.1.0-beta.2 @fedimint/react-native-bindings@0.1.0-beta.2
+npm install --save-exact @fedimint/react-native@0.1.0-beta.4 @fedimint/react-native-bindings@0.1.0-beta.4
 npm install react-native-fs
 ls node_modules/@fedimint/
 ```

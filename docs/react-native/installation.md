@@ -28,8 +28,8 @@ Everything else in Expo still works. The router, the asset pipeline, the config 
 
 | Item                              | Version           | Note                                                                |
 | --------------------------------- | ----------------- | ------------------------------------------------------------------- |
-| `@fedimint/react-native`          | `0.1.0-beta.2`    | Install the exact version                                           |
-| `@fedimint/react-native-bindings` | `0.1.0-beta.2`    | The same version as the package above                               |
+| `@fedimint/react-native`          | `0.1.0-beta.4`    | Install the exact version                                           |
+| `@fedimint/react-native-bindings` | `0.1.0-beta.4`    | The same version as the package above                               |
 | React Native                      | `0.78` or newer   | `0.83` is recommended                                               |
 | React                             | `18` or newer     |                                                                     |
 | New Architecture                  | Required          | The bindings are a Turbo Module. There is no legacy bridge fallback |
@@ -77,7 +77,7 @@ You will see five versions and a locale that is not empty.
 Install both packages at the same exact version. `--save-exact` writes the version into `package.json` with no range, so the two can never drift apart. The probe in step 06 also uses `react-native-fs` to find the documents folder. Skip that line if your app already has a file library.
 
 ```sh [install.sh]
-npm install --save-exact @fedimint/react-native@0.1.0-beta.2 @fedimint/react-native-bindings@0.1.0-beta.2
+npm install --save-exact @fedimint/react-native@0.1.0-beta.4 @fedimint/react-native-bindings@0.1.0-beta.4
 npm install react-native-fs
 ls node_modules/@fedimint/
 ```

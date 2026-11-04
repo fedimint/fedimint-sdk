@@ -8,7 +8,7 @@ The reader is a human or an agent. Both follow it from start to end, with no hel
 - Install both: `@fedimint/react-native` and `@fedimint/react-native-bindings`. The app must
   list both, because autolinking links only packages the app names directly.
 - Import everything from `@fedimint/react-native`. It re-exports the bindings.
-- The version is in `react-native/VERSION`. Write it literally (today `0.1.0-beta.2`). `tools/set_version.py`
+- The version is in `react-native/VERSION`. Write it literally (today `0.1.0-beta.4`). `tools/set_version.py`
   replaces every occurrence. Never write `latest`, `beta`, `^` or `~`.
 - Never mention any other wrapper package or a vendored or locally built copy.
 
