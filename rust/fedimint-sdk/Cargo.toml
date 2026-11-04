@@ -32,8 +32,8 @@ exclude = ["/AGENTS.md"]
 # The public API is the same on every native target, so documenting one covers all of them.
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
-# The extension API is documented too, marked as needing its feature.
-features = ["extension-api"]
+# The extension API and the multisig facade are documented too, marked as needing their features.
+features = ["extension-api", "multisig"]
 cargo-args = ["--config", 'env.ROCKSDB_LIB_DIR="/nonexistent"']
 
 [features]
@@ -50,13 +50,18 @@ cargo-args = ["--config", 'env.ROCKSDB_LIB_DIR="/nonexistent"']
 # fallback runtime is current-thread and the first RocksDB transaction aborts the process.
 uniffi = ["dep:uniffi", "dep:async-compat", "dep:uniffi-runtime-wasm"]
 # `SdkBuilder::extension`, `Extension` and `Federation::client`: how another crate adds client
-# modules this one does not ship. With them, `MultisigBackend` and what a backend needs to build
-# and read the facade's values: how an extension puts a module behind the `Multisig` facade.
-# Off by default. The one place fedimint's own types are part of the public API (the client,
-# module inits, keys, operation ids), which the rule against foreign types below otherwise
-# forbids, so an extension must be built against the exact fedimint release this crate requires,
-# and this part of the API is not covered by this crate's semver.
+# modules this one does not ship. With `multisig` too, `MultisigBackend` and what a backend needs
+# to build and read the facade's values: how an extension puts a module behind the `Multisig`
+# facade. Off by default. The one place fedimint's own types are part of the public API (the
+# client, module inits, keys, operation ids), which the rule against foreign types below
+# otherwise forbids, so an extension must be built against the exact fedimint release this crate
+# requires, and this part of the API is not covered by this crate's semver.
 extension-api = []
+# The `Multisig` facade: `Federation::multisig`, `Capabilities::multisig`, the accounts,
+# proposals and approvals, and the three operation kinds. This crate ships no module behind it,
+# so it is only of use to a build that also carries one, through `extension-api`. Off by
+# default, so the facade is in no build that cannot back it.
+multisig = []
 
 [dependencies]
 # Every fedimint crate below is required at one exact version, the same for

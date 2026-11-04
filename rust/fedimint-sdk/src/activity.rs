@@ -69,9 +69,13 @@ pub(crate) use page::page;
 /// | [`OnchainSend`](OperationKind::OnchainSend) | amount bound for the destination address | all federation-side funding costs, aggregated (peg-out, network, mint funding, change, dust) |
 /// | [`OnchainReceive`](OperationKind::OnchainReceive) | gross amount that arrived on chain | all federation-side claim costs, aggregated, per [`OnchainReceiveDetails::fee`](crate::OnchainReceiveDetails::fee); `None` until the claim settles |
 /// | [`Recovery`](OperationKind::Recovery) | `None`, nothing was transferred | `None` |
-/// | [`MultisigDeposit`](OperationKind::MultisigDeposit) | amount put into the account | `None`, not recorded |
-/// | [`MultisigTransfer`](OperationKind::MultisigTransfer) | amount paid out of the account, `None` when it is fiat; no direction, as it moves value between two accounts and not this balance | `None` |
-/// | [`MultisigSweep`](OperationKind::MultisigSweep) | payouts moved into the balance | `None`, not recorded |
+#[cfg_attr(
+    feature = "multisig",
+    doc = "\
+| [`MultisigDeposit`](OperationKind::MultisigDeposit) | amount put into the account | `None`, not recorded |
+| [`MultisigTransfer`](OperationKind::MultisigTransfer) | amount paid out of the account, `None` when it is fiat; no direction, as it moves value between two accounts and not this balance | `None` |
+| [`MultisigSweep`](OperationKind::MultisigSweep) | payouts moved into the balance | `None`, not recorded |"
+)]
 /// | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
 ///
 /// ## The identity describes what was attempted
@@ -207,10 +211,13 @@ pub struct ActivityItem {
     /// [`Success`](ActivityStatus::Success) row:
     /// [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
     /// [`Incoming`](Direction::Incoming) credited `amount - fee`. A row with
-    /// no direction has no identity to reconcile. Its figures are `None`,
-    /// except that a [`MultisigTransfer`](OperationKind::MultisigTransfer)
-    /// reports the amount it moved between two accounts, none of which
-    /// touched this balance.
+    /// no direction has no identity to reconcile. Its figures are `None`.
+    #[cfg_attr(
+        feature = "multisig",
+        doc = "The exception is a [`MultisigTransfer`](OperationKind::MultisigTransfer), which \
+               reports the amount it moved between two accounts, none of which touched this \
+               balance."
+    )]
     pub direction: Option<Direction>,
     /// How the operation turned out, or that it has not yet.
     pub status: ActivityStatus,
@@ -299,12 +306,16 @@ pub enum Direction {
 /// | [`OnchainReceiveState::Failed`](crate::OnchainReceiveState::Failed) | [`Failed`](Self::Failed) |
 /// | [`RecoveryState::Done`](crate::RecoveryState::Done) | [`Success`](Self::Success) |
 /// | [`RecoveryState::Failed`](crate::RecoveryState::Failed) | [`Failed`](Self::Failed) |
-/// | [`MultisigDepositState::Done`](crate::MultisigDepositState::Done) | [`Success`](Self::Success) |
-/// | [`MultisigDepositState::Failed`](crate::MultisigDepositState::Failed) | [`Failed`](Self::Failed) |
-/// | [`MultisigTransferState::Done`](crate::MultisigTransferState::Done) | [`Success`](Self::Success) |
-/// | [`MultisigTransferState::Failed`](crate::MultisigTransferState::Failed) | [`Failed`](Self::Failed) |
-/// | [`MultisigSweepState::Done`](crate::MultisigSweepState::Done) | [`Success`](Self::Success) |
-/// | [`MultisigSweepState::Failed`](crate::MultisigSweepState::Failed) | [`Failed`](Self::Failed) |
+#[cfg_attr(
+    feature = "multisig",
+    doc = "\
+| [`MultisigDepositState::Done`](crate::MultisigDepositState::Done) | [`Success`](Self::Success) |
+| [`MultisigDepositState::Failed`](crate::MultisigDepositState::Failed) | [`Failed`](Self::Failed) |
+| [`MultisigTransferState::Done`](crate::MultisigTransferState::Done) | [`Success`](Self::Success) |
+| [`MultisigTransferState::Failed`](crate::MultisigTransferState::Failed) | [`Failed`](Self::Failed) |
+| [`MultisigSweepState::Done`](crate::MultisigSweepState::Done) | [`Success`](Self::Success) |
+| [`MultisigSweepState::Failed`](crate::MultisigSweepState::Failed) | [`Failed`](Self::Failed) |"
+)]
 ///
 /// The one placement that is a judgement rather than a reading is
 /// [`LnReceiveState::Expired`](crate::LnReceiveState::Expired). An invoice

@@ -29,7 +29,7 @@
 use std::io::{Read, Write};
 
 use fedimint_sdk::{ErrorCode, ErrorDetails, Sdk, Storage};
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 use {
     fedimint_client::Client,
     fedimint_core::core::OperationId,
@@ -1245,13 +1245,13 @@ async fn recovery_restores_a_wallet_with_history() {
 
 /// Hands back work on each client it is told about that holds the client and never ends on its
 /// own, so only the SDK stopping it ends it.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 struct ClientWatcher {
     /// One entry for each client it was told about, in order: whether its task has ended.
     ended: std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 impl fedimint_sdk::Extension for ClientWatcher {
     fn client_started(
         &self,
@@ -1277,13 +1277,13 @@ impl fedimint_sdk::Extension for ClientWatcher {
 }
 
 /// Notes that the work on a client ended when it is dropped, which is how the SDK ends it.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 struct Ended {
     ended: std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
     index: usize,
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 impl Drop for Ended {
     fn drop(&mut self) {
         self.ended.send_modify(|ended| ended[self.index] = true);
@@ -1292,14 +1292,14 @@ impl Drop for Ended {
 
 /// Provides a [`MintBackend`] for the multisig facade, and notes for each client it is told about
 /// whether the federation offered multisig by then.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 struct MultisigWatcher {
     backend: std::sync::Arc<MintBackend>,
     /// One entry for each client it was told about, in order: whether multisig was offered.
     offered: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 impl fedimint_sdk::Extension for MultisigWatcher {
     fn client_started(
         &self,
@@ -1318,12 +1318,12 @@ impl fedimint_sdk::Extension for MultisigWatcher {
 
 /// A multisig backend on the mint module, which every federation devimint stands up runs. It does
 /// nothing: the tests only need the facade offered, and never call it.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 struct MintBackend {
     kind: &'static str,
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 impl MintBackend {
     /// The backend for the mint of a federation of devimint's `shape`.
     fn of(shape: &str) -> MintBackend {
@@ -1337,12 +1337,12 @@ impl MintBackend {
 }
 
 /// What every call into a [`MintBackend`] fails with.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 fn does_nothing() -> fedimint_sdk::Error {
     fedimint_sdk::Error::new(ErrorCode::Internal, "this backend does nothing")
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 impl fedimint_sdk::MultisigBackend for MintBackend {
     fn module_kind(&self) -> String {
         self.kind.to_owned()
@@ -1452,7 +1452,7 @@ impl fedimint_sdk::MultisigBackend for MintBackend {
 
 /// Opens an instance on `location` with a [`ClientWatcher`] reporting to `ended`, once whatever
 /// held the location has let go of it, failing the test after a minute.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 async fn reopen(
     location: &str,
     ended: &std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
@@ -1480,7 +1480,7 @@ async fn reopen(
 }
 
 /// Waits for the clients `ended` reports to match `expected`, failing the test after a minute.
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 async fn clients_settle(
     ended: &std::sync::Arc<tokio::sync::watch::Sender<Vec<bool>>>,
     what: &str,
@@ -1498,7 +1498,7 @@ async fn clients_settle(
     settled.expect("the extension is still alive");
 }
 
-#[cfg(feature = "extension-api")]
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn extensions_follow_the_client_through_a_recovery() {
     let devimint = devimint!();

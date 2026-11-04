@@ -44,10 +44,12 @@ through. An extension works with fedimint's own types, so it has to be built
 against the exact fedimint release this crate requires, and this part of the
 API is not covered by this crate's semver.
 
-An extension can also back the `Multisig` facade, accounts that a group's
-members pay out of together, by providing a `MultisigBackend`. This crate
-defines the facade and ships no module behind it, so without such an
-extension `Federation::multisig` is `None`.
+With the `multisig` feature too, an extension can back the `Multisig` facade,
+accounts that a group's members pay out of together, by providing a
+`MultisigBackend`. This crate defines the facade and ships no module behind
+it, so without such an extension `Federation::multisig` is `None`. The
+facade is off by default, and the Kotlin, Swift and JavaScript SDKs built
+from this crate do not carry it.
 
 ## Releases
 

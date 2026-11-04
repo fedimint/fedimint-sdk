@@ -176,6 +176,7 @@ impl From<StoredCapabilities> for Capabilities {
             onchain: stored.onchain,
             // Not stored: it depends on the build as well as on the configuration, and
             // `Federation::capabilities` fills it in.
+            #[cfg(feature = "multisig")]
             multisig: false,
         }
     }

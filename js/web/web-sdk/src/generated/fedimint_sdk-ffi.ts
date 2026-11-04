@@ -55,21 +55,6 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
-    uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
     uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_receive: {
       args: [],
       ret: FfiType.UInt16,
@@ -106,26 +91,6 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_checksum_method_anyoperation_supported_kind: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_approval_approves: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_approval_display: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_approval_member: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_constructor_approval_parse: {
       args: [],
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
@@ -301,11 +266,6 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_checksum_method_federation_meta: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_federation_multisig: {
       args: [],
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
@@ -490,151 +450,6 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
-    uniffi_fedimint_sdk_checksum_method_multisig_account: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_approve: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_balance: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_denominations: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_deposit: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_execute: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_member_key: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_propose: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisig_sweep: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigaccount_id: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigaccount_policy: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
     uniffi_fedimint_sdk_checksum_method_notes_display: {
       args: [],
       ret: FfiType.UInt16,
@@ -756,41 +571,6 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_checksum_method_onchainsendoperationupdates_next: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_account_id: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_amount: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_display: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_federation: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_policy: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_method_proposal_proposer: {
-      args: [],
-      ret: FfiType.UInt16,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_checksum_constructor_proposal_parse: {
       args: [],
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
@@ -920,21 +700,6 @@ const DEFINITIONS = {
       ret: FfiType.RustBuffer,
       hasRustCallStatus: true,
     },
-    uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
     uniffi_fedimint_sdk_fn_method_anyoperation_as_onchain_receive: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
@@ -973,26 +738,6 @@ const DEFINITIONS = {
     uniffi_fedimint_sdk_fn_method_anyoperation_supported_kind: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_approval_approves: {
-      args: [FfiType.Handle, FfiType.Handle],
-      ret: FfiType.Int8,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_approval_display: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_approval_member: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_constructor_approval_parse: {
-      args: [FfiType.RustBuffer],
-      ret: FfiType.Handle,
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_method_balanceupdates_next: {
@@ -1180,11 +925,6 @@ const DEFINITIONS = {
       ret: FfiType.Handle,
       hasRustCallStatus: true,
     },
-    uniffi_fedimint_sdk_fn_method_federation_multisig: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
     uniffi_fedimint_sdk_fn_method_federation_name: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
@@ -1365,156 +1105,6 @@ const DEFINITIONS = {
       ret: FfiType.Handle,
       hasRustCallStatus: true,
     },
-    uniffi_fedimint_sdk_fn_method_multisig_account: {
-      args: [FfiType.Handle, FfiType.RustBuffer],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_approve: {
-      args: [FfiType.Handle, FfiType.RustBuffer, FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_balance: {
-      args: [FfiType.Handle, FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_denominations: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_deposit: {
-      args: [FfiType.Handle, FfiType.Handle, FfiType.UInt64],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_execute: {
-      args: [FfiType.Handle, FfiType.Handle, FfiType.RustBuffer],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_member_key: {
-      args: [FfiType.Handle, FfiType.RustBuffer],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_propose: {
-      args: [
-        FfiType.Handle,
-        FfiType.RustBuffer,
-        FfiType.Handle,
-        FfiType.RustBuffer,
-      ],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisig_sweep: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigaccount_id: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigaccount_policy: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: false,
-    },
     uniffi_fedimint_sdk_fn_method_notes_display: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
@@ -1640,41 +1230,6 @@ const DEFINITIONS = {
       ret: FfiType.Handle,
       hasRustCallStatus: false,
     },
-    uniffi_fedimint_sdk_fn_method_proposal_account_id: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_proposal_amount: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_proposal_display: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_proposal_federation: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_proposal_policy: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_method_proposal_proposer: {
-      args: [FfiType.Handle],
-      ret: FfiType.RustBuffer,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_constructor_proposal_parse: {
-      args: [FfiType.RustBuffer],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
     uniffi_fedimint_sdk_fn_method_recoveryoperation_await_final: {
       args: [FfiType.Handle],
       ret: FfiType.Handle,
@@ -1781,16 +1336,6 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_free_anyoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_approval: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_approval: {
       args: [FfiType.Handle],
       ret: FfiType.Void,
       hasRustCallStatus: true,
@@ -1985,86 +1530,6 @@ const DEFINITIONS = {
       ret: FfiType.Void,
       hasRustCallStatus: true,
     },
-    uniffi_fedimint_sdk_fn_clone_multisig: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisig: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigaccount: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigaccount: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigdepositoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigdepositoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigsweepoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigsweepoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigtransferoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigtransferoperation: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
     uniffi_fedimint_sdk_fn_clone_notes: {
       args: [FfiType.Handle],
       ret: FfiType.Handle,
@@ -2141,16 +1606,6 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_free_onchainsendoperationupdates: {
-      args: [FfiType.Handle],
-      ret: FfiType.Void,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_clone_proposal: {
-      args: [FfiType.Handle],
-      ret: FfiType.Handle,
-      hasRustCallStatus: true,
-    },
-    uniffi_fedimint_sdk_fn_free_proposal: {
       args: [FfiType.Handle],
       ret: FfiType.Void,
       hasRustCallStatus: true,
@@ -2491,9 +1946,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_send(): number
-  uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_deposit(): number
-  uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_sweep(): number
-  uniffi_fedimint_sdk_checksum_method_anyoperation_as_multisig_transfer(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_receive(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_onchain_send(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_recovery(): number
@@ -2502,10 +1954,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_anyoperation_raw_kind(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_support(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_supported_kind(): number
-  uniffi_fedimint_sdk_checksum_method_approval_approves(): number
-  uniffi_fedimint_sdk_checksum_method_approval_display(): number
-  uniffi_fedimint_sdk_checksum_method_approval_member(): number
-  uniffi_fedimint_sdk_checksum_constructor_approval_parse(): number
   uniffi_fedimint_sdk_checksum_method_balanceupdates_next(): number
   uniffi_fedimint_sdk_checksum_method_ecash_quote(): number
   uniffi_fedimint_sdk_checksum_method_ecash_receive(): number
@@ -2541,7 +1989,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_federation_invite_code(): number
   uniffi_fedimint_sdk_checksum_method_federation_lightning(): number
   uniffi_fedimint_sdk_checksum_method_federation_meta(): number
-  uniffi_fedimint_sdk_checksum_method_federation_multisig(): number
   uniffi_fedimint_sdk_checksum_method_federation_name(): number
   uniffi_fedimint_sdk_checksum_method_federation_network(): number
   uniffi_fedimint_sdk_checksum_method_federation_onchain(): number
@@ -2578,35 +2025,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_mnemonic_words(): number
   uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words(): number
   uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_account(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_approve(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_balance(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_denominations(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_deposit(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_execute(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_member_key(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_propose(): number
-  uniffi_fedimint_sdk_checksum_method_multisig_sweep(): number
-  uniffi_fedimint_sdk_checksum_method_multisigaccount_id(): number
-  uniffi_fedimint_sdk_checksum_method_multisigaccount_policy(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_await_final(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_details(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_id(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_state(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperation_updates(): number
-  uniffi_fedimint_sdk_checksum_method_multisigdepositoperationupdates_next(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_await_final(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_details(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_id(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_state(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperation_updates(): number
-  uniffi_fedimint_sdk_checksum_method_multisigsweepoperationupdates_next(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_await_final(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_details(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_id(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_state(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperation_updates(): number
-  uniffi_fedimint_sdk_checksum_method_multisigtransferoperationupdates_next(): number
   uniffi_fedimint_sdk_checksum_method_notes_display(): number
   uniffi_fedimint_sdk_checksum_method_notes_value(): number
   uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
@@ -2632,13 +2050,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_onchainsendoperation_state(): number
   uniffi_fedimint_sdk_checksum_method_onchainsendoperation_updates(): number
   uniffi_fedimint_sdk_checksum_method_onchainsendoperationupdates_next(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_account_id(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_amount(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_display(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_federation(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_policy(): number
-  uniffi_fedimint_sdk_checksum_method_proposal_proposer(): number
-  uniffi_fedimint_sdk_checksum_constructor_proposal_parse(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_await_final(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_id(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_state(): number
@@ -2679,18 +2090,6 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_deposit(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_sweep(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_anyoperation_as_multisig_transfer(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
   uniffi_fedimint_sdk_fn_method_anyoperation_as_onchain_receive(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -2723,23 +2122,6 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_approval_approves(
-    uniffiSelf: bigint,
-    proposal: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): number
-  uniffi_fedimint_sdk_fn_method_approval_display(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_approval_member(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_constructor_approval_parse(
-    approval: Uint8Array,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
   uniffi_fedimint_sdk_fn_method_balanceupdates_next(uniffiSelf: bigint): bigint
   uniffi_fedimint_sdk_fn_method_ecash_quote(
     uniffiSelf: bigint,
@@ -2874,10 +2256,6 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
-  uniffi_fedimint_sdk_fn_method_federation_multisig(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
   uniffi_fedimint_sdk_fn_method_federation_name(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -3009,113 +2387,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_fn_constructor_mnemonic_generate(
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_account(
-    uniffiSelf: bigint,
-    policy: Uint8Array,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_approve(
-    uniffiSelf: bigint,
-    group: Uint8Array,
-    proposal: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_balance(
-    uniffiSelf: bigint,
-    account: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_denominations(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisig_deposit(
-    uniffiSelf: bigint,
-    account: bigint,
-    amount: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_execute(
-    uniffiSelf: bigint,
-    proposal: bigint,
-    approvals: Uint8Array,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_member_key(
-    uniffiSelf: bigint,
-    group: Uint8Array,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_propose(
-    uniffiSelf: bigint,
-    group: Uint8Array,
-    account: bigint,
-    amount: Uint8Array,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisig_sweep(uniffiSelf: bigint): bigint
-  uniffi_fedimint_sdk_fn_method_multisigaccount_id(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisigaccount_policy(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperation_await_final(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperation_details(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperation_id(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperation_state(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperation_updates(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigdepositoperationupdates_next(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperation_await_final(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperation_details(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperation_id(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperation_state(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperation_updates(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigsweepoperationupdates_next(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperation_await_final(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperation_details(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperation_id(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperation_state(
-    uniffiSelf: bigint,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperation_updates(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_method_multisigtransferoperationupdates_next(
-    uniffiSelf: bigint,
-  ): bigint
   uniffi_fedimint_sdk_fn_method_notes_display(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -3200,34 +2471,6 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_fn_method_onchainsendoperationupdates_next(
     uniffiSelf: bigint,
   ): bigint
-  uniffi_fedimint_sdk_fn_method_proposal_account_id(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_proposal_amount(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_proposal_display(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_proposal_federation(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_proposal_policy(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_method_proposal_proposer(
-    uniffiSelf: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array
-  uniffi_fedimint_sdk_fn_constructor_proposal_parse(
-    proposal: Uint8Array,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
   uniffi_fedimint_sdk_fn_method_recoveryoperation_await_final(
     uniffiSelf: bigint,
   ): bigint
@@ -3309,14 +2552,6 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   uniffi_fedimint_sdk_fn_free_anyoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_approval(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_approval(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
@@ -3472,70 +2707,6 @@ interface NativeModuleInterface {
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void
-  uniffi_fedimint_sdk_fn_clone_multisig(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisig(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigaccount(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigaccount(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigdepositoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigdepositoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigdepositoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigdepositoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigsweepoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigsweepoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigsweepoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigsweepoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigtransferoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigtransferoperation(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_multisigtransferoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_multisigtransferoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
   uniffi_fedimint_sdk_fn_clone_notes(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -3597,14 +2768,6 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   uniffi_fedimint_sdk_fn_free_onchainsendoperationupdates(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): void
-  uniffi_fedimint_sdk_fn_clone_proposal(
-    ptr: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): bigint
-  uniffi_fedimint_sdk_fn_free_proposal(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void

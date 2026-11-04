@@ -5,10 +5,13 @@ use crate::operation::Driver;
 use crate::{
     ActivityStatus, Amount, DetailedOperationState, Direction, EcashReceiveDetails,
     EcashReceiveState, EcashSendDetails, EcashSendState, Error, ErrorCode, LnReceiveDetails,
-    LnReceiveState, LnSendDetails, LnSendState, MultisigAmount, MultisigDepositDetails,
-    MultisigDepositState, MultisigSweepDetails, MultisigSweepState, MultisigTransferDetails,
-    MultisigTransferState, OnchainReceiveDetails, OnchainReceiveState, OnchainSendDetails,
-    OnchainSendState, OperationDetails, OperationState, RecoveryState, Result,
+    LnReceiveState, LnSendDetails, LnSendState, OnchainReceiveDetails, OnchainReceiveState,
+    OnchainSendDetails, OnchainSendState, OperationDetails, OperationState, RecoveryState, Result,
+};
+#[cfg(feature = "multisig")]
+use crate::{
+    MultisigAmount, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState,
 };
 
 /// The three numbers a row carries, as the table on [`ActivityItem`](crate::ActivityItem) fixes
@@ -113,6 +116,7 @@ impl Bucket for RecoveryState {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Bucket for MultisigDepositState {
     fn bucket(&self) -> ActivityStatus {
         match self {
@@ -125,6 +129,7 @@ impl Bucket for MultisigDepositState {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Bucket for MultisigTransferState {
     fn bucket(&self) -> ActivityStatus {
         match self {
@@ -135,6 +140,7 @@ impl Bucket for MultisigTransferState {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Bucket for MultisigSweepState {
     fn bucket(&self) -> ActivityStatus {
         match self {
@@ -211,6 +217,7 @@ impl Accounted for OnchainReceiveDetails {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Accounted for MultisigDepositDetails {
     /// Outgoing: the deposit leaves this wallet's balance for the account. The fee for spending
     /// the ecash is not recorded, so it is `None` rather than a guess.
@@ -223,6 +230,7 @@ impl Accounted for MultisigDepositDetails {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Accounted for MultisigTransferDetails {
     /// No direction and no fee: the payment moves value between two accounts of the federation,
     /// neither of them this wallet's balance. A fiat amount has no [`Amount`] to report.
@@ -238,6 +246,7 @@ impl Accounted for MultisigTransferDetails {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Accounted for MultisigSweepDetails {
     /// Incoming: the payouts come into this wallet's balance. The fee for issuing the ecash is
     /// not recorded, so it is `None` rather than a guess.
@@ -301,18 +310,21 @@ impl Row for RecoveryState {
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Row for MultisigDepositState {
     fn figures(driver: &dyn Driver<MultisigDepositState>, details: &str) -> Result<Figures> {
         detailed(driver, details)
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Row for MultisigTransferState {
     fn figures(driver: &dyn Driver<MultisigTransferState>, details: &str) -> Result<Figures> {
         detailed(driver, details)
     }
 }
 
+#[cfg(feature = "multisig")]
 impl Row for MultisigSweepState {
     fn figures(driver: &dyn Driver<MultisigSweepState>, details: &str) -> Result<Figures> {
         detailed(driver, details)
@@ -726,6 +738,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "multisig")]
     #[test]
     fn multisig_states_land_in_their_documented_buckets() {
         let failed = || String::from("refused");
@@ -761,6 +774,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "multisig")]
     #[test]
     fn multisig_details_yield_what_moved_this_balance_and_which_way() {
         let account_id = "ab".repeat(32).parse().expect("a valid id");

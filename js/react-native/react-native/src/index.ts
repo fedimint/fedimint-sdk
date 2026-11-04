@@ -1,9 +1,7 @@
 import {
-  Approval,
   InviteCode,
   Mnemonic,
   Notes,
-  Proposal,
   Sdk,
   createFedimintSdk,
   type MnemonicLike,
@@ -26,8 +24,6 @@ export interface SdkSession {
   sdk: SdkLike
   InviteCode: { parse: typeof InviteCode.parse }
   Notes: { parse: typeof Notes.parse }
-  Proposal: { parse: typeof Proposal.parse }
-  Approval: { parse: typeof Approval.parse }
   Mnemonic: {
     fromWords: typeof Mnemonic.fromWords
     generate: typeof Mnemonic.generate
@@ -64,8 +60,6 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
     sdk,
     InviteCode: { parse: (code) => InviteCode.parse(code) },
     Notes: { parse: (notes) => Notes.parse(notes) },
-    Proposal: { parse: (proposal) => Proposal.parse(proposal) },
-    Approval: { parse: (approval) => Approval.parse(approval) },
     Mnemonic: {
       fromWords: (words) => Mnemonic.fromWords(words),
       generate: () => Mnemonic.generate(),

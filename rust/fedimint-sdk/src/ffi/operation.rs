@@ -133,26 +133,4 @@ impl AnyOperation {
     pub fn ffi_as_recovery(&self) -> Option<Arc<super::recovery::RecoveryOperation>> {
         self.as_recovery().map(|op| Arc::new(op.into()))
     }
-
-    /// See [`AnyOperation::as_multisig_deposit`].
-    #[uniffi::method(name = "as_multisig_deposit")]
-    pub fn ffi_as_multisig_deposit(
-        &self,
-    ) -> Option<Arc<super::multisig::MultisigDepositOperation>> {
-        self.as_multisig_deposit().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_multisig_transfer`].
-    #[uniffi::method(name = "as_multisig_transfer")]
-    pub fn ffi_as_multisig_transfer(
-        &self,
-    ) -> Option<Arc<super::multisig::MultisigTransferOperation>> {
-        self.as_multisig_transfer().map(|op| Arc::new(op.into()))
-    }
-
-    /// See [`AnyOperation::as_multisig_sweep`].
-    #[uniffi::method(name = "as_multisig_sweep")]
-    pub fn ffi_as_multisig_sweep(&self) -> Option<Arc<super::multisig::MultisigSweepOperation>> {
-        self.as_multisig_sweep().map(|op| Arc::new(op.into()))
-    }
 }

@@ -4,10 +4,55 @@ use std::sync::Arc;
 
 use super::ffi_operation;
 use crate::{
-    Amount, Approval, Multisig, MultisigAccount, MultisigDepositDetails, MultisigDepositState,
-    MultisigSweepDetails, MultisigSweepState, MultisigTransferDetails, MultisigTransferState,
-    Policy, Proposal, Result,
+    Amount, AnyOperation, Approval, Federation, MemberKey, Multisig, MultisigAccount,
+    MultisigAccountId, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal, Result,
 };
+
+uniffi::custom_type!(MemberKey, String, {
+    lower: |key| key.to_string(),
+    try_lift: |s| s.parse::<MemberKey>().map_err(Into::into),
+});
+
+uniffi::custom_type!(MultisigAccountId, String, {
+    lower: |id| id.to_string(),
+    try_lift: |s| s.parse::<MultisigAccountId>().map_err(Into::into),
+});
+
+// The UniFFI view of `Federation::multisig`, under its real name but a different Rust identifier
+// so it can wrap the facade in `Arc`, as `ffi/federation.rs` does for the other facades. In a
+// block of its own because the facade is behind the `multisig` feature.
+#[uniffi::export]
+impl Federation {
+    /// See [`Federation::multisig`].
+    #[uniffi::method(name = "multisig")]
+    pub fn ffi_multisig(&self) -> Option<Arc<Multisig>> {
+        self.multisig().map(Arc::new)
+    }
+}
+
+// The downcasts to the three multisig operations, as `ffi/operation.rs` has them for the other
+// kinds.
+#[uniffi::export]
+impl AnyOperation {
+    /// See [`AnyOperation::as_multisig_deposit`].
+    #[uniffi::method(name = "as_multisig_deposit")]
+    pub fn ffi_as_multisig_deposit(&self) -> Option<Arc<MultisigDepositOperation>> {
+        self.as_multisig_deposit().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_multisig_transfer`].
+    #[uniffi::method(name = "as_multisig_transfer")]
+    pub fn ffi_as_multisig_transfer(&self) -> Option<Arc<MultisigTransferOperation>> {
+        self.as_multisig_transfer().map(|op| Arc::new(op.into()))
+    }
+
+    /// See [`AnyOperation::as_multisig_sweep`].
+    #[uniffi::method(name = "as_multisig_sweep")]
+    pub fn ffi_as_multisig_sweep(&self) -> Option<Arc<MultisigSweepOperation>> {
+        self.as_multisig_sweep().map(|op| Arc::new(op.into()))
+    }
+}
 
 // The UniFFI view of `Multisig::account`/`deposit`/`execute`/`sweep`, under their real names but
 // different Rust identifiers: `account` takes its policy, a record, by reference, which a binding

@@ -153,6 +153,7 @@ pub(crate) fn capabilities_of(kinds: &[String]) -> Capabilities {
         onchain: has("wallet") || has("walletv2"),
         // A multisig module is never one this crate ships; whether one serves this federation
         // is `FederationInner::multisig_backend`'s answer, not the configuration's.
+        #[cfg(feature = "multisig")]
         multisig: false,
     }
 }
@@ -368,6 +369,7 @@ mod tests {
                 ecash: true,
                 lightning: true,
                 onchain: true,
+                #[cfg(feature = "multisig")]
                 multisig: false
             }
         );
@@ -377,6 +379,7 @@ mod tests {
                 ecash: true,
                 lightning: true,
                 onchain: true,
+                #[cfg(feature = "multisig")]
                 multisig: false
             }
         );
@@ -386,6 +389,7 @@ mod tests {
                 ecash: false,
                 lightning: false,
                 onchain: false,
+                #[cfg(feature = "multisig")]
                 multisig: false
             }
         );
@@ -395,6 +399,7 @@ mod tests {
                 ecash: true,
                 lightning: false,
                 onchain: false,
+                #[cfg(feature = "multisig")]
                 multisig: false
             }
         );

@@ -59,12 +59,10 @@ describe('preview and join', () => {
       const preview = await session.sdk.preview(invite)
       expect(await federation.name()).toBe(preview.name)
       expect(await federation.network()).toBe(Network.Regtest)
-      // devimint runs no module behind multisig, and this build carries none.
       expect(await federation.capabilities()).toEqual({
         ecash: true,
         lightning: true,
         onchain: true,
-        multisig: false,
       })
       const code = await federation.inviteCode()
       expect(await code.federationId()).toBe(await federation.id())
@@ -73,7 +71,6 @@ describe('preview and join', () => {
       expect(await federation.ecash()).toBeDefined()
       expect(await federation.lightning()).toBeDefined()
       expect(await federation.onchain()).toBeDefined()
-      expect(await federation.multisig()).toBeUndefined()
     },
   )
 })
