@@ -8,6 +8,10 @@ release, grouped under Breaking, Added, Changed and Fixed, and the section can b
 in that pull request. The release refuses a version that has no section. See "Release
 notes" in [RELEASING.md](../../RELEASING.md#release-notes).
 
+## 0.1.0-beta.4
+
+No changes for users since 0.1.0-beta.2.
+
 ## 0.1.0-beta.2
 
 No change to the API.
