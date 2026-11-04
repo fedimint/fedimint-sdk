@@ -50,8 +50,12 @@ python3 tools/set_version.py --check        # what CI runs
 ```
 
 CI (`.github/workflows/docs.yaml`) runs the tool tests, the version check, the fixture check and
-`vitepress build` on every pull request that touches `docs/` or `skills/`, and on every
-`react-native-sdk-v*` tag. Nothing deploys the site yet.
+`vitepress build` on every pull request that touches `docs/`, `skills/` or `js/react-native/`.
+
+The same workflow deploys the site to GitHub Pages (sdk.fedimint.org) in two ways only:
+`react-native-sdk-release.yaml` calls it after the npm publish, on the release tag, and a manual
+run on main with `deploy` ticked publishes a docs-only fix between releases. Both deploy only
+after the checks pass.
 
 ## Tests
 
