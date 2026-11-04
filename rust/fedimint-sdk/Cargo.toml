@@ -168,7 +168,13 @@ async-trait = "0.1.92"
 # lock: this one is the SDK's single-opener claim, and it has to give up after a
 # bounded retry on contention rather than block. See src/storage.rs.
 fd-lock = "4"
+# Named only to spell the type of the store `fedimint-rocksdb` opens, `Locked<RocksDb>`, which the
+# closable wrapper in src/storage.rs has to name to hold it. Pinned with the rest of fedimint.
+fedimint-db-locked = "=0.13.0"
 fedimint-rocksdb = "=0.13.0"
+# Ties each store transaction to the read guard that keeps the store open under it, without
+# `unsafe`, so that src/storage.rs can close a store while handles over it are still alive.
+self_cell = "1.3"
 tokio = { version = "1.48.0", features = [
     "rt",
     "rt-multi-thread",

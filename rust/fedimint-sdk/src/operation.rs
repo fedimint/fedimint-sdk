@@ -509,6 +509,11 @@ impl<S: OperationState> OperationUpdates<S> {
         // call instead of losing the state it was about to hand out.
         loop {
             if let Some(state) = self.handoff.clone() {
+                // Checked before the persist too: once the instance has shut down its store is
+                // closed, and a write there would never start. The state is kept for a later
+                // call, and the operation reaches it again from storage when the location is
+                // reopened.
+                self.inner.federation.ensure_open()?;
                 let encoded = self.driver.encode_state(&state)?;
                 self.inner.record_final_state(encoded).await?;
                 self.handoff = None;
