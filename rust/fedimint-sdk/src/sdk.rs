@@ -421,6 +421,53 @@ impl Sdk {
         }
     }
 
+    /// Discovers joinable federations from Nostr NIP-87 (`kind:38173`) announcements
+    /// or a local dev mock.
+    ///
+    /// In [`DiscoverySource::Dev`](crate::DiscoverySource::Dev) mode, returns a
+    /// deterministic hardcoded test federation without any network queries.
+    ///
+    /// In [`DiscoverySource::Nostr`](crate::DiscoverySource::Nostr) mode, queries
+    /// the provided Nostr relay WebSockets for NIP-87 federation announcements.
+    ///
+    /// The returned [`DiscoveredFederation`](crate::DiscoveredFederation) records are *advertisements*,
+    /// not verified federation state. Each entry's invite code has been
+    /// parsed and cross-checked against its declared federation ID, but the
+    /// metadata is unverified. To verify a federation, take its
+    /// [`invite`](crate::DiscoveredFederation::invite) field and feed it to
+    /// [`Sdk::preview`] or [`Sdk::join`].
+    ///
+    /// # Nostr Discovery Policy & Continuation
+    ///
+    /// When querying [`DiscoverySource::Nostr`](crate::DiscoverySource::Nostr), the SDK
+    /// queries Nostr relays for NIP-87 announcements with up to 100 raw events per page.
+    /// To defend against raw-window crowdout by spam or non-announcement events, the query
+    /// performs bounded continuation backfill (up to 3 pages per relay) using `until`
+    /// timestamp filters within the query deadline. If a full page shares a single
+    /// timestamp (a "full timestamp bucket"), the client detects this immediately and
+    /// expands the per-request `limit` to reach past the bucket, capped at 300.
+    /// Callers should provide multiple curated relays to ensure discovery resilience.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when no Nostr relays are provided,
+    /// or when any relay URL is malformed (checked before any connections are opened).
+    /// [`Timeout`](crate::ErrorCode::Timeout) when all queries failed, none returned
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput), and at least one timed out.
+    /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable) when all
+    /// specified relays fail to connect, reject the subscription, or terminate without
+    /// responding. Note: relay failures reuse this code; it does not imply that a
+    /// federation's guardians are down.
+    /// [`FederationClosed`](crate::ErrorCode::FederationClosed) if the SDK instance
+    /// has shut down.
+    pub async fn discover_federations(
+        &self,
+        source: crate::DiscoverySource,
+    ) -> Result<Vec<crate::DiscoveredFederation>> {
+        self.inner.alive()?;
+        crate::discovery::discover_federations(source).await
+    }
+
     /// Every federation this instance currently has open.
     ///
     /// "Open" here means [`Running`](FederationStatus::Running) or

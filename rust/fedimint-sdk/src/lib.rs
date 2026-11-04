@@ -363,6 +363,7 @@ mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
 mod db;
+mod discovery;
 mod ecash;
 mod error;
 #[cfg(feature = "extension-api")]
