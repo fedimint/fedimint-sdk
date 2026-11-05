@@ -123,6 +123,12 @@ The API is the generated one in
 every class, enum and method it exports, with every method returning a promise on the main
 thread. The package ships it as `dist/generated/fedimint_sdk.d.ts`.
 
+## Example
+
+[`js/examples/vite-app`](https://github.com/fedimint/fedimint-sdk/tree/main/js/examples/vite-app)
+is a React application built with Vite that opens a wallet, joins a federation, and sends and
+receives ecash, Lightning and on-chain payments with this package.
+
 ## License
 
 MIT
