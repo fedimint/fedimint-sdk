@@ -80,7 +80,7 @@ struct JoinView: View {
                 BusyLabel(title: recovering ? "Join and recover" : "Join", busy: model.isWorking(.join))
             }
             .buttonStyle(.primary)
-            .disabled(model.invite.trimmed.isEmpty || model.isWorking(.join) || model.isSending)
+            .disabled(model.invite.trimmed.isEmpty || model.isWorking(.join) || model.isSending || model.isAttaching)
             .padding(Metrics.screenPadding)
             .background(Palette.background)
         }
@@ -88,8 +88,8 @@ struct JoinView: View {
         .navigationTitle("Join")
         .navigationBarTitleDisplayMode(.inline)
         // A join that finished without failing is done here, including one that
-        // found the federation already joined and reattached to it, which
-        // leaves the federation id where it was.
+        // found the federation already joined and reattached to it. Joining the
+        // one attached and running fails instead, so its message stays on screen.
         .onChange(of: model.isWorking(.join)) { _, working in
             guard joining, !working else { return }
             joining = false

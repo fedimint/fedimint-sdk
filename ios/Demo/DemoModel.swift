@@ -19,14 +19,26 @@ enum Section: String {
     case ecashReclaim
     /// Following, or resuming, the attached federation's seed recovery.
     case recovery
+    /// Attaching another federation this storage already holds.
+    case switching
 }
 
 extension Section {
+    /// Sections whose failure is a passing note under a form or a list, so it
+    /// clears itself after `DemoModel.failureLifetime`. The rest stay, because
+    /// the failure is all their screen has to say: a send's is its outcome,
+    /// without which the result screen goes back to "on its way"; a wallet
+    /// that failed to open is why onboarding is showing; and a recovery that
+    /// could not be read is why Home is locked.
+    static let expiringFailures: Set<Section> = [
+        .join, .switching, .lnReceive, .ecashReceive, .deposit, .ecashReclaim,
+    ]
+
     /// Sections whose contents belong to one federation, and are therefore
     /// meaningless the moment another one is attached.
     ///
-    /// `wallet` is SDK-scoped, so it survives a switch; `join` is written by
-    /// the caller of `attach` immediately afterwards.
+    /// `wallet` is SDK-scoped, so it survives a switch; `join` and `switching`
+    /// are written by the caller of `attach` immediately afterwards.
     static let federationScoped: Set<Section> = [
         .lnReceive, .ecashReceive, .ecashSend, .lnPay, .deposit, .onchainSend, .activity,
         .ecashReclaim, .recovery,
@@ -85,8 +97,14 @@ final class DemoModel: ObservableObject {
     /// Which rails the federation has. Screens show only these: the design's
     /// rule is to hide a rail the federation cannot use, never to disable it.
     @Published private(set) var capabilities: Capabilities?
-    /// As `Sdk.federationStatus` reported it when the federation was attached.
+    /// The attached federation's status, kept live by `followFederationStatuses`.
     @Published private(set) var federationStatus: FederationStatus?
+    /// Every federation this storage holds, running or not, in no particular
+    /// order. Kept live by `followFederationStatuses`.
+    @Published private(set) var storedFederations: [FederationInfo] = []
+    /// The federation the last switch was for; a switch is under way while
+    /// `.switching` is working.
+    @Published private(set) var switchTarget: FederationId?
     /// The attached federation's seed recovery, while one is being followed.
     @Published private(set) var recoveryState: RecoveryState?
     @Published private(set) var activityItems: [ActivityItem] = []
@@ -204,6 +222,7 @@ final class DemoModel: ObservableObject {
     private var sdk: Sdk?
     private var federation: Federation?
     private var balanceTask: Task<Void, Never>?
+    private var statusTask: Task<Void, Never>?
 
     /// One long-lived operation watcher per section, so a new one can replace
     /// the old instead of racing it. Same ownership `balanceTask` has, and for
@@ -275,10 +294,18 @@ final class DemoModel: ObservableObject {
             // for a copy to stay in an input field for the life of the screen.
             self.restoreWords = ""
 
-            // Reattach to whatever this storage already joined, so a second
-            // launch comes back with a federation rather than a blank screen.
-            if let existing = sdk.federations().first {
-                self.attach(existing)
+            self.followFederationStatuses(of: sdk)
+            // Reattach to the federation used last, so a second launch comes
+            // back where it left off. While that one is stored but not open,
+            // such as quarantined, another stands in without being remembered
+            // in its place, and Federations offers to reconnect it. Otherwise
+            // the stand-in takes over, so launches stop landing on whichever
+            // is listed first.
+            let open = sdk.federations()
+            let last = open.first(where: { $0.id() == Self.lastFederationId })
+            if let existing = last ?? open.first {
+                let lastStored = self.storedFederations.contains { $0.id == Self.lastFederationId }
+                self.attach(existing, remember: last != nil || !lastStored)
                 // A recovery interrupted by the last quit carries on in the
                 // SDK; follow it, or Home stays locked with nothing moving.
                 if case .recovering = self.federationStatus { self.followRecovery() }
@@ -302,12 +329,14 @@ final class DemoModel: ObservableObject {
         guard sdk != nil else { return }
 
         seedFailure = nil
+        // A new attempt, so an earlier one's prompt or failure timer stands down.
+        revealGeneration += 1
         let generation = revealGeneration
         Task {
             let context = LAContext()
             var unavailable: NSError?
             guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &unavailable) else {
-                seedFailure = "set a device passcode to view the seed"
+                failSeed("set a device passcode to view the seed", generation: generation)
                 return
             }
             do {
@@ -315,10 +344,7 @@ final class DemoModel: ObservableObject {
                     .deviceOwnerAuthentication,
                     localizedReason: "Show the wallet's recovery phrase")
             } catch {
-                // Not once the screen has gone, or it would greet the next one.
-                if generation == revealGeneration {
-                    seedFailure = "seed stays hidden: \(error.localizedDescription)"
-                }
+                failSeed("seed stays hidden: \(error.localizedDescription)", generation: generation)
                 return
             }
             // Hidden while the prompt was up, such as the sheet showing it
@@ -334,6 +360,16 @@ final class DemoModel: ObservableObject {
                 .enumerated()
                 .map { "\($0.offset + 1). \($0.element)" }
                 .joined(separator: "\n")
+        }
+    }
+
+    /// Shows why the phrase stayed hidden, for `failureLifetime`. Not once the
+    /// screen has gone or another reveal has started, or it would greet that one.
+    private func failSeed(_ reason: String, generation: Int) {
+        guard generation == revealGeneration else { return }
+        seedFailure = reason
+        expire(if: { $0.revealGeneration == generation && $0.seedFailure == reason }) {
+            $0.seedFailure = nil
         }
     }
 
@@ -393,6 +429,16 @@ final class DemoModel: ObservableObject {
         }
     }
 
+    /// The pasted invite, unless it is for the federation attached and
+    /// running: reattaching that would change nothing, and Join would close
+    /// without a word. The caller reopens a closed or quarantined one, and
+    /// follows a recovering one again.
+    private func inviteToAttach() throws -> InviteCode {
+        let code = try InviteCode.parse(code: trimmedInvite)
+        if code.federationId() == federationId, case .running = federationStatus { throw AlreadyAttached() }
+        return code
+    }
+
     /// Joins the pasted federation, or reattaches if this storage already joined
     /// it: `.alreadyJoined` is the cue to look the running federation up by the
     /// id the invite code carries.
@@ -400,13 +446,13 @@ final class DemoModel: ObservableObject {
     /// Whether the join started; Join waits for its result only if it did.
     @discardableResult
     func join() -> Bool {
-        guard !isSending, !isWorking(.join) else { return false }
+        guard !isSending, !isAttaching, !isWorking(.join) else { return false }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
 
             guard let sdk = self.sdk else { return "open the wallet first" }
-            let code = try InviteCode.parse(code: self.trimmedInvite)
+            let code = try self.inviteToAttach()
 
             let joined: Federation
             let verb: String
@@ -422,6 +468,7 @@ final class DemoModel: ObservableObject {
 
             guard !self.isSuperseded else { return "superseded by a newer join" }
             self.attach(joined)
+            if case .recovering = self.federationStatus { self.followRecovery() }
             return "\(verb) \(joined.id())\n\(joined.name() ?? "(unnamed)") on \(joined.network())"
         }
         return true
@@ -434,13 +481,13 @@ final class DemoModel: ObservableObject {
     /// Whether the recovery started, as for `join`.
     @discardableResult
     func recover() -> Bool {
-        guard !isSending, !isWorking(.join) else { return false }
+        guard !isSending, !isAttaching, !isWorking(.join) else { return false }
         attachesInFlight += 1
         run(.join) {
             defer { self.attachesInFlight -= 1 }
 
             guard let sdk = self.sdk else { return "open the wallet first" }
-            let code = try InviteCode.parse(code: self.trimmedInvite)
+            let code = try self.inviteToAttach()
             let recovery: RecoveryHandle
             do {
                 recovery = try await sdk.recover(invite: code)
@@ -465,6 +512,28 @@ final class DemoModel: ObservableObject {
                 try await progress.next()
             }
             return header
+        }
+        return true
+    }
+
+    /// Attaches another federation this storage holds. `reopenFederation` is
+    /// the one call for every status it can be in: it returns the live handle
+    /// of an open federation, and brings back a closed or quarantined one
+    /// without its invite code.
+    ///
+    /// Whether the switch started, as for `join`.
+    @discardableResult
+    func switchFederation(to id: FederationId) -> Bool {
+        guard !isSending, !isAttaching, let sdk else { return false }
+        switchTarget = id
+        attachesInFlight += 1
+        run(.switching) {
+            defer { self.attachesInFlight -= 1 }
+            let reopened = try await sdk.reopenFederation(id: id)
+            guard !self.isSuperseded else { return "superseded by a newer switch" }
+            self.attach(reopened)
+            if case .recovering = self.federationStatus { self.followRecovery() }
+            return "switched to \(reopened.id())"
         }
         return true
     }
@@ -918,11 +987,14 @@ final class DemoModel: ObservableObject {
         }
     }
 
-    /// A recovery that completed also changed the federation's status, from
-    /// `recovering`, so that is read again with it.
+    /// A completed recovery also moved the federation's status on from
+    /// `recovering`. It is read here as well, so Home unlocks without waiting
+    /// on the status subscription.
     private func recoveryProgressed(_ state: RecoveryState) {
         recoveryState = state
-        if case .done = state { refreshFederationStatus() }
+        if case .done = state, let sdk, let id = federationId {
+            federationStatus = try? sdk.federationStatus(id: id)
+        }
     }
 
     /// The follower of one operation's detail, shared by every visit to it: its
@@ -941,13 +1013,6 @@ final class DemoModel: ObservableObject {
     /// follows it. `nil` for an id this federation has no record of.
     func operation(id: OperationId) async throws -> AnyOperation? {
         try await federation?.operation(id: id)
-    }
-
-    /// Reads the attached federation's status again: it moves on its own, for
-    /// example from `recovering` to `running` when a rescan completes.
-    func refreshFederationStatus() {
-        guard let sdk, let id = federationId else { return }
-        federationStatus = try? sdk.federationStatus(id: id)
     }
 
     // MARK: - Activity
@@ -1097,6 +1162,13 @@ final class DemoModel: ObservableObject {
         }
     }
 
+    /// The federation attached last, so a relaunch comes back to it rather than
+    /// to whichever open one the SDK lists first.
+    private static var lastFederationId: FederationId? {
+        get { UserDefaults.standard.string(forKey: "lastFederationId") }
+        set { UserDefaults.standard.set(newValue, forKey: "lastFederationId") }
+    }
+
     /// Whether an earlier launch left a wallet in the data directory.
     ///
     /// Only a hint for which screen to start on, read without creating the
@@ -1109,8 +1181,11 @@ final class DemoModel: ObservableObject {
 
     /// Makes `joined` the current federation and follows its balance (see
     /// `followBalance`).
-    private func attach(_ joined: Federation) {
+    ///
+    /// `remember` makes it the one a relaunch comes back to.
+    private func attach(_ joined: Federation, remember: Bool = true) {
         attachments += 1
+        if remember { Self.lastFederationId = joined.id() }
         federation = joined
         hasFederation = true
         balanceTask?.cancel()
@@ -1168,9 +1243,50 @@ final class DemoModel: ObservableObject {
         for section in Section.federationScoped {
             stopRun(section)
             results[section] = nil
+            failures[section] = nil
         }
 
         followBalance(of: joined)
+    }
+
+    /// Keeps `storedFederations` and `federationStatus` live for the life of
+    /// `sdk`. Each update, a join included, is the cue to read the whole list
+    /// again: `storedFederations()` is in-memory and synchronous, and a list
+    /// read whole cannot keep a federation whose `forgotten` update was missed
+    /// while resubscribing or catching up.
+    private func followFederationStatuses(of sdk: Sdk) {
+        statusTask?.cancel()
+        storedFederations = sdk.storedFederations()
+        // Weak, like `self`: the wait in `next()` cannot be cancelled, and a
+        // replaced instance should not be kept alive by it.
+        statusTask = Task { [weak self, weak sdk] in
+            while !Task.isCancelled, let updates = sdk?.federationStatusUpdates() {
+                do {
+                    while !Task.isCancelled {
+                        let info = try await updates.next()
+                        if Task.isCancelled { return }
+                        guard let self, let sdk else { return }
+                        // From the list read now rather than from `info`: an
+                        // update sent before a reopen can arrive after it.
+                        let list = sdk.storedFederations()
+                        if list != self.storedFederations { self.storedFederations = list }
+                        if info.id == self.federationId {
+                            // `info` itself only for an id the list no longer
+                            // holds, such as one announced `forgotten`.
+                            self.federationStatus = list.first { $0.id == info.id }?.status ?? info.status
+                        }
+                    }
+                } catch let error as SdkError where error.code() == .federationClosed {
+                    // The instance has shut down: the last statuses known are
+                    // the ones worth keeping.
+                    return
+                } catch {
+                    // A storage or internal failure. A new subscription starts
+                    // by replaying every federation's state.
+                    try? await Task.sleep(for: .seconds(5))
+                }
+            }
+        }
     }
 
     /// Keeps `balanceMsats` live from `joined`'s `balanceUpdates()`, replacing
@@ -1234,6 +1350,32 @@ final class DemoModel: ObservableObject {
     private func fail(_ section: Section, _ reason: String) {
         results[section] = reason
         failures[section] = reason
+        guard Section.expiringFailures.contains(section) else { return }
+        // Not once another run has started, or another failure replaced this
+        // one: the line is theirs now.
+        let generation = runGenerations[section, default: 0]
+        expire(if: { $0.runGenerations[section, default: 0] == generation && $0.failures[section] == reason }) {
+            $0.failures[section] = nil
+            if $0.results[section] == reason { $0.results[section] = nil }
+        }
+    }
+
+    /// Runs `clear` after `failureLifetime`, if `current` says the failure it
+    /// clears is still the one on screen.
+    private func expire(if current: @escaping (DemoModel) -> Bool, clear: @escaping (DemoModel) -> Void) {
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.failureLifetime)
+            guard let self, current(self) else { return }
+            clear(self)
+        }
+    }
+
+    /// How long a passing failure stays on screen; see `expiringFailures`.
+    private static let failureLifetime: Duration = .seconds(30)
+
+    /// Drops a section's failure now, for a screen starting a new visit.
+    func clearFailure(_ section: Section) {
+        failures[section] = nil
     }
 
     /// Drops every held quote: the user declined it, so nothing may execute it.
@@ -1470,4 +1612,9 @@ func formatTimestamp(_ epochMillis: UInt64) -> String {
 
 extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// Joining the federation that is already attached and running.
+private struct AlreadyAttached: Swift.Error, CustomStringConvertible {
+    var description: String { "You're already in this federation." }
 }
