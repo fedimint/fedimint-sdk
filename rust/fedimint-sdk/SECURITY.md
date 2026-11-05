@@ -71,10 +71,15 @@ clones share (`ClaimedStore` in `src/storage.rs`), so it can be closed while clo
   `begin_transaction` stays pending for good. It must not fail. Fedimint's typed database calls
   `expect` on any error from the store, and the release profile is `panic = "abort"`, so an
   error there would abort the host application. Public calls on a stale handle fail with
-  `FederationClosed` at their closed checks before they reach the store.
+  `FederationClosed` at their closed checks before they reach the store. A call that uses the
+  store without holding a client, and passed its check just before the shutdown, is raced
+  against it (`sdk::until_shut_down`) and ends with `FederationClosed` rather than waiting for
+  good.
 - `shutdown` waits for the close for at most `CLOSE_DEADLINE`. If a transaction is still running
   then, it returns `Storage`, and the spawned close carries on: the claim is released as soon as
-  that transaction ends, and a reopen before then is refused.
+  that transaction ends, and a reopen before then is refused. Every call to `shutdown` waits for
+  that one close, so a retry after a timed-out or cancelled call returns `Ok` only once it has
+  finished.
 - Without `Sdk::shutdown`, the store closes when the last `Database` clone is dropped. Dropping the
   last handle drops each Fedimint client. On a multi-thread Tokio runtime the client shuts down
   inline. Anywhere else, such as a current-thread runtime or a thread with no runtime at all,
@@ -129,6 +134,9 @@ These tests pin the invariant down:
 - `storage::tests::a_transaction_begun_after_close_parks_rather_than_failing`
 - `sdk::tests::building::a_held_instance_keeps_its_location_until_it_is_shut_down`
 - `sdk::tests::building::a_federation_handle_does_not_outlive_shutdown`
+- `sdk::tests::building::a_location_comes_free_once_every_handle_is_dropped_without_shutdown`
+- `sdk::tests::building::a_shutdown_retried_after_its_deadline_waits_for_the_same_close`
+- `sdk::tests::building::a_call_waiting_on_a_closed_store_ends_when_the_instance_shuts_down`
 - `federation::tests::extension_work_ends_when_the_instance_is_dropped`
 - `extensions_follow_the_client_through_a_recovery` in `tests/integration.rs`, which reopens a
   location whose extension work held the client when every handle was dropped
