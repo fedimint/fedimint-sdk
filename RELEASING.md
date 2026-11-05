@@ -97,10 +97,9 @@ A beta is always either continued (`beta`) or released (`release`). There is no 
    had no `!`, and add a line for anything users see among the commits left out. Edit the notes
    there for anything else they need, for example to explain how to adapt to a breaking change.
    This is optional.
-3. A pull request opened by a workflow does not start other workflows, so close and reopen it
-   to start its checks, and let all of them finish before you merge. They also build the native
-   libraries that the release then takes from the cache. One of them, **SDK Release Scripts**,
-   runs `scripts/sdk-release.sh check-tree` on every pull request that changes a version or a
+3. Let all of its checks finish before you merge. They also build the native libraries that the
+   release then takes from the cache. One of them, **SDK Release Scripts**, runs
+   `scripts/sdk-release.sh check-tree` on every pull request that changes a version or a
    `CHANGELOG.md`.
 4. Merge it. Merging starts the release: the **SDK Tag** workflow runs when a push to `main`
    changes a file that holds a version. For each component whose version the push changed, it
@@ -388,8 +387,14 @@ Settings outside this repository's files. All of them have to be in place before
   pushes, so that a release tag never moves. None may restrict creating a tag: the tag workflow
   creates the tags with its own token, and GitHub does not accept that on a ruleset's bypass list
   in an organization's repository.
-- **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions →
-  General), or the version bump cannot open its pull request.
+- **A GitHub App that opens the version bump pull requests.** GitHub starts no workflow from an
+  event made with a workflow's own token, so a pull request that the version bump opened with its
+  own would get none of its checks. The app is installed on this repository alone, with the
+  repository permissions Contents (read) and Pull requests (read and write) and nothing else. Its
+  Client ID is the variable `BUMP_APP_CLIENT_ID` and a private key of it the secret
+  `BUMP_APP_PRIVATE_KEY`, both of the `version-bump` environment and nowhere else. That
+  environment has no reviewers, as running the version bump is already the step a person takes,
+  and it is limited to the branch `main`, so that no workflow on another branch can read the key.
 - **Squash merges with the "Default message"** (Settings → General → Pull Requests → Allow squash
   merging → Default commit message, which the API calls `squash_merge_commit_title` and sets to
   `COMMIT_OR_PR_TITLE`). The generated release notes read the subjects that this setting produces:
