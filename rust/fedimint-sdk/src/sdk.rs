@@ -1387,8 +1387,9 @@ impl SdkBuilder {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) if no storage was
-    /// set, or if an extension adds a module kind that is already registered
-    /// (both refused before the storage is opened),
+    /// set, if an extension adds a module kind that is already registered,
+    /// or if more than one extension provides a multisig backend (all
+    /// refused before the storage is opened),
     /// [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
     /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
@@ -1416,6 +1417,8 @@ impl SdkBuilder {
         // storage above.
         #[cfg(feature = "extension-api")]
         let module_inits = crate::modules::module_inits_with(&self.extensions)?;
+        #[cfg(all(feature = "extension-api", feature = "multisig"))]
+        let multisig = multisig_backend_of(&self.extensions)?;
         #[cfg(not(feature = "extension-api"))]
         let module_inits = crate::modules::module_inits();
         let location = storage.location();
@@ -1434,6 +1437,8 @@ impl SdkBuilder {
             module_inits,
             #[cfg(feature = "extension-api")]
             extensions: self.extensions,
+            #[cfg(all(feature = "extension-api", feature = "multisig"))]
+            multisig,
             root_secret: RootSecret::StandardDoubleDerive(
                 Bip39RootSecretStrategy::<12>::to_root_secret(mnemonic.inner()),
             ),
@@ -1766,6 +1771,9 @@ pub(crate) struct SdkInner {
     /// What `SdkBuilder::extension` registered, told about every client a federation starts.
     #[cfg(feature = "extension-api")]
     pub(crate) extensions: Vec<Arc<dyn crate::Extension>>,
+    /// The one multisig backend the extensions provide, if any.
+    #[cfg(all(feature = "extension-api", feature = "multisig"))]
+    pub(crate) multisig: Option<Arc<dyn crate::MultisigBackend>>,
     /// The instance seed, in the form `fedimint-client` wants it. Every federation is handed this
     /// same value: the client hashes the federation id in itself, twice, and applications must
     /// not do that derivation any more.
@@ -2074,6 +2082,10 @@ impl SdkInner {
                 status,
                 None,
             ));
+            // Nothing brings it up, but its `multisig` answers from the configuration it last
+            // came up with, as its other facades answer from the record.
+            #[cfg(all(feature = "extension-api", feature = "multisig"))]
+            federation.read_module_kinds().await;
             self.insert(federation.clone());
             self.announce(&federation);
             return;
@@ -2100,6 +2112,9 @@ impl SdkInner {
                 },
                 None,
             ));
+            // As for a closed federation above.
+            #[cfg(all(feature = "extension-api", feature = "multisig"))]
+            federation.read_module_kinds().await;
             self.insert(federation.clone());
             self.announce(&federation);
             return;
@@ -2249,6 +2264,24 @@ impl SdkInner {
         }
         Ok((record.clone(), new_meta))
     }
+}
+
+/// The one multisig backend `extensions` provide, if any, or the refusal of a second one.
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
+fn multisig_backend_of(
+    extensions: &[Arc<dyn crate::Extension>],
+) -> Result<Option<Arc<dyn crate::MultisigBackend>>> {
+    let mut backends = extensions
+        .iter()
+        .filter_map(|extension| extension.multisig());
+    let first = backends.next();
+    if backends.next().is_some() {
+        return Err(crate::Error::new(
+            crate::ErrorCode::InvalidInput,
+            "more than one extension provides a multisig backend",
+        ));
+    }
+    Ok(first)
 }
 
 /// The code for a client that could not be opened, joined or recovered.
@@ -2959,6 +2992,37 @@ mod tests {
                 !location.exists(),
                 "the storage location is not even created"
             );
+        }
+
+        /// Provides a multisig backend.
+        #[cfg(all(feature = "extension-api", feature = "multisig"))]
+        struct MultisigBacking;
+
+        #[cfg(all(feature = "extension-api", feature = "multisig"))]
+        impl crate::Extension for MultisigBacking {
+            fn multisig(&self) -> Option<Arc<dyn crate::MultisigBackend>> {
+                Some(Arc::new(crate::multisig::UnreachableBackend))
+            }
+        }
+
+        #[cfg(all(feature = "extension-api", feature = "multisig"))]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_second_multisig_backend_is_refused() {
+            let err = Sdk::builder()
+                .storage(Storage::in_memory())
+                .extension(Arc::new(MultisigBacking))
+                .extension(Arc::new(MultisigBacking))
+                .build()
+                .await
+                .expect_err("one backend at most");
+            assert_eq!(err.code, crate::ErrorCode::InvalidInput);
+
+            Sdk::builder()
+                .storage(Storage::in_memory())
+                .extension(Arc::new(MultisigBacking))
+                .build()
+                .await
+                .expect("one is fine");
         }
 
         #[tokio::test(flavor = "multi_thread")]

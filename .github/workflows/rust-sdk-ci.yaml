@@ -1,8 +1,9 @@
 name: Rust SDK Continuous Integration
 
 # Continuous integration for the fedimint-sdk crate: build, test, clippy
-# (default, `--features uniffi`, `--features extension-api` and both features),
-# rustfmt, doc, and the wasm-target check, with each feature and both.
+# (default, `--features uniffi`, `--features extension-api`, `--features multisig`
+# and their combinations), rustfmt, doc, and the wasm-target check, with each
+# feature and all of them.
 # The `--features uniffi` clippy is the cheap Android-surface gate: it
 # compiles the `#[uniffi::export]` blocks and type derives on the host, no
 # cross-compile. The real Android build (2 ABIs) lives in android-native.yaml,
@@ -275,9 +276,9 @@ jobs:
         # transaction. See `async_compat_runtime` in src/lib.rs.
         run: cargo test --locked --lib --features uniffi async_compat
 
-      - name: 'Test the extension API'
+      - name: 'Test the extension API and the multisig facade'
         # Off by default, so the default test run above compiles none of it.
-        run: cargo test --locked --lib --features extension-api
+        run: cargo test --locked --lib --features extension-api,multisig
 
   check:
     name: 'Run clippy, fmt, docs and wasm'
@@ -322,17 +323,23 @@ jobs:
       - name: 'Check clippy (extension-api feature)'
         run: cargo clippy --locked --all-targets --features extension-api -- -D warnings
 
-      - name: 'Check clippy (uniffi and extension-api features)'
-        # Both add fields and methods to the same types, so they are compiled together too.
-        run: cargo clippy --locked --lib --features uniffi,extension-api -- -D warnings
+      - name: 'Check clippy (multisig feature)'
+        run: cargo clippy --locked --all-targets --features multisig -- -D warnings
+
+      - name: 'Check clippy (extension-api and multisig features)'
+        run: cargo clippy --locked --all-targets --features extension-api,multisig -- -D warnings
+
+      - name: 'Check clippy (uniffi, extension-api and multisig features)'
+        # All three add fields and methods to the same types, so they are compiled together too.
+        run: cargo clippy --locked --lib --features uniffi,extension-api,multisig -- -D warnings
 
       - name: 'Check docs'
         run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
-      - name: 'Check docs (extension-api feature)'
-        run: cargo doc --no-deps --locked --features extension-api
+      - name: 'Check docs (extension-api and multisig features)'
+        run: cargo doc --no-deps --locked --features extension-api,multisig
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -348,8 +355,10 @@ jobs:
       - name: 'Check wasm (extension-api feature)'
         run: cargo check --locked --target wasm32-unknown-unknown --features extension-api
 
-      - name: 'Check wasm (uniffi and extension-api features)'
-        run: cargo check --locked --target wasm32-unknown-unknown --features uniffi,extension-api
+      - name: 'Check wasm (uniffi, extension-api and multisig features)'
+        run: >-
+          cargo check --locked --target wasm32-unknown-unknown
+          --features uniffi,extension-api,multisig
 
   # The one check of this workflow for branch protection to require. It runs on
   # every pull request and merge group whatever they touched, so the check

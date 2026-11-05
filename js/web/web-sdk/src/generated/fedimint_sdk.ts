@@ -724,8 +724,7 @@ export type ActivityItem = {
    * [`Success`](ActivityStatus::Success) row:
    * [`Outgoing`](Direction::Outgoing) debited `amount + fee`,
    * [`Incoming`](Direction::Incoming) credited `amount - fee`. A row with
-   * no direction has no identity to reconcile, and both figures are
-   * `None`.
+   * no direction has no identity to reconcile. Its figures are `None`.
    */
   direction?: Direction
   /**
@@ -13537,7 +13536,7 @@ const FfiConverterTypeOperationSupport = (() => {
  * is not supported; and [`raw_kind`](AnyOperation::raw_kind) gives the
  * persisted discriminator verbatim, for logs and bug reports.
  *
- * The seven `as_*` accessors return `Some` only when the kind matches and
+ * The `as_*` accessors return `Some` only when the kind matches and
  * the operation is supported, and `None` otherwise, without distinguishing
  * a plain kind mismatch from an unsupported record of the matching kind:
  * use [`support`](AnyOperation::support) or
@@ -13695,7 +13694,7 @@ export type AnyOperationInterface = AnyOperationLike
  * is not supported; and [`raw_kind`](AnyOperation::raw_kind) gives the
  * persisted discriminator verbatim, for logs and bug reports.
  *
- * The seven `as_*` accessors return `Some` only when the kind matches and
+ * The `as_*` accessors return `Some` only when the kind matches and
  * the operation is supported, and `None` otherwise, without distinguishing
  * a plain kind mismatch from an unsupported record of the matching kind:
  * use [`support`](AnyOperation::support) or
@@ -14251,7 +14250,7 @@ export interface FederationLike {
    *
    * Reported as plain booleans so an application can decide what to
    * render before the user touches anything. It answers the same
-   * question as the three facade accessors below and exists alongside
+   * question as the facade accessors below and exists alongside
    * them for the case where a screen needs to know about several
    * capabilities at once without taking handles it will not use.
    */
@@ -14549,7 +14548,7 @@ export class Federation extends UniffiAbstractObject implements FederationLike {
    *
    * Reported as plain booleans so an application can decide what to
    * render before the user touches anything. It answers the same
-   * question as the three facade accessors below and exists alongside
+   * question as the facade accessors below and exists alongside
    * them for the case where a screen needs to know about several
    * capabilities at once without taking handles it will not use.
    */
@@ -17803,7 +17802,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_federation_capabilities() !==
-    44324
+    13842
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_federation_capabilities',

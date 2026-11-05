@@ -87,7 +87,7 @@ macro_rules! ffi_operation {
 }
 pub(crate) use ffi_operation;
 
-// The UniFFI view of the seven `AnyOperation::as_*` downcasts: same names, same `None`-on-mismatch
+// The UniFFI view of the `AnyOperation::as_*` downcasts: same names, same `None`-on-mismatch
 // behaviour, but returning the monomorphised `*Operation` helpers `ffi_operation!` emits in each
 // facade submodule, instead of the generic `Operation<S>` a UniFFI object cannot carry directly.
 #[uniffi::export]

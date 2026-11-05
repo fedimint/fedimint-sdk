@@ -77,4 +77,18 @@ pub trait Extension: MaybeSend + MaybeSync + 'static {
     ) -> BoxFuture<'static, ()> {
         Box::pin(std::future::ready(()))
     }
+
+    /// The module the [`Multisig`](crate::Multisig) facade runs on, if this extension provides
+    /// one.
+    ///
+    /// Asked once, by [`SdkBuilder::build`](crate::SdkBuilder::build); an instance has one
+    /// multisig backend at most, and a second one fails that build with
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput). The facade is then available on every
+    /// federation whose configuration has a module of the backend's
+    /// [`module_kind`](crate::MultisigBackend::module_kind).
+    #[cfg(feature = "multisig")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
+    fn multisig(&self) -> Option<std::sync::Arc<dyn crate::MultisigBackend>> {
+        None
+    }
 }

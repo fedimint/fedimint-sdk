@@ -44,6 +44,8 @@ pub(crate) mod ecash;
 pub(crate) mod error;
 pub(crate) mod federation;
 pub(crate) mod lightning;
+#[cfg(feature = "multisig")]
+pub(crate) mod multisig;
 pub(crate) mod onchain;
 pub(crate) mod operation;
 pub(crate) mod quote;

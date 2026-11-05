@@ -1,5 +1,5 @@
 //! How the crate's value types cross the boundary: every `custom_type!` conversion, one per type,
-//! in the order `types/` declares them.
+//! in the order `types/` declares them. The multisig facade's own are in `multisig.rs`.
 //!
 //! Each of these is a real type whose FFI shape is a primitive — a string or an integer — so
 //! nothing about it needs to sit beside its definition: the type keeps its own parsing and

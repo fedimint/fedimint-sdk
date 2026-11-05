@@ -25,6 +25,11 @@
 //! requires at an exact version. The Kotlin, Swift and JavaScript SDKs are
 //! generated from this surface, behind the `uniffi` feature.
 //!
+//! The `Multisig` facade, behind the `multisig` feature, is the one with no
+//! module behind it in this crate: a build that carries one adds it with the
+//! `extension-api` feature, and everywhere else `Federation::multisig` is
+//! `None`.
+//!
 //! # A worked example
 //!
 //! `examples/walkthrough.rs` is this same happy path, runnable end to end: it
@@ -157,8 +162,8 @@
 //!
 //! Not every federation runs every module. Rather than making an application
 //! find that out by attempting an operation and catching the failure,
-//! [`Federation::ecash`], [`Federation::lightning`] and
-//! [`Federation::onchain`] return `Option`, and
+//! [`Federation::ecash`], [`Federation::lightning`] and [`Federation::onchain`]
+//! (and `Federation::multisig`, behind its feature) return `Option`, and
 //! [`Federation::capabilities`] reports the same information as plain
 //! booleans so a screen can be laid out before the user touches anything. An
 //! absent capability is an ordinary value to branch on.
@@ -372,6 +377,8 @@ mod lightning;
 mod logging;
 mod meta;
 mod modules;
+#[cfg(feature = "multisig")]
+mod multisig;
 mod onchain;
 mod operation;
 mod recovery;
@@ -409,6 +416,14 @@ pub use lightning::{
     LnReceiveState, LnSendDetails, LnSendState,
 };
 pub use meta::{ConsensusMetadata, Meta};
+#[cfg(feature = "multisig")]
+pub use multisig::{
+    Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId, MultisigAmount,
+    MultisigDenomination, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal,
+};
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
+pub use multisig::{MultisigBackend, MultisigSweep};
 pub use onchain::{
     Onchain, OnchainDeposits, OnchainQuote, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
     OnchainReceiveState, OnchainSendDetails, OnchainSendFeeBreakdown, OnchainSendState,

@@ -65,9 +65,10 @@ echo "fedimint-sdk integration tests: shape=${shape} fed_size=${FM_FED_SIZE}"
 devimint --version || true
 grep -m1 '^fedimint-client = ' Cargo.toml
 
-# Built with the extension API, so its tests run against the federation too.
-# The feature changes nothing until an extension is registered.
-cargo_test=(cargo test --locked --features extension-api --test integration)
+# Built with the extension API and the multisig facade, so their tests run
+# against the federation too. Neither feature changes anything until an
+# extension is registered.
+cargo_test=(cargo test --locked --features extension-api,multisig --test integration)
 
 # Compile before devimint starts, so build time is not charged to the
 # federation's uptime and a compile error does not cost a full DKG.

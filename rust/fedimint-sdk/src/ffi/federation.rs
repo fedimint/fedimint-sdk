@@ -9,7 +9,8 @@ use crate::{
 
 // The UniFFI view of `Federation::ecash`/`lightning`/`onchain`/`operation`, under their real names
 // but different Rust identifiers so they can wrap each object in `Arc`: a UniFFI object nested in
-// `Option`/`Result<Option<_>>` has to cross as `Arc<T>`.
+// `Option`/`Result<Option<_>>` has to cross as `Arc<T>`. `Federation::multisig` is adapted the
+// same way in `multisig.rs`, behind its feature.
 #[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
 #[cfg_attr(target_family = "wasm", uniffi::export)]
 impl Federation {
