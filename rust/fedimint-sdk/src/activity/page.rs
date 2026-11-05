@@ -727,6 +727,116 @@ mod tests {
         assert!(finished.is_final);
     }
 
+    /// What a build with the multisig facade records for a deposit, a payout and a sweep, each
+    /// ended, spelled out rather than encoded by the facade, which a build without it lacks.
+    fn multisig_records() -> [(u8, OperationRecord); 3] {
+        let account = "aa".repeat(32);
+        let module = "multi_sig_stability_pool";
+        [
+            (
+                1,
+                record(
+                    "multisig_deposit",
+                    module,
+                    1,
+                    serde_json::json!({
+                        "account_id": account,
+                        "amount_msats": 300_000,
+                        "created_at_epoch_ms": 1,
+                    })
+                    .to_string(),
+                    Some("Done".to_owned()),
+                ),
+            ),
+            (
+                2,
+                record(
+                    "multisig_transfer",
+                    module,
+                    2,
+                    serde_json::json!({
+                        "account_id": account,
+                        "denomination": 0,
+                        "value": 200_000,
+                        "currency": "",
+                        "created_at_epoch_ms": 2,
+                    })
+                    .to_string(),
+                    Some("Done".to_owned()),
+                ),
+            ),
+            (
+                3,
+                record(
+                    "multisig_sweep",
+                    module,
+                    3,
+                    serde_json::json!({ "amount_msats": 200_000, "created_at_epoch_ms": 3 })
+                        .to_string(),
+                    Some("Failed:refused".to_owned()),
+                ),
+            ),
+        ]
+    }
+
+    #[cfg(not(feature = "multisig"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_records_are_unknown_and_kept_without_the_feature() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        for (n, record) in multisig_records() {
+            write(&db, id_bytes(n), record).await;
+        }
+
+        let activity = page(&federation, None, 10).await.expect("a page");
+        for (n, record) in multisig_records() {
+            let row = activity
+                .items
+                .iter()
+                .find(|item| item.operation_id == opid(n))
+                .expect("listed");
+            assert_eq!(row.kind, OperationKind::Unknown);
+            assert_eq!(row.status, ActivityStatus::Unknown);
+            assert!(row.is_final);
+            assert_eq!((row.amount, row.fee, row.direction), (None, None, None));
+            // Left as it was, for a build with the facade to read again.
+            let stored = db
+                .begin_transaction_nc()
+                .await
+                .get_value(&OperationRecordKey(UpstreamOperationId(id_bytes(n))))
+                .await;
+            assert_eq!(stored, Some(record));
+        }
+    }
+
+    #[cfg(feature = "multisig")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multisig_records_read_back_as_their_kinds() {
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let federation = FederationInner::detached(db.clone(), true);
+        for (n, record) in multisig_records() {
+            write(&db, id_bytes(n), record).await;
+        }
+
+        let activity = page(&federation, None, 10).await.expect("a page");
+        let row = |n: u8| {
+            activity
+                .items
+                .iter()
+                .find(|item| item.operation_id == opid(n))
+                .expect("listed")
+        };
+        assert_eq!(row(1).kind, OperationKind::MultisigDeposit);
+        assert_eq!(row(1).status, ActivityStatus::Success);
+        assert_eq!(row(1).amount, Some(Amount::from_msats(300_000)));
+        assert_eq!(row(1).direction, Some(Direction::Outgoing));
+        assert_eq!(row(2).kind, OperationKind::MultisigTransfer);
+        assert_eq!(row(2).status, ActivityStatus::Success);
+        assert_eq!(row(2).amount, Some(Amount::from_msats(200_000)));
+        assert_eq!(row(3).kind, OperationKind::MultisigSweep);
+        assert_eq!(row(3).status, ActivityStatus::Failed);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_state_schema_newer_than_this_build_is_unknown() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);

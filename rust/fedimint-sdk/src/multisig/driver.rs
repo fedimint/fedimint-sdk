@@ -98,6 +98,19 @@ where
                     "this build cannot follow multisig operations on this federation",
                 )
             })?;
+            // An operation made through a backend on another kind of module, by a build that
+            // carried that one, means nothing to the backend in place.
+            let module = backend.module_kind();
+            if record.module != module {
+                return Err(Error::new(
+                    ErrorCode::NotSupported,
+                    format!(
+                        "this operation was made with the {} module, and this build's multisig \
+                         runs on {module}",
+                        record.module
+                    ),
+                ));
+            }
             let client = federation.client(false).await?;
             // The backend's stream holds no client (see `MultisigBackend`), so the guard goes
             // with this call.
@@ -414,6 +427,70 @@ mod tests {
             .await
             .expect_err("nothing can follow it");
         assert_eq!(err.code, ErrorCode::NotSupported);
+    }
+
+    #[cfg(feature = "extension-api")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operation_another_kind_of_backend_made_is_not_followed() {
+        use std::sync::Arc;
+
+        use crate::db::{federation_namespace, in_memory_root};
+        use crate::multisig::UnreachableBackend;
+
+        struct Backing;
+
+        impl crate::Extension for Backing {
+            fn multisig(&self) -> Option<Arc<dyn MultisigBackend>> {
+                Some(Arc::new(UnreachableBackend))
+            }
+        }
+
+        let sdk = crate::Sdk::builder()
+            .storage(crate::Storage::in_memory())
+            .extension(Arc::new(Backing))
+            .build()
+            .await
+            .expect("an instance opens");
+        let federation = FederationInner::detached_in(
+            Arc::downgrade(sdk.inner()),
+            federation_namespace(&in_memory_root(), [1u8; 32]),
+            true,
+        );
+        federation.set_module_kinds(&[UnreachableBackend::MODULE.to_owned()]);
+        let pending = |module: &str| OperationRecord {
+            schema_version: crate::operation::READABLE_STATE_SCHEMA,
+            kind: crate::operation::kinds::MULTISIG_SWEEP.to_owned(),
+            module: module.to_owned(),
+            created_at: 0,
+            details: "{}".to_owned(),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+        let driver = MultisigSweepDriver::default();
+
+        let err = driver
+            .current(
+                &federation,
+                UpstreamOperationId([1u8; 32]),
+                &pending("another_multisig"),
+            )
+            .await
+            .expect_err("not this backend's operation");
+        assert_eq!(err.code, ErrorCode::NotSupported);
+        assert!(err.message.contains("another_multisig"), "{}", err.message);
+
+        // An operation of the backend's own module gets past that, to the client this federation
+        // does not have.
+        let err = driver
+            .current(
+                &federation,
+                UpstreamOperationId([1u8; 32]),
+                &pending(UnreachableBackend::MODULE),
+            )
+            .await
+            .expect_err("no client to follow it with");
+        assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 
     #[test]
