@@ -416,6 +416,8 @@ impl Sdk {
         SdkBuilder {
             storage: None,
             mnemonic: None,
+            #[cfg(feature = "extension-api")]
+            extensions: Vec::new(),
         }
     }
 
@@ -1233,6 +1235,8 @@ impl Sdk {
 pub struct SdkBuilder {
     storage: Option<Storage>,
     mnemonic: Option<Mnemonic>,
+    #[cfg(feature = "extension-api")]
+    extensions: Vec<Arc<dyn crate::Extension>>,
 }
 
 impl SdkBuilder {
@@ -1275,6 +1279,18 @@ impl SdkBuilder {
     /// different [`Storage`].
     pub fn mnemonic(mut self, mnemonic: Mnemonic) -> Self {
         self.mnemonic = Some(mnemonic);
+        self
+    }
+
+    /// Adds an [`Extension`](crate::Extension) to the instance: client modules this crate does
+    /// not ship, and work that runs on each client a federation starts.
+    ///
+    /// Call it once per extension, in any order. Nothing is checked here:
+    /// [`SdkBuilder::build`] refuses a module kind added twice, before it opens the storage.
+    #[cfg(feature = "extension-api")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
+    pub fn extension(mut self, extension: Arc<dyn crate::Extension>) -> Self {
+        self.extensions.push(extension);
         self
     }
 
@@ -1371,7 +1387,9 @@ impl SdkBuilder {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) if no storage was
-    /// set, [`StorageInUse`](crate::ErrorCode::StorageInUse),
+    /// set, or if an extension adds a module kind that is already registered
+    /// (both refused before the storage is opened),
+    /// [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
     /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
     /// generated and the platform's secure random source failed,
@@ -1394,6 +1412,12 @@ impl SdkBuilder {
                 "no storage was set: use SdkBuilder::storage to say where state is kept",
             ));
         };
+        // A builder that cannot work is refused before the storage is touched, like a missing
+        // storage above.
+        #[cfg(feature = "extension-api")]
+        let module_inits = crate::modules::module_inits_with(&self.extensions)?;
+        #[cfg(not(feature = "extension-api"))]
+        let module_inits = crate::modules::module_inits();
         let location = storage.location();
 
         // Step 1: open the location and claim it. Nothing has been touched if this fails.
@@ -1407,7 +1431,9 @@ impl SdkBuilder {
         let inner = Arc::new(SdkInner {
             db,
             connectors: crate::modules::connectors().await,
-            module_inits: crate::modules::module_inits(),
+            module_inits,
+            #[cfg(feature = "extension-api")]
+            extensions: self.extensions,
             root_secret: RootSecret::StandardDoubleDerive(
                 Bip39RootSecretStrategy::<12>::to_root_secret(mnemonic.inner()),
             ),
@@ -1434,12 +1460,17 @@ impl SdkBuilder {
 
 impl core::fmt::Debug for SdkBuilder {
     /// Prints the builder with the mnemonic redacted: whether one is set
-    /// is visible, its contents never are.
+    /// is visible, its contents never are. With the extension API, it
+    /// also says how many extensions are registered.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SdkBuilder")
+        let mut builder = f.debug_struct("SdkBuilder");
+        builder
             .field("storage", &self.storage)
-            .field("mnemonic", &self.mnemonic.as_ref().map(|_| Redacted))
-            .finish()
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| Redacted));
+        // A count, since an extension has no `Debug` of its own.
+        #[cfg(feature = "extension-api")]
+        builder.field("extensions", &self.extensions.len());
+        builder.finish()
     }
 }
 
@@ -1732,6 +1763,9 @@ pub(crate) struct SdkInner {
     pub(crate) connectors: ConnectorRegistry,
     /// The canonical module init registry, cloned per federation.
     pub(crate) module_inits: ClientModuleInitRegistry,
+    /// What `SdkBuilder::extension` registered, told about every client a federation starts.
+    #[cfg(feature = "extension-api")]
+    pub(crate) extensions: Vec<Arc<dyn crate::Extension>>,
     /// The instance seed, in the form `fedimint-client` wants it. Every federation is handed this
     /// same value: the client hashes the federation id in itself, twice, and applications must
     /// not do that derivation any more.
@@ -2396,10 +2430,11 @@ mod tests {
         let mnemonic = PHRASE.parse::<Mnemonic>().expect("a valid phrase");
         let rendered = format!("{:?}", Sdk::builder().mnemonic(mnemonic));
         assert!(!rendered.contains("abandon"));
-        assert_eq!(
-            rendered,
-            "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }"
-        );
+        #[cfg(not(feature = "extension-api"))]
+        let expected = "SdkBuilder { storage: None, mnemonic: Some(<redacted>) }";
+        #[cfg(feature = "extension-api")]
+        let expected = "SdkBuilder { storage: None, mnemonic: Some(<redacted>), extensions: 0 }";
+        assert_eq!(rendered, expected);
     }
 
     #[test]
@@ -2894,6 +2929,37 @@ mod tests {
         // between two opens, which is beyond what `tests/integration.rs`'s devimint harness drives
         // today. Reviewed by inspection instead: `reopen_federation` and `restore` both now build
         // on `start`'s returned record rather than on the snapshot taken before calling it.
+
+        /// Adds the SDK's own mint module a second time.
+        #[cfg(feature = "extension-api")]
+        struct SecondMint;
+
+        #[cfg(feature = "extension-api")]
+        impl crate::Extension for SecondMint {
+            fn module_inits(&self) -> Vec<fedimint_client::module_init::DynClientModuleInit> {
+                vec![fedimint_mint_client::MintClientInit.into()]
+            }
+        }
+
+        #[cfg(feature = "extension-api")]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_extension_adding_a_registered_kind_is_refused_before_storage_is_touched() {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let location = dir.path().join("wallet");
+            let path = location.to_str().expect("a utf-8 path").to_owned();
+
+            let err = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .extension(Arc::new(SecondMint))
+                .build()
+                .await
+                .expect_err("a second mint module is refused");
+            assert_eq!(err.code, crate::ErrorCode::InvalidInput);
+            assert!(
+                !location.exists(),
+                "the storage location is not even created"
+            );
+        }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn closing_an_unknown_federation_is_not_an_error() {

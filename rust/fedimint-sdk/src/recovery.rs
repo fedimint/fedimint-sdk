@@ -491,6 +491,8 @@ impl Sdk {
                         let client = federation.client(false).await?.handle();
                         engine::after_open(self.inner(), &federation, client, Some(new_attempt))
                             .await;
+                        #[cfg(feature = "extension-api")]
+                        federation.tell_extensions().await;
                         self.inner().announce(&federation);
                     }
                 }

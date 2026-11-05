@@ -65,9 +65,13 @@ echo "fedimint-sdk integration tests: shape=${shape} fed_size=${FM_FED_SIZE}"
 devimint --version || true
 grep -m1 '^fedimint-client = ' Cargo.toml
 
+# Built with the extension API, so its tests run against the federation too.
+# The feature changes nothing until an extension is registered.
+cargo_test=(cargo test --locked --features extension-api --test integration)
+
 # Compile before devimint starts, so build time is not charged to the
 # federation's uptime and a compile error does not cost a full DKG.
-cargo test --locked --test integration --no-run
+"${cargo_test[@]}" --no-run
 
 # devimint integration tests can be flaky in constrained CI environments (e.g. timeouts).
 # Retry up to 3 times to ensure flakiness doesn't fail the build.
@@ -89,7 +93,7 @@ for ((i=1; i<=MAX_RETRIES; i++)); do
   export TMPDIR="$FM_TEST_DIR"
 
   rc=0
-  devimint wasm-test-setup --exec cargo test --locked --test integration "$@" || rc=$?
+  devimint wasm-test-setup --exec "${cargo_test[@]}" "$@" || rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "Tests passed on attempt $i"
     exit 0

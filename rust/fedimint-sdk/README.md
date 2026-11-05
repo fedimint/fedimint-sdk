@@ -33,6 +33,17 @@ The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the
 RFC this crate implements.
 
+## Extensions
+
+With the `extension-api` feature, off by default, another crate can add
+client modules this one does not ship. `SdkBuilder::extension` registers an
+`Extension`: its modules run in every federation whose configuration has a
+module of their kind, it can run work on each client a federation starts, and
+`Federation::client` hands it the running client to reach its modules
+through. An extension works with fedimint's own types, so it has to be built
+against the exact fedimint release this crate requires, and this part of the
+API is not covered by this crate's semver.
+
 ## Releases
 
 The crate is published as `fedimint-sdk` on crates.io, and its release notes

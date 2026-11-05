@@ -330,6 +330,7 @@
     forbid(unsafe_code)
 )]
 #![cfg_attr(any(target_os = "android", target_vendor = "apple"), deny(unsafe_code))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
 // These attributes stay: dropping them does not surface leftover skeleton work, it surfaces
@@ -359,6 +360,8 @@ mod apple;
 mod db;
 mod ecash;
 mod error;
+#[cfg(feature = "extension-api")]
+mod extension;
 mod federation;
 #[cfg(feature = "uniffi")]
 mod ffi;
@@ -398,6 +401,8 @@ pub use error::{
     DetailEnvelope, Diagnostic, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails,
     Result,
 };
+#[cfg(feature = "extension-api")]
+pub use extension::Extension;
 pub use federation::{BalanceUpdates, Capabilities, Federation};
 pub use lightning::{
     Lightning, LightningRoute, LnFeeBreakdown, LnQuote, LnReceive, LnReceiveDetails,
