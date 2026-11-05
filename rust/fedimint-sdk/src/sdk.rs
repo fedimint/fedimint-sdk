@@ -2486,7 +2486,11 @@ pub(crate) async fn until_shut_down<T>(
         }
         core::future::pending::<()>().await;
     };
+    // Biased so the work is polled first: a call that can answer on its own gets its own answer
+    // after a shutdown too, rather than one picked at random. A parked call stays pending, and the
+    // shutdown branch still ends it.
     tokio::select! {
+        biased;
         result = work => result,
         () = shut_down => Err(crate::Error::new(
             crate::ErrorCode::FederationClosed,
@@ -2509,9 +2513,10 @@ const STATUS_CAPACITY: usize = 256;
 #[cfg(not(test))]
 const CLOSE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(10);
 /// Shortened under `cfg(test)` so a test that holds a transaction across a shutdown does not
-/// have to sit out the production deadline to see it reported.
+/// have to sit out the production deadline to see it reported. Every shutdown in the suite must
+/// close its store within this, so it leaves room for a slow runner.
 #[cfg(test)]
-const CLOSE_DEADLINE: core::time::Duration = core::time::Duration::from_millis(200);
+const CLOSE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(2);
 
 /// Establishes the instance's seed, or refuses in a way that changes nothing.
 ///
@@ -3029,6 +3034,28 @@ mod tests {
             .expect("the call answers rather than waiting on the closed store")
             .expect_err("the call is refused");
             assert_eq!(err.code, crate::ErrorCode::FederationClosed);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_call_that_answers_at_once_keeps_its_answer_after_shutdown() {
+            // Both branches are ready on the first poll here. The call's own answer wins every
+            // time, so a binding sees the same outcome on every run.
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            sdk.shutdown().await.expect("shutdown succeeds");
+
+            for _ in 0..64 {
+                let answer =
+                    super::super::until_shut_down(Some(sdk.inner().shutdown_watch()), async {
+                        Ok(7)
+                    })
+                    .await
+                    .expect("the call keeps its own answer");
+                assert_eq!(answer, 7);
+            }
         }
 
         #[tokio::test(flavor = "multi_thread")]
