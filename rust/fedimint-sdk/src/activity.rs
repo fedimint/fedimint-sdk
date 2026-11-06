@@ -6,6 +6,8 @@ mod page;
 mod rows;
 
 pub(crate) use page::page;
+#[cfg(feature = "multisig")]
+pub(crate) use rows::{Accounted, Bucket, Figures, Row, detailed};
 
 /// One row of a federation's activity history.
 ///
