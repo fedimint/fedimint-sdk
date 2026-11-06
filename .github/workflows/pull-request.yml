@@ -122,8 +122,9 @@ jobs:
               js/package.json|js/pnpm-lock.yaml|js/pnpm-workspace.yaml|js/.npmrc|js/tsconfig.base.json)
                 enable_all
                 ;;
-              # CI implementation changes must exercise all affected jobs.
-              .github/workflows/*|.github/actions/*)
+              # CI implementation changes must exercise all affected jobs. List every
+              # workflow this file calls with `uses:` (currently only verify.yml; see the `verify` job below).
+              .github/workflows/pull-request.yml|.github/workflows/verify.yml|.github/actions/*)
                 enable_all
                 ;;
               js/react-native/react-native/*|js/react-native/react-native-bindings/*|js/examples/react-native/*|js/examples/expo-app/*|scripts/generate-sdk-rn-bindings.sh|scripts/build-sdk-rn-ios.sh|Justfile)
