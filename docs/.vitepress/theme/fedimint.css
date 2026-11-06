@@ -1,0 +1,113 @@
+/* ---------------------------------------------------------------------------
+   Fedimint style for the React Native pages, on top of the VitePress default theme.
+
+   Colours and fonts are the Fedimint design tokens, read from
+   https://fedi-miki.vercel.app/fedimint/design (16 September 2026). Only the tokens
+   change. The layout, and the grey code blocks, are VitePress's own.
+
+   Scope: the .fm-react-native class, which .vitepress/config.mts puts on every page under
+   react-native/. Other folders keep the default theme until the project picks one style
+   (see the docs proposal issue).
+   --------------------------------------------------------------------------- */
+
+.fm-react-native {
+  /* The raw tokens. The figure on the Welcome page draws with these. */
+  --ink: #0a0a0a;
+  --blue: #2746d8;
+  --blue-deep: #181884;
+  --paper: #ffffff;
+  --grey-1: #525252;
+  --grey-2: #737373;
+  --grey-3: #a3a3a3;
+  --line: #e5e5e5;
+  --surface: #fafafa;
+  --surface-blue: #f6f8ff;
+  --display: 'Archivo', Helvetica, Arial, sans-serif;
+  --body: 'Inter', Helvetica, Arial, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+
+  /* The same tokens, given to VitePress. */
+  --vp-font-family-base: var(--body);
+  --vp-font-family-mono: var(--mono);
+  --vp-c-brand-1: var(--blue);
+  --vp-c-brand-2: var(--blue-deep);
+  --vp-c-brand-3: var(--blue);
+  --vp-c-brand-soft: rgba(39, 70, 216, 0.12);
+  --vp-c-text-1: var(--ink);
+  --vp-c-text-2: var(--grey-1);
+  --vp-c-text-3: var(--grey-2);
+  --vp-c-divider: var(--line);
+  --vp-c-bg: var(--paper);
+}
+
+/* The design system defines a light theme only. These pairings reuse its hex values. */
+.dark .fm-react-native {
+  --ink: #ffffff;
+  --blue: #4ad6ff;
+  --blue-deep: #a8d8ff;
+  --paper: #0a0a0a;
+  --grey-1: #c2c6cf;
+  --grey-2: #a3a3a3;
+  --grey-3: #737373;
+  --line: #525252;
+  --surface: #181884;
+  --surface-blue: #181884;
+  --vp-c-brand-soft: rgba(74, 214, 255, 0.14);
+}
+
+.fm-react-native .vp-doc h1,
+.fm-react-native .vp-doc h2 {
+  font-family: var(--display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.fm-react-native .vp-doc h1 {
+  font-weight: 900;
+}
+
+.fm-react-native .vp-doc .subtitle {
+  font-size: 1.15rem;
+  color: var(--grey-1);
+  margin-top: 8px;
+}
+
+.fm-react-native .vp-doc .cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fm-react-native .vp-doc .cap-row .VPBadge {
+  margin-left: 0;
+}
+
+/* A code block's file name, shown above it (see the fence rule in config.mts). */
+.vp-doc .fm-code-title {
+  margin: 16px 0 0;
+  padding: 8px 24px;
+  border-radius: 8px 8px 0 0;
+  background: var(--vp-code-block-bg);
+  border-bottom: 1px solid var(--vp-c-divider);
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .fm-code-title + div[class*='language-'] {
+  margin-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+@media (max-width: 639px) {
+  .vp-doc .fm-code-title {
+    margin: 16px -24px 0;
+    border-radius: 0;
+  }
+}
+
+.fm-react-native .vp-doc .flow-figure {
+  margin: 24px 0;
+}
