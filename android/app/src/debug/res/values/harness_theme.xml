@@ -1,0 +1,4 @@
+<resources>
+    <!-- The harness is AppCompat views, not Compose, so it needs an AppCompat theme. -->
+    <style name="Theme.FedimintHarness" parent="Theme.Material3.DayNight.NoActionBar" />
+</resources>
