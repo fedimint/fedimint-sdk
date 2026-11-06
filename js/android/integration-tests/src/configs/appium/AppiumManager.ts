@@ -1,12 +1,12 @@
 /* eslint-disable no-console */
+import path from 'path'
 import { remote } from 'webdriverio'
 
 import { AppiumConfigValidator } from './AppiumConfigValidator'
 import { AppiumConfig } from './types'
 
-// Single-actor only — this SDK has no flow that needs two simultaneous
-// devices. If one ever does, extend this with a per-actor handle scheme
-// (device id/AVD suffixes and indexed capabilities like systemPort per handle).
+// Single-actor per session; concurrent runs across shapes isolate `udid`,
+// `AVD_NAME`, `APPIUM_PORT`, and `APPIUM_SYSTEM_PORT` via the runner script.
 const getCapabilities = (): AppiumConfig => {
   const config = AppiumConfigValidator.getValidatedConfig()
 
@@ -15,6 +15,8 @@ const getCapabilities = (): AppiumConfig => {
   if (!udid && !avd) {
     throw new Error('Need DEVICE_ID or AVD set to start an Appium session')
   }
+
+  const systemPort = parseInt(process.env.APPIUM_SYSTEM_PORT || '8200', 10)
 
   return {
     'appium:platformName': 'Android',
@@ -31,7 +33,7 @@ const getCapabilities = (): AppiumConfig => {
     'appium:uiautomator2ServerInstallTimeout': 120000,
     'appium:uiautomator2ServerLaunchTimeout': 120000,
     'appium:newCommandTimeout': 600,
-    'appium:systemPort': 8200,
+    'appium:systemPort': systemPort,
     'appium:chromedriverAutodownload': true,
   }
 }
@@ -112,5 +114,15 @@ export default class AppiumManager {
 
   static deviceId(): string | undefined {
     return process.env.DEVICE_ID
+  }
+
+  static logDir(): string {
+    return process.env.APPIUM_LOG_DIR || path.join(process.cwd(), '.appium')
+  }
+
+  static screenshotsDir(): string {
+    return (
+      process.env.SCREENSHOTS_DIR || path.join(process.cwd(), 'screenshots')
+    )
   }
 }

@@ -69,7 +69,6 @@ just build-android-apk                       # `.#android`: native lib, Kotlin, 
 
 nix develop .#android-tests
 pnpm --dir js install                        # first time only
-bash scripts/e2e-android/setup-and-start-appium.sh   # one-time per shell: installs/starts Appium
 FM_SDK_SHAPE=v2 bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 ```
 

@@ -80,11 +80,13 @@ jobs:
     # collide. The `adb reverse` mappings are per-device, so they cannot
     # collide either.
     #
-    # Two jobs on the same host would collide, though: in CI
-    # run-android-e2e.sh drives whichever device adb already lists, and the
-    # adb server is shared by everything on a host, so a second job would
-    # drive the first one's emulator. The Mac therefore has to keep a single
-    # runner, which also means the two shapes run one after the other.
+    # run-android-e2e.sh isolates AVD names, emulator console port ranges,
+    # Appium ports, UiAutomator2 systemPort, and log/screenshot directories per
+    # shape, so a v1 and a v2 run can share a host. Two runs of the same shape
+    # still collide: the adb server is shared by everything on a host, and a
+    # second v1 job would find and drive the first one's `fedimint-e2e-v1`
+    # emulator. The Mac therefore has to keep a single runner, which also means
+    # the two shapes run one after the other.
     #
     # Nothing here kills a previous run's emulator or federation. The runner
     # does that itself when the job ends, cancelled or timed out included: its
@@ -158,5 +160,5 @@ jobs:
           name: android-e2e-logs-${{ matrix.shape }}
           include-hidden-files: true
           path: |
-            js/android/integration-tests/.appium/*.log
-            js/android/integration-tests/screenshots/*
+            js/android/integration-tests/.appium/runs/**/*.log
+            js/android/integration-tests/screenshots/**
