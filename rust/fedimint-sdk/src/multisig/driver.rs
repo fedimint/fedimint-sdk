@@ -127,6 +127,8 @@ where
             // The backend's stream holds no client (see `MultisigBackend`), so the guard goes
             // with this call.
             let stream = S::updates(backend.as_ref(), &client, id).await?;
+            // The one place this build gets a live state from the backend, `current` included,
+            // so every state it persists as final has completed the details first. Keep it so.
             Ok(settled(until_final(completing_details(
                 stream,
                 federation.db(),
