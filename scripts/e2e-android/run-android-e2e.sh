@@ -127,7 +127,7 @@ if ! command -v appium >/dev/null 2>&1; then
   exit 1
 fi
 
-LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
+LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium-${FM_SDK_SHAPE:-default}}"
 mkdir -p "$LOG_DIR"
 
 # Appium is started with nohup, so it outlives this script unless stopped, and
@@ -156,7 +156,7 @@ if [[ -f "${APPIUM_HOME:-$LOG_DIR}/appium_port.txt" ]]; then
   echo "Appium is serving on port $APPIUM_PORT"
 fi
 
-AVD_NAME="fedimint-e2e"
+AVD_NAME="fedimint-e2e-${FM_SDK_SHAPE:-default}"
 
 ensure_avd_exists() {
   if emulator -list-avds | grep -qx "$AVD_NAME"; then return; fi
@@ -237,15 +237,10 @@ get_device_ids() {
 }
 
 if [[ "${CI:-}" == "true" ]]; then
-  # Non-interactive: reuse a running device if one exists, else boot the AVD.
-  device_ids=()
-  while IFS= read -r line; do device_ids+=("$line"); done < <(get_device_ids)
-  if [[ ${#device_ids[@]} -eq 0 ]]; then
-    boot_avd
-    DEVICE_ID=$BOOTED_SERIAL
-  else
-    DEVICE_ID=${device_ids[0]}
-  fi
+  # In CI, boot the shape-specific AVD ($AVD_NAME) on a dedicated port rather than
+  # blindly attaching to another concurrent matrix leg's running device.
+  boot_avd
+  DEVICE_ID=$BOOTED_SERIAL
   TESTS_TO_RUN=${TESTS_TO_RUN:-all}
 else
   while true; do
