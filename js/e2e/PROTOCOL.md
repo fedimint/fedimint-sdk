@@ -6,7 +6,8 @@ console and a dispatcher that maps each method below onto that platform's genera
 bindings. [`src/protocol`](src/protocol) is the machine-checked copy of this file:
 the suite decodes every answer against it. Keep the two in step.
 
-Harnesses: Android [`ConsoleActivity`](../../android/app/src/debug/java/org/fedimint/demo/harness/ConsoleActivity.kt).
+Harnesses: Android [`ConsoleActivity`](../../android/app/src/debug/java/org/fedimint/demo/harness/ConsoleActivity.kt),
+web [`js/web/sdk-harness`](../web/sdk-harness/src/dispatch.ts).
 
 ## The console
 

@@ -7,18 +7,21 @@ and shows a JSON answer, as [PROTOCOL.md](PROTOCOL.md) defines. What this adds o
 compiling the bindings is a running device: the native library is loaded and the
 calls execute against a real devimint federation.
 
-| target    | harness                                           | driven by            | CI                |
-| --------- | ------------------------------------------------- | -------------------- | ----------------- |
-| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml` |
+| target    | harness                                           | driven by            | CI                     |
+| --------- | ------------------------------------------------- | -------------------- | ---------------------- |
+| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml`      |
+| `web`     | `js/web/sdk-harness` (served by `vite preview`)   | Playwright, Chromium | `verify.yml` `web-e2e` |
 
 A target may list tests it cannot run yet in its `knownUnsupported`, with the reason;
-they are reported as `SKIPPED`, never silently dropped.
+they are reported as `SKIPPED`, never silently dropped. The web target lists `errors`
+today: a malformed invoice there throws an internal error instead of `INVALID_INPUT`.
 
 ## Running
 
 ```bash
 just test-e2e android        # a v1 federation (mint, wallet, ln)
 just test-e2e android v2     # a v2 federation (mintv2, walletv2, lnv2)
+just test-e2e web v2
 ```
 
 That builds the harness, then, inside the target's nix shell, starts devimint

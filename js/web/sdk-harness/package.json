@@ -1,0 +1,16 @@
+{
+  "name": "@fedimint/web-sdk-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fedimint/web-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0"
+  }
+}

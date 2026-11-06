@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SDK harness</title>
+    <style>
+      body {
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        margin: 12px;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+      }
+      textarea,
+      pre {
+        box-sizing: border-box;
+        width: 100%;
+        margin: 8px 0 0;
+        border: 1px solid #ccc;
+        padding: 6px;
+        font: inherit;
+      }
+      textarea {
+        height: 120px;
+      }
+      pre {
+        min-height: 200px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- The console of js/e2e/PROTOCOL.md. -->
+    <button id="run">Run</button>
+    <textarea
+      id="request"
+      spellcheck="false"
+      autocomplete="off"
+      autocapitalize="off"
+    ></textarea>
+    <pre id="response"></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
