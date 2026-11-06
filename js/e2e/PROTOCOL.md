@@ -7,7 +7,7 @@ bindings. [`src/protocol`](src/protocol) is the machine-checked copy of this fil
 the suite decodes every answer against it. Keep the two in step.
 
 Harnesses: Android [`ConsoleActivity`](../../android/app/src/debug/java/org/fedimint/demo/harness/ConsoleActivity.kt),
-web [`js/web/sdk-harness`](../web/sdk-harness/src/dispatch.ts).
+web [`js/web/sdk-harness`](../web/sdk-harness/src/dispatch.ts), iOS [`ios/Harness`](../../ios/Harness/Sources/Dispatcher.swift).
 
 ## The console
 

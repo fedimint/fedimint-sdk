@@ -8,6 +8,7 @@
   "dependencies": {
     "appium": "^3.6.0",
     "appium-uiautomator2-driver": "^8.5.0",
+    "appium-xcuitest-driver": "^12.22.8",
     "playwright": "1.56.1",
     "webdriverio": "^9.31.2"
   },

@@ -1,7 +1,7 @@
 import { ConsoleBackend } from '../backends/types'
 import { Method } from '../protocol/methods'
 
-export type TargetName = 'android' | 'web'
+export type TargetName = 'android' | 'ios' | 'web'
 
 /**
  * One platform the suite runs on: how to reach its harness and how to

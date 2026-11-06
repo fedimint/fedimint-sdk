@@ -7,10 +7,11 @@ and shows a JSON answer, as [PROTOCOL.md](PROTOCOL.md) defines. What this adds o
 compiling the bindings is a running device: the native library is loaded and the
 calls execute against a real devimint federation.
 
-| target    | harness                                           | driven by            | CI                     |
-| --------- | ------------------------------------------------- | -------------------- | ---------------------- |
-| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml`      |
-| `web`     | `js/web/sdk-harness` (served by `vite preview`)   | Playwright, Chromium | `verify.yml` `web-e2e` |
+| target    | harness                                           | driven by            | CI                                   |
+| --------- | ------------------------------------------------- | -------------------- | ------------------------------------ |
+| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml`                    |
+| `web`     | `js/web/sdk-harness` (served by `vite preview`)   | Playwright, Chromium | `verify.yml` `web-e2e`               |
+| `ios`     | `ios/Harness` (`org.fedimint.harness`)            | Appium, XCUITest     | not yet; runs locally on a simulator |
 
 A target may list tests it cannot run yet in its `knownUnsupported`, with the reason;
 they are reported as `SKIPPED`, never silently dropped. The web target lists `errors`

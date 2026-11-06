@@ -1,9 +1,11 @@
 import { AndroidTarget } from './android'
+import { IosTarget } from './ios'
 import { WebTarget } from './web'
 import { Target, TargetName } from './types'
 
 const TARGETS: Record<TargetName, () => Target> = {
   android: () => new AndroidTarget(),
+  ios: () => new IosTarget(),
   web: () => new WebTarget(),
 }
 
