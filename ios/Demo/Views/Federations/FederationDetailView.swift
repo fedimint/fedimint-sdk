@@ -26,6 +26,21 @@ struct FederationDetailView: View {
                     diagnosticCard(diagnostic)
                 }
 
+                if FederationStatusStyle.reconnects(model.federationStatus), let id = model.federationId {
+                    Button { model.switchFederation(to: id) } label: {
+                        BusyLabel(title: "Reconnect",
+                                  busy: model.isWorking(.switching) && model.switchTarget == id)
+                    }
+                    .buttonStyle(.primary)
+                    .disabled(model.isAttaching || model.isSending)
+                    if model.switchTarget == id, let failure = model.failures[.switching] {
+                        Text(failure)
+                            .font(Typeface.footnote)
+                            .foregroundStyle(Palette.danger)
+                            .textSelection(.enabled)
+                    }
+                }
+
                 if case .recovering = model.federationStatus {
                     Button("View recovery progress") { showingRecovery = true }
                         .buttonStyle(.secondary)
@@ -57,7 +72,8 @@ struct FederationDetailView: View {
         .navigationTitle("Federation")
         .navigationDestination(isPresented: $showingRecovery) { RecoveryView(model: model) }
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { model.refreshFederationStatus() }
+        // Only this screen's own Reconnect: not a switch failed on the list.
+        .onAppear { model.clearFailure(.switching) }
     }
 
     private var rails: String {

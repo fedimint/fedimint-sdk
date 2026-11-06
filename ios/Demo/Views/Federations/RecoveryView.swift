@@ -10,6 +10,7 @@ import FedimintSdk
 /// spend one twice. A stopped attempt does not unlock it; only `done` does.
 struct RecoveryView: View {
     @ObservedObject var model: DemoModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
@@ -56,6 +57,9 @@ struct RecoveryView: View {
         .navigationTitle("Recovery")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.followRecovery() }
+        // Another federation attached, from the Federations tab: this screen
+        // was about the one it replaced.
+        .onChange(of: model.attachments) { dismiss() }
     }
 
     private var fraction: Double? {

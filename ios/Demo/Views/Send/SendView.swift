@@ -84,6 +84,9 @@ struct SendView: View {
             .onChange(of: quoteReady) { _, ready in
                 if ready { reviewing = true }
             }
+            // Another federation attached: `attach` cleared this flow's quote and
+            // failure, so its review and result screens would describe nothing.
+            .onChange(of: model.attachments) { dismiss() }
         }
     }
 

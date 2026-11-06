@@ -217,9 +217,28 @@ enum FederationStatusStyle {
         case .recovering: return "Recovering"
         case .quarantined: return "Quarantined"
         case .closed: return "Closed"
-        case .forgetting: return "Forgetting"
-        case .forgotten: return "Forgotten"
+        case .forgetting: return "Removing"
+        case .forgotten: return "Removed"
         case nil: return "Unknown"
+        }
+    }
+
+    /// What tapping a federation that is not attached does, or `nil` when
+    /// nothing can: the SDK reopens neither a federation being removed nor
+    /// one already removed.
+    static func action(_ status: FederationStatus?) -> String? {
+        switch status {
+        case .running, .recovering: return "Switch"
+        case _ where reconnects(status): return "Reconnect"
+        default: return nil
+        }
+    }
+
+    /// Stored and intact but not running, so `reopenFederation` brings it back.
+    static func reconnects(_ status: FederationStatus?) -> Bool {
+        switch status {
+        case .quarantined, .closed: return true
+        default: return false
         }
     }
 
