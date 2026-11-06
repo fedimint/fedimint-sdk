@@ -22,17 +22,35 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="${1:-$ROOT/android/fedimint-sdk/src/main/jniLibs}"
+DEST="${1:-}"
+if [[ -z "$DEST" ]]; then
+  DEST="$ROOT/android/fedimint-sdk/src/main/jniLibs"
+fi
+TARGETS="${2:-all}"
 
-echo "==> nix build .#fedimint-sdk-android-jni"
-out="$(nix build "$ROOT#fedimint-sdk-android-jni" \
-  --accept-flake-config --no-link --print-out-paths)"
+if [[ "$TARGETS" == "arm64-only" ]]; then
+  echo "==> nix build .#fedimint-sdk-android-aarch64-linux-android (arm64-only)"
+  out="$(nix build "$ROOT#fedimint-sdk-android-aarch64-linux-android" \
+    --accept-flake-config --no-link --print-out-paths)"
+  mkdir -p "$DEST/arm64-v8a"
+  cp "$out/lib/libfedimint_sdk.so" "$DEST/arm64-v8a/"
+  # If the full jniLibs is already cached or reachable, sync libc++_shared.so
+  jni_out="$(nix build "$ROOT#fedimint-sdk-android-jni" --accept-flake-config --no-link --print-out-paths 2>/dev/null || true)"
+  if [[ -n "$jni_out" && -f "$jni_out/jniLibs/arm64-v8a/libc++_shared.so" ]]; then
+    cp "$jni_out/jniLibs/arm64-v8a/libc++_shared.so" "$DEST/arm64-v8a/"
+  fi
+  chmod -R u+w "$DEST/arm64-v8a"
+else
+  echo "==> nix build .#fedimint-sdk-android-jni"
+  out="$(nix build "$ROOT#fedimint-sdk-android-jni" \
+    --accept-flake-config --no-link --print-out-paths)"
 
-echo "==> Syncing $out/jniLibs -> $DEST"
-rm -rf "$DEST"
-mkdir -p "$DEST"
-cp -RL "$out/jniLibs/." "$DEST/"
-chmod -R u+w "$DEST"   # Nix store outputs are read-only; make them replaceable
+  echo "==> Syncing $out/jniLibs -> $DEST"
+  rm -rf "$DEST"
+  mkdir -p "$DEST"
+  cp -RL "$out/jniLibs/." "$DEST/"
+  chmod -R u+w "$DEST"   # Nix store outputs are read-only; make them replaceable
+fi
 
 echo "==> Done."
 find "$DEST" -type f | sort
