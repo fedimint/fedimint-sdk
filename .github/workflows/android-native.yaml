@@ -25,6 +25,12 @@ on:
   # Callable so a binding workflow can build its own input rather than
   # depending on a previous run's artifacts having survived.
   workflow_call:
+    inputs:
+      targets:
+        description: 'Target architectures to build (all | arm64-only)'
+        default: 'all'
+        required: false
+        type: string
     outputs:
       jni-artifact:
         description: 'Name of the uploaded jniLibs artifact'
@@ -94,17 +100,27 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: 'Build per-target .so + deps'
+        env:
+          TARGETS: ${{ inputs.targets || 'all' }}
         run: |
-          nix build -L --accept-flake-config \
-            .#fedimint-sdk-android-aarch64-linux-android \
-            .#fedimint-sdk-android-x86_64-linux-android \
-            .#fedimint-sdk-android-aarch64-linux-android-deps \
-            .#fedimint-sdk-android-x86_64-linux-android-deps
+          if [[ "$TARGETS" == "arm64-only" ]]; then
+            nix build -L --accept-flake-config \
+              .#fedimint-sdk-android-aarch64-linux-android \
+              .#fedimint-sdk-android-aarch64-linux-android-deps
+          else
+            nix build -L --accept-flake-config \
+              .#fedimint-sdk-android-aarch64-linux-android \
+              .#fedimint-sdk-android-x86_64-linux-android \
+              .#fedimint-sdk-android-aarch64-linux-android-deps \
+              .#fedimint-sdk-android-x86_64-linux-android-deps
+          fi
 
       # The shared artifact: jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so,
       # laid out the way AGP expects so a consumer needs no extra wiring.
       - name: 'Assemble the jniLibs tree'
-        run: ./scripts/nix-build-android-so.sh
+        env:
+          TARGETS: ${{ inputs.targets || 'all' }}
+        run: ./scripts/nix-build-android-so.sh "" "$TARGETS"
 
       - name: 'Upload jniLibs'
         uses: actions/upload-artifact@v4
@@ -118,11 +134,20 @@ jobs:
         # warm self-hosted store nothing is ever "new", so the entries would
         # quietly expire. Push the outputs explicitly instead.
         continue-on-error: true
+        env:
+          TARGETS: ${{ inputs.targets || 'all' }}
         run: |
-          nix build --accept-flake-config --no-link --print-out-paths \
-            .#fedimint-sdk-android-aarch64-linux-android \
-            .#fedimint-sdk-android-x86_64-linux-android \
-            .#fedimint-sdk-android-aarch64-linux-android-deps \
-            .#fedimint-sdk-android-x86_64-linux-android-deps \
-            .#fedimint-sdk-android-jni \
-            | cachix push fedimint
+          if [[ "$TARGETS" == "arm64-only" ]]; then
+            nix build --accept-flake-config --no-link --print-out-paths \
+              .#fedimint-sdk-android-aarch64-linux-android \
+              .#fedimint-sdk-android-aarch64-linux-android-deps \
+              | cachix push fedimint
+          else
+            nix build --accept-flake-config --no-link --print-out-paths \
+              .#fedimint-sdk-android-aarch64-linux-android \
+              .#fedimint-sdk-android-x86_64-linux-android \
+              .#fedimint-sdk-android-aarch64-linux-android-deps \
+              .#fedimint-sdk-android-x86_64-linux-android-deps \
+              .#fedimint-sdk-android-jni \
+              | cachix push fedimint
+          fi
