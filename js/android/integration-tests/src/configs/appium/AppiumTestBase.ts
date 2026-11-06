@@ -75,7 +75,8 @@ export class AppiumTestBase {
 
   /**
    * Tests name a view by the bare id it carries in the layout XML
-   * (`openWallet`, from android/app/src/main/res/layout/activity_main.xml).
+   * (`openWallet`, from the debug-only SDK harness's layout,
+   * android/app/src/debug/res/layout/activity_harness.xml).
    * On a native Android view that surfaces as a fully qualified resource-id,
    * `org.fedimint.demo:id/openWallet`, so the package under test is prepended
    * here rather than repeated at every call site. A key that already carries

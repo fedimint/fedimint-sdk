@@ -45,7 +45,10 @@ exception: `onchain.receive()` returns an address to pay and no operation, becau
 a deposit becomes an operation only once the federation's wallet finds the
 payment. Open `onchain.deposits()` before showing the address, so that a payment
 found right away is not missed, and call `next()` on it to wait for the next
-deposit's operation. The example app (`android/app`) drives each of them once.
+deposit's operation. The reference wallet in `android/app` is a complete app built
+on this surface: onboarding, federations, Lightning/ecash/on-chain payments,
+activity and recovery. See [`app/DECISION.md`](app/DECISION.md) for how it is put
+together and why.
 
 ## Using it
 
@@ -79,7 +82,7 @@ sdk.close()
 ```
 
 `createFedimintSdk`, `preview` and `join` are `suspend` functions doing real disk
-and network work — call them from a coroutine, as the example app does. `exportMnemonic()`
+and network work — call them from a coroutine, as the reference wallet does. `exportMnemonic()`
 and the `Mnemonic` / `InviteCode` methods are plain accessors.
 
 ### Error handling
@@ -178,7 +181,10 @@ just test-android-e2e         # build-android-apk, then drive the example app on
 `test-android-e2e` is the only one of these that needs a device: it installs the
 example app on an emulator and drives it with the Appium suite in
 [`js/android/integration-tests`](../js/android/integration-tests), so the
-bindings are loaded and the calls execute rather than merely compiling. It runs
+bindings are loaded and the calls execute rather than merely compiling. The
+suite drives the SDK harness, a one-screen page with every call on it that ships
+in debug builds only (`app/src/debug`, launched as `harness.HarnessActivity`),
+not the wallet's own screens. It runs
 in the `.#android-tests` shell, which adds the emulator, a system image and
 devimint to what `.#android` provides.
 
