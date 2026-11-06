@@ -23,7 +23,7 @@ const fixtures: Record<string, Fixture> = {
 }
 
 function captureAndroidLogcat(testName: string) {
-  const outDir = path.join(process.cwd(), '.appium')
+  const outDir = AppiumManager.logDir()
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
   const udid = AppiumManager.deviceId()
   if (!udid) return
@@ -165,21 +165,20 @@ async function runTests(testNames: string[]): Promise<void> {
         const drv = AppiumManager.getDriver()
         if (drv) {
           try {
+            const dir = AppiumManager.screenshotsDir()
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+
             const screenshot = await drv.takeScreenshot()
             const screenshotPath = path.join(
-              process.cwd(),
-              'screenshots',
+              dir,
               `${testName}-failure-${Date.now()}.png`,
             )
-            const dir = path.dirname(screenshotPath)
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
             fs.writeFileSync(screenshotPath, screenshot, 'base64')
             console.log(`Screenshot saved to: ${screenshotPath}`)
 
             const pageSource = await drv.getPageSource()
             const xmlPath = path.join(
-              process.cwd(),
-              'screenshots',
+              dir,
               `${testName}-failure-${Date.now()}.xml`,
             )
             fs.writeFileSync(xmlPath, pageSource)
