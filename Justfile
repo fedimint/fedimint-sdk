@@ -40,6 +40,23 @@ build-android-apk:
 test-android-e2e shape="v1": build-android-apk
     FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
+# The cross-platform SDK suite (js/e2e) on one target against a devimint
+# federation: builds the target's harness first, then runs scripts/e2e/run.sh
+# inside the target's nix shell, which only installs it. `shape` is v1 (mint,
+# wallet, ln) or v2 (mintv2, walletv2, lnv2).
+test-e2e target="android" shape="v1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      android) shell=android-tests ;;
+      *) echo "unknown e2e target '{{target}}' (known: android)" >&2; exit 1 ;;
+    esac
+    just build-e2e-{{target}}
+    FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config ".#$shell" -c scripts/setup_test_shell.sh bash scripts/e2e/run.sh {{target}}
+
+# The Android harness: the debug APK, whose harness.ConsoleActivity js/e2e drives.
+build-e2e-android: build-android-apk
+
 # Test the release checks: the component, version and changelog scripts the
 # release, tag and bump workflows rely on. Needs only bash and git, no build.
 test-sdk-release-scripts:

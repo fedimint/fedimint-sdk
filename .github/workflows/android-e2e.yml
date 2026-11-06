@@ -146,8 +146,8 @@ jobs:
             # Same entry point the browser package's tests use (js/package.json's
             # `test:setup`): devimint stands a federation up, exports its
             # ports, and execs the run inside it. The app reaches that
-            # federation through `adb reverse` — see the script.
-            bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+            # federation through `adb reverse` — see scripts/e2e/android.sh.
+            bash scripts/setup_test_shell.sh bash scripts/e2e/run.sh android
           EOF
 
       - name: Upload logs & screenshots
@@ -160,3 +160,4 @@ jobs:
           path: |
             js/android/integration-tests/.appium/*.log
             js/android/integration-tests/screenshots/*
+            js/e2e/.artifacts/**

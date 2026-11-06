@@ -157,7 +157,7 @@ jobs:
               # produce and then generating against it, which is a stronger
               # check than building the `.so` alone. None of these turns e2e on:
               # on a pull request only the label does.
-              android/*|rust/fedimint-sdk/*|rust/uniffi-bindgen/*|nix/*|flake.nix|flake.lock|scripts/nix-build-android-so.sh|scripts/generate-android-bindings.sh|scripts/build-android-sdk.sh|scripts/e2e-android/*|js/android/integration-tests/*|scripts/setup_test_shell.sh|scripts/devimint-modules.sh|.github/workflows/android-sdk.yaml|.github/workflows/android-native.yaml|.github/workflows/android-apk.yaml|.github/workflows/android-e2e.yml|.github/workflows/android-e2e-label.yml)
+              android/*|rust/fedimint-sdk/*|rust/uniffi-bindgen/*|nix/*|flake.nix|flake.lock|scripts/nix-build-android-so.sh|scripts/generate-android-bindings.sh|scripts/build-android-sdk.sh|scripts/e2e-android/*|js/android/integration-tests/*|scripts/e2e/*|js/e2e/*|scripts/setup_test_shell.sh|scripts/devimint-modules.sh|.github/workflows/android-sdk.yaml|.github/workflows/android-native.yaml|.github/workflows/android-apk.yaml|.github/workflows/android-e2e.yml|.github/workflows/android-e2e-label.yml)
                 android=true
                 ;;
             esac
