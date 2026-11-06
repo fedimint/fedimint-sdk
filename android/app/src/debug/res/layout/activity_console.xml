@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The console of js/e2e/PROTOCOL.md: `run` on top so nothing ever covers it,
+     then `request`, then `response` filling the rest. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <Button
+        android:id="@+id/run"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Run" />
+
+    <EditText
+        android:id="@+id/request"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:fontFamily="monospace"
+        android:gravity="top|start"
+        android:importantForAutofill="no"
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:textSize="12sp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/response"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+    </ScrollView>
+</LinearLayout>

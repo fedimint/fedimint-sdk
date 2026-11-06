@@ -21,6 +21,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The console harness the cross-platform suite (js/e2e) drives over
+             js/e2e/PROTOCOL.md. No launcher entry: started by name with `am start -n`. -->
+        <activity
+            android:name=".harness.ConsoleActivity"
+            android:exported="true"
+            android:label="SDK console"
+            android:theme="@style/Theme.FedimintHarness"
+            android:windowSoftInputMode="stateAlwaysHidden" />
     </application>
 
 </manifest>
