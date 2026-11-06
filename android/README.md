@@ -175,6 +175,13 @@ just build-android-apk        # the example APK, in the lean `.#android` shell
 just test-android-e2e         # build-android-apk, then drive the example app on an emulator
 ```
 
+For local ARM64 emulator or physical device iteration, prefix with `ANDROID_TARGETS=arm64`
+(e.g. `ANDROID_TARGETS=arm64 just build-android-so` or `ANDROID_TARGETS=arm64 just build-android-sdk`)
+to build only the `arm64-v8a` target and skip `x86_64`. This replaces the `jniLibs` destination
+with ARM64-only libraries; running with `ANDROID_TARGETS=all` (the default) restores both ABIs.
+Note that on x86_64 Linux hosts, emulators run x86_64 system images and require the default
+two-ABI build.
+
 `test-android-e2e` is the only one of these that needs a device: it installs the
 example app on an emulator and drives it with the Appium suite in
 [`js/android/integration-tests`](../js/android/integration-tests), so the
