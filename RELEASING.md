@@ -231,12 +231,12 @@ npm (a member of the `@fedimint` scope) does this:
    authentication and disallow tokens", and deprecate the placeholder with the same message:
    `npm deprecate "@fedimint/web-sdk@0.0.0" "Install @fedimint/web-sdk@beta instead"`.
 2. At most two days before the release: add the trusted publisher, which names this repository,
-   the workflow file `web-sdk-release.yaml` and the environment `npm`, with `npm publish` allowed.
-   On the command line that is `npm trust github @fedimint/web-sdk --file web-sdk-release.yaml
---repository fedimint/fedimint-sdk --environment npm --allow-publish`.
-3. After the release: move `latest` off the placeholder, with
-   `npm dist-tag add @fedimint/web-sdk@<version> latest`. A beta is published under `beta` only,
-   so without this `latest` stays on the placeholder until the first `X.Y.Z`.
+   the workflow file `web-sdk-release.yaml` and the environment `npm`, with `npm publish` and
+   "Allow npm dist-tag" allowed. The command line can only allow the first, with
+   `npm trust github @fedimint/web-sdk --file web-sdk-release.yaml --repository
+fedimint/fedimint-sdk --environment npm --allow-publish`, so tick "Allow npm dist-tag" in the
+   package's settings on npmjs.com afterwards. The release then moves `latest` off the
+   placeholder to its beta.
 
 The repository needs the settings that "What the releases rely on" lists for the web SDK as well:
 the `npm` environment has to accept `web-sdk-v*` tags, and the `web-sdk-v*` tag ruleset has to
@@ -268,9 +268,10 @@ two days of step 2.
 - **A release workflow fails half way.** Re-run its failed jobs, not all jobs (Actions → the
   failed run → Re-run failed jobs). A crate that crates.io already has from the tagged commit is
   not published again, and an npm package that is already there as the tarball this run built is
-  skipped, so both releases go on from where they stopped. The GitHub Release is created or
-  updated again. A version that a registry has from another build stops the release instead (see
-  the next point). For the Android release, a re-run of the `publish` job for a version that
+  skipped, so both releases go on from where they stopped. An npm beta that went out but whose
+  move of `latest` failed gets `latest` moved then. The GitHub Release is created or updated
+  again. A version that a registry has from another build stops the release instead (see the
+  next point). For the Android release, a re-run of the `publish` job for a version that
   Central published fails and changes nothing, because Central refuses a version it has. A re-run
   after a failed validation uploads again, as nothing was published. If the job ran out of time
   waiting for Central, the version may be out already: read "Releases" in
@@ -366,8 +367,10 @@ Settings outside this repository's files. All of them have to be in place before
   commit.
 - **npm trusted publishing.** Each of the two React Native packages names this repository, the
   workflow file `react-native-sdk-release.yaml` and the environment `npm` as a trusted publisher,
-  with `npm publish` among the allowed actions, and `@fedimint/web-sdk` names the workflow file
-  `web-sdk-release.yaml` in the same way. npm only lets a package that exists set up trusted
+  with `npm publish` and "Allow npm dist-tag" among the allowed actions, and `@fedimint/web-sdk`
+  names the workflow file `web-sdk-release.yaml` in the same way. The dist-tag permission is what
+  lets a beta move `latest` while no `X.Y.Z` is out; without it, the publish job publishes the
+  beta and then fails to move `latest`. npm only lets a package that exists set up trusted
   publishing; "The first release of the web SDK" says how the web SDK gets there.
 - **Maven Central credentials.** A Central Portal user token (`MAVEN_CENTRAL_USERNAME` and
   `MAVEN_CENTRAL_PASSWORD`) and the signing key with its passphrase (`MAVEN_SIGNING_KEY` and

@@ -40,7 +40,9 @@ that bundle from the libraries the Swift SDK is built from instead (see Packing 
 The two packages share one version, which is on the SDK's shared line of versions:
 [`RELEASING.md`](../../RELEASING.md#versions) has the rules and says which bump a change calls
 for. A version is `X.Y.Z-beta.N` (a beta, published under the npm dist-tag `beta`) or `X.Y.Z` (a
-release, published under `latest`), and nothing else.
+release, published under `latest`), and nothing else. A beta moves `latest` to itself as well, as
+long as `latest` is on no `X.Y.Z`, so until the first release a plain install gets the newest
+beta.
 
 The version is in the tree, in both `package.json` files, and the SDK Version Bump workflow sets
 it. Both files stay `"private": true`, which keeps everything else in the repository that
@@ -52,8 +54,8 @@ its own version. The generated API and the native library behind it only fit tog
 come from the same build.
 
 While every release is a beta, the install commands in
-[`react-native/README.md`](react-native/README.md) name the `beta` tag. They lose it with the
-first `X.Y.Z`, which is what moves `latest`.
+[`react-native/README.md`](react-native/README.md) name the `beta` tag, which is always on the
+newest beta. They lose it with the first `X.Y.Z`, after which a beta no longer moves `latest`.
 
 ### Releases
 
@@ -147,12 +149,12 @@ in place before a release:
 
 - **npm trusted publishing.** Each of the two packages on npmjs.com (Settings → Trusted
   Publisher) names this repository, the workflow file `react-native-sdk-release.yaml` and the
-  environment `npm` as its publisher, with `npm publish` among the allowed actions. npm drops a
-  trusted publisher that has not published within two days of being set up, so set it up right
-  before the first release. Once a release has gone through, set both packages' publishing access
-  to "Require two-factor authentication and disallow tokens": no token can publish them then.
-  That leaves this workflow and a maintainer who publishes by hand, signed in with two-factor
-  authentication.
+  environment `npm` as its publisher, with `npm publish` and "Allow npm dist-tag" among the
+  allowed actions: a beta moves `latest` while no `X.Y.Z` is out. npm drops a trusted publisher
+  that has not published within two days of being set up, so set it up right before the first
+  release. Once a release has gone through, set both packages' publishing access to "Require
+  two-factor authentication and disallow tokens": no token can publish them then. That leaves
+  this workflow and a maintainer who publishes by hand, signed in with two-factor authentication.
 - **The `npm` environment** (Settings → Environments), with required reviewers and with
   deployments limited to tags matching `react-native-sdk-v*` and `web-sdk-v*` (the web SDK
   publishes in it too). It has "Prevent self-review" on, so that whoever started a release run,

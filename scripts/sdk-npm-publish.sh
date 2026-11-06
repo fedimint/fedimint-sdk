@@ -16,38 +16,48 @@
 # npm before them. A beta goes to the dist-tag `beta` and a release to `latest`, since npm refuses
 # a prerelease without a tag.
 #
+# A beta also moves `latest` of each package to it, once every package is published, while
+# `latest` is on no release `X.Y.Z` of the package: on the placeholder `0.0.0`, a snapshot
+# `0.0.0-*`, an older beta, or nowhere. So until the first `X.Y.Z`, a plain `npm install` gets
+# the newest beta. `latest` stays where it is when it is on a release, or on a version the beta
+# is not newer than, and the script says so.
+#
 # The tarballs of a component were tested together, and only they are ever released. A release
 # that stopped half way can be run again with the same tarballs: a package whose version is
 # already on npm is skipped, and so is one that turns out to be on npm although `npm publish`
-# reported an error, as long as npm serves that very tarball. A version that is on npm as any
-# other tarball stops the script. That is what building the packages again for a release that
-# already published one of them leads to, unless the build comes out byte for byte the same, and
-# the way out is the next version.
+# reported an error, as long as npm serves that very tarball. `latest` is moved all the same, so
+# running again also finishes a release that stopped before moving it. A version that is on npm
+# as any other tarball stops the script. That is what building the packages again for a release
+# that already published one of them leads to, unless the build comes out byte for byte the same,
+# and the way out is the next version.
 #
 # A dist-tag never moves back either. When the dist-tag a package would be published under is
 # already on a newer version, a later release has replaced this one, and the script stops.
 #
 # Every package is checked before anything is uploaded: one whose version is on npm has to be
-# there as the local tarball, and one whose version is not must not move its dist-tag back. A
-# release that is refused there has uploaded nothing. When the script succeeds, the files in
-# <dir> are exactly what is on npm, and <dir>/SHA256SUMS lists their SHA-256 digests in the
-# format `sha256sum -c` reads, for the GitHub Release to carry.
+# there as the local tarball, and one whose version is not must not move its dist-tag back. Where
+# `latest` goes is decided then too. A release that is refused there has uploaded nothing. When
+# the script succeeds, the files in <dir> are exactly what is on npm, and <dir>/SHA256SUMS lists
+# their SHA-256 digests in the format `sha256sum -c` reads, for the GitHub Release to carry.
 #
 # A registry that cannot be asked stops the script before anything further is published: a
-# version that is on npm must not look like one that is not. Publishing uses npm's trusted
-# publishing (OIDC), which needs npm 11.5.1 or later and no token, and adds the provenance
-# statement by itself.
+# version that is on npm must not look like one that is not. Publishing and moving `latest` use
+# npm's trusted publishing (OIDC), which needs no token and adds the provenance statement by
+# itself. Moving a dist-tag with it needs npm 11.21.0 or later (12.2.0 or later on npm 12), and a
+# trusted publisher that allows `npm dist-tag`.
 #
 # `--dry-run` only runs `npm publish --dry-run` on every tarball: it asks the registry nothing
-# and writes nothing.
+# and writes nothing, so it does not say whether `latest` would move.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/sdk-components.sh
 . "$ROOT/scripts/sdk-components.sh"
 VERSION_SCRIPT="$ROOT/scripts/sdk-version.sh"
-# The oldest npm that can publish with trusted publishing.
-MIN_NPM=(11 5 1)
+# The oldest npm that can move a dist-tag with trusted publishing, and the oldest of npm 12, which
+# gained it later than npm 11 did.
+MIN_NPM=(11 21 0)
+MIN_NPM_12=(12 2 0)
 
 die() {
     echo "$*" >&2
@@ -104,23 +114,36 @@ integrity() {
     ' "$1"
 }
 
-# Stops the script unless npm is new enough to publish with trusted publishing.
+# Succeeds when the version $1.$2.$3 is $4.$5.$6 or later.
+at_least() {
+    local -a have=("$1" "$2" "$3") want=("$4" "$5" "$6")
+    local i
+    for i in 0 1 2; do
+        if ((10#${have[i]} != want[i])); then
+            ((10#${have[i]} > want[i])) && return 0
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Stops the script unless npm is new enough to publish and to move a dist-tag with trusted
+# publishing.
 check_npm() {
-    local found i
+    local found
+    local -a have
     found="$(npm --version)" ||
         die "cannot run npm --version; install npm ${MIN_NPM[0]}.${MIN_NPM[1]}.${MIN_NPM[2]}"
     if [[ ! "$found" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
         die "cannot read a version from the output of npm --version: $found"
     fi
-    for i in 0 1 2; do
-        if ((10#${BASH_REMATCH[i + 1]} > MIN_NPM[i])); then
-            return
-        fi
-        if ((10#${BASH_REMATCH[i + 1]} < MIN_NPM[i])); then
-            die "npm $found is too old: publishing with trusted publishing needs npm" \
-                "${MIN_NPM[0]}.${MIN_NPM[1]}.${MIN_NPM[2]} or later"
-        fi
-    done
+    have=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+    if ! at_least "${have[@]}" "${MIN_NPM[@]}" ||
+        { ((10#${have[0]} == MIN_NPM_12[0])) && ! at_least "${have[@]}" "${MIN_NPM_12[@]}"; }; then
+        die "npm $found is too old: moving a dist-tag with trusted publishing needs npm" \
+            "${MIN_NPM[0]}.${MIN_NPM[1]}.${MIN_NPM[2]} or later, and" \
+            "${MIN_NPM_12[0]}.${MIN_NPM_12[1]}.${MIN_NPM_12[2]} or later on npm ${MIN_NPM_12[0]}"
+    fi
 }
 
 # Succeeds when $1@$2 is on npm and fails when it is not. Stops the script when npm cannot say,
@@ -249,6 +272,39 @@ publish_one() {
     echo "published $name@$version under $tag"
 }
 
+# Decides whether `latest` of the package $1 is to follow its beta $2, and prints `move` when it is.
+# Otherwise it prints why `latest` stays. It prints, so call it as `x="$(latest_plan ...)" ||
+# exit 1`: its own exit only leaves the command substitution.
+latest_plan() {
+    local name="$1" version="$2" current
+    current="$(dist_tag "$name" latest)" || exit 1
+    if [[ -z "$current" ]]; then
+        echo move
+    elif [[ "$current" == "$version" ]]; then
+        echo "latest of $name is already on $version"
+    elif [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$current" != 0.0.0 ]]; then
+        echo "latest of $name stays on $current, a release"
+    elif "$VERSION_SCRIPT" check-newer --published "$version" <<<"$current" >/dev/null 2>&1; then
+        echo move
+    else
+        echo "latest of $name stays on $current, which $version is not newer than"
+    fi
+}
+
+# Moves `latest` of the package $1 to $2 when the plan $3 from latest_plan is `move`, and otherwise
+# prints the plan.
+move_latest() {
+    local name="$1" version="$2" plan="$3"
+    if [[ "$plan" != move ]]; then
+        echo "$plan"
+        return
+    fi
+    npm dist-tag add "$name@$version" latest ||
+        die "npm dist-tag add $name@$version latest failed: $name@$version is on npm under beta," \
+            "but latest is not on it yet. Run the release again to move it."
+    echo "moved latest of $name to $version"
+}
+
 # Writes SHA256SUMS in the directory $1 for the files $2... in it.
 write_sums() {
     local dir="$1"
@@ -333,13 +389,25 @@ if ((dry_run)); then
 fi
 
 check_npm
-# Nothing is uploaded before every package has passed.
+# Nothing is uploaded before every package has passed, and where `latest` goes is decided before
+# anything is uploaded too.
+plans=()
 for i in "${!packages[@]}"; do
     preflight "${tarballs[i]}" "${packages[i]}" "$version" "$tag"
+    if [[ "$tag" == beta ]]; then
+        plan="$(latest_plan "${packages[i]}" "$version")" || exit 1
+        plans+=("$plan")
+    fi
 done
 for i in "${!packages[@]}"; do
     publish_one "${tarballs[i]}" "${packages[i]}" "$version" "$tag"
 done
+# In the order the packages were published in, once they all are.
+if [[ "$tag" == beta ]]; then
+    for i in "${!packages[@]}"; do
+        move_latest "${packages[i]}" "$version" "${plans[i]}"
+    done
+fi
 names=()
 for tarball in "${tarballs[@]}"; do
     names+=("${tarball##*/}")
