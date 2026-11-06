@@ -74,11 +74,10 @@ jobs:
   # whole chain, e2e included: a merge group, a manual run, or the release and
   # snapshot workflows calling this one.
   #
-  # The queue ignores the path list on purpose. It is the last check before
-  # main, and e2e also depends on files outside the list: the setup-nix action,
-  # the JS lockfile the suite installs from, and devimint-shape.sh, which
-  # setup_test_shell.sh sources. Running it for every queued PR costs few runs,
-  # since most merges touch Android anyway.
+  # In the merge queue, changed paths are checked against the full list of Android
+  # dependencies (including setup-nix, devimint-shape.sh, and the JS lockfile).
+  # Android changes run the full chain (e2e included); non-Android PRs skip it,
+  # unblocking the single Mac runner.
   changes:
     name: 'Detect changes'
     runs-on: ubuntu-24.04
@@ -103,6 +102,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           E2E_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-android-e2e') }}
         run: |
           set -euo pipefail
@@ -131,7 +132,17 @@ jobs:
                 run_everything
               fi
               ;;
-            # A merge group, a manual run, or a release or snapshot call.
+            merge_group)
+              # In a merge group, HEAD^2 is the incoming PR head and HEAD^1 is the queue
+              # base. Diffing HEAD^1...HEAD^2 isolates this PR's delta and avoids
+              # inheriting diffs from preceding queue entries.
+              if git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+                diff_args=("HEAD^1...HEAD^2")
+              else
+                diff_args=("$MERGE_GROUP_BASE_SHA" "$MERGE_GROUP_HEAD_SHA")
+              fi
+              ;;
+            # A manual run, or a release or snapshot call.
             *)
               run_everything
               emit_outputs
@@ -143,25 +154,75 @@ jobs:
           # it as a deletion plus an addition keeps both sides covered.
           changed_files="$RUNNER_TEMP/changed-files"
           if ! git diff --no-renames --name-only -z "${diff_args[@]}" > "$changed_files"; then
-            echo "Could not determine changed paths; building the whole chain." >&2
-            android=true
+            echo "Could not determine changed paths; fail-safe fallback to full chain." >&2
+            run_everything
             emit_outputs
             exit 0
           fi
 
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              # Everything the chain builds from, and the e2e suite and the
-              # workflows that run it. The Nix and flake paths are here because
-              # a change to the derivations is validated by building what they
-              # produce and then generating against it, which is a stronger
-              # check than building the `.so` alone. None of these turns e2e on:
-              # on a pull request only the label does.
-              android/*|rust/fedimint-sdk/*|rust/uniffi-bindgen/*|nix/*|flake.nix|flake.lock|scripts/nix-build-android-so.sh|scripts/generate-android-bindings.sh|scripts/build-android-sdk.sh|scripts/e2e-android/*|js/android/integration-tests/*|scripts/setup_test_shell.sh|scripts/devimint-modules.sh|.github/workflows/android-sdk.yaml|.github/workflows/android-native.yaml|.github/workflows/android-apk.yaml|.github/workflows/android-e2e.yml|.github/workflows/android-e2e-label.yml)
-                android=true
+          # Explicit safe leaf files: documentation, licenses, and editor formatting.
+          # Only changes matching these exclusively can be safely skipped.
+          is_safe_leaf() {
+            case "$1" in
+              *.md|docs/*|LICENSE|.gitignore|.prettier*|.envrc)
+                return 0
+                ;;
+              *)
+                return 1
                 ;;
             esac
+          }
+
+          is_android_dep() {
+            case "$1" in
+              # Everything the chain builds from, the e2e suite, and the workflows/actions that run it.
+              android/*|\
+              rust/fedimint-sdk/*|\
+              rust/uniffi-bindgen/*|\
+              nix/*|flake.nix|flake.lock|\
+              scripts/nix-build-android-so.sh|\
+              scripts/generate-android-bindings.sh|\
+              scripts/build-android-sdk.sh|\
+              scripts/e2e-android/*|\
+              js/android/integration-tests/*|\
+              scripts/setup_test_shell.sh|\
+              scripts/devimint-modules.sh|\
+              scripts/devimint-shape.sh|\
+              .github/actions/setup-nix/*|\
+              .github/workflows/android-sdk.yaml|\
+              .github/workflows/android-native.yaml|\
+              .github/workflows/android-apk.yaml|\
+              .github/workflows/android-e2e.yml|\
+              .github/workflows/android-e2e-label.yml|\
+              js/pnpm-lock.yaml|js/package.json)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          has_unclassified=false
+
+          while IFS= read -r -d '' path; do
+            if is_android_dep "$path"; then
+              android=true
+            elif ! is_safe_leaf "$path"; then
+              # Unclassified file (e.g. root config, Justfile, new workflow). Fail-closed: run full chain.
+              has_unclassified=true
+            fi
           done < "$changed_files"
+
+          if [[ "$has_unclassified" == true ]]; then
+            echo "Detected unclassified files in changeset; fail-closed trigger." >&2
+            android=true
+          fi
+
+          # Any Android change merging to main must pass e2e in the merge queue.
+          if [[ "$android" == true && "$EVENT_NAME" == "merge_group" ]]; then
+            e2e=true
+          fi
 
           emit_outputs
 
