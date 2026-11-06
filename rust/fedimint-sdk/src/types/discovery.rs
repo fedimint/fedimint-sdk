@@ -140,7 +140,7 @@ pub(crate) fn dev_federation() -> DiscoveredFederation {
 }
 
 /// Raw representation of a Nostr NIP-87 `kind:38173` event.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RawNip87Event {
     #[serde(default)]
     pub id: Option<String>,
@@ -154,6 +154,55 @@ pub struct RawNip87Event {
     pub tags: Vec<Vec<String>>,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub sig: Option<String>,
+}
+
+impl RawNip87Event {
+    /// Verifies the NIP-01 Schnorr signature of the event.
+    ///
+    /// Validates that:
+    /// 1. `id`, `pubkey`, `created_at`, `kind`, and `sig` are present and well-formed.
+    /// 2. Canonical NIP-01 serialization `[0, pubkey, created_at, kind, tags, content]`
+    ///    SHA256 hashes to `id`.
+    /// 3. `sig` is a valid BIP-340 Schnorr signature over `id` verified by `pubkey`.
+    pub fn verify_signature(&self) -> bool {
+        let (Some(id_hex), Some(pubkey_hex), Some(created_at), Some(kind), Some(sig_hex)) = (
+            self.id.as_deref(),
+            self.pubkey.as_deref(),
+            self.created_at,
+            self.kind,
+            self.sig.as_deref(),
+        ) else {
+            return false;
+        };
+
+        let Ok(serialized) =
+            serde_json::to_string(&(0, pubkey_hex, created_at, kind, &self.tags, &self.content))
+        else {
+            return false;
+        };
+
+        use fedimint_core::bitcoin::hashes::{Hash, sha256};
+        let computed_id = sha256::Hash::hash(serialized.as_bytes());
+        let computed_id_hex = format!("{computed_id:x}");
+        if !computed_id_hex.eq_ignore_ascii_case(id_hex) {
+            return false;
+        }
+
+        use std::str::FromStr;
+        let Ok(pubkey) = fedimint_core::secp256k1::XOnlyPublicKey::from_str(pubkey_hex) else {
+            return false;
+        };
+        let Ok(sig) = fedimint_core::secp256k1::schnorr::Signature::from_str(sig_hex) else {
+            return false;
+        };
+
+        let msg = fedimint_core::secp256k1::Message::from_digest(computed_id.to_byte_array());
+        fedimint_core::secp256k1::SECP256K1
+            .verify_schnorr(&sig, &msg, &pubkey)
+            .is_ok()
+    }
 }
 
 impl std::convert::TryFrom<RawNip87Event> for DiscoveredFederation {
@@ -165,7 +214,18 @@ impl std::convert::TryFrom<RawNip87Event> for DiscoveredFederation {
             return Err("missing or unsupported event kind: expected 38173");
         }
 
-        // 2. Extract federation ID from 'd' tag
+        // 2. Reject events too far in the future (15-minute NIP-01 clock drift tolerance)
+        if let Some(created_at) = raw.created_at {
+            let now_secs = fedimint_core::time::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if created_at > now_secs.saturating_add(900) {
+                return Err("event created_at is too far in the future");
+            }
+        }
+
+        // 3. Extract federation ID from 'd' tag
         let d_tag = raw
             .tags
             .iter()
