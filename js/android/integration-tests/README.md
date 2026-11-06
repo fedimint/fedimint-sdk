@@ -69,7 +69,6 @@ just build-android-apk                       # `.#android`: native lib, Kotlin, 
 
 nix develop .#android-tests
 pnpm --dir js install                        # first time only
-bash scripts/e2e-android/setup-and-start-appium.sh   # one-time per shell: installs/starts Appium
 FM_SDK_SHAPE=v2 bash scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 ```
 
@@ -116,6 +115,13 @@ module generations by design, so there is no successful payment to test there.
 
 Capabilities read the same on both generations, so `federation` checks the module kinds
 `preview` reports against the shape, and fails if any of the other generation's are present.
+
+Overlapping `v1` and `v2` runs on the same host are supported: AVD names (`fedimint-e2e-v1` vs
+`fedimint-e2e-v2`), Appium ports, UiAutomator2 system ports, and log directories are isolated
+per shape. Concurrent runs of the same shape (e.g. two `v1` runs) remain unsupported because
+they collide on the shared host `adb` server and the same AVD name. When running overlapping
+shapes interactively, choose distinct devices or let the script pick its default shape-specific
+AVDs.
 
 ## The tests
 
