@@ -18,8 +18,6 @@ pub use account::{
     MemberKey, MultisigAccount, MultisigAccountId, MultisigAmount, MultisigDenomination, Policy,
 };
 pub use backend::MultisigBackend;
-#[cfg(feature = "extension-api")]
-pub use backend::MultisigSweep;
 pub(crate) use driver::{MultisigDepositDriver, MultisigSweepDriver, MultisigTransferDriver};
 pub use proposal::{Approval, Proposal};
 
@@ -344,6 +342,10 @@ impl Multisig {
     /// once a payout this member proposed is [`Done`](MultisigTransferState::Done), and when the
     /// application starts, to collect any payout that finished while it was not running.
     ///
+    /// The sweep takes whatever is waiting when the federation processes it, a payout that lands
+    /// in the meantime included, so how much it moved is known once it is
+    /// [`Done`](MultisigSweepState::Done).
+    ///
     /// # Errors
     ///
     /// [`Recovering`](crate::ErrorCode::Recovering) while a recovery for this federation is
@@ -354,16 +356,16 @@ impl Multisig {
         let federation = &self.inner.federation;
         federation.ensure_open()?;
         let client = federation.client(true).await?;
-        let Some(sweep) = self.inner.backend.sweep(&client).await? else {
+        let Some(id) = self.inner.backend.sweep(&client).await? else {
             return Ok(None);
         };
         let details = MultisigSweepDetails {
-            amount: sweep.amount,
+            amount: None,
             created_at: Timestamp::from_epoch_millis(crate::db::now_millis()),
         };
         federation
             .create_operation(
-                sweep.operation,
+                id,
                 kinds::MULTISIG_SWEEP,
                 &self.inner.backend.module_kind(),
                 &driver::SweepDetailsWire::from(&details),
@@ -527,7 +529,10 @@ pub enum MultisigSweepState {
     /// The federation accepted it, and is issuing the ecash.
     Accepted,
     /// Final: the swept value is in the ecash balance.
-    Done,
+    Done {
+        /// How much the sweep moved into the ecash balance, before the fee for issuing it.
+        amount: Amount,
+    },
     /// Final: the sweep did not go through, and what was waiting is still waiting.
     Failed {
         /// Human-readable explanation. Diagnostic only, not a stable contract, and not something
@@ -542,7 +547,7 @@ impl OperationState for MultisigSweepState {
     fn is_final(&self) -> bool {
         match self {
             MultisigSweepState::Created | MultisigSweepState::Accepted => false,
-            MultisigSweepState::Done | MultisigSweepState::Failed { .. } => true,
+            MultisigSweepState::Done { .. } | MultisigSweepState::Failed { .. } => true,
         }
     }
 }
@@ -595,13 +600,16 @@ impl DetailedOperationState for MultisigTransferState {
 
 /// What a [`Multisig::sweep`] is, as opposed to where it has got to.
 ///
-/// Every field is fixed when the sweep starts.
+/// Every field but [`amount`](MultisigSweepDetails::amount) is fixed when the sweep starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[non_exhaustive]
 pub struct MultisigSweepDetails {
-    /// How much the sweep moves into the ecash balance, before the fee for issuing it.
-    pub amount: Amount,
+    /// How much the sweep moved into the ecash balance, before the fee for issuing it: the amount
+    /// its [`Done`](MultisigSweepState::Done) state carries.
+    ///
+    /// `None` until then, and for a sweep that failed.
+    pub amount: Option<Amount>,
     /// When the sweep started, by this device's clock.
     pub created_at: Timestamp,
 }
@@ -699,7 +707,7 @@ impl MultisigBackend for UnreachableBackend {
     fn sweep<'a>(
         &'a self,
         _client: &'a fedimint_client::Client,
-    ) -> fedimint_core::util::BoxFuture<'a, Result<Option<backend::MultisigSweep>>> {
+    ) -> fedimint_core::util::BoxFuture<'a, Result<Option<fedimint_core::core::OperationId>>> {
         Box::pin(async { Err(UnreachableBackend::reached()) })
     }
 
