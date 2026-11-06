@@ -1,0 +1,55 @@
+# XcodeGen spec for the iOS SDK harness: the console app js/e2e drives over
+# js/e2e/PROTOCOL.md, the iOS counterpart of android/app's debug-only
+# harness.ConsoleActivity. Its own project, apart from ios/Demo, so it is never
+# built into the demo wallet. The .xcodeproj is generated and gitignored.
+#
+# `just build-e2e-ios` builds the SDK, generates this and compiles it for the
+# simulator.
+
+name: FedimintHarness
+
+options:
+  bundleIdPrefix: org.fedimint
+  deploymentTarget:
+    iOS: '17.0'
+  createIntermediateGroups: true
+
+packages:
+  # The SDK under test, as the local package, like the demo.
+  FedimintSdk:
+    path: ..
+
+targets:
+  FedimintHarness:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: FedimintSdk
+        product: FedimintSdk
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: SDK Harness
+        CFBundleShortVersionString: '1.0'
+        CFBundleVersion: '1'
+        UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        # Simulator only; it is never signed or shipped.
+        CODE_SIGNING_ALLOWED: 'NO'
+        CODE_SIGNING_REQUIRED: 'NO'
+        GENERATE_INFOPLIST_FILE: 'NO'
+        PRODUCT_BUNDLE_IDENTIFIER: org.fedimint.harness
+        SWIFT_VERSION: '5.9'
+        TARGETED_DEVICE_FAMILY: '1'
+
+schemes:
+  FedimintHarness:
+    build:
+      targets:
+        FedimintHarness: all
+    run:
+      config: Debug

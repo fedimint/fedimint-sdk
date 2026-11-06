@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-#   scripts/e2e/run.sh <target>          target: android | web
+#   scripts/e2e/run.sh <target>          target: android | ios | web
 #
 # Runs the cross-platform SDK suite (js/e2e) on one target, against the
 # devimint federation scripts/setup_test_shell.sh started around it:
@@ -21,9 +21,9 @@ source "$E2E_DIR/lib.sh"
 
 TARGET="${1:-}"
 case "$TARGET" in
-  android | web) ;;
+  android | ios | web) ;;
   *)
-    echo "usage: $0 <android|web>" >&2
+    echo "usage: $0 <android|ios|web>" >&2
     exit 1
     ;;
 esac
