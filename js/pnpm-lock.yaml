@@ -84,6 +84,9 @@ importers:
       appium-uiautomator2-driver:
         specifier: ^8.5.0
         version: 8.7.0(@types/node@22.19.11)(appium@3.7.0(@types/node@22.19.11)(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1))
+      playwright:
+        specifier: 1.56.1
+        version: 1.56.1
       webdriverio:
         specifier: ^9.31.2
         version: 9.31.9(supports-color@8.1.1)
@@ -308,6 +311,19 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+
+  web/sdk-harness:
+    dependencies:
+      '@fedimint/web-sdk':
+        specifier: workspace:*
+        version: link:../web-sdk
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.9.0)
 
   web/web-sdk:
     dependencies:
@@ -17253,6 +17269,22 @@ snapshots:
       lightningcss: 1.31.1
       terser: 5.46.0
       yaml: 2.8.2
+
+  vite@7.3.6(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.9.0):
+    dependencies:
+      esbuild: 0.28.2
+      fdir: 6.5.0(picomatch@4.0.3)
+      picomatch: 4.0.3
+      postcss: 8.5.6
+      rollup: 4.59.0
+      tinyglobby: 0.2.15
+    optionalDependencies:
+      '@types/node': 22.19.11
+      fsevents: 2.3.3
+      jiti: 2.6.1
+      lightningcss: 1.31.1
+      terser: 5.46.0
+      yaml: 2.9.0
 
   vitest@4.1.11(@types/node@22.19.11)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(happy-dom@20.7.0)(jsdom@20.0.3(supports-color@8.1.1))(vite@7.3.6(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2)):
     dependencies:

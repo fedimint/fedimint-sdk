@@ -1,8 +1,10 @@
 import { AndroidTarget } from './android'
+import { WebTarget } from './web'
 import { Target, TargetName } from './types'
 
 const TARGETS: Record<TargetName, () => Target> = {
   android: () => new AndroidTarget(),
+  web: () => new WebTarget(),
 }
 
 /** The target `E2E_TARGET` names. */

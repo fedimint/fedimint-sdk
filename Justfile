@@ -49,13 +49,19 @@ test-e2e target="android" shape="v1":
     set -euo pipefail
     case "{{target}}" in
       android) shell=android-tests ;;
-      *) echo "unknown e2e target '{{target}}' (known: android)" >&2; exit 1 ;;
+      web) shell=wasm-tests ;;
+      *) echo "unknown e2e target '{{target}}' (known: android, web)" >&2; exit 1 ;;
     esac
     just build-e2e-{{target}}
     FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config ".#$shell" -c scripts/setup_test_shell.sh bash scripts/e2e/run.sh {{target}}
 
 # The Android harness: the debug APK, whose harness.ConsoleActivity js/e2e drives.
 build-e2e-android: build-android-apk
+
+# The web harness: the browser package over freshly generated bindings, and the harness page
+# js/e2e drives, bundled into js/web/sdk-harness/dist.
+build-e2e-web: generate-sdk-web-bindings
+    nix develop --accept-flake-config .#wasm -c bash -c 'pnpm --dir js build && pnpm --dir js/web/sdk-harness bundle'
 
 # Test the release checks: the component, version and changelog scripts the
 # release, tag and bump workflows rely on. Needs only bash and git, no build.
