@@ -74,7 +74,7 @@ pub(crate) use page::page;
     doc = "\
 | [`MultisigDeposit`](OperationKind::MultisigDeposit) | amount put into the account | `None`, not recorded |
 | [`MultisigTransfer`](OperationKind::MultisigTransfer) | amount paid out of the account, `None` when it is fiat; no direction, as it moves value between two accounts and not this balance | `None` |
-| [`MultisigSweep`](OperationKind::MultisigSweep) | payouts moved into the balance | `None`, not recorded |"
+| [`MultisigSweep`](OperationKind::MultisigSweep) | payouts moved into the balance; `None` until the sweep is done | `None`, not recorded |"
 )]
 /// | [`Unknown`](OperationKind::Unknown) | `None`, nothing may be guessed | `None` |
 ///

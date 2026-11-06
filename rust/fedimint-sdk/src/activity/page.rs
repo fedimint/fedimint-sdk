@@ -197,17 +197,6 @@ async fn typed<S>(
 where
     S: Row,
 {
-    // A record whose details cannot be read still has a time, a kind and an outcome.
-    let figures = S::figures(driver.as_ref(), &inner.record.details).unwrap_or_else(|err| {
-        tracing::warn!(
-            target: "fedimint_sdk",
-            operation = %inner.id.fmt_full(),
-            error = %err,
-            "could not read this operation's details",
-        );
-        Figures::NONE
-    });
-
     let (status, is_final) = match &inner.record.final_state {
         Some(encoded) => match driver.decode_state(encoded) {
             Ok(state) if state.is_final() => (state.bucket(), true),
@@ -240,6 +229,27 @@ where
             }
         },
     };
+
+    // A kind can complete its details as it ends (a sweep learns how much it moved), so a record
+    // seen ending just now is read again for them.
+    let details = if is_final && inner.record.final_state.is_none() {
+        match inner.reload().await {
+            Ok(record) => record.details,
+            Err(_) => inner.record.details.clone(),
+        }
+    } else {
+        inner.record.details.clone()
+    };
+    // A record whose details cannot be read still has a time, a kind and an outcome.
+    let figures = S::figures(driver.as_ref(), &details).unwrap_or_else(|err| {
+        tracing::warn!(
+            target: "fedimint_sdk",
+            operation = %inner.id.fmt_full(),
+            error = %err,
+            "could not read this operation's details",
+        );
+        Figures::NONE
+    });
 
     // `Unknown` implies no figures, enforced here once rather than by every branch above
     // remembering to clear them.
@@ -729,7 +739,7 @@ mod tests {
 
     /// What a build with the multisig facade records for a deposit, a payout and a sweep, each
     /// ended, spelled out rather than encoded by the facade, which a build without it lacks.
-    fn multisig_records() -> [(u8, OperationRecord); 3] {
+    fn multisig_records() -> [(u8, OperationRecord); 4] {
         let account = "aa".repeat(32);
         let module = "multi_sig_stability_pool";
         [
@@ -772,6 +782,17 @@ mod tests {
                     module,
                     3,
                     serde_json::json!({ "amount_msats": 200_000, "created_at_epoch_ms": 3 })
+                        .to_string(),
+                    Some("Done:200000".to_owned()),
+                ),
+            ),
+            (
+                4,
+                record(
+                    "multisig_sweep",
+                    module,
+                    4,
+                    serde_json::json!({ "amount_msats": null, "created_at_epoch_ms": 4 })
                         .to_string(),
                     Some("Failed:refused".to_owned()),
                 ),
@@ -834,7 +855,12 @@ mod tests {
         assert_eq!(row(2).status, ActivityStatus::Success);
         assert_eq!(row(2).amount, Some(Amount::from_msats(200_000)));
         assert_eq!(row(3).kind, OperationKind::MultisigSweep);
-        assert_eq!(row(3).status, ActivityStatus::Failed);
+        assert_eq!(row(3).status, ActivityStatus::Success);
+        assert_eq!(row(3).amount, Some(Amount::from_msats(200_000)));
+        assert_eq!(row(3).direction, Some(Direction::Incoming));
+        assert_eq!(row(4).kind, OperationKind::MultisigSweep);
+        assert_eq!(row(4).status, ActivityStatus::Failed);
+        assert_eq!(row(4).amount, None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

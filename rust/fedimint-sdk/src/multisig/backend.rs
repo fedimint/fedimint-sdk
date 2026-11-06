@@ -119,7 +119,13 @@ pub trait MultisigBackend: MaybeSend + MaybeSync + 'static {
 
     /// Starts moving everything paid out to this member into the ecash balance, or `None` when
     /// nothing is waiting.
-    fn sweep<'a>(&'a self, client: &'a Client) -> BoxFuture<'a, Result<Option<MultisigSweep>>>;
+    ///
+    /// How much it moved is what its [`Done`](MultisigSweepState::Done) state carries, as
+    /// [`sweep_updates`](MultisigBackend::sweep_updates) reports it.
+    fn sweep<'a>(
+        &'a self,
+        client: &'a Client,
+    ) -> BoxFuture<'a, Result<Option<UpstreamOperationId>>>;
 
     /// The states of the deposit `id`, as described under [Operations](#operations).
     fn deposit_updates<'a>(
@@ -148,20 +154,5 @@ impl core::fmt::Debug for dyn MultisigBackend {
         f.debug_struct("MultisigBackend")
             .field("module", &self.module_kind())
             .finish()
-    }
-}
-
-/// A sweep a [`MultisigBackend`] started: its operation, and how much it moves.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
-pub struct MultisigSweep {
-    pub(crate) operation: UpstreamOperationId,
-    pub(crate) amount: Amount,
-}
-
-impl MultisigSweep {
-    /// The sweep the module started as `operation`, moving `amount` into the ecash balance.
-    pub fn new(operation: UpstreamOperationId, amount: Amount) -> MultisigSweep {
-        MultisigSweep { operation, amount }
     }
 }

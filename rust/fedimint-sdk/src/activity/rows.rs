@@ -145,7 +145,7 @@ impl Bucket for MultisigSweepState {
     fn bucket(&self) -> ActivityStatus {
         match self {
             MultisigSweepState::Created | MultisigSweepState::Accepted => ActivityStatus::Pending,
-            MultisigSweepState::Done => ActivityStatus::Success,
+            MultisigSweepState::Done { .. } => ActivityStatus::Success,
             MultisigSweepState::Failed { .. } => ActivityStatus::Failed,
         }
     }
@@ -248,11 +248,12 @@ impl Accounted for MultisigTransferDetails {
 
 #[cfg(feature = "multisig")]
 impl Accounted for MultisigSweepDetails {
-    /// Incoming: the payouts come into this wallet's balance. The fee for issuing the ecash is
-    /// not recorded, so it is `None` rather than a guess.
+    /// Incoming: the payouts come into this wallet's balance. How much is known once the sweep is
+    /// done, and the fee for issuing the ecash is not recorded, so each is `None` rather than a
+    /// guess until then.
     fn figures(&self) -> Figures {
         Figures {
-            amount: Some(self.amount),
+            amount: self.amount,
             fee: None,
             direction: Some(Direction::Incoming),
         }
@@ -767,7 +768,13 @@ mod tests {
             MultisigSweepState::Accepted.bucket(),
             ActivityStatus::Pending
         );
-        assert_eq!(MultisigSweepState::Done.bucket(), ActivityStatus::Success);
+        assert_eq!(
+            MultisigSweepState::Done {
+                amount: Amount::from_msats(1)
+            }
+            .bucket(),
+            ActivityStatus::Success
+        );
         assert_eq!(
             MultisigSweepState::Failed { reason: failed() }.bucket(),
             ActivityStatus::Failed
@@ -820,7 +827,7 @@ mod tests {
         assert_eq!(fiat.figures(), Figures::NONE);
 
         let sweep = MultisigSweepDetails {
-            amount: Amount::from_msats(4_000),
+            amount: Some(Amount::from_msats(4_000)),
             created_at,
         };
         assert_eq!(
@@ -831,6 +838,11 @@ mod tests {
                 direction: Some(Direction::Incoming),
             }
         );
+        let running = MultisigSweepDetails {
+            amount: None,
+            ..sweep
+        };
+        assert_eq!(running.figures().amount, None);
     }
 
     /// A driver whose every method reports `Internal`. [`RecoveryState`]'s [`Row::figures`]

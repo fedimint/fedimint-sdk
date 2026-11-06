@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 
 use fedimint_client::Client;
 use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxFuture, BoxStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,17 @@ pub(crate) trait MultisigKind: OperationState + PartialEq {
 
     /// The state back from [`encode`](MultisigKind::encode), if it is one.
     fn parse(encoded: &str) -> Option<Self>;
+
+    /// Whether this state completes the details record, which
+    /// [`completed_details`](MultisigKind::completed_details) then does.
+    fn completes_details(&self) -> bool {
+        false
+    }
+
+    /// The details record `details`, as it is persisted, completed with what this state knows.
+    fn completed_details(&self, details: &str) -> Result<String> {
+        Ok(details.to_owned())
+    }
 }
 
 impl<S> Driver<S> for MultisigDriver<S>
@@ -115,7 +127,11 @@ where
             // The backend's stream holds no client (see `MultisigBackend`), so the guard goes
             // with this call.
             let stream = S::updates(backend.as_ref(), &client, id).await?;
-            Ok(settled(until_final(stream)))
+            Ok(settled(until_final(completing_details(
+                stream,
+                federation.db(),
+                id,
+            ))))
         })
     }
 
@@ -148,12 +164,70 @@ where
     }
 }
 
-// Every state is spelled by its variant name, and `Failed` is followed by its reason, verbatim:
-// a prefix no other variant produces, so the reason, whatever it contains, never has to be told
-// apart from the encoding around it.
+/// `stream`, completing the details record of the operation `id` with each state that completes
+/// it before handing that state on.
+///
+/// So a record never reads as ended without what its ending knows: the final state is persisted
+/// only after it is handed on, and completing the details again is a no-op.
+fn completing_details<S>(
+    stream: BoxStream<'static, Result<S>>,
+    db: Database,
+    id: UpstreamOperationId,
+) -> BoxStream<'static, Result<S>>
+where
+    S: MultisigKind,
+{
+    Box::pin(futures::StreamExt::then(stream, move |item| {
+        let db = db.clone();
+        async move {
+            let state = item?;
+            if state.completes_details() {
+                complete_details(&db, id, &state).await?;
+            }
+            Ok(state)
+        }
+    }))
+}
+
+/// Completes the details record of the operation `id` with what `state` knows.
+async fn complete_details<S>(db: &Database, id: UpstreamOperationId, state: &S) -> Result<()>
+where
+    S: MultisigKind,
+{
+    db.autocommit(
+        |dbtx, _| {
+            let state = state.clone();
+            Box::pin(async move {
+                let key = crate::db::OperationRecordKey(id);
+                // The operation log is authoritative and the record a decoration over it: no
+                // record is nothing to complete.
+                let Some(mut record) = dbtx.get_value(&key).await else {
+                    return Ok(Ok(()));
+                };
+                let completed = match state.completed_details(&record.details) {
+                    Ok(completed) => completed,
+                    Err(err) => return Ok(Err(err)),
+                };
+                if record.details != completed {
+                    record.details = completed;
+                    dbtx.insert_entry(&key, &record).await;
+                }
+                Ok::<_, core::convert::Infallible>(Ok(()))
+            })
+        },
+        Some(100),
+    )
+    .await
+    .map_err(crate::db::storage_error)?
+}
+
+// Every state is spelled by its variant name. `Failed` is followed by its reason, verbatim: a
+// prefix no other variant produces, so the reason, whatever it contains, never has to be told
+// apart from the encoding around it. A sweep's `Done` is followed by the millisatoshi it moved.
 const CREATED: &str = "Created";
 const ACCEPTED: &str = "Accepted";
 const DONE: &str = "Done";
+const DONE_MOVING: &str = "Done:";
 const FAILED: &str = "Failed:";
 
 impl MultisigKind for MultisigDepositState {
@@ -242,7 +316,7 @@ impl MultisigKind for MultisigSweepState {
         match self {
             MultisigSweepState::Created => CREATED.to_owned(),
             MultisigSweepState::Accepted => ACCEPTED.to_owned(),
-            MultisigSweepState::Done => DONE.to_owned(),
+            MultisigSweepState::Done { amount } => format!("{DONE_MOVING}{}", amount.msats()),
             MultisigSweepState::Failed { reason } => format!("{FAILED}{reason}"),
         }
     }
@@ -253,12 +327,38 @@ impl MultisigKind for MultisigSweepState {
                 reason: reason.to_owned(),
             });
         }
+        if let Some(msats) = encoded.strip_prefix(DONE_MOVING) {
+            let amount = Amount::from_msats(msats.parse().ok()?);
+            return Some(MultisigSweepState::Done { amount });
+        }
         match encoded {
             CREATED => Some(MultisigSweepState::Created),
             ACCEPTED => Some(MultisigSweepState::Accepted),
-            DONE => Some(MultisigSweepState::Done),
             _ => None,
         }
+    }
+
+    fn completes_details(&self) -> bool {
+        matches!(self, MultisigSweepState::Done { .. })
+    }
+
+    fn completed_details(&self, details: &str) -> Result<String> {
+        let MultisigSweepState::Done { amount } = self else {
+            return Ok(details.to_owned());
+        };
+        let mut wire: SweepDetailsWire = serde_json::from_str(details).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not decode multisig operation details: {err}"),
+            )
+        })?;
+        wire.amount_msats = Some(amount.msats());
+        serde_json::to_string(&wire).map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("could not encode multisig operation details: {err}"),
+            )
+        })
     }
 }
 
@@ -336,14 +436,15 @@ impl TryFrom<TransferDetailsWire> for MultisigTransferDetails {
 /// [`MultisigSweepDetails`] as it is persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SweepDetailsWire {
-    amount_msats: u64,
+    /// Set once the sweep is done.
+    amount_msats: Option<u64>,
     created_at_epoch_ms: u64,
 }
 
 impl From<&MultisigSweepDetails> for SweepDetailsWire {
     fn from(details: &MultisigSweepDetails) -> Self {
         SweepDetailsWire {
-            amount_msats: details.amount.msats(),
+            amount_msats: details.amount.map(Amount::msats),
             created_at_epoch_ms: details.created_at.epoch_millis(),
         }
     }
@@ -354,7 +455,7 @@ impl TryFrom<SweepDetailsWire> for MultisigSweepDetails {
 
     fn try_from(wire: SweepDetailsWire) -> Result<Self> {
         Ok(MultisigSweepDetails {
-            amount: Amount::from_msats(wire.amount_msats),
+            amount: wire.amount_msats.map(Amount::from_msats),
             created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
         })
     }
@@ -385,12 +486,99 @@ mod tests {
         for state in [
             MultisigSweepState::Created,
             MultisigSweepState::Accepted,
-            MultisigSweepState::Done,
+            MultisigSweepState::Done {
+                amount: Amount::from_msats(200_000),
+            },
             MultisigSweepState::Failed { reason: reason() },
         ] {
             assert_eq!(MultisigSweepState::parse(&state.encode()), Some(state));
         }
         assert_eq!(MultisigTransferState::parse(ACCEPTED), None);
+        assert_eq!(MultisigSweepState::parse(DONE), None);
+        assert_eq!(MultisigSweepState::parse("Done:many"), None);
+    }
+
+    #[test]
+    fn a_done_sweep_completes_its_details_with_what_it_moved() {
+        let started = MultisigSweepDetails {
+            amount: None,
+            created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
+        };
+        let json = serde_json::to_string(&SweepDetailsWire::from(&started)).expect("json");
+
+        let failed = MultisigSweepState::Failed {
+            reason: "refused".to_owned(),
+        };
+        assert!(!failed.completes_details());
+        assert!(!MultisigSweepState::Accepted.completes_details());
+
+        let done = MultisigSweepState::Done {
+            amount: Amount::from_msats(300_000),
+        };
+        assert!(done.completes_details());
+        let completed = done.completed_details(&json).expect("completes");
+        let wire: SweepDetailsWire = serde_json::from_str(&completed).expect("json");
+        let details = MultisigSweepDetails::try_from(wire).expect("decodes");
+        assert_eq!(details.amount, Some(Amount::from_msats(300_000)));
+        assert_eq!(details.created_at, started.created_at);
+        // Completing it again changes nothing.
+        assert_eq!(
+            done.completed_details(&completed).expect("completes"),
+            completed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_state_that_completes_the_details_writes_them_before_it_is_handed_on() {
+        use crate::db::{OperationRecordKey, federation_namespace, in_memory_root};
+
+        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
+        let id = UpstreamOperationId([2u8; 32]);
+        let started = SweepDetailsWire {
+            amount_msats: None,
+            created_at_epoch_ms: 1,
+        };
+        let record = OperationRecord {
+            schema_version: crate::operation::READABLE_STATE_SCHEMA,
+            kind: crate::operation::kinds::MULTISIG_SWEEP.to_owned(),
+            module: "multi_sig_stability_pool".to_owned(),
+            created_at: 1,
+            details: serde_json::to_string(&started).expect("json"),
+            phase: None,
+            cancel_requested_at: None,
+            final_state: None,
+        };
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&OperationRecordKey(id), &record).await;
+        dbtx.commit_tx().await;
+
+        let done = MultisigSweepState::Done {
+            amount: Amount::from_msats(300_000),
+        };
+        let states =
+            futures::stream::iter(vec![Ok(MultisigSweepState::Accepted), Ok(done.clone())]);
+        let mut stream = completing_details(Box::pin(states), db.clone(), id);
+        let read = || async {
+            let stored = db
+                .begin_transaction_nc()
+                .await
+                .get_value(&OperationRecordKey(id))
+                .await
+                .expect("the record");
+            serde_json::from_str::<SweepDetailsWire>(&stored.details)
+                .expect("json")
+                .amount_msats
+        };
+
+        let accepted = futures::StreamExt::next(&mut stream).await;
+        assert_eq!(
+            accepted.expect("a state").expect("ok"),
+            MultisigSweepState::Accepted
+        );
+        assert_eq!(read().await, None);
+        let ended = futures::StreamExt::next(&mut stream).await;
+        assert_eq!(ended.expect("a state").expect("ok"), done);
+        assert_eq!(read().await, Some(300_000));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -409,14 +597,24 @@ mod tests {
             details: "{}".to_owned(),
             phase: None,
             cancel_requested_at: None,
-            final_state: Some(MultisigSweepState::Done.encode()),
+            final_state: Some(
+                MultisigSweepState::Done {
+                    amount: Amount::from_msats(1),
+                }
+                .encode(),
+            ),
         };
         let driver = MultisigSweepDriver::default();
         let state = driver
             .current(&federation, UpstreamOperationId([1u8; 32]), &record)
             .await
             .expect("read from the record");
-        assert_eq!(state, MultisigSweepState::Done);
+        assert_eq!(
+            state,
+            MultisigSweepState::Done {
+                amount: Amount::from_msats(1)
+            }
+        );
 
         let pending = OperationRecord {
             final_state: None,

@@ -1412,7 +1412,7 @@ impl fedimint_sdk::MultisigBackend for MintBackend {
     fn sweep<'a>(
         &'a self,
         _client: &'a Client,
-    ) -> BoxFuture<'a, fedimint_sdk::Result<Option<fedimint_sdk::MultisigSweep>>> {
+    ) -> BoxFuture<'a, fedimint_sdk::Result<Option<OperationId>>> {
         Box::pin(async { Err(does_nothing()) })
     }
 
