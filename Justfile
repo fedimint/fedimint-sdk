@@ -3,6 +3,9 @@ set shell := ["bash", "-c"]
 # Native libraries only (.so), via Nix. Shared by every binding generator,
 # and what the two-job CI split (android-native.yaml, android-sdk.yaml) uses
 # so a binding job can read an artifact instead of rebuilding.
+#
+# ANDROID_TARGETS="arm64-only" narrows to arm64-v8a for local emulator/device
+# iteration (roughly half the work).
 build-android-so:
     ./scripts/nix-build-android-so.sh
 
