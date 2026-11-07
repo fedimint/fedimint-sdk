@@ -56,19 +56,35 @@ override.
 
 ## How long a claim lasts
 
-`SdkBuilder::build` takes the claim in its first step. It is held until the store closes, which is
-when the last `Database` clone over it is dropped. Everything built on an instance holds one: the
-`Sdk`, every `Federation`, every operation handle and subscriber taken from a federation, and the
-Fedimint client under each federation, background tasks included.
+`SdkBuilder::build` takes the claim in its first step. It is held until the store closes.
+Everything built on an instance holds a `Database` clone over the store: the `Sdk`, every
+`Federation`, every operation handle and subscriber taken from a federation, and the Fedimint
+client under each federation, background tasks included. The store lives in a slot that those
+clones share (`ClaimedStore` in `src/storage.rs`), so it can be closed while clones survive.
 
-- `Sdk::shutdown` does not release the claim. It stops the instance's background work, so that
-  the store closes as soon as the application drops its last handle. Reopening a location in the
-  same process therefore means shutting down, dropping everything, then opening.
-- Without `Sdk::shutdown`, dropping the last handle drops each Fedimint client. On a multi-thread
-  Tokio runtime the client shuts down inline. Anywhere else, such as a current-thread runtime or
-  a thread with no runtime at all, which is where a foreign binding frees its objects, the client
-  only tells its executor to stop, and the executor holds the store until it exits. A reopen in
-  the meantime is refused.
+- `Sdk::shutdown` closes the store and releases the claim. It stops the instance's background
+  work, then `StoreCloser::close` takes the slot's write lock, which waits for the transactions
+  already running (each holds a read guard for its whole life), empties the slot, and drops the
+  store and then the claim in one blocking task. Once `shutdown` returns `Ok`, the location can
+  be reopened while foreign handles from the first instance are still alive.
+- A transaction begun on a closed store, or while a close is queued, never starts: its
+  `begin_transaction` stays pending for good. It must not fail. Fedimint's typed database calls
+  `expect` on any error from the store, and the release profile is `panic = "abort"`, so an
+  error there would abort the host application. Public calls on a stale handle fail with
+  `FederationClosed` at their closed checks before they reach the store. A call that uses the
+  store without holding a client, and passed its check just before the shutdown, is raced
+  against it (`sdk::until_shut_down`) and ends with `FederationClosed` rather than waiting for
+  good.
+- `shutdown` waits for the close for at most `CLOSE_DEADLINE`. If a transaction is still running
+  then, it returns `Storage`, and the spawned close carries on: the claim is released as soon as
+  that transaction ends, and a reopen before then is refused. Every call to `shutdown` waits for
+  that one close, so a retry after a timed-out or cancelled call returns `Ok` only once it has
+  finished.
+- Without `Sdk::shutdown`, the store closes when the last `Database` clone is dropped. Dropping the
+  last handle drops each Fedimint client. On a multi-thread Tokio runtime the client shuts down
+  inline. Anywhere else, such as a current-thread runtime or a thread with no runtime at all,
+  which is where a foreign binding frees its objects, the client only tells its executor to stop,
+  and the executor holds the store until it exits. A reopen in the meantime is refused.
 - The SDK's own background work holds the instance weakly, or stops with the client's task group,
   which `Sdk::shutdown` shuts down. It never keeps a location claimed on its own.
 - So does the work an extension returns from `Extension::client_started`, which may hold the
@@ -79,6 +95,7 @@ Fedimint client under each federation, background tasks included.
 - Opening survives cancellation. The claim is taken and the store opened in one blocking task,
   which runs to completion even when `build` is dropped. A dropped `build` leaves a store that
   closes before its claim is released, never a free claim over a store still being opened.
+  Closing is the same: the store and the claim are dropped in one blocking task, in that order.
 - When `build` fails after opening, the store is dropped along with it, and the location comes
   free by the rules above.
 
@@ -98,8 +115,10 @@ restoring one wallet's backup onto two devices, and nothing here can detect it.
 - Splitting the claim and the open across more than one task or `await`. That reopens a window in
   which a cancelled open leaves a free claim over a store that is still open.
 - Adding anything that holds a `Database` clone outside the application's handles, such as a new
-  background task. It keeps every claim it outlives, so it has to stop on shutdown or hold the
-  instance weakly.
+  background task. Without a shutdown it keeps every claim it outlives, and with one it parks on
+  its next transaction, so it has to stop on shutdown or hold the instance weakly.
+- Making a closed store answer a transaction with an error instead of parking it. See above for
+  why that aborts the application.
 - Adding a storage kind, which needs its own answer to what enforces a single opener.
 - Bumping Fedimint across a change to how a client shuts down when dropped, or to whether
   `fedimint-cursed-redb` closes its handle when dropped. Either changes when a location comes free.
@@ -111,8 +130,13 @@ These tests pin the invariant down:
 - `storage::tests::a_claim_held_past_the_retry_budget_is_still_refused`
 - `storage::tests::a_lock_failure_other_than_contention_is_reported_at_once`
 - `storage::tests::contention_is_retried_until_the_lock_comes_free`
-- `sdk::tests::building::a_location_is_refused_while_the_instance_on_it_is_still_held`
-- `sdk::tests::building::a_federation_handle_holds_the_location_on_its_own`
+- `storage::tests::closing_waits_for_a_transaction_in_flight_then_frees_the_location`
+- `storage::tests::a_transaction_begun_after_close_parks_rather_than_failing`
+- `sdk::tests::building::a_held_instance_keeps_its_location_until_it_is_shut_down`
+- `sdk::tests::building::a_federation_handle_does_not_outlive_shutdown`
+- `sdk::tests::building::a_location_comes_free_once_every_handle_is_dropped_without_shutdown`
+- `sdk::tests::building::a_shutdown_retried_after_its_deadline_waits_for_the_same_close`
+- `sdk::tests::building::a_call_waiting_on_a_closed_store_ends_when_the_instance_shuts_down`
 - `federation::tests::extension_work_ends_when_the_instance_is_dropped`
 - `extensions_follow_the_client_through_a_recovery` in `tests/integration.rs`, which reopens a
   location whose extension work held the client when every handle was dropped

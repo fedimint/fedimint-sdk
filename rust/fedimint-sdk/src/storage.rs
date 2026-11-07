@@ -2,10 +2,15 @@
 
 use fedimint_core::db::Database;
 use fedimint_core::db::mem_impl::MemDatabase;
+#[cfg(not(target_family = "wasm"))]
+use fedimint_core::db::{
+    DatabaseError, DatabaseResult, IDatabaseTransactionOps, IDatabaseTransactionOpsCore,
+    IRawDatabase, IRawDatabaseTransaction, PrefixStream,
+};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::util::FmtCompact as _;
 #[cfg(not(target_family = "wasm"))]
-use fedimint_core::{apply, async_trait_maybe_send, db::IRawDatabase};
+use fedimint_core::{apply, async_trait_maybe_send};
 
 use crate::{Error, ErrorCode, ErrorDetails, Result};
 
@@ -76,14 +81,14 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 ///
 /// The claim lasts as long as the open store, not as long as one [`Sdk`](crate::Sdk) handle.
 /// [`SdkBuilder::build`](crate::SdkBuilder::build) takes it, and it is given back when the store
-/// closes. After [`Sdk::shutdown`](crate::Sdk::shutdown), that is when the last handle over the
-/// instance is dropped: every [`Sdk`](crate::Sdk), every [`Federation`](crate::Federation), and
-/// every operation handle and subscriber taken from a federation. Shutting down ends the
-/// instance's work but does not by itself close the store, so reopening a location in the same
-/// process means shutting the instance down and then letting go of everything built on it, and
-/// an attempt before that point is refused rather than left waiting. An instance that is let go
-/// of without being shut down can go on holding its location for a while after its last handle
-/// is dropped, until its background work has stopped.
+/// closes. [`Sdk::shutdown`](crate::Sdk::shutdown) closes the store, so once it returns the
+/// location can be opened again, in this process or another, even while handles built on the
+/// first instance are still alive: they fail closed and never reach the location again. Without
+/// a shutdown, the store closes when the last handle over the instance is dropped: every
+/// [`Sdk`](crate::Sdk), every [`Federation`](crate::Federation), and every operation handle and
+/// subscriber taken from a federation, and possibly a while after that, until the instance's
+/// background work has stopped. An attempt to open the location before then is refused rather
+/// than left waiting.
 ///
 /// A claim left behind by a process that died is reclaimed by the next opener rather than left
 /// stuck: `StorageInUse` means genuinely concurrent use, never a stale marker.
@@ -310,15 +315,61 @@ impl Storage {
     ///
     /// The claim on the location travels inside the returned store, so the caller has nothing
     /// to hold on to and nothing to release: the location is given back when the last clone of
-    /// this `Database` goes, and not before.
-    pub(crate) async fn open(self) -> Result<Database> {
+    /// this `Database` goes, or earlier, when the returned [`StoreCloser`] closes it.
+    pub(crate) async fn open(self) -> Result<(Database, StoreCloser)> {
         match self.inner {
             #[cfg(not(target_family = "wasm"))]
             StorageInner::Directory { location } => open_directory(location).await,
             #[cfg(target_family = "wasm")]
-            StorageInner::Browser { location } => open_browser(location).await,
-            StorageInner::Memory { db } => Ok(db),
+            StorageInner::Browser { location } => {
+                Ok((open_browser(location).await?, StoreCloser::default()))
+            }
+            StorageInner::Memory { db } => Ok((db, StoreCloser::default())),
         }
+    }
+}
+
+/// Closes an opened location's store and gives its claim back, while handles over it may still
+/// be alive.
+///
+/// Only a native location has anything to close. A browser store is handed back when its worker
+/// ends, and an in-memory one has no claim, so for those this does nothing.
+#[derive(Debug, Default)]
+pub(crate) struct StoreCloser {
+    /// Weak, so that holding a closer never keeps a store open that every handle has let go of.
+    #[cfg(not(target_family = "wasm"))]
+    opened: Option<std::sync::Weak<OpenedSlot>>,
+}
+
+impl StoreCloser {
+    /// Waits for the transactions in flight to end, then closes the store and gives the claim
+    /// back, in that order.
+    ///
+    /// From the moment this starts, no transaction can begin: one that tries parks for good
+    /// rather than failing, see [`ClaimedStore`]. Only the transactions already running are
+    /// waited for, so this ends as soon as the last of them does.
+    pub(crate) async fn close(self) -> Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(slot) = self.opened.and_then(|opened| opened.upgrade()) {
+            // The write lock is granted only once no read guard is left, and every transaction
+            // holds one for its whole life, so no transaction is running past this point. A
+            // queued writer also refuses `try_read`, so none starts while this waits.
+            let opened = slot.write().await.take();
+            drop(slot);
+            // One blocking task closes the store and then gives the claim back, through the
+            // field order of `Opened`. It runs to completion even if this future is dropped, so
+            // the order holds whatever the caller does, and RocksDB's blocking close stays off
+            // the async threads.
+            tokio::task::spawn_blocking(move || drop(opened))
+                .await
+                .map_err(|err| {
+                    Error::new(
+                        ErrorCode::Storage,
+                        format!("could not close storage: {err}"),
+                    )
+                })?;
+        }
+        Ok(())
     }
 }
 
@@ -335,46 +386,180 @@ enum StorageInner {
     Memory { db: Database },
 }
 
-/// A store with the claim on its location inside it.
+/// The embedded store as `fedimint-rocksdb` opens it, behind its own `db.db.lock`.
+#[cfg(not(target_family = "wasm"))]
+type Store = fedimint_db_locked::Locked<fedimint_rocksdb::RocksDb>;
+
+/// An open store with the claim on its location inside it.
 ///
 /// The claim is a field of the store rather than a value held next to it so that the two cannot
 /// come apart. Fields are dropped in declaration order, so the store is closed before the claim
 /// is given up, and there is never a moment when a location looks free while the store on it is
 /// still open. That is the moment a second opener would take the free claim and then block inside
 /// the store's own file lock, which has no timeout and no error.
-///
-/// Generic over the store so that the concrete type `fedimint-rocksdb` hands back, itself a
-/// wrapper around a wrapper, never has to be named here.
 #[cfg(not(target_family = "wasm"))]
 #[derive(Debug)]
-struct ClaimedStore<Store> {
+struct Opened {
     /// The store, closed when this value is dropped.
     store: Store,
     /// Given back after the store above has been closed, and never before it.
     claim: Claim,
 }
 
+/// Where an [`Opened`] store lives: `None` once a [`StoreCloser`] has closed it.
+#[cfg(not(target_family = "wasm"))]
+type OpenedSlot = tokio::sync::RwLock<Option<Opened>>;
+
+/// The raw database every `Database` clone over a native location shares.
+///
+/// The store sits in a slot that [`StoreCloser::close`] can empty while clones of the `Database`
+/// are still alive, which is what lets `Sdk::shutdown` give a location back without waiting for
+/// every foreign handle to be collected. Each transaction holds a read guard on the slot for its
+/// whole life, so the store is never closed under a transaction that is still using it, and
+/// closing waits for exactly those transactions.
+///
+/// A transaction begun once the slot is empty, or while a close is waiting for it, never
+/// starts: its `begin_transaction` stays pending for good. It does not fail, because Fedimint's
+/// typed database calls panic on any error from the store, and a panic aborts the host
+/// application in a release build. Whatever asks for a transaction after a close is work the
+/// shutdown has already stopped, and it sleeps until it is dropped, holding neither the store
+/// nor the claim.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct ClaimedStore {
+    slot: std::sync::Arc<OpenedSlot>,
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[apply(async_trait_maybe_send!)]
-impl<Store> IRawDatabase for ClaimedStore<Store>
-where
-    Store: IRawDatabase,
-{
-    type Transaction<'a> = Store::Transaction<'a>;
+impl IRawDatabase for ClaimedStore {
+    type Transaction<'a> = ClaimedTransaction;
 
-    async fn begin_transaction<'a>(&'a self) -> <Self as IRawDatabase>::Transaction<'_> {
-        self.store.begin_transaction().await
+    async fn begin_transaction<'a>(&'a self) -> ClaimedTransaction {
+        // `try_read` never waits: it is refused while a close holds the slot or is queued for
+        // it, and a transaction that would start then parks below instead.
+        if let Ok(guard) = self.slot.clone().try_read_owned() {
+            let begun = ClaimedTransaction::try_new(guard, async |guard| match &**guard {
+                Some(opened) => Ok(Some(opened.store.begin_transaction().await)),
+                None => Err(()),
+            })
+            .await;
+            if let Ok(transaction) = begun {
+                return transaction;
+            }
+        }
+        std::future::pending().await
     }
 
-    fn checkpoint(&self, backup_path: &std::path::Path) -> fedimint_core::db::DatabaseResult<()> {
-        self.store.checkpoint(backup_path)
+    fn checkpoint(&self, backup_path: &std::path::Path) -> DatabaseResult<()> {
+        match self.slot.try_read().as_deref() {
+            Ok(Some(opened)) => opened.store.checkpoint(backup_path),
+            _ => Err(DatabaseError::DatabaseBackend(
+                "the storage is closed".into(),
+            )),
+        }
+    }
+}
+
+/// A transaction of the embedded store, `None` once it has been committed.
+#[cfg(not(target_family = "wasm"))]
+type StoreTransaction<'a> = Option<<Store as IRawDatabase>::Transaction<'a>>;
+
+#[cfg(not(target_family = "wasm"))]
+self_cell::self_cell!(
+    /// A transaction of a [`ClaimedStore`], together with the read guard that keeps its store
+    /// open until the transaction is gone.
+    struct ClaimedTransaction {
+        owner: tokio::sync::OwnedRwLockReadGuard<Option<Opened>>,
+
+        #[not_covariant, async_builder]
+        dependent: StoreTransaction,
+    }
+
+    impl {Debug}
+);
+
+/// Runs one operation on the transaction inside a [`ClaimedTransaction`].
+///
+/// The transaction is only missing once committed, and committing consumes the wrapper, so the
+/// `TransactionConsumed` arm cannot be reached; it is an error rather than a panic all the same.
+#[cfg(not(target_family = "wasm"))]
+macro_rules! with_transaction {
+    ($this:expr, |$transaction:ident| $call:expr) => {
+        $this
+            .with_dependent_mut(|_, transaction| match transaction {
+                Some($transaction) => $call,
+                None => Box::pin(async { Err(DatabaseError::TransactionConsumed) }),
+            })
+            .await
+    };
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[apply(async_trait_maybe_send!)]
+impl IDatabaseTransactionOpsCore for ClaimedTransaction {
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> DatabaseResult<Option<Vec<u8>>> {
+        with_transaction!(self, |transaction| transaction.raw_insert_bytes(key, value))
+    }
+
+    async fn raw_get_bytes(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+        with_transaction!(self, |transaction| transaction.raw_get_bytes(key))
+    }
+
+    async fn raw_remove_entry(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+        with_transaction!(self, |transaction| transaction.raw_remove_entry(key))
+    }
+
+    async fn raw_find_by_prefix(&mut self, key_prefix: &[u8]) -> DatabaseResult<PrefixStream<'_>> {
+        with_transaction!(self, |transaction| transaction
+            .raw_find_by_prefix(key_prefix))
+    }
+
+    async fn raw_find_by_prefix_sorted_descending(
+        &mut self,
+        key_prefix: &[u8],
+    ) -> DatabaseResult<PrefixStream<'_>> {
+        with_transaction!(self, |transaction| transaction
+            .raw_find_by_prefix_sorted_descending(key_prefix))
+    }
+
+    async fn raw_find_by_range(
+        &mut self,
+        range: std::ops::Range<&[u8]>,
+    ) -> DatabaseResult<PrefixStream<'_>> {
+        with_transaction!(self, |transaction| transaction.raw_find_by_range(range))
+    }
+
+    async fn raw_remove_by_prefix(&mut self, key_prefix: &[u8]) -> DatabaseResult<()> {
+        with_transaction!(self, |transaction| transaction
+            .raw_remove_by_prefix(key_prefix))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl IDatabaseTransactionOps for ClaimedTransaction {}
+
+#[cfg(not(target_family = "wasm"))]
+#[apply(async_trait_maybe_send!)]
+impl IRawDatabaseTransaction for ClaimedTransaction {
+    async fn commit_tx(mut self) -> DatabaseResult<()> {
+        // The read guard outlives the commit: it is dropped with `self`, after this returns.
+        self.with_dependent_mut(|_, transaction| match transaction.take() {
+            Some(transaction) => transaction.commit_tx(),
+            None => Box::pin(async { Err(DatabaseError::TransactionConsumed) }),
+        })
+        .await
     }
 }
 
 /// Proof that this instance is the only opener of its location.
 ///
-/// Dropping it gives the location back, which is what makes a location reopenable once
-/// everything built on it is gone, and what makes a claim left by a dead process reclaimable
+/// Dropping it gives the location back, which is what makes a location reopenable once its
+/// store has closed, and what makes a claim left by a dead process reclaimable
 /// rather than fatal.
 #[cfg(not(target_family = "wasm"))]
 struct Claim {
@@ -404,8 +589,8 @@ impl core::fmt::Debug for Claim {
 /// caller that walks away leaves a store that is closed before its claim is given up, never a
 /// free claim over a store that is still being opened.
 #[cfg(not(target_family = "wasm"))]
-async fn open_directory(location: String) -> Result<Database> {
-    let store = tokio::task::spawn_blocking(move || -> Result<_> {
+async fn open_directory(location: String) -> Result<(Database, StoreCloser)> {
+    let opened = tokio::task::spawn_blocking(move || -> Result<_> {
         let directory = std::path::PathBuf::from(&location);
         let claim = take_claim(&directory, &location)?;
         let store = fedimint_rocksdb::RocksDb::build(directory.join("db"))
@@ -419,12 +604,19 @@ async fn open_directory(location: String) -> Result<Database> {
                     ),
                 )
             })?;
-        Ok(ClaimedStore { store, claim })
+        Ok(Opened { store, claim })
     })
     .await
     .map_err(|err| Error::new(ErrorCode::Storage, format!("could not open storage: {err}")))??;
 
-    Ok(Database::new(store, ModuleDecoderRegistry::default()))
+    let slot = std::sync::Arc::new(tokio::sync::RwLock::new(Some(opened)));
+    let closer = StoreCloser {
+        opened: Some(std::sync::Arc::downgrade(&slot)),
+    };
+    Ok((
+        Database::new(ClaimedStore { slot }, ModuleDecoderRegistry::default()),
+        closer,
+    ))
 }
 
 /// Creates the directory and claims it, or reports why it cannot be claimed.
@@ -535,9 +727,9 @@ fn retry_while_contended(
     Err(Error::with_details(
         ErrorCode::StorageInUse,
         format!(
-            "the storage at {location} is already open, in this process or another one: \
-             shutting an instance down does not close its storage, dropping every handle over it \
-             does"
+            "the storage at {location} is already open, in this process or another one: an \
+             instance on it closes its storage when it is shut down, or once every handle over it \
+             has been dropped"
         ),
         ErrorDetails::StorageInUse {
             location: location.to_owned(),
@@ -689,6 +881,86 @@ mod tests {
             .await
             .expect("the claim is reclaimed once the store is closed");
         drop(third);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_waits_for_a_transaction_in_flight_then_frees_the_location() {
+        // A transaction that is running when the close starts finishes on an open store: the
+        // close waits for it, and only then closes the store and gives the claim back.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+        let (db, closer) = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the location opens");
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.raw_insert_bytes(b"key", b"value")
+            .await
+            .expect("the write lands on the open store");
+
+        let mut closing = tokio::spawn(closer.close());
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut closing)
+            .await
+            .expect_err("the close waits for the transaction in flight");
+        let err = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect_err("the location is still held while the close waits");
+        assert_eq!(err.code, ErrorCode::StorageInUse);
+
+        dbtx.commit_tx().await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), closing)
+            .await
+            .expect("the close ends once the transaction does")
+            .expect("the close task finishes")
+            .expect("the store closes");
+
+        let (reopened, _closer) = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the location is free while the first database is still alive");
+        let mut dbtx = reopened.begin_transaction_nc().await;
+        assert_eq!(
+            dbtx.raw_get_bytes(b"key").await.expect("the read succeeds"),
+            Some(b"value".to_vec()),
+            "the transaction the close waited for was committed"
+        );
+        drop(dbtx);
+        drop((reopened, db));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_transaction_begun_after_close_parks_rather_than_failing() {
+        // Fedimint's typed database calls panic on an error from the store, and a panic aborts
+        // the host application in a release build, so a closed store must never answer with
+        // one: whatever asks for a transaction after the close waits for good instead.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+        let (db, closer) = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the location opens");
+        closer.close().await.expect("the store closes");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            db.begin_transaction_nc(),
+        )
+        .await
+        .expect_err("no transaction starts on a closed store");
+
+        let (reopened, _closer) = Storage::at(&path)
+            .expect("a valid path")
+            .open()
+            .await
+            .expect("the location is free while the closed database is still alive");
+        drop((reopened, db));
     }
 
     /// Claims `directory` the way `take_claim` does, and returns the claim together with a second

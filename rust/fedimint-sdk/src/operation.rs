@@ -248,6 +248,14 @@ impl<S: OperationState> Operation<S> {
     /// [`Observable`](OperationSupport::Observable), so a record this build
     /// cannot read is refused before a handle for it exists.
     pub async fn state(&self) -> Result<S> {
+        self.inner
+            .federation
+            .until_shut_down(self.state_now())
+            .await
+    }
+
+    /// [`state`](Self::state), without the race against shutdown.
+    async fn state_now(&self) -> Result<S> {
         self.inner.federation.ensure_open()?;
         let record = self.inner.reload().await?;
         let state = self
@@ -375,6 +383,14 @@ impl<S: DetailedOperationState> Operation<S> {
     /// typed handle exists only for an operation this build can observe, and
     /// that is checked once, earlier, by [`AnyOperation::supported_kind`].
     pub async fn details(&self) -> Result<S::Details> {
+        self.inner
+            .federation
+            .until_shut_down(self.details_now())
+            .await
+    }
+
+    /// [`details`](Self::details), without the race against shutdown.
+    async fn details_now(&self) -> Result<S::Details> {
         self.inner.federation.ensure_open()?;
         let record = self.inner.reload().await?;
         let decoded = self.driver.decode_details(&record.details)?;
@@ -486,6 +502,12 @@ impl<S: OperationState> OperationUpdates<S> {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed), or
     /// [`Internal`](crate::ErrorCode::Internal).
     pub async fn next(&mut self) -> Result<Option<S>> {
+        let federation = self.inner.federation.clone();
+        federation.until_shut_down(self.next_now()).await
+    }
+
+    /// [`next`](Self::next), without the race against shutdown.
+    async fn next_now(&mut self) -> Result<Option<S>> {
         // The cursor is `self.last`, `self.resubscribed`, `self.current_fallback_used`,
         // `self.finished` and `self.handoff`, and every one of them lives on the subscriber
         // rather than inside this future. For a non-final state that is enough on its own: it is
@@ -501,6 +523,11 @@ impl<S: OperationState> OperationUpdates<S> {
         // call instead of losing the state it was about to hand out.
         loop {
             if let Some(state) = self.handoff.clone() {
+                // Checked before the persist too: once the instance has shut down its store is
+                // closed, and a write there would never start. The state is kept for a later
+                // call, and the operation reaches it again from storage when the location is
+                // reopened.
+                self.inner.federation.ensure_open()?;
                 let encoded = self.driver.encode_state(&state)?;
                 self.inner.record_final_state(encoded).await?;
                 self.handoff = None;
