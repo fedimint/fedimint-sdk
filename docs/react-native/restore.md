@@ -14,18 +14,54 @@ A user lost their phone, or bought a new one. They have the words from [Seed wor
 
 It takes two calls, and they do different jobs. `openSdk` with a `mnemonic` makes the words this wallet's seed. It talks to nobody. Then `sdk.recover(invite)`, once per federation, joins it and scans it for the seed's ecash. That scan can take minutes, so it comes back as an operation to watch.
 
-```text no-check
-words ─▶ openSdk({ dataDir, mnemonic: words })   the wallet, with the old seed, no money yet
-             │
-             ▼  once per federation
-         sdk.recover(invite) ─▶ { federation, progress }
-             │
-             ▼
-         progress: Running ─▶ Done      the money is back and spendable
-                           └▶ Failed    stopped before it finished, still locked
-                                          ▲
-         sdk.resumeRecovery(id) ──────────┘  after a restart, or to retry
-```
+<figure class="flow-figure">
+<svg viewBox="0 0 720 450" role="img" aria-label="The words open the wallet with openSdk. Then sdk.recover(invite) runs once per federation and returns a progress that ends Done or Failed. sdk.resumeRecovery(id) picks up a recovery that failed or was cut off by a restart." style="width: 100%; height: auto; font-family: var(--body)">
+<defs>
+<marker id="restore-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" style="fill: var(--grey-2)" />
+</marker>
+</defs>
+<g style="stroke: var(--grey-2); stroke-width: 1.5; fill: none" marker-end="url(#restore-arr)">
+<path d="M150,48 L220,48" />
+<path d="M295,76 L295,132" />
+<path d="M295,188 L295,244" />
+<path d="M370,256 H395 V244 H450" />
+<path d="M370,280 H415 V328 H450" />
+<path d="M430,408 H580 V356" />
+</g>
+<g style="fill: var(--grey-1); font-size: 11px; font-family: var(--mono)">
+<text x="307" y="108">once per federation</text>
+<text x="307" y="220">progress</text>
+</g>
+<g style="stroke-width: 1.5">
+<rect x="20" y="20" width="130" height="56" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+<rect x="220" y="20" width="320" height="56" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+<rect x="220" y="132" width="320" height="56" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+<rect x="220" y="244" width="150" height="48" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+<rect x="450" y="216" width="260" height="56" rx="12" style="fill: var(--surface-blue); stroke: var(--blue)" />
+<rect x="450" y="300" width="260" height="56" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+<rect x="220" y="380" width="210" height="56" rx="12" style="fill: var(--surface); stroke: var(--line)" />
+</g>
+<g text-anchor="middle" style="fill: var(--ink); font-weight: 600; font-size: 14px">
+<text x="85" y="53">words</text>
+<text x="295" y="273">Running</text>
+<text x="580" y="240">Done</text>
+<text x="580" y="324">Failed</text>
+</g>
+<g text-anchor="middle" style="fill: var(--ink); font-weight: 600; font-size: 13px; font-family: var(--mono)">
+<text x="380" y="44">openSdk({ dataDir, mnemonic: words })</text>
+<text x="380" y="156">sdk.recover(invite)</text>
+<text x="325" y="404">sdk.resumeRecovery(id)</text>
+</g>
+<g text-anchor="middle" style="fill: var(--grey-1); font-size: 12px">
+<text x="380" y="64">the wallet, with the old seed, no money yet</text>
+<text x="380" y="176">returns { federation, progress }</text>
+<text x="580" y="260">the money is back and spendable</text>
+<text x="580" y="344">stopped before it finished, still locked</text>
+<text x="325" y="424">after a restart, or to retry</text>
+</g>
+</svg>
+</figure>
 
 ::: warning
 **The words do not say which federations the wallet used.** Recovery needs an invite for each one. Your app has to ask the user, or keep that list somewhere they can get back to, such as the directory from [Join a federation](./join.md).
