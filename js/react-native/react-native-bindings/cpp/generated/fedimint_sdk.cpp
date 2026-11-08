@@ -443,6 +443,8 @@ void uniffi_fedimint_sdk_fn_free_sdk(
     /*handle*/ uint64_t ptr, RustBuffer id);
 /*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_sdk_resume_recovery(
     /*handle*/ uint64_t ptr, RustBuffer id);
+/*handle*/ uint64_t uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+    /*handle*/ uint64_t ptr, RustBuffer source);
 RustBuffer uniffi_fedimint_sdk_fn_method_sdk_federation(
     /*handle*/ uint64_t ptr, RustBuffer id, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_sdk_federation_status(
@@ -734,6 +736,7 @@ uint16_t uniffi_fedimint_sdk_checksum_method_federationstatusupdates_next();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_recover();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_recovery_status();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery();
+uint16_t uniffi_fedimint_sdk_checksum_method_sdk_discover_federations();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_federation();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_federation_status();
 uint16_t uniffi_fedimint_sdk_checksum_method_sdk_federations();
@@ -4079,6 +4082,19 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_method_sdk_resume_recovery(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_sdk_discover_federations"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_method_sdk_discover_federations"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_fn_method_sdk_federation"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -6228,6 +6244,18 @@ NativeFedimintSdk::NativeFedimintSdk(
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this
                 ->cpp_uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_sdk_discover_federations"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_"
+                                        "method_sdk_discover_federations"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_sdk_discover_federations(
                     rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_sdk_federation"] =
@@ -9842,6 +9870,19 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_sdk_resume_recovery(
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
 }
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
 jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_sdk_federation(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -11693,6 +11734,14 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_method_sdk_discover_federations(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_sdk_discover_federations();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }

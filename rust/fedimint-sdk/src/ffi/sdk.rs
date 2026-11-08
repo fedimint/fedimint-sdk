@@ -1,10 +1,11 @@
 //! The SDK handle's FFI adapters, and the UniFFI entry point.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
-    Federation, FederationId, FederationInfo, FederationStatus, FederationStatusUpdates, Mnemonic,
-    Result, Sdk, Storage,
+    DiscoveredFederation, Federation, FederationId, FederationInfo, FederationStatus,
+    FederationStatusUpdates, InviteCode, Mnemonic, Network, Result, Sdk, Storage,
 };
 
 /// Opens an instance over `data_dir`: on native targets a directory path, in a browser the name
@@ -101,5 +102,86 @@ impl FederationStatusUpdates {
     #[uniffi::method(name = "next")]
     pub async fn ffi_next(&self) -> Result<FederationInfo> {
         self.next_shared().await
+    }
+}
+
+/// The UniFFI view of [`crate::DiscoverySource`].
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiDiscoverySource {
+    /// Dev mode: returns a hardcoded local/test federation without network queries.
+    Dev,
+    /// Production mode: queries the specified Nostr relays for NIP-87 announcements.
+    Nostr {
+        /// Nostr relay websocket URLs (e.g. `["wss://relay.damus.io"]`).
+        relays: Vec<String>,
+    },
+}
+
+impl From<FfiDiscoverySource> for crate::DiscoverySource {
+    fn from(source: FfiDiscoverySource) -> Self {
+        match source {
+            FfiDiscoverySource::Dev => crate::DiscoverySource::Dev,
+            FfiDiscoverySource::Nostr { relays } => crate::DiscoverySource::Nostr { relays },
+        }
+    }
+}
+
+// The UniFFI view of `Sdk::discover_federations`, under its real name but a different Rust
+// identifier: `DiscoveredFederation` carries a bare `InviteCode`, which is a UniFFI object and
+// must cross nested in a record behind `Arc<InviteCode>`.
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
+impl Sdk {
+    /// See [`Sdk::discover_federations`].
+    #[uniffi::method(name = "discover_federations")]
+    pub async fn ffi_discover_federations(
+        &self,
+        source: FfiDiscoverySource,
+    ) -> Result<Vec<FfiDiscoveredFederation>> {
+        let federations = self.discover_federations(source.into()).await?;
+        Ok(federations.into_iter().map(Into::into).collect())
+    }
+}
+
+/// The UniFFI view of [`DiscoveredFederation`], with `invite` crossing as `Arc<InviteCode>`:
+/// [`InviteCode`] is a UniFFI object, and an object can sit in a record only behind an `Arc`.
+/// Exported as `DiscoveredFederation`; the real type never crosses.
+#[derive(Debug, uniffi::Record)]
+#[uniffi(name = "DiscoveredFederation")]
+pub struct FfiDiscoveredFederation {
+    /// See [`DiscoveredFederation::id`].
+    pub id: FederationId,
+    /// See [`DiscoveredFederation::invite`].
+    pub invite: Arc<InviteCode>,
+    /// See [`DiscoveredFederation::name`].
+    pub name: Option<String>,
+    /// See [`DiscoveredFederation::network`].
+    pub network: Option<Network>,
+    /// See [`DiscoveredFederation::modules`].
+    pub modules: Vec<String>,
+    /// See [`DiscoveredFederation::metadata`].
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl From<DiscoveredFederation> for FfiDiscoveredFederation {
+    fn from(fed: DiscoveredFederation) -> Self {
+        // Destructured with no `..`, so a field added to `DiscoveredFederation` fails to compile
+        // here until this projection carries it too.
+        let DiscoveredFederation {
+            id,
+            invite,
+            name,
+            network,
+            modules,
+            metadata,
+        } = fed;
+        Self {
+            id,
+            invite: Arc::new(invite),
+            name,
+            network,
+            modules,
+            metadata,
+        }
     }
 }

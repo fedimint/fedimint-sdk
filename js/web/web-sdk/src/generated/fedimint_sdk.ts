@@ -1657,6 +1657,465 @@ const FfiConverterTypeDiagnostic = (() => {
 })()
 
 /**
+ * Typealias from the type name used in the UDL file to the builtin type.  This
+ * is needed because the UDL type name is used in function/method signatures.
+ */
+export type FederationId = string
+// FfiConverter for FederationId, a type alias for string.
+const FfiConverterTypeFederationId = FfiConverterString
+
+/**
+ * An invite code for a federation.
+ *
+ * An invite code carries everything needed to locate and connect to a
+ * federation's guardians before anything has been persisted locally. It is
+ * opaque: callers pass it to a preview or join call rather than picking it
+ * apart, with one deliberate exception:
+ * [`federation_id`](InviteCode::federation_id), the key that every
+ * per-federation call takes, is readable from the code without a network
+ * round trip. It round-trips through [`Display`](core::fmt::Display) and
+ * [`FromStr`](core::str::FromStr) with a validating parse, so it can be
+ * entered as text, scanned from a QR code, or shared as a link and
+ * reconstructed on the other end without any federation-specific parsing
+ * logic outside this crate.
+ *
+ * # `Display` prints the code, `Debug` never does
+ *
+ * An invite code is not always public: it can embed an `api_secret`, the
+ * credential a private federation requires before its guardians will answer
+ * at all, so the code is a bearer credential and printing one can hand a
+ * reader access to a federation meant to be closed.
+ * [`Display`](core::fmt::Display) prints the code and is the deliberate way
+ * to render, scan or share it. [`Debug`] is redacted instead, because it is
+ * what logging, crash reporters and `assert!` failures reach for, and any
+ * struct holding an `InviteCode` would otherwise print it merely by being
+ * logged.
+ */
+export interface InviteCodeLike {
+  /**
+   * The invite code in its canonical `fed1…` bech32m string, for showing the
+   * user, putting in a QR code, or sharing so someone else can join.
+   *
+   * This is the deliberate way to render the value; see the type-level
+   * documentation for why [`Debug`] is not.
+   */
+  display(): string
+  /**
+   * The id of the federation this code invites to.
+   *
+   * Read from the code itself, which encodes it: no network round trip,
+   * no join, and the same value [`FederationPreview::id`] reports after
+   * one. It is the key every per-federation call on [`Sdk`](crate::Sdk)
+   * takes, including [`federation_status`](crate::Sdk::federation_status),
+   * [`reopen_federation`](crate::Sdk::reopen_federation),
+   * [`recovery_status`](crate::Sdk::recovery_status) and
+   * [`resume_recovery`](crate::Sdk::resume_recovery). An application
+   * holding only an invite code can therefore check where that federation
+   * stands before joining, and find its way back to a federation that a
+   * failed seed recovery left committed but not open, when nothing else
+   * identifies which stored federation that failed call produced.
+   *
+   * Not a credential: a federation id is public, unlike the `api_secret`
+   * the code as a whole may embed.
+   */
+  federationId(): FederationId
+}
+/**
+ * @deprecated Use `InviteCodeLike` instead.
+ */
+export type InviteCodeInterface = InviteCodeLike
+
+/**
+ * An invite code for a federation.
+ *
+ * An invite code carries everything needed to locate and connect to a
+ * federation's guardians before anything has been persisted locally. It is
+ * opaque: callers pass it to a preview or join call rather than picking it
+ * apart, with one deliberate exception:
+ * [`federation_id`](InviteCode::federation_id), the key that every
+ * per-federation call takes, is readable from the code without a network
+ * round trip. It round-trips through [`Display`](core::fmt::Display) and
+ * [`FromStr`](core::str::FromStr) with a validating parse, so it can be
+ * entered as text, scanned from a QR code, or shared as a link and
+ * reconstructed on the other end without any federation-specific parsing
+ * logic outside this crate.
+ *
+ * # `Display` prints the code, `Debug` never does
+ *
+ * An invite code is not always public: it can embed an `api_secret`, the
+ * credential a private federation requires before its guardians will answer
+ * at all, so the code is a bearer credential and printing one can hand a
+ * reader access to a federation meant to be closed.
+ * [`Display`](core::fmt::Display) prints the code and is the deliberate way
+ * to render, scan or share it. [`Debug`] is redacted instead, because it is
+ * what logging, crash reporters and `assert!` failures reach for, and any
+ * struct holding an `InviteCode` would otherwise print it merely by being
+ * logged.
+ */
+export class InviteCode extends UniffiAbstractObject implements InviteCodeLike {
+  readonly [uniffiTypeNameSymbol] = 'InviteCode'
+  readonly [destructorGuardSymbol]: UniffiGcObject
+  readonly [pointerLiteralSymbol]: UniffiHandle
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super()
+    this[pointerLiteralSymbol] = pointer
+    this[destructorGuardSymbol] =
+      uniffiTypeInviteCodeObjectFactory.bless(pointer)
+  }
+
+  /**
+   * Parses and validates an invite code from its canonical string form.
+   *
+   * # Errors
+   *
+   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value.
+   * The rejected string is never echoed back: it may carry an `api_secret`.
+   */
+  static parse(code: string): InviteCodeLike /*throws*/ {
+    return FfiConverterTypeInviteCode.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeError__as_error.lift.bind(
+          FfiConverterTypeError__as_error,
+        ),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().uniffi_fedimint_sdk_fn_constructor_invitecode_parse(
+            FfiConverterString.lower(code, nativeModule().rustbuffer_alloc),
+            callStatus,
+          )
+        },
+        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      ),
+    )
+  }
+
+  /**
+   * The invite code in its canonical `fed1…` bech32m string, for showing the
+   * user, putting in a QR code, or sharing so someone else can join.
+   *
+   * This is the deliberate way to render the value; see the type-level
+   * documentation for why [`Debug`] is not.
+   */
+  display(): string {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_invitecode_display(
+          uniffiTypeInviteCodeObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterString.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The id of the federation this code invites to.
+   *
+   * Read from the code itself, which encodes it: no network round trip,
+   * no join, and the same value [`FederationPreview::id`] reports after
+   * one. It is the key every per-federation call on [`Sdk`](crate::Sdk)
+   * takes, including [`federation_status`](crate::Sdk::federation_status),
+   * [`reopen_federation`](crate::Sdk::reopen_federation),
+   * [`recovery_status`](crate::Sdk::recovery_status) and
+   * [`resume_recovery`](crate::Sdk::resume_recovery). An application
+   * holding only an invite code can therefore check where that federation
+   * stands before joining, and find its way back to a federation that a
+   * failed seed recovery left committed but not open, when nothing else
+   * identifies which stored federation that failed call produced.
+   *
+   * Not a credential: a federation id is public, unlike the `api_secret`
+   * the code as a whole may embed.
+   */
+  federationId(): FederationId {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_invitecode_federation_id(
+          uniffiTypeInviteCodeObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterTypeFederationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol]
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeInviteCodeObjectFactory.pointer(this)
+      uniffiTypeInviteCodeObjectFactory.freePointer(pointer)
+      uniffiTypeInviteCodeObjectFactory.unbless(ptr)
+      delete (this as any)[destructorGuardSymbol]
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is InviteCode {
+    return uniffiTypeInviteCodeObjectFactory.isConcreteType(obj_)
+  }
+}
+
+const uniffiTypeInviteCodeObjectFactory: UniffiObjectFactory<InviteCodeLike> =
+  (() => {
+    /// <reference lib="es2021" />
+    const registry =
+      typeof FinalizationRegistry !== 'undefined'
+        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
+            uniffiTypeInviteCodeObjectFactory.freePointer(heldValue)
+          })
+        : null
+
+    return {
+      create(pointer: UniffiHandle): InviteCodeLike {
+        const instance = Object.create(InviteCode.prototype)
+        instance[pointerLiteralSymbol] = pointer
+        instance[destructorGuardSymbol] = this.bless(pointer)
+        instance[uniffiTypeNameSymbol] = 'InviteCode'
+        return instance
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        const ptr = {
+          p, // make sure this object doesn't get optimized away.
+          markDestroyed: () => undefined,
+        }
+        if (registry) {
+          registry.register(ptr, p, ptr)
+        }
+        return ptr
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        if (registry) {
+          registry.unregister(ptr_)
+        }
+      },
+
+      pointer(obj_: InviteCodeLike): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer()
+        }
+        return (obj_ as any)[pointerLiteralSymbol]
+      },
+
+      clonePointer(obj_: InviteCodeLike): UniffiHandle {
+        const pointer = this.pointer(obj_)
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_clone_invitecode(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().uniffi_fedimint_sdk_fn_free_invitecode(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        )
+      },
+
+      isConcreteType(obj_: any): obj_ is InviteCodeLike {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === 'InviteCode'
+        )
+      },
+    }
+  })()
+const FfiConverterTypeInviteCode = new FfiConverterObject(
+  uniffiTypeInviteCodeObjectFactory,
+)
+
+/**
+ * The Bitcoin network a federation's on-chain module is configured for.
+ *
+ * Every federation operates on exactly one network; this value is read
+ * from federation configuration and reported on
+ * [`FederationPreview`](crate::FederationPreview) and the federation handle.
+ * It is also what an [`Address`](crate::Address) is checked against when an
+ * on-chain quote is requested, failing with
+ * [`ErrorCode::NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on
+ * disagreement.
+ *
+ * This enum is `#[non_exhaustive]`: Bitcoin has occasionally grown new test
+ * networks, and a new variant here is an additive change for Rust callers,
+ * who must write a non-exhaustive match with a wildcard arm.
+ *
+ * It is not additive for a generated binding, though, and the crate-level
+ * documentation's forward-compatibility section explains why: a decoder
+ * pinned to an older SDK fails on a tag it has never seen rather than
+ * mapping it to an unknown case. A binding is expected to be regenerated
+ * alongside the SDK it talks to.
+ */
+export enum Network {
+  /**
+   * Bitcoin mainnet.
+   */
+  Bitcoin,
+  /**
+   * The long-running public Bitcoin testnet, testnet3.
+   */
+  Testnet,
+  /**
+   * Testnet4: the successor public testnet, introduced after testnet3's
+   * difficulty and supply problems made it unreliable to test against.
+   * A separate network with its own genesis block, not a continuation of
+   * [`Testnet`](Self::Testnet).
+   */
+  Testnet4,
+  /**
+   * Signet: a public test network secured by a signer rather than
+   * proof-of-work, generally more stable than testnet.
+   */
+  Signet,
+  /**
+   * A privately operated regression-test network, typically used for
+   * local development.
+   */
+  Regtest,
+}
+
+const FfiConverterTypeNetwork = (() => {
+  type TypeName = Network
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return Network.Bitcoin
+        case 2:
+          return Network.Testnet
+        case 3:
+          return Network.Testnet4
+        case 4:
+          return Network.Signet
+        case 5:
+          return Network.Regtest
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value) {
+        case Network.Bitcoin:
+          return c.writeI32(1)
+        case Network.Testnet:
+          return c.writeI32(2)
+        case Network.Testnet4:
+          return c.writeI32(3)
+        case Network.Signet:
+          return c.writeI32(4)
+        case Network.Regtest:
+          return c.writeI32(5)
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return 4
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
+ * The UniFFI view of [`DiscoveredFederation`], with `invite` crossing as `Arc<InviteCode>`:
+ * [`InviteCode`] is a UniFFI object, and an object can sit in a record only behind an `Arc`.
+ * Exported as `DiscoveredFederation`; the real type never crosses.
+ */
+export type DiscoveredFederation = {
+  /**
+   * See [`DiscoveredFederation::id`].
+   */
+  id: FederationId
+  /**
+   * See [`DiscoveredFederation::invite`].
+   */
+  invite: InviteCodeLike
+  /**
+   * See [`DiscoveredFederation::name`].
+   */
+  name?: string
+  /**
+   * See [`DiscoveredFederation::network`].
+   */
+  network?: Network
+  /**
+   * See [`DiscoveredFederation::modules`].
+   */
+  modules: Array<string>
+  /**
+   * See [`DiscoveredFederation::metadata`].
+   */
+  metadata: MetaMap
+}
+
+/**
+ * Generated factory for {@link DiscoveredFederation} record objects.
+ */
+export const DiscoveredFederation = (() => {
+  const defaults = () => ({})
+  const create = (() => {
+    return uniffiCreateRecord<
+      DiscoveredFederation,
+      ReturnType<typeof defaults>
+    >(defaults)
+  })()
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DiscoveredFederation>,
+  })
+})()
+
+const FfiConverterTypeDiscoveredFederation = (() => {
+  type TypeName = DiscoveredFederation
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      return {
+        id: FfiConverterTypeFederationId.readFromCursor(c),
+        invite: FfiConverterTypeInviteCode.readFromCursor(c),
+        name: FfiConverterOptionalString.readFromCursor(c),
+        network: FfiConverterOptionalTypeNetwork.readFromCursor(c),
+        modules: FfiConverterSequenceString.readFromCursor(c),
+        metadata: FfiConverterTypeMetaMap.readFromCursor(c),
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      FfiConverterTypeFederationId.writeIntoCursor(value.id, c)
+      FfiConverterTypeInviteCode.writeIntoCursor(value.invite, c)
+      FfiConverterOptionalString.writeIntoCursor(value.name, c)
+      FfiConverterOptionalTypeNetwork.writeIntoCursor(value.network, c)
+      FfiConverterSequenceString.writeIntoCursor(value.modules, c)
+      FfiConverterTypeMetaMap.writeIntoCursor(value.metadata, c)
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeFederationId.allocationSize(value.id) +
+        FfiConverterTypeInviteCode.allocationSize(value.invite) +
+        FfiConverterOptionalString.allocationSize(value.name) +
+        FfiConverterOptionalTypeNetwork.allocationSize(value.network) +
+        FfiConverterSequenceString.allocationSize(value.modules) +
+        FfiConverterTypeMetaMap.allocationSize(value.metadata)
+      )
+    }
+  }
+  return new FFIConverter()
+})()
+
+/**
  * An out-of-band ecash token string, handed from a sender to a receiver
  * outside the federation (over a message, a QR code, a file).
  *
@@ -3046,103 +3505,6 @@ const FfiConverterTypeEcashSendHandle = (() => {
         FfiConverterTypeNotes.allocationSize(value.notes) +
         FfiConverterTypeEcashSendOperation.allocationSize(value.operation)
       )
-    }
-  }
-  return new FFIConverter()
-})()
-
-/**
- * Typealias from the type name used in the UDL file to the builtin type.  This
- * is needed because the UDL type name is used in function/method signatures.
- */
-export type FederationId = string
-// FfiConverter for FederationId, a type alias for string.
-const FfiConverterTypeFederationId = FfiConverterString
-
-/**
- * The Bitcoin network a federation's on-chain module is configured for.
- *
- * Every federation operates on exactly one network; this value is read
- * from federation configuration and reported on
- * [`FederationPreview`](crate::FederationPreview) and the federation handle.
- * It is also what an [`Address`](crate::Address) is checked against when an
- * on-chain quote is requested, failing with
- * [`ErrorCode::NetworkMismatch`](crate::ErrorCode::NetworkMismatch) on
- * disagreement.
- *
- * This enum is `#[non_exhaustive]`: Bitcoin has occasionally grown new test
- * networks, and a new variant here is an additive change for Rust callers,
- * who must write a non-exhaustive match with a wildcard arm.
- *
- * It is not additive for a generated binding, though, and the crate-level
- * documentation's forward-compatibility section explains why: a decoder
- * pinned to an older SDK fails on a tag it has never seen rather than
- * mapping it to an unknown case. A binding is expected to be regenerated
- * alongside the SDK it talks to.
- */
-export enum Network {
-  /**
-   * Bitcoin mainnet.
-   */
-  Bitcoin,
-  /**
-   * The long-running public Bitcoin testnet, testnet3.
-   */
-  Testnet,
-  /**
-   * Testnet4: the successor public testnet, introduced after testnet3's
-   * difficulty and supply problems made it unreliable to test against.
-   * A separate network with its own genesis block, not a continuation of
-   * [`Testnet`](Self::Testnet).
-   */
-  Testnet4,
-  /**
-   * Signet: a public test network secured by a signer rather than
-   * proof-of-work, generally more stable than testnet.
-   */
-  Signet,
-  /**
-   * A privately operated regression-test network, typically used for
-   * local development.
-   */
-  Regtest,
-}
-
-const FfiConverterTypeNetwork = (() => {
-  type TypeName = Network
-  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    readFromCursor(c: UniffiCursor): TypeName {
-      switch (c.readI32()) {
-        case 1:
-          return Network.Bitcoin
-        case 2:
-          return Network.Testnet
-        case 3:
-          return Network.Testnet4
-        case 4:
-          return Network.Signet
-        case 5:
-          return Network.Regtest
-        default:
-          throw new UniffiInternalError.UnexpectedEnumCase()
-      }
-    }
-    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
-      switch (value) {
-        case Network.Bitcoin:
-          return c.writeI32(1)
-        case Network.Testnet:
-          return c.writeI32(2)
-        case Network.Testnet4:
-          return c.writeI32(3)
-        case Network.Signet:
-          return c.writeI32(4)
-        case Network.Regtest:
-          return c.writeI32(5)
-      }
-    }
-    allocationSize(value: TypeName): number {
-      return 4
     }
   }
   return new FFIConverter()
@@ -7450,283 +7812,6 @@ const uniffiTypeEcashObjectFactory: UniffiObjectFactory<EcashLike> = (() => {
 })()
 const FfiConverterTypeEcash = new FfiConverterObject(
   uniffiTypeEcashObjectFactory,
-)
-
-/**
- * An invite code for a federation.
- *
- * An invite code carries everything needed to locate and connect to a
- * federation's guardians before anything has been persisted locally. It is
- * opaque: callers pass it to a preview or join call rather than picking it
- * apart, with one deliberate exception:
- * [`federation_id`](InviteCode::federation_id), the key that every
- * per-federation call takes, is readable from the code without a network
- * round trip. It round-trips through [`Display`](core::fmt::Display) and
- * [`FromStr`](core::str::FromStr) with a validating parse, so it can be
- * entered as text, scanned from a QR code, or shared as a link and
- * reconstructed on the other end without any federation-specific parsing
- * logic outside this crate.
- *
- * # `Display` prints the code, `Debug` never does
- *
- * An invite code is not always public: it can embed an `api_secret`, the
- * credential a private federation requires before its guardians will answer
- * at all, so the code is a bearer credential and printing one can hand a
- * reader access to a federation meant to be closed.
- * [`Display`](core::fmt::Display) prints the code and is the deliberate way
- * to render, scan or share it. [`Debug`] is redacted instead, because it is
- * what logging, crash reporters and `assert!` failures reach for, and any
- * struct holding an `InviteCode` would otherwise print it merely by being
- * logged.
- */
-export interface InviteCodeLike {
-  /**
-   * The invite code in its canonical `fed1…` bech32m string, for showing the
-   * user, putting in a QR code, or sharing so someone else can join.
-   *
-   * This is the deliberate way to render the value; see the type-level
-   * documentation for why [`Debug`] is not.
-   */
-  display(): string
-  /**
-   * The id of the federation this code invites to.
-   *
-   * Read from the code itself, which encodes it: no network round trip,
-   * no join, and the same value [`FederationPreview::id`] reports after
-   * one. It is the key every per-federation call on [`Sdk`](crate::Sdk)
-   * takes, including [`federation_status`](crate::Sdk::federation_status),
-   * [`reopen_federation`](crate::Sdk::reopen_federation),
-   * [`recovery_status`](crate::Sdk::recovery_status) and
-   * [`resume_recovery`](crate::Sdk::resume_recovery). An application
-   * holding only an invite code can therefore check where that federation
-   * stands before joining, and find its way back to a federation that a
-   * failed seed recovery left committed but not open, when nothing else
-   * identifies which stored federation that failed call produced.
-   *
-   * Not a credential: a federation id is public, unlike the `api_secret`
-   * the code as a whole may embed.
-   */
-  federationId(): FederationId
-}
-/**
- * @deprecated Use `InviteCodeLike` instead.
- */
-export type InviteCodeInterface = InviteCodeLike
-
-/**
- * An invite code for a federation.
- *
- * An invite code carries everything needed to locate and connect to a
- * federation's guardians before anything has been persisted locally. It is
- * opaque: callers pass it to a preview or join call rather than picking it
- * apart, with one deliberate exception:
- * [`federation_id`](InviteCode::federation_id), the key that every
- * per-federation call takes, is readable from the code without a network
- * round trip. It round-trips through [`Display`](core::fmt::Display) and
- * [`FromStr`](core::str::FromStr) with a validating parse, so it can be
- * entered as text, scanned from a QR code, or shared as a link and
- * reconstructed on the other end without any federation-specific parsing
- * logic outside this crate.
- *
- * # `Display` prints the code, `Debug` never does
- *
- * An invite code is not always public: it can embed an `api_secret`, the
- * credential a private federation requires before its guardians will answer
- * at all, so the code is a bearer credential and printing one can hand a
- * reader access to a federation meant to be closed.
- * [`Display`](core::fmt::Display) prints the code and is the deliberate way
- * to render, scan or share it. [`Debug`] is redacted instead, because it is
- * what logging, crash reporters and `assert!` failures reach for, and any
- * struct holding an `InviteCode` would otherwise print it merely by being
- * logged.
- */
-export class InviteCode extends UniffiAbstractObject implements InviteCodeLike {
-  readonly [uniffiTypeNameSymbol] = 'InviteCode'
-  readonly [destructorGuardSymbol]: UniffiGcObject
-  readonly [pointerLiteralSymbol]: UniffiHandle
-  // No primary constructor declared for this class.
-  private constructor(pointer: UniffiHandle) {
-    super()
-    this[pointerLiteralSymbol] = pointer
-    this[destructorGuardSymbol] =
-      uniffiTypeInviteCodeObjectFactory.bless(pointer)
-  }
-
-  /**
-   * Parses and validates an invite code from its canonical string form.
-   *
-   * # Errors
-   *
-   * [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value.
-   * The rejected string is never echoed back: it may carry an `api_secret`.
-   */
-  static parse(code: string): InviteCodeLike /*throws*/ {
-    return FfiConverterTypeInviteCode.lift(
-      uniffiCaller.rustCallWithError(
-        /*liftError:*/ FfiConverterTypeError__as_error.lift.bind(
-          FfiConverterTypeError__as_error,
-        ),
-        /*caller:*/ (callStatus) => {
-          return nativeModule().uniffi_fedimint_sdk_fn_constructor_invitecode_parse(
-            FfiConverterString.lower(code, nativeModule().rustbuffer_alloc),
-            callStatus,
-          )
-        },
-        /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-      ),
-    )
-  }
-
-  /**
-   * The invite code in its canonical `fed1…` bech32m string, for showing the
-   * user, putting in a QR code, or sharing so someone else can join.
-   *
-   * This is the deliberate way to render the value; see the type-level
-   * documentation for why [`Debug`] is not.
-   */
-  display(): string {
-    const __rb: Uint8Array = uniffiCaller.rustCall(
-      /*caller:*/ (callStatus) => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_invitecode_display(
-          uniffiTypeInviteCodeObjectFactory.clonePointer(this),
-          callStatus,
-        )
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-    )
-    try {
-      return FfiConverterString.lift(__rb)
-    } finally {
-      nativeModule().rustbuffer_free(__rb)
-    }
-  }
-
-  /**
-   * The id of the federation this code invites to.
-   *
-   * Read from the code itself, which encodes it: no network round trip,
-   * no join, and the same value [`FederationPreview::id`] reports after
-   * one. It is the key every per-federation call on [`Sdk`](crate::Sdk)
-   * takes, including [`federation_status`](crate::Sdk::federation_status),
-   * [`reopen_federation`](crate::Sdk::reopen_federation),
-   * [`recovery_status`](crate::Sdk::recovery_status) and
-   * [`resume_recovery`](crate::Sdk::resume_recovery). An application
-   * holding only an invite code can therefore check where that federation
-   * stands before joining, and find its way back to a federation that a
-   * failed seed recovery left committed but not open, when nothing else
-   * identifies which stored federation that failed call produced.
-   *
-   * Not a credential: a federation id is public, unlike the `api_secret`
-   * the code as a whole may embed.
-   */
-  federationId(): FederationId {
-    const __rb: Uint8Array = uniffiCaller.rustCall(
-      /*caller:*/ (callStatus) => {
-        return nativeModule().uniffi_fedimint_sdk_fn_method_invitecode_federation_id(
-          uniffiTypeInviteCodeObjectFactory.clonePointer(this),
-          callStatus,
-        )
-      },
-      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
-    )
-    try {
-      return FfiConverterTypeFederationId.lift(__rb)
-    } finally {
-      nativeModule().rustbuffer_free(__rb)
-    }
-  }
-
-  uniffiDestroy(): void {
-    const ptr = (this as any)[destructorGuardSymbol]
-    if (ptr !== undefined) {
-      const pointer = uniffiTypeInviteCodeObjectFactory.pointer(this)
-      uniffiTypeInviteCodeObjectFactory.freePointer(pointer)
-      uniffiTypeInviteCodeObjectFactory.unbless(ptr)
-      delete (this as any)[destructorGuardSymbol]
-    }
-  }
-
-  static instanceOf(obj_: any): obj_ is InviteCode {
-    return uniffiTypeInviteCodeObjectFactory.isConcreteType(obj_)
-  }
-}
-
-const uniffiTypeInviteCodeObjectFactory: UniffiObjectFactory<InviteCodeLike> =
-  (() => {
-    /// <reference lib="es2021" />
-    const registry =
-      typeof FinalizationRegistry !== 'undefined'
-        ? new FinalizationRegistry<UniffiHandle>((heldValue: UniffiHandle) => {
-            uniffiTypeInviteCodeObjectFactory.freePointer(heldValue)
-          })
-        : null
-
-    return {
-      create(pointer: UniffiHandle): InviteCodeLike {
-        const instance = Object.create(InviteCode.prototype)
-        instance[pointerLiteralSymbol] = pointer
-        instance[destructorGuardSymbol] = this.bless(pointer)
-        instance[uniffiTypeNameSymbol] = 'InviteCode'
-        return instance
-      },
-
-      bless(p: UniffiHandle): UniffiGcObject {
-        const ptr = {
-          p, // make sure this object doesn't get optimized away.
-          markDestroyed: () => undefined,
-        }
-        if (registry) {
-          registry.register(ptr, p, ptr)
-        }
-        return ptr
-      },
-
-      unbless(ptr_: UniffiGcObject) {
-        if (registry) {
-          registry.unregister(ptr_)
-        }
-      },
-
-      pointer(obj_: InviteCodeLike): UniffiHandle {
-        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
-          throw new UniffiInternalError.UnexpectedNullPointer()
-        }
-        return (obj_ as any)[pointerLiteralSymbol]
-      },
-
-      clonePointer(obj_: InviteCodeLike): UniffiHandle {
-        const pointer = this.pointer(obj_)
-        return uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_clone_invitecode(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      freePointer(pointer: UniffiHandle): void {
-        uniffiCaller.rustCall(
-          /*caller:*/ (callStatus) =>
-            nativeModule().uniffi_fedimint_sdk_fn_free_invitecode(
-              pointer,
-              callStatus,
-            ),
-          /*liftString:*/ FfiConverterString.lift,
-        )
-      },
-
-      isConcreteType(obj_: any): obj_ is InviteCodeLike {
-        return (
-          obj_[destructorGuardSymbol] &&
-          obj_[uniffiTypeNameSymbol] === 'InviteCode'
-        )
-      },
-    }
-  })()
-const FfiConverterTypeInviteCode = new FfiConverterObject(
-  uniffiTypeInviteCodeObjectFactory,
 )
 
 /**
@@ -14942,6 +15027,151 @@ const FfiConverterTypeRecoveryHandle = (() => {
   return new FFIConverter()
 })()
 
+// Enum: FfiDiscoverySource
+export enum FfiDiscoverySource_Tags {
+  Dev = 'Dev',
+  Nostr = 'Nostr',
+}
+/**
+ * The UniFFI view of [`crate::DiscoverySource`].
+ */
+
+type FfiDiscoverySource_Dev_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'FfiDiscoverySource'
+  tag: FfiDiscoverySource_Tags.Dev
+}
+
+type FfiDiscoverySource_Nostr_interface = {
+  /**
+   * @private
+   * This field is private and should not be used, use `tag` instead.
+   */
+  readonly [uniffiTypeNameSymbol]: 'FfiDiscoverySource'
+  tag: FfiDiscoverySource_Tags.Nostr
+  inner: Readonly<{ relays: Array<string> }>
+}
+export type FfiDiscoverySource =
+  | FfiDiscoverySource_Dev_interface
+  | FfiDiscoverySource_Nostr_interface
+
+export const FfiDiscoverySource = (() => {
+  /**
+   * Dev mode: returns a hardcoded local/test federation without network queries.
+   */
+  class Dev_ extends UniffiEnum implements FfiDiscoverySource_Dev_interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'FfiDiscoverySource'
+    readonly tag = FfiDiscoverySource_Tags.Dev
+    constructor() {
+      super('FfiDiscoverySource', 'Dev')
+    }
+
+    static new(): Dev_ {
+      return new Dev_()
+    }
+
+    static instanceOf(obj: any): obj is Dev_ {
+      return obj.tag === FfiDiscoverySource_Tags.Dev
+    }
+  }
+  /**
+   * Production mode: queries the specified Nostr relays for NIP-87 announcements.
+   */
+  class Nostr_
+    extends UniffiEnum
+    implements FfiDiscoverySource_Nostr_interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'FfiDiscoverySource'
+    readonly tag = FfiDiscoverySource_Tags.Nostr
+    readonly inner: Readonly<{ relays: Array<string> }>
+    constructor(inner: { relays: Array<string> }) {
+      super('FfiDiscoverySource', 'Nostr')
+
+      this.inner = Object.freeze(inner)
+    }
+    static new(inner: { relays: Array<string> }): Nostr_ {
+      return new Nostr_(inner)
+    }
+
+    static instanceOf(obj: any): obj is Nostr_ {
+      return obj.tag === FfiDiscoverySource_Tags.Nostr
+    }
+  }
+
+  function instanceOf(obj: any): obj is FfiDiscoverySource {
+    return obj[uniffiTypeNameSymbol] === 'FfiDiscoverySource'
+  }
+
+  return Object.freeze({
+    instanceOf,
+    Dev: Dev_,
+    Nostr: Nostr_,
+  })
+})()
+
+// FfiConverter for enum FfiDiscoverySource
+const FfiConverterTypeFfiDiscoverySource = (() => {
+  type TypeName = FfiDiscoverySource
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: UniffiCursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new FfiDiscoverySource.Dev()
+        case 2:
+          return new FfiDiscoverySource.Nostr({
+            relays: FfiConverterSequenceString.readFromCursor(c),
+          })
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    writeIntoCursor(value: TypeName, c: UniffiCursor): void {
+      switch (value.tag) {
+        case FfiDiscoverySource_Tags.Dev: {
+          c.writeI32(1)
+          return
+        }
+        case FfiDiscoverySource_Tags.Nostr: {
+          c.writeI32(2)
+          const inner = value.inner
+          FfiConverterSequenceString.writeIntoCursor(inner.relays, c)
+          return
+        }
+        default:
+          // Throwing from here means that FfiDiscoverySource_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case FfiDiscoverySource_Tags.Dev: {
+          return 4
+        }
+        case FfiDiscoverySource_Tags.Nostr: {
+          const inner = value.inner
+          let size = 4
+          size += FfiConverterSequenceString.allocationSize(inner.relays)
+          return size
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase()
+      }
+    }
+  }
+  return new FFIConverter()
+})()
+
 /**
  * One independent subscription to every federation's status.
  *
@@ -15556,6 +15786,13 @@ export interface SdkLike {
     id: FederationId,
     asyncOpts_?: { signal: AbortSignal },
   ) /*throws*/ : Promise<void>
+  /**
+   * See [`Sdk::discover_federations`].
+   */
+  discoverFederations(
+    source: FfiDiscoverySource,
+    asyncOpts_?: { signal: AbortSignal },
+  ) /*throws*/ : Promise<Array<DiscoveredFederation>>
   /**
    * Returns this instance's seed phrase, for the user to write down.
    *
@@ -16276,6 +16513,55 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
         .ffi_fedimint_sdk_rust_future_complete_void,
       /*freeFunc:*/ nativeModule().ffi_fedimint_sdk_rust_future_free_void,
       /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  }
+
+  /**
+   * See [`Sdk::discover_federations`].
+   */
+  async discoverFederations(
+    source: FfiDiscoverySource,
+    asyncOpts_?: { signal: AbortSignal },
+  ): Promise<Array<DiscoveredFederation>> /*throws*/ {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+          uniffiTypeSdkObjectFactory.clonePointer(this),
+          FfiConverterTypeFfiDiscoverySource.lower(
+            source,
+            nativeModule().rustbuffer_alloc,
+          ),
+        )
+      },
+      /*pollFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ffi_fedimint_sdk_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterSequenceTypeDiscoveredFederation.lift(__rb)
+        } finally {
+          nativeModule().rustbuffer_free(__rb)
+        }
+      },
       /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
@@ -17283,23 +17569,13 @@ const FfiConverterOptionalTypeDetailEnvelope = new FfiConverterOptional(
   FfiConverterTypeDetailEnvelope,
 )
 
-// FfiConverter for NotesLike | undefined
-const FfiConverterOptionalTypeNotes = new FfiConverterOptional(
-  FfiConverterTypeNotes,
-)
-
-// FfiConverter for RawErrorDetails | undefined
-const FfiConverterOptionalTypeRawErrorDetails = new FfiConverterOptional(
-  FfiConverterTypeRawErrorDetails,
-)
-
-// FfiConverter for EcashSendState | undefined
-const FfiConverterOptionalTypeEcashSendState = new FfiConverterOptional(
-  FfiConverterTypeEcashSendState,
-)
-
 // FfiConverter for string | undefined
 const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString)
+
+// FfiConverter for Network | undefined
+const FfiConverterOptionalTypeNetwork = new FfiConverterOptional(
+  FfiConverterTypeNetwork,
+)
 
 // FfiConverter for Array<string>
 const FfiConverterSequenceString = new FfiConverterArray(FfiConverterString)
@@ -17317,6 +17593,21 @@ const FfiConverterMapStringString = new FfiConverterMap(
 export type MetaMap = Map<string, string>
 // FfiConverter for MetaMap, a type alias for Map<string, string>.
 const FfiConverterTypeMetaMap = FfiConverterMapStringString
+
+// FfiConverter for NotesLike | undefined
+const FfiConverterOptionalTypeNotes = new FfiConverterOptional(
+  FfiConverterTypeNotes,
+)
+
+// FfiConverter for RawErrorDetails | undefined
+const FfiConverterOptionalTypeRawErrorDetails = new FfiConverterOptional(
+  FfiConverterTypeRawErrorDetails,
+)
+
+// FfiConverter for EcashSendState | undefined
+const FfiConverterOptionalTypeEcashSendState = new FfiConverterOptional(
+  FfiConverterTypeEcashSendState,
+)
 
 // FfiConverter for GatewayId | undefined
 const FfiConverterOptionalTypeGatewayId = new FfiConverterOptional(
@@ -17422,6 +17713,11 @@ const FfiConverterOptionalTypeRecoveryOperation = new FfiConverterOptional(
 // FfiConverter for AnyOperationLike | undefined
 const FfiConverterOptionalTypeAnyOperation = new FfiConverterOptional(
   FfiConverterTypeAnyOperation,
+)
+
+// FfiConverter for Array<DiscoveredFederation>
+const FfiConverterSequenceTypeDiscoveredFederation = new FfiConverterArray(
+  FfiConverterTypeDiscoveredFederation,
 )
 
 // FfiConverter for FederationLike | undefined
@@ -18371,6 +18667,14 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_discover_federations() !==
+    21888
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_sdk_discover_federations',
+    )
+  }
+  if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_export_mnemonic() !==
     7225
   ) {
@@ -18495,6 +18799,7 @@ export default Object.freeze({
     FfiConverterTypeDetailEnvelope,
     FfiConverterTypeDiagnostic,
     FfiConverterTypeDirection,
+    FfiConverterTypeDiscoveredFederation,
     FfiConverterTypeEcash,
     FfiConverterTypeEcashQuote,
     FfiConverterTypeEcashReceiveDetails,
@@ -18515,6 +18820,7 @@ export default Object.freeze({
     FfiConverterTypeFederationPreview,
     FfiConverterTypeFederationStatus,
     FfiConverterTypeFederationStatusUpdates,
+    FfiConverterTypeFfiDiscoverySource,
     FfiConverterTypeGatewayId,
     FfiConverterTypeInviteCode,
     FfiConverterTypeLightning,
