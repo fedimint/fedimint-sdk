@@ -313,7 +313,7 @@ pub(super) async fn subscribe_withdraw(
 /// A newly allocated v1 deposit address.
 ///
 /// The module logs the allocation as an operation of its own
-/// (`modules/fedimint-wallet-client/src/lib.rs:1190-1249`). That operation is an address, not a
+/// (`modules/fedimint-wallet-client/src/lib.rs:1249-1308`). That operation is an address, not a
 /// deposit, and gets no record here: [`adopt`] writes one when the module announces a payment
 /// to the address.
 pub(super) async fn receive(module: &WalletClientModule) -> Result<Address> {
@@ -398,7 +398,7 @@ pub(super) async fn adopt(
         // No record yet, or one that only says reconciliation could not place the entry.
         _ => {
             // An address the module derived again while recovering a wallet has no log entry
-            // (`modules/fedimint-wallet-client/src/lib.rs:246-266`), and the module has no call
+            // (`modules/fedimint-wallet-client/src/lib.rs:245-268`), and the module has no call
             // that names the address of an operation, so a payment to one is claimed into the
             // balance without a record to show for it.
             let Some(address) = allocated_address(&db, id).await else {
@@ -490,7 +490,7 @@ pub(super) enum Progress {
 //
 // A record exists only for a payment the module has already started claiming (see `adopt`), and
 // `subscribe_deposit` replays its states from the first one on every call
-// (`modules/fedimint-wallet-client/src/lib.rs:1567-1620`). The two it yields before `Confirmed`
+// (`modules/fedimint-wallet-client/src/lib.rs:1626-1679`). The two it yields before `Confirmed`
 // are therefore that replay catching up, the second of them behind a round trip to the bitcoin
 // backend, and not where the deposit is: the first state is there at once, and none is reported
 // that is behind the claim the record stands for.
@@ -498,7 +498,7 @@ pub(super) enum Progress {
 // Only the progress is taken from upstream. The transaction and the amount every state reports
 // are the record's own, the ones the module announced, because upstream's stream follows the
 // first payment in the address's history
-// (`modules/fedimint-wallet-client/src/lib.rs:1575-1596`), and for an address paid more than once
+// (`modules/fedimint-wallet-client/src/lib.rs:1634-1655`), and for an address paid more than once
 // that need not be the payment the record stands for. Its progress is then another payment's
 // too: the module has one operation per address and no way to follow one payment to it
 // (fedimint/fedimint#8123), which is why an address is for one payment.

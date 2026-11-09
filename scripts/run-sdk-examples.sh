@@ -8,11 +8,7 @@
 # The shape is optional and defaults to v2; every other argument (including a leading one that is
 # not v1 or v2) is an example name. Defaults to running all four examples: walkthrough, ecash,
 # lightning, onchain. The name `shell` instead hands the federation to the caller's own shell
-# (SHELL, or FM_SDK_SHELL to pick another) for running the examples by hand. v1 stays
-# selectable, but on it the pinned fedimint release's lnv1
-# client cannot decode a successful send's preimage, so the walkthrough and lightning examples end
-# with an Internal error after the payment has actually gone through, while ecash and onchain are
-# unaffected.
+# (SHELL, or FM_SDK_SHELL to pick another) for running the examples by hand.
 #
 # Runs inside the .#wasm-tests dev shell, the only one with devimint, fedimintd,
 # gatewayd, bitcoind, lnd, esplora and the recurringd binaries on PATH, and

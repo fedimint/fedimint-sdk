@@ -1153,7 +1153,7 @@ fn ensure_executable(
 
 /// Assembles a withdrawal's plan from the on-chain fee the destination output costs, the wallet
 /// module's own fee on that output, and the fee quote for funding it, whose `output` already
-/// includes that explicit fee (`fedimint-client/src/client.rs:865-935`): `change` is what is
+/// includes that explicit fee (`fedimint-client/src/client.rs:897-967`): `change` is what is
 /// left of the quote's output once the module's own fee is taken back out, plus the dust the
 /// quote reports.
 // `chain_fee` is `PegOutFees::amount()` on v1 and `send_fee()` on walletv2; `module_fee` is

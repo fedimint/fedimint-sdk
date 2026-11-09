@@ -70,7 +70,11 @@ pub(super) fn map_ln_pay(
         | LnPayState::AwaitingChange
         | LnPayState::WaitingForRefund { .. } => SendStep::State(LnSendState::Funded),
         LnPayState::Success { preimage } => SendStep::State(LnSendState::Success {
-            // v1 reports the preimage as the hex text the gateway answered with, unvalidated.
+            // v1 reports the preimage as the hex text the gateway answered with. The client
+            // checks it against the payment hash before it records the success
+            // (`verify_gateway_preimage` in `fedimint-ln-client/src/pay.rs`), but a fedimint
+            // client before 0.13.0 recorded the text unchecked and cut two characters off it
+            // (fedimint/fedimint#8969), and such a success fails to parse here.
             preimage: preimage.parse::<Preimage>().map_err(|err| {
                 Error::new(
                     ErrorCode::Internal,
@@ -893,7 +897,7 @@ fn pay_error(
         ),
         PayBolt11InvoiceError::InvoiceExpired => quote_expired(quote.expires_at, false),
         // v1 converts the configured network through lightning-invoice's
-        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.33.3/src/lib.rs:451-463) and
+        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.34.1/src/lib.rs:453-465) and
         // compares the result with the invoice's currency
         // (fedimint-ln-client/src/lib.rs:850-858). That conversion has no `Testnet4` arm and
         // falls to a `_` arm yielding `Currency::Regtest`, so a testnet4 federation refuses

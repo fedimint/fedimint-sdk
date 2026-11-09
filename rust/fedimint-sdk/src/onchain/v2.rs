@@ -67,7 +67,7 @@ pub(super) fn module_of(client: &Client) -> Result<ClientModuleInstance<'_, Wall
 
 /// A whole-satoshi `bitcoin::Amount` reinterpreted as a millisatoshi upstream `Amount`: the same
 /// conversion `send_fee_quote` uses internally to price its own fee consensus
-/// (`modules/fedimint-walletv2-client/src/lib.rs:291-304`).
+/// (`modules/fedimint-walletv2-client/src/lib.rs:292-305`).
 fn to_upstream_sats(amount: bitcoin::Amount) -> fedimint_core::Amount {
     fedimint_core::Amount::from_sats(amount.to_sat())
 }
@@ -249,7 +249,7 @@ pub(super) async fn send(
 // step and no `Created` to map here: `subscribe_send` reports that state itself before this
 // ever runs. Upstream documents `Failure` itself as "a programming
 // error has occurred or the federation is malicious"
-// (`modules/fedimint-walletv2-client/src/lib.rs:106`), which is why it maps to `Failed` rather
+// (`modules/fedimint-walletv2-client/src/lib.rs:107`), which is why it maps to `Failed` rather
 // than the ordinary `Refunded` ending `Aborted` gets.
 //
 // `Aborted` is the funding rejection, so it is not an ending here: it is the step that sends the
@@ -318,7 +318,7 @@ pub(super) async fn subscribe_send(
 ///
 /// The module hands back the highest address its scanner has derived, which stays the same one
 /// until the scanner has seen it paid, and waits for the scanner when it has derived none yet
-/// (`modules/fedimint-walletv2-client/src/lib.rs:581-601`). Deriving one is a hash-prefix search
+/// (`modules/fedimint-walletv2-client/src/lib.rs:570-590`). Deriving one is a hash-prefix search
 /// that can take well over half a minute on constrained hardware (fedimint/fedimint-sdk#418),
 /// and the caller holds the client throughout, so the wait is bounded.
 pub(super) async fn receive(module: &WalletClientModule) -> Result<Address> {
@@ -424,7 +424,7 @@ fn paid_of(details: &wire::OnchainReceiveDetailsWire) -> Option<Paid> {
 /// search for another claim of the deposit starts from. For a record that has not searched yet
 /// that is the beginning of the log, because the claim it was written for need not be the first
 /// one made of its output. The module's scanner comes back to an output until a claim of it was
-/// accepted (`modules/fedimint-walletv2-client/src/lib.rs:864-930`), so a wallet that restarts
+/// accepted (`modules/fedimint-walletv2-client/src/lib.rs:893-959`), so a wallet that restarts
 /// while a claim is pending can claim an output that is still unspent a second time. After a
 /// search the position is just past the announcement of the claim that was found, or as far as
 /// a search that found none got.
@@ -447,9 +447,9 @@ pub(super) struct Link {
 /// for new entries, so a caller that wants to keep watching calls this again after the next
 /// [`Client::log_event_added_rx`] tick.
 ///
-/// A claim the module never announced is not found. The module commits a claim and logs its
-/// announcement in two database transactions, so a client that stops between them keeps the
-/// claim without the announcement (fedimint/fedimint#9338).
+/// A claim is found by its announcement. The module commits a claim and logs its announcement in
+/// one database transaction. A fedimint client before 0.13.0 used two (fedimint/fedimint#9338),
+/// so a claim it made is not found when the client stopped between them.
 ///
 /// Returns the claim, if there is one, and otherwise the position the pass reached, which is
 /// where the next one starts.
@@ -631,10 +631,10 @@ async fn claim_from_upstream(
     let input_fee = cfg.fee_consensus.fee(input_amount);
 
     // The same wait upstream's own `await_receive` makes before it reports a claim
-    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:630-649): it returns once every note the
+    // ($FM/modules/fedimint-walletv2-client/src/lib.rs:619-638): it returns once every note the
     // claim minted is spendable, and fails if the mint's own state machine for one of them
     // ended in failure instead. That failure arrives as `TransactionSubmitError::PrimaryModule`
-    // (`$FM/fedimint-client/src/client.rs:1320`), the only variant the wait itself produces besides
+    // (`$FM/fedimint-client/src/client.rs:1354`), the only variant the wait itself produces besides
     // a missing primary module. Mint issuance cannot be delayed or failed from a test at this
     // pin, so only the devimint suite exercises the wait, and only its success path.
     let issued = client

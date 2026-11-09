@@ -32,7 +32,7 @@ impl Bolt11Invoice {
     /// with a useful message instead of surfacing a failed quote.
     pub fn amount(&self) -> Option<Amount> {
         // Already millisatoshis upstream
-        // (lightning-invoice-0.33.3/src/lib.rs:1650).
+        // (lightning-invoice-0.34.1/src/lib.rs:1639).
         self.invoice.amount_milli_satoshis().map(Amount::from_msats)
     }
 
@@ -42,7 +42,7 @@ impl Bolt11Invoice {
     /// not resolve).
     pub fn description(&self) -> String {
         // `description()` returns one of two variants
-        // (lightning-invoice-0.33.3/src/lib.rs:1483). `Description`'s `Display`
+        // (lightning-invoice-0.34.1/src/lib.rs:1472). `Description`'s `Display`
         // replaces control characters, which matters because this text is
         // attacker-controlled and ends up in a UI.
         match self.invoice.description() {
@@ -54,7 +54,7 @@ impl Bolt11Invoice {
     /// The point in time after which this invoice is no longer payable.
     pub fn expires_at(&self) -> Timestamp {
         // Upstream returns `None` when the timestamp plus the expiry overflows
-        // a `Duration` (lightning-invoice-0.33.3/src/lib.rs:1533). Saturating
+        // a `Duration` (lightning-invoice-0.34.1/src/lib.rs:1522). Saturating
         // is the honest reading of "no longer payable after this", and the
         // accessor must not panic.
         let millis = self.invoice.expires_at().map_or(u64::MAX, |since_epoch| {
@@ -74,7 +74,7 @@ impl Bolt11Invoice {
         // bare wasm32-unknown-unknown. `fedimint_core::time::now`
         // (fedimint-core/src/time.rs) reads the JS clock there, and
         // `would_expire` is the variant that takes "now" as an argument
-        // (lightning-invoice-0.33.3/src/lib.rs:1577).
+        // (lightning-invoice-0.34.1/src/lib.rs:1566).
         let now = fedimint_core::time::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
@@ -105,7 +105,7 @@ impl Bolt11Invoice {
     /// mismatch against any federation.
     pub(crate) fn network(&self) -> Option<Network> {
         // Matched here rather than through upstream's `From<Currency> for
-        // Network` (lightning-invoice-0.33.3/src/lib.rs:465-476), which
+        // Network` (lightning-invoice-0.34.1/src/lib.rs:468-478), which
         // collapses `Simnet` into `Regtest` and would report a network the
         // invoice never named.
         //
@@ -130,7 +130,7 @@ impl Bolt11Invoice {
     /// name for.
     pub(crate) fn observed_prefix(&self) -> String {
         // The same table upstream's `Display for Currency` uses
-        // (lightning-invoice-0.33.3/src/ser.rs:194-200).
+        // (lightning-invoice-0.34.1/src/ser.rs:194-200).
         match self.invoice.currency() {
             Currency::Bitcoin => "bc",
             Currency::BitcoinTestnet => "tb",
@@ -145,7 +145,7 @@ impl Bolt11Invoice {
 impl core::fmt::Display for Bolt11Invoice {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Re-encodes the signed invoice as canonical lowercase bolt11
-        // (lightning-invoice-0.33.3/src/ser.rs:152-156).
+        // (lightning-invoice-0.34.1/src/ser.rs:152-156).
         core::fmt::Display::fmt(&self.invoice, f)
     }
 }

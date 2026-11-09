@@ -692,33 +692,23 @@ async fn lightning_send_pays_an_invoice_from_outside_the_federation() {
     assert_eq!(details.total, total);
     assert_eq!(details.route, route);
 
-    if devimint.shape == "v1" {
-        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
-        // gateway returns, so the SDK cannot decode the success state. The payment itself goes
-        // through; only its observation fails, and the record and the reattached handle are
-        // still checked below. Remove this branch once the pin includes the fix.
-        let err = operation.await_final().await.expect_err("fedimint#8969");
-        assert_eq!(err.code, ErrorCode::Internal);
-        assert!(err.message.contains("preimage"), "{}", err.message);
-    } else {
-        let last = operation.await_final().await.expect("settles");
-        match last {
-            LnSendState::Success {
-                preimage,
-                fee: reported_fee,
-                route: reported_route,
-            } => {
-                assert_eq!(reported_fee, fee);
-                assert_eq!(reported_route, route);
-                assert_eq!(preimage.to_string().len(), 64);
-            }
-            other => panic!("expected Success, got {other:?}"),
+    let last = operation.await_final().await.expect("settles");
+    match last {
+        LnSendState::Success {
+            preimage,
+            fee: reported_fee,
+            route: reported_route,
+        } => {
+            assert_eq!(reported_fee, fee);
+            assert_eq!(reported_route, route);
+            assert_eq!(preimage.to_string().len(), 64);
         }
-        assert_eq!(
-            federation.balance().await.expect("balance"),
-            funded.checked_sub(total).expect("the total was debited")
-        );
+        other => panic!("expected Success, got {other:?}"),
     }
+    assert_eq!(
+        federation.balance().await.expect("balance"),
+        funded.checked_sub(total).expect("the total was debited")
+    );
 
     let any = federation
         .operation(&id)
@@ -728,16 +718,10 @@ async fn lightning_send_pays_an_invoice_from_outside_the_federation() {
     assert_eq!(any.kind(), OperationKind::LnSend);
     let typed = any.as_ln_send().expect("a typed handle");
     assert_eq!(typed.details().await.expect("details"), details);
-    if devimint.shape == "v1" {
-        // Same cause as above: `state()` replays the same undecodable stream.
-        let err = typed.state().await.expect_err("fedimint#8969");
-        assert_eq!(err.code, ErrorCode::Internal);
-    } else {
-        assert!(matches!(
-            typed.state().await.expect("state"),
-            LnSendState::Success { .. }
-        ));
-    }
+    assert!(matches!(
+        typed.state().await.expect("state"),
+        LnSendState::Success { .. }
+    ));
     sdk.shutdown().await.expect("shuts down");
 }
 
@@ -842,7 +826,7 @@ async fn lightning_send_refuses_a_quote_used_twice() {
     let lightning = federation
         .lightning()
         .expect("devimint runs a lightning module");
-    let funded = fund(&lightning, 200_000).await;
+    fund(&lightning, 200_000).await;
 
     let invoice: fedimint_sdk::Bolt11Invoice = faucet("POST", "/invoice", "10000")
         .expect("the faucet issues an invoice")
@@ -852,25 +836,10 @@ async fn lightning_send_refuses_a_quote_used_twice() {
     let first = lightning.quote(&invoice).await.expect("a quote");
     let second = lightning.quote(&invoice).await.expect("a second quote");
     let operation = lightning.send(first).await.expect("the payment starts");
-    if devimint.shape == "v1" {
-        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
-        // gateway returns, so `await_final` cannot decode the success state. The payment itself
-        // goes through, so the second send below is still refused as already executed; the
-        // balance drop confirms the first payment settled since `await_final` cannot.
-        let _ = operation.await_final().await.expect_err("fedimint#8969");
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-        let mut balance = federation.balance().await.expect("balance");
-        while balance >= funded && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            balance = federation.balance().await.expect("balance");
-        }
-        assert!(balance < funded, "the payment never debited the balance");
-    } else {
-        assert!(matches!(
-            operation.await_final().await.expect("settles"),
-            LnSendState::Success { .. }
-        ));
-    }
+    assert!(matches!(
+        operation.await_final().await.expect("settles"),
+        LnSendState::Success { .. }
+    ));
     // The invoice is paid; a second quote for it is refused as already executed.
     let err = lightning.send(second).await.expect_err("already paid");
     assert_eq!(err.code, ErrorCode::QuoteExpired);
@@ -914,16 +883,7 @@ async fn activity_lists_what_the_federation_was_used_for() {
     let send = lightning.send(quote).await.expect("the payment starts");
     let send_id = send.id();
 
-    if devimint.shape == "v1" {
-        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
-        // gateway returns, so the SDK cannot decode the success state. The payment itself goes
-        // through; only its observation fails.
-        let err = send.await_final().await.expect_err("fedimint#8969");
-        assert_eq!(err.code, ErrorCode::Internal);
-        assert!(err.message.contains("preimage"), "{}", err.message);
-    } else {
-        send.await_final().await.expect("settles");
-    }
+    send.await_final().await.expect("settles");
 
     let history = federation.activity(None, 10).await.expect("both rows");
     assert_eq!(history.items.len(), 2);
@@ -933,22 +893,11 @@ async fn activity_lists_what_the_federation_was_used_for() {
 
     assert_eq!(send_row.operation_id, send_id);
     assert_eq!(send_row.kind, OperationKind::LnSend);
-    if devimint.shape == "v1" {
-        // The record has no final state and the current one cannot be read
-        // (fedimint/fedimint#8969, as above): the outcome is unknown, not pending, and an
-        // unknown outcome carries no figures.
-        assert_eq!(send_row.status, ActivityStatus::Unknown);
-        assert!(!send_row.is_final);
-        assert_eq!(send_row.direction, None);
-        assert_eq!(send_row.amount, None);
-        assert_eq!(send_row.fee, None);
-    } else {
-        assert_eq!(send_row.status, ActivityStatus::Success);
-        assert!(send_row.is_final);
-        assert_eq!(send_row.direction, Some(Direction::Outgoing));
-        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
-        assert_eq!(send_row.fee, Some(fee));
-    }
+    assert_eq!(send_row.status, ActivityStatus::Success);
+    assert!(send_row.is_final);
+    assert_eq!(send_row.direction, Some(Direction::Outgoing));
+    assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+    assert_eq!(send_row.fee, Some(fee));
 
     assert_eq!(receive_row.kind, OperationKind::LnReceive);
     assert_eq!(receive_row.direction, Some(Direction::Incoming));
@@ -1000,17 +949,11 @@ async fn activity_lists_what_the_federation_was_used_for() {
     let receive_row = &restarted.items[1];
     assert_eq!(send_row.operation_id, send_id);
     assert_eq!(send_row.kind, OperationKind::LnSend);
-    if devimint.shape == "v1" {
-        assert_eq!(send_row.status, ActivityStatus::Unknown);
-        assert!(!send_row.is_final);
-        assert_eq!(send_row.amount, None);
-    } else {
-        assert_eq!(send_row.status, ActivityStatus::Success);
-        assert!(send_row.is_final);
-        assert_eq!(send_row.direction, Some(Direction::Outgoing));
-        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
-        assert_eq!(send_row.fee, Some(fee));
-    }
+    assert_eq!(send_row.status, ActivityStatus::Success);
+    assert!(send_row.is_final);
+    assert_eq!(send_row.direction, Some(Direction::Outgoing));
+    assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+    assert_eq!(send_row.fee, Some(fee));
     assert_eq!(receive_row.kind, OperationKind::LnReceive);
     assert_eq!(receive_row.direction, Some(Direction::Incoming));
     assert_eq!(receive_row.amount, Some(Amount::from_msats(200_000)));
@@ -1180,20 +1123,10 @@ async fn recovery_restores_a_wallet_with_history() {
         .expect("a bolt11 invoice");
     let quote = lightning_b.quote(&invoice).await.expect("a quote");
     let send = lightning_b.send(quote).await.expect("the payment starts");
-    if devimint.shape == "v1" {
-        // fedimint/fedimint#8969: the v1 client strips two characters off the preimage the
-        // gateway returns, so the SDK cannot decode the success state. The payment itself goes
-        // through; only its observation fails, as in
-        // `lightning_send_pays_an_invoice_from_outside_the_federation`.
-        let err = send.await_final().await.expect_err("fedimint#8969");
-        assert_eq!(err.code, ErrorCode::Internal);
-        assert!(err.message.contains("preimage"), "{}", err.message);
-    } else {
-        assert!(matches!(
-            send.await_final().await.expect("settles"),
-            LnSendState::Success { .. }
-        ));
-    }
+    assert!(matches!(
+        send.await_final().await.expect("settles"),
+        LnSendState::Success { .. }
+    ));
     // The subscription opened during recovery is the one that reports the payment.
     let paid = tokio::time::timeout(std::time::Duration::from_secs(60), updates.next())
         .await

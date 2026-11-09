@@ -114,14 +114,7 @@ describe('lightning', () => {
         LnSendState_Tags.Funded,
         LnSendState_Tags.Success,
       ]).toContain(started.tag)
-      // fedimint/fedimint#8969: on the v1 lightning module `awaitFinal` can fail to decode the
-      // success state the gateway reports, although the payment went through. The balance is the
-      // proof of payment either way, as in the crate's own test.
-      const final = await operation.awaitFinal().then(
-        (state) => state.tag,
-        () => undefined,
-      )
-      if (final !== undefined) expect(final).toBe(LnSendState_Tags.Success)
+      expect((await operation.awaitFinal()).tag).toBe(LnSendState_Tags.Success)
       const after = await balanceBelow(federation, balance)
       expect(balance - after).toBeGreaterThanOrEqual(10_000n)
 

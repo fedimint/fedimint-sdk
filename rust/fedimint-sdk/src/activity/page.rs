@@ -213,8 +213,9 @@ where
             Err(err) if matches!(err.code, ErrorCode::FederationClosed | ErrorCode::Storage) => {
                 return Err(err);
             }
-            // An upstream state this build's driver cannot decode (fedimint/fedimint#8969 on
-            // the v1 module today) must not make the whole list unreadable, and it is not a
+            // An upstream state this build's driver cannot decode (such as a v1 send's success
+            // that a fedimint client before 0.13.0 recorded, see `lightning/v1.rs`) must not
+            // make the whole list unreadable, and it is not a
             // reading either: `Pending` would claim the operation is still running when all
             // that is known is that no ending was recorded. So the outcome is `Unknown` and
             // finality is what the record says, which in this branch is "not yet".
