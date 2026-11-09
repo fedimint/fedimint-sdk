@@ -148,10 +148,6 @@ The tests assert what each generation documents rather than identical behaviour:
   reclaims only when the send is observed after its deadline. Neither has to report a redeemed
   send as `REDEEMED` straight away, so `mint` requires only that it is not `CANCELED` (the generated
   Kotlin enum constant the example app prints).
-- **Lightning send outcome on v1.** The v1 client cannot decode the success state
-  (fedimint/fedimint#8969), so `awaitFinal` ends in `INTERNAL` mentioning the preimage. `lightningSend`
-  accepts exactly that, and only on v1, and still requires the payee to report the invoice
-  paid and the exact debit.
 - **lnv2 gateway.** The lnv2 client picks a gateway at random, and only devimint's LND gateway is
   funded, so on v2 `run-android-e2e.sh` removes the other gateways from every guardian's lnv2
   list before the tests run. On v1 the SDK picks the cheapest gateway, which is LND (devimint sets

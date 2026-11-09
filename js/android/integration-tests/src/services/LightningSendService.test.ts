@@ -13,10 +13,8 @@ import {
   operationIdFrom,
   quoteLineMsats,
   readBalanceMsats,
-  readSdkError,
   waitForBalance,
 } from '../flows/wallet'
-import { currentShape } from '../shape'
 
 const INVOICE_MSATS = 20_000
 
@@ -44,7 +42,6 @@ export class LightningSendService extends AppiumTestBase {
 
   async execute(): Promise<void> {
     console.log('Starting LightningSendService test')
-    const shape = currentShape()
 
     const invoice = (
       await new FaucetClient().createInvoice(INVOICE_MSATS)
@@ -104,33 +101,15 @@ export class LightningSendService extends AppiumTestBase {
     console.log(`Send outcome: ${outcome.replace(/\n/g, ' | ')}`)
 
     const preimage = outcome.match(/Success\(.*preimage=([0-9a-f]{64})\)/)?.[1]
-    if (preimage) {
-      // The preimage is the payee's to reveal: hashing to the invoice's
-      // payment hash proves the invoice was paid, not merely that the SDK
-      // thinks so.
-      if (sha256Hex(preimage) !== hash) {
-        throw new Error(`The preimage ${preimage} does not hash to ${hash}`)
-      }
-      operationIdFrom(outcome)
-    } else {
-      const error = readSdkError(outcome)
-      // fedimint/fedimint#8969: the v1 client strips two characters off the
-      // preimage the gateway returns, so the SDK cannot decode the success
-      // state. The payment itself goes through, which the payee check below
-      // still requires; only this one, known, observation failure is let
-      // through, and only on v1. Mirrors
-      // rust/fedimint-sdk/tests/integration.rs's lightning send test.
-      const knownV1Failure =
-        shape === 'v1' &&
-        error?.code === 'INTERNAL' &&
-        error.reason.includes('preimage')
-      if (!knownV1Failure) {
-        throw new Error(`The payment did not succeed: "${outcome}"`)
-      }
-      console.log(
-        'v1 send outcome undecodable (fedimint#8969); checking the payee',
-      )
+    if (!preimage) {
+      throw new Error(`The payment did not succeed: "${outcome}"`)
     }
+    // The preimage is the payee's to reveal: hashing to the invoice's payment
+    // hash proves the invoice was paid, not merely that the SDK thinks so.
+    if (sha256Hex(preimage) !== hash) {
+      throw new Error(`The preimage ${preimage} does not hash to ${hash}`)
+    }
+    operationIdFrom(outcome)
 
     // ── The other end ────────────────────────────────────────────────────
     await waitForLdkInvoicePaid(hash, NETWORK_TIMEOUT)

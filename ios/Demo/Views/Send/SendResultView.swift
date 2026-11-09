@@ -38,9 +38,7 @@ struct SendResultView: View {
         } else if let lost = model.watchFailures[section] {
             // The send was submitted, and then reading its state failed. That
             // says nothing about how the payment ended, so neither outcome is
-            // claimed. On a federation running lnv1, a payment that succeeded
-            // ends up here: the SDK cannot decode the preimage the gateway
-            // reported (`map_ln_pay` in rust/fedimint-sdk/src/lightning/v1.rs).
+            // claimed.
             Outcome(icon: "questionmark", tone: .neutral, title: "Status unknown",
                     detail: "The payment was submitted, but the SDK stopped reporting its state: \(lost). Check your balance and Activity to see how it ended.")
         } else {

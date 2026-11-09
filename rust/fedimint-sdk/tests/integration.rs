@@ -949,17 +949,11 @@ async fn activity_lists_what_the_federation_was_used_for() {
     let receive_row = &restarted.items[1];
     assert_eq!(send_row.operation_id, send_id);
     assert_eq!(send_row.kind, OperationKind::LnSend);
-    if devimint.shape == "v1" {
-        assert_eq!(send_row.status, ActivityStatus::Unknown);
-        assert!(!send_row.is_final);
-        assert_eq!(send_row.amount, None);
-    } else {
-        assert_eq!(send_row.status, ActivityStatus::Success);
-        assert!(send_row.is_final);
-        assert_eq!(send_row.direction, Some(Direction::Outgoing));
-        assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
-        assert_eq!(send_row.fee, Some(fee));
-    }
+    assert_eq!(send_row.status, ActivityStatus::Success);
+    assert!(send_row.is_final);
+    assert_eq!(send_row.direction, Some(Direction::Outgoing));
+    assert_eq!(send_row.amount, Some(Amount::from_msats(50_000)));
+    assert_eq!(send_row.fee, Some(fee));
     assert_eq!(receive_row.kind, OperationKind::LnReceive);
     assert_eq!(receive_row.direction, Some(Direction::Incoming));
     assert_eq!(receive_row.amount, Some(Amount::from_msats(200_000)));
