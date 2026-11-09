@@ -417,14 +417,14 @@ pub use lightning::{
     LnReceiveState, LnSendDetails, LnSendState,
 };
 pub use meta::{ConsensusMetadata, Meta};
+#[cfg(all(feature = "extension-api", feature = "multisig"))]
+pub use multisig::MultisigBackend;
 #[cfg(feature = "multisig")]
 pub use multisig::{
     Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId, MultisigAmount,
     MultisigDenomination, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
     MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal,
 };
-#[cfg(all(feature = "extension-api", feature = "multisig"))]
-pub use multisig::{MultisigBackend, MultisigSweep};
 pub use onchain::{
     Onchain, OnchainDeposits, OnchainQuote, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,
     OnchainReceiveState, OnchainSendDetails, OnchainSendFeeBreakdown, OnchainSendState,

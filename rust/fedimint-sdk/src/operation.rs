@@ -111,6 +111,14 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 /// A caller never needs to have seen an earlier state: whatever it takes to
 /// render or complete a reattached operation, [`Operation::details`] and the
 /// current state supply between them.
+#[cfg_attr(
+    feature = "multisig",
+    doc = "
+One value is in both although its state carries it for good: what a sweep moved, which
+[`MultisigSweepState::Done`](crate::MultisigSweepState::Done) announces and
+[`MultisigSweepDetails::amount`](crate::MultisigSweepDetails::amount) keeps, so that the activity
+history reads it off the record like every other figure."
+)]
 // The client's own operation log is authoritative for an operation's existence; this record is a
 // decoration over it, written immediately after the module call returns and before the creating
 // call hands back a handle. A crash in the gap between the two commits leaves a log entry with no
