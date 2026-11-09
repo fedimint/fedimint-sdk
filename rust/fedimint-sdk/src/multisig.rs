@@ -10,6 +10,7 @@ use crate::operation::{DetailedOperationState, OperationDetails, OperationState,
 use crate::{Amount, Error, ErrorCode, Operation, Result, Timestamp};
 
 mod account;
+mod activity;
 mod backend;
 mod driver;
 mod proposal;
