@@ -80,41 +80,41 @@ multisig = []
 # boxed inside its own error, and telling that apart from the module's other failures means
 # naming the type. Already resolved at the identical version as a dependency of
 # `fedimint-client`.
-fedimint-api-client = "=0.13.0-beta.1"
-fedimint-bip39 = "=0.13.0-beta.1"
-fedimint-client = "=0.13.0-beta.1"
-fedimint-client-module = "=0.13.0-beta.1"
-fedimint-connectors = "=0.13.0-beta.1"
-fedimint-core = "=0.13.0-beta.1"
+fedimint-api-client = "=0.13.0"
+fedimint-bip39 = "=0.13.0"
+fedimint-client = "=0.13.0"
+fedimint-client-module = "=0.13.0"
+fedimint-connectors = "=0.13.0"
+fedimint-core = "=0.13.0"
 # `EventLogId` and the client's `get_event_log`/`log_event_added_rx` read positions in it, needed
 # to scan for a walletv2 deposit's `ReceivePaymentEvent`; nothing already listed here re-exports
 # it (`fedimint-client` only re-exports `EventHandlerError` from this crate).
-fedimint-eventlog = "=0.13.0-beta.1"
-fedimint-ln-client = "=0.13.0-beta.1"
-fedimint-ln-common = "=0.13.0-beta.1"
-fedimint-lnv2-client = "=0.13.0-beta.1"
-fedimint-lnv2-common = "=0.13.0-beta.1"
-fedimint-meta-client = "=0.13.0-beta.1"
-fedimint-meta-common = "=0.13.0-beta.1"
-fedimint-mint-client = "=0.13.0-beta.1"
+fedimint-eventlog = "=0.13.0"
+fedimint-ln-client = "=0.13.0"
+fedimint-ln-common = "=0.13.0"
+fedimint-lnv2-client = "=0.13.0"
+fedimint-lnv2-common = "=0.13.0"
+fedimint-meta-client = "=0.13.0"
+fedimint-meta-common = "=0.13.0"
+fedimint-mint-client = "=0.13.0"
 # `MintClientModule` keeps its `MintClientConfig` (and the `FeeConsensus`/denomination
 # rounding on it) private, and re-exports nothing that names the type from
 # `fedimint-mint-client` itself, so reading the fee schedule at all means naming
 # `MintClientConfig` at its own defining crate. Already resolved at the identical
 # version as a transitive dependency of `fedimint-mint-client`; this only makes it
 # directly nameable, it does not change what's compiled.
-fedimint-mint-common = "=0.13.0-beta.1"
-fedimint-mintv2-client = "=0.13.0-beta.1"
+fedimint-mint-common = "=0.13.0"
+fedimint-mintv2-client = "=0.13.0"
 # Named directly for the same reason as `fedimint-mint-common` above: a claim transaction's
 # output amount is read off the concrete `mintv2_common::MintOutput` the client's own state
 # store holds, and `MintClientConfig::fee_consensus` is only nameable through this crate.
 # Already resolved at the identical version as a transitive dependency of
 # `fedimint-mintv2-client`.
-fedimint-mintv2-common = "=0.13.0-beta.1"
-fedimint-wallet-client = "=0.13.0-beta.1"
-fedimint-wallet-common = "=0.13.0-beta.1"
-fedimint-walletv2-client = "=0.13.0-beta.1"
-fedimint-walletv2-common = "=0.13.0-beta.1"
+fedimint-mintv2-common = "=0.13.0"
+fedimint-wallet-client = "=0.13.0"
+fedimint-wallet-common = "=0.13.0"
+fedimint-walletv2-client = "=0.13.0"
+fedimint-walletv2-common = "=0.13.0"
 
 # `bip39` is named directly only to switch its `zeroize` feature on, which
 # `fedimint-bip39` does not: features are unioned, so this is the same single
@@ -168,7 +168,7 @@ async-trait = "0.1.92"
 # lock: this one is the SDK's single-opener claim, and it has to give up after a
 # bounded retry on contention rather than block. See src/storage.rs.
 fd-lock = "4"
-fedimint-rocksdb = "=0.13.0-beta.1"
+fedimint-rocksdb = "=0.13.0"
 tokio = { version = "1.48.0", features = [
     "rt",
     "rt-multi-thread",
@@ -225,7 +225,7 @@ uniffi = { version = "0.32.0", optional = true, features = ["wasm-unstable-singl
 # Exports `__ubrn_alloc`/`__ubrn_free` and the panic hook the wasm player installs before any
 # SDK code runs. Nothing here calls it, so `src/lib.rs` force-links it with `extern crate`.
 uniffi-runtime-wasm = { version = "0.31.0-6", optional = true }
-fedimint-cursed-redb = "=0.13.0-beta.1"
+fedimint-cursed-redb = "=0.13.0"
 js-sys = "0.3.83"
 # `macros` is not about tests here: `tokio::select!` lives behind it, and both
 # subscription types select a stream against a shutdown watch on every target.

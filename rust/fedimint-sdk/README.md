@@ -113,9 +113,4 @@ the invite code, a fresh data directory and the counterparty commands in the env
 scripts/run-sdk-examples.sh v2 shell
 ```
 
-The default and recommended shape is `v2`. On `v1`, the pinned fedimint
-release's lnv1 client cannot decode a successful send's preimage
-([fedimint/fedimint#8969](https://github.com/fedimint/fedimint/issues/8969)),
-so the `walkthrough` and `lightning` examples end with an `Internal` error
-after the payment has actually gone through; `ecash` and `onchain` are
-unaffected.
+The default and recommended shape is `v2`.

@@ -815,7 +815,7 @@ const QUOTE_VALIDITY_MILLIS: u64 = 60_000;
 pub(super) const INVOICE_EXPIRY_SECS: u32 = 3_600;
 
 /// The longest description a BOLT11 invoice can carry, in bytes: 1023 five-bit groups
-/// (lightning-invoice-0.33.3/src/lib.rs:1687-1697, `Description::new`).
+/// (lightning-invoice-0.34.1/src/lib.rs:1676-1686, `Description::new`).
 const MAX_DESCRIPTION_BYTES: usize = 639;
 
 /// The lightning module the live client has, whichever generation it is.
@@ -920,7 +920,7 @@ fn ensure_executable(
 
 /// Assembles a plan from the gateway's charge, the lightning module's own fee on the explicit
 /// output (or input), and the shared fee quote, whose `output` (or `input`) total already
-/// includes that explicit fee (`fedimint-client/src/client.rs:865-935`): the primary module's
+/// includes that explicit fee (`fedimint-client/src/client.rs:897-967`): the primary module's
 /// share is what is left of the quote's input and output fees once the lightning module's
 /// explicit fee is taken back out.
 pub(super) fn plan_of(
@@ -1112,7 +1112,7 @@ pub(super) fn amount_too_small() -> Error {
 // (`self.cfg.network != invoice.currency().into()`,
 // `fedimint-lnv2-client/src/lib.rs:640`), and `Currency::BitcoinTestnet` converts only to
 // `bitcoin::Network::Testnet`; v1 converts the configured network through lightning-invoice's
-// `From<bitcoin::Network> for Currency` (`lightning-invoice-0.33.3/src/lib.rs:451-463`), which
+// `From<bitcoin::Network> for Currency` (`lightning-invoice-0.34.1/src/lib.rs:453-465`), which
 // has no `Testnet4` arm and falls to a `_` arm yielding `Currency::Regtest`, so its own check
 // (`fedimint-ln-client/src/lib.rs:850-858`) never matches a `tb` invoice either. Tracked
 // upstream as fedimint/fedimint#9100; both generations report this refusal with the same

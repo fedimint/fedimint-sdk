@@ -472,7 +472,7 @@ fn send_error(
         // the same way (`tb`), so a `tb` invoice this SDK's own `check_network` accepts is
         // still refused by the module. Both generations are affected, not lnv2 alone: v1
         // converts the configured network through lightning-invoice's
-        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.33.3/src/lib.rs:451-463),
+        // `From<bitcoin::Network> for Currency` (lightning-invoice-0.34.1/src/lib.rs:453-465),
         // which has no `Testnet4` arm either. Tracked upstream as fedimint/fedimint#9100; the
         // SDK reports this with the same detail `check_network` would have produced, rather
         // than trying to work around it.

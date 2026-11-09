@@ -9,7 +9,7 @@
       # this input and rust/fedimint-sdk/Cargo.toml together: the pins-agree
       # job in .github/workflows/rust-sdk-ci.yaml fails the build when they
       # drift.
-      url = "github:fedimint/fedimint/v0.13.0-beta.1";
+      url = "github:fedimint/fedimint/v0.13.0";
     };
     nixpkgs-playwright = {
       # Playwright browsers have to match the `playwright` version pnpm-lock.yaml
