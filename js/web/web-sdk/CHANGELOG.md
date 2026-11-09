@@ -10,12 +10,6 @@ notes" in [RELEASING.md](../../../RELEASING.md#release-notes).
 
 ## 0.1.0
 
-### Added
-
-- implement Nostr relay client & SDK federation discovery (#471)
-- add a multisig facade that an extension backs (#508)
-- let another crate add client modules to an instance (#507)
-
 ### Changed
 
 - Built against fedimint 0.13.0, where 0.1.0-beta.4 was built against fedimint 0.13.0-beta.1.
@@ -23,7 +17,6 @@ notes" in [RELEASING.md](../../../RELEASING.md#release-notes).
 ### Fixed
 
 - report a v1 lightning send's success with fedimint 0.13.0 (#529)
-- record how much a multisig sweep moved once it is done (#520)
 
 ## 0.1.0-beta.4
 
