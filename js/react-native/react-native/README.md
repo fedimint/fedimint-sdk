@@ -14,17 +14,16 @@ below that fits your environment.
 #### Installation
 
 ```bash
-npm install @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+npm install @fedimint/react-native @fedimint/react-native-bindings
 # or
-yarn add @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+yarn add @fedimint/react-native @fedimint/react-native-bindings
 # or
-pnpm add @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+pnpm add @fedimint/react-native @fedimint/react-native-bindings
 ```
 
 Install both. `@fedimint/react-native-bindings` is the native module, and React Native only links
 native modules that the app's own `package.json` lists. The two packages are released together
-and only work at the same version. The SDK is in beta and its releases are published under the
-`beta` tag, which is why the commands name it.
+and only work at the same version.
 
 The native library is built for the `arm64-v8a` and `x86_64` Android ABIs. Build the app for
 those two only, in `android/gradle.properties`:
@@ -73,7 +72,7 @@ take the invoice or the address out of it first.
 #### Installation
 
 ```bash
-npm install @fedimint/react-native@beta @fedimint/react-native-bindings@beta
+npm install @fedimint/react-native @fedimint/react-native-bindings
 npx expo install expo-file-system
 ```
 

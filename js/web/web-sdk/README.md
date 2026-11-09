@@ -8,7 +8,7 @@ Rust one, so it is a view of that API and not a copy of it.
 ## Install
 
 ```sh
-npm install @fedimint/web-sdk@beta
+npm install @fedimint/web-sdk
 ```
 
 ## Usage

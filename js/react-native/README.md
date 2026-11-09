@@ -53,9 +53,8 @@ no `private`.
 its own version. The generated API and the native library behind it only fit together when they
 come from the same build.
 
-While every release is a beta, the install commands in
-[`react-native/README.md`](react-native/README.md) name the `beta` tag, which is always on the
-newest beta. They lose it with the first `X.Y.Z`, after which a beta no longer moves `latest`.
+The install commands in [`react-native/README.md`](react-native/README.md) name no dist-tag, so
+they install the version `latest` is on.
 
 ### Releases
 
@@ -176,8 +175,8 @@ workflow runs as its file is in the tagged commit, so the workflow's own check s
 misuse.
 
 Both packages also have versions on npm that this release did not make: `0.0.0` and a number of
-`0.0.0-*` snapshots of an earlier API, with `latest` on `0.0.0`. An npm maintainer deprecates
-them, so that installing one prints where to go:
+`0.0.0-*` snapshots of an earlier API. An npm maintainer deprecates them, so that installing one
+prints where to go:
 
 ```sh
 npm deprecate "@fedimint/react-native@<=0.0.0" \
