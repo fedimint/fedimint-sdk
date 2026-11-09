@@ -10,8 +10,7 @@ repository, all built from the Rust crate in `rust/fedimint-sdk`:
 | `react-native` | [`@fedimint/react-native`](https://www.npmjs.com/package/@fedimint/react-native) and [`@fedimint/react-native-bindings`](https://www.npmjs.com/package/@fedimint/react-native-bindings) on npm | both `package.json` files under `js/react-native`    | `react-native-sdk-v<version>` | [`js/react-native/CHANGELOG.md`](js/react-native/CHANGELOG.md)     |
 | `web`          | [`@fedimint/web-sdk`](https://www.npmjs.com/package/@fedimint/web-sdk) on npm                                                                                                                  | `js/web/web-sdk/package.json`                        | `web-sdk-v<version>`          | [`js/web/web-sdk/CHANGELOG.md`](js/web/web-sdk/CHANGELOG.md)       |
 
-The web SDK has not had its first release yet, which needs some steps on npm first (see "The
-first release of the web SDK"). The Swift SDK in `ios/` is not published yet.
+The Swift SDK in `ios/` is not published yet.
 
 ## Versions
 
@@ -219,11 +218,12 @@ workflow. What it publishes to may need setting up first, as for the web SDK.
 
 ### The first release of the web SDK
 
-The web SDK's release publishes through npm's trusted publishing, like the React Native one, but
-npm only lets a package that exists set up a trusted publisher, and `@fedimint/web-sdk` has never
-been published. A trusted publisher also expires when it has not published within two days of
-being set up. So before the first version bump that includes `web`, a maintainer of the package on
-npm (a member of the `@fedimint` scope) does this:
+The web SDK's first release, `0.1.0-beta.3`, needed some steps on npm first, and a package that
+is new to npm needs the same. The web SDK's release publishes through npm's trusted publishing,
+like the React Native one, but npm only lets a package that exists set up a trusted publisher. A
+trusted publisher also expires when it has not published within two days of being set up. So
+before the first version bump that includes the package, a maintainer of the package on npm (a
+member of the `@fedimint` scope) does this, here for `@fedimint/web-sdk`:
 
 1. At any time: publish a placeholder, version `0.0.0`, of `@fedimint/web-sdk` by hand, from a
    directory that holds only a `package.json` with that name and version and a README that says
@@ -371,7 +371,7 @@ Settings outside this repository's files. All of them have to be in place before
   names the workflow file `web-sdk-release.yaml` in the same way. The dist-tag permission is what
   lets a beta move `latest` while no `X.Y.Z` is out; without it, the publish job publishes the
   beta and then fails to move `latest`. npm only lets a package that exists set up trusted
-  publishing; "The first release of the web SDK" says how the web SDK gets there.
+  publishing; "The first release of the web SDK" says how the web SDK got there.
 - **Maven Central credentials.** A Central Portal user token (`MAVEN_CENTRAL_USERNAME` and
   `MAVEN_CENTRAL_PASSWORD`) and the signing key with its passphrase (`MAVEN_SIGNING_KEY` and
   `MAVEN_SIGNING_KEY_PASSWORD`), as secrets of the `maven-central` environment and nowhere else.

@@ -240,7 +240,7 @@ what exists.
 ### Versioning
 
 The Android SDK shares one line of versions with the SDK's other released
-components, the Rust crate and the React Native packages.
+components, the Rust crate, the React Native packages and the web SDK.
 [`RELEASING.md`](../RELEASING.md#versions) has the rules, and says which bump
 a change calls for.
 
