@@ -46,7 +46,7 @@ BINDINGS=@fedimint/react-native-bindings
 WRAPPER=@fedimint/react-native
 
 # The fake npm answers from files in $FAKE_NPM and records every call in its `calls` file:
-#   npm --version                    $FAKE_NPM/npm-version, else 11.19.0
+#   npm --version                    $FAKE_NPM/npm-version, else 11.21.1
 #   npm view <name>@<version> version --json
 #                                    $FAKE_NPM/view-error.json with a failing status when it
 #                                    exists, else the version if the registry holds it, else the
@@ -67,11 +67,26 @@ WRAPPER=@fedimint/react-native
 #                                    tarball's version in the package's dist-tags/<name>.json, and
 #                                    then fails anyway when $FAKE_NPM/publish-fails-but-lands
 #                                    exists.
+#   npm dist-tag add <name>@<version> <tag>
+#                                    appends its arguments to $FAKE_NPM/tags-log, then fails when
+#                                    $FAKE_NPM/dist-tag-fails exists, else sets the dist-tag to
+#                                    the version in the package's dist-tags/<name>.json.
 # With $FAKE_NPM/forbid-view, any `npm view` fails. Anything else fails loudly.
 mkdir "$WORK/bin"
 cat >"$WORK/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_NPM/calls"
+# set_tag <name> <tag> <version>: points the dist-tag of the package at the version.
+set_tag() {
+    mkdir -p "$FAKE_NPM/dist-tags"
+    node -e '
+        const fs = require("fs");
+        const [file, tag, version] = process.argv.slice(1);
+        const tags = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+        tags[tag] = version;
+        fs.writeFileSync(file, JSON.stringify(tags) + "\n");
+    ' "$FAKE_NPM/dist-tags/${1//\//__}.json" "$2" "$3"
+}
 if [[ "${1:-}" == view && -f "$FAKE_NPM/forbid-view" ]]; then
     echo "npm view must not be called: $*" >&2
     exit 9
@@ -80,8 +95,14 @@ if [[ $# -eq 1 && "$1" == --version ]]; then
     if [[ -f "$FAKE_NPM/npm-version" ]]; then
         cat "$FAKE_NPM/npm-version"
     else
-        echo 11.19.0
+        echo 11.21.1
     fi
+    exit 0
+fi
+if [[ $# -eq 4 && "$1" == dist-tag && "$2" == add ]]; then
+    echo "$*" >>"$FAKE_NPM/tags-log"
+    [[ ! -f "$FAKE_NPM/dist-tag-fails" ]] || exit 1
+    set_tag "${3%@*}" "$4" "${3##*@}"
     exit 0
 fi
 if [[ $# -eq 4 && "${1:-}" == view && "$3" == dist-tags && "$4" == --json ]]; then
@@ -140,21 +161,14 @@ if [[ "${1:-}" == publish ]]; then
         console.log(m.name + " " + m.version);
     ')
     identity="${package//\//__}@$version"
-    mkdir -p "$FAKE_NPM/published" "$FAKE_NPM/dist-tags"
+    mkdir -p "$FAKE_NPM/published"
     : >"$FAKE_NPM/published/$identity"
     node -e '
         const crypto = require("crypto");
         const data = require("fs").readFileSync(process.argv[1]);
         console.log("sha512-" + crypto.createHash("sha512").update(data).digest("base64"));
     ' "$tarball" >"$FAKE_NPM/published/$identity.integrity"
-    tags="$FAKE_NPM/dist-tags/${package//\//__}.json"
-    node -e '
-        const fs = require("fs");
-        const [file, tag, version] = process.argv.slice(1);
-        const tags = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-        tags[tag] = version;
-        fs.writeFileSync(file, JSON.stringify(tags) + "\n");
-    ' "$tags" "$tag" "$version"
+    set_tag "$package" "$tag" "$version"
     [[ ! -f "$FAKE_NPM/publish-fails-but-lands" ]] || exit 1
     exit 0
 fi
@@ -800,6 +814,25 @@ publish_log() {
     sed "s#$1/##g" "$FAKE_NPM/log" 2>/dev/null || true
 }
 
+# tags_log: the `npm dist-tag` calls the fake npm saw.
+tags_log() {
+    cat "$FAKE_NPM/tags-log" 2>/dev/null || true
+}
+
+# registry_tag <name> <tag>: the version the fake npm has the dist-tag <tag> of <name> on, or
+# nothing.
+registry_tag() {
+    local file="$FAKE_NPM/dist-tags/${1//\//__}.json"
+    [[ -f "$file" ]] || return 0
+    node -e '
+        const tags = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        console.log(tags[process.argv[2]] ?? "");
+    ' "$file" "$2"
+}
+
+# LATEST_MOVES: the `npm dist-tag` calls that move `latest` of both packages to $VERSION.
+LATEST_MOVES="dist-tag add $BINDINGS@$VERSION latest"$'\n'"dist-tag add $WRAPPER@$VERSION latest"
+
 # check_sums <dir>: whether the system's own checker accepts <dir>/SHA256SUMS.
 check_sums() {
     if command -v sha256sum >/dev/null; then
@@ -831,6 +864,13 @@ expect_equal "npm publish is called for the bindings first, then the wrapper" \
 expect_equal "SHA256SUMS lists both tarballs, bindings first, with their digests" \
     "$(sha256 "$d/$BT")  $BT"$'\n'"$(sha256 "$d/$NT")  $NT" "$(cat "$d/SHA256SUMS")"
 expect_equal "SHA256SUMS is accepted by the checker" ok "$(check_sums "$d")"
+expect_equal "latest of both packages is moved to the beta, bindings first" "$LATEST_MOVES" \
+    "$(tags_log)"
+expect_contains "the moves are reported after both packages are published" \
+    "published $WRAPPER@$VERSION under beta"$'\n'"moved latest of $BINDINGS to $VERSION"$'\n'\
+"moved latest of $WRAPPER to $VERSION" "$OUT"
+expect_equal "latest of the bindings is on the beta" "$VERSION" "$(registry_tag "$BINDINGS" latest)"
+expect_equal "latest of the wrapper is on the beta" "$VERSION" "$(registry_tag "$WRAPPER" latest)"
 run "$publish" react-native "$d"
 expect_equal "running the release again succeeds" 0 "$STATUS"
 expect_contains "the second run skips both packages" \
@@ -839,6 +879,10 @@ expect_contains "the second run skips both packages" \
     "$OUT"
 expect_equal "the second run publishes nothing" 2 "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
 expect_equal "SHA256SUMS is accepted by the checker after the second run" ok "$(check_sums "$d")"
+expect_equal "the second run moves no dist-tag" "$LATEST_MOVES" "$(tags_log)"
+expect_contains "the second run says latest is already on the beta" \
+    "latest of $BINDINGS is already on $VERSION"$'\n'"latest of $WRAPPER is already on $VERSION" \
+    "$OUT"
 
 BT0=fedimint-react-native-bindings-0.1.0.tgz
 NT0=fedimint-react-native-0.1.0.tgz
@@ -848,6 +892,85 @@ expect_equal "a release of a final version succeeds" 0 "$STATUS"
 expect_equal "both packages are published under latest" \
     "publish $BT0 --tag latest --access public"$'\n'"publish $NT0 --tag latest --access public" \
     "$(publish_log "$d")"
+expect_equal "a final version moves no other dist-tag" "" "$(tags_log)"
+
+# `latest` follows a beta only while it is on no release, and never moves back.
+for start in 0.0.0 0.0.0-canary-abc123 0.0.9-beta.3; do
+    fresh "$VERSION"
+    registry_tags "$BINDINGS" "{\"latest\":\"$start\",\"beta\":\"0.0.9-beta.3\"}"
+    registry_tags "$WRAPPER" "{\"latest\":\"$start\",\"beta\":\"0.0.9-beta.3\"}"
+    run "$publish" react-native "$d"
+    expect_equal "latest on $start: the release succeeds" 0 "$STATUS"
+    expect_equal "latest on $start follows the beta" "$LATEST_MOVES" "$(tags_log)"
+done
+
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.0.9","beta":"0.0.9-beta.3"}'
+registry_tags "$WRAPPER" '{"latest":"0.0.9","beta":"0.0.9-beta.3"}'
+run "$publish" react-native "$d"
+expect_equal "latest on a release: the beta is published" 0 "$STATUS"
+expect_equal "latest on a release: both packages go under beta" \
+    "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
+    "$(publish_log "$d")"
+expect_equal "latest on a release does not move" "" "$(tags_log)"
+expect_contains "the script says latest stays on the release" \
+    "latest of $BINDINGS stays on 0.0.9, a release" "$OUT"
+expect_equal "latest of the bindings is still on the release" 0.0.9 \
+    "$(registry_tag "$BINDINGS" latest)"
+
+fresh "$VERSION"
+registry_tags "$BINDINGS" '{"latest":"0.1.0-beta.2","beta":"0.0.9-beta.3"}'
+registry_tags "$WRAPPER" '{"latest":"0.1.0-beta.2","beta":"0.0.9-beta.3"}'
+run "$publish" react-native "$d"
+expect_equal "latest on a newer beta: the beta is published" 0 "$STATUS"
+expect_equal "latest on a newer beta does not move back" "" "$(tags_log)"
+expect_contains "the script says latest stays on the newer beta" \
+    "latest of $BINDINGS stays on 0.1.0-beta.2, which $VERSION is not newer than" "$OUT"
+
+# Where latest goes is decided before anything is uploaded: a latest that cannot be read stops
+# the release while the beta dist-tag reads fine.
+fresh "$VERSION"
+registry_tags "$WRAPPER" '{"latest":5,"beta":"0.0.9-beta.3"}'
+run "$publish" react-native "$d"
+expect_equal "a latest that cannot be read: the release fails" 1 "$STATUS"
+expect_contains "a latest that cannot be read is refused as unreadable" \
+    "which this script does not read" "$OUT"
+expect_equal "nothing is published when latest cannot be read" "" "$(publish_log "$d")"
+expect_equal "no dist-tag is moved when latest cannot be read" "" "$(tags_log)"
+
+# A release that stopped before moving latest finishes when it is run again.
+fresh "$VERSION"
+: >"$FAKE_NPM/dist-tag-fails"
+run "$publish" react-native "$d"
+expect_equal "a failed move of latest fails the release" 1 "$STATUS"
+expect_contains "the failure names the package and says to run the release again" \
+    "npm dist-tag add $BINDINGS@$VERSION latest failed" "$OUT"
+expect_contains "the failure says how to finish" "Run the release again to move it." "$OUT"
+expect_equal "both packages were published before latest was moved" \
+    "publish $BT --tag beta --access public"$'\n'"publish $NT --tag beta --access public" \
+    "$(publish_log "$d")"
+expect_equal "the wrapper's latest is not attempted after the bindings' failed" \
+    "dist-tag add $BINDINGS@$VERSION latest" "$(tags_log)"
+expect_equal "no SHA256SUMS is written after a failed move of latest" absent "$(sums_state "$d")"
+rm "$FAKE_NPM/dist-tag-fails"
+run "$publish" react-native "$d"
+expect_equal "the release run again after a failed move succeeds" 0 "$STATUS"
+expect_equal "the release run again publishes nothing more" 2 \
+    "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
+expect_equal "the release run again moves latest of both packages" \
+    "dist-tag add $BINDINGS@$VERSION latest"$'\n'"$LATEST_MOVES" "$(tags_log)"
+expect_equal "SHA256SUMS is written once latest has moved" ok "$(check_sums "$d")"
+
+# An older release run again after a newer one: its packages are on npm, and latest stays.
+fresh "$VERSION"
+on_registry "$BINDINGS" "$VERSION" "$d/$BT"
+on_registry "$WRAPPER" "$VERSION" "$d/$NT"
+registry_tags "$BINDINGS" '{"latest":"0.1.0-beta.2","beta":"0.1.0-beta.2"}'
+registry_tags "$WRAPPER" '{"latest":"0.1.0-beta.2","beta":"0.1.0-beta.2"}'
+run "$publish" react-native "$d"
+expect_equal "an older release on npm run again after a newer one succeeds" 0 "$STATUS"
+expect_equal "it publishes nothing" "" "$(publish_log "$d")"
+expect_equal "it leaves latest on the newer beta" "" "$(tags_log)"
 
 fresh "$VERSION"
 on_registry "$BINDINGS" "$VERSION" "$d/$BT"
@@ -926,15 +1049,26 @@ expect_equal "both packages are on the registry" "yes yes" \
 $([[ -e "$FAKE_NPM/published/${WRAPPER//\//__}@$VERSION" ]] && echo yes || echo no)"
 
 fresh "$VERSION"
-echo 10.9.9 >"$FAKE_NPM/npm-version"
-expect_fail "an npm older than 11.5.1 is refused" "11.5.1" -- "$publish" react-native "$d"
-expect_fail "the npm that was found is named" "10.9.9" -- "$publish" react-native "$d"
+echo 11.19.1 >"$FAKE_NPM/npm-version"
+expect_fail "an npm older than 11.21.0 is refused" "11.21.0" -- "$publish" react-native "$d"
+expect_fail "the npm that was found is named" "11.19.1" -- "$publish" react-native "$d"
 expect_equal "an old npm is refused before any other npm call" "--version" \
     "$(sort -u "$FAKE_NPM/calls")"
 run "$publish" --dry-run react-native "$d"
 expect_equal "an old npm is fine for a dry run" 0 "$STATUS"
 expect_equal "an old npm publishes both tarballs in a dry run" 2 \
     "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
+for old in 10.9.9 11.20.9 12.0.0 12.1.5; do
+    fresh "$VERSION"
+    echo "$old" >"$FAKE_NPM/npm-version"
+    expect_fail "npm $old is refused" "npm $old is too old" -- "$publish" react-native "$d"
+done
+for new in 11.21.0 11.22.0 12.2.0 13.0.0; do
+    fresh "$VERSION"
+    echo "$new" >"$FAKE_NPM/npm-version"
+    run "$publish" react-native "$d"
+    expect_equal "npm $new is new enough" 0 "$STATUS"
+done
 
 fresh "$VERSION"
 : >"$FAKE_NPM/forbid-view"
@@ -948,6 +1082,7 @@ expect_equal "a dry run writes no SHA256SUMS" absent \
     "$([[ -e "$d/SHA256SUMS" ]] && echo present || echo absent)"
 expect_equal "a dry run publishes nothing" absent \
     "$([[ -e "$FAKE_NPM/published" ]] && echo present || echo absent)"
+expect_equal "a dry run moves no dist-tag" "" "$(tags_log)"
 fresh 0.1.0
 : >"$FAKE_NPM/forbid-view"
 run "$publish" --dry-run react-native "$d"
@@ -1180,6 +1315,9 @@ expect_equal "only the two uploads of the newer beta were made" \
     "publish $BT2 --tag beta --access public"$'\n'"publish $NT2 --tag beta --access public" \
     "$(publish_log "$d2")"
 expect_equal "no SHA256SUMS is written for the refused older beta" absent "$(sums_state "$d1")"
+expect_equal "latest follows the newer beta and not the refused older one" \
+    "dist-tag add $BINDINGS@0.1.0-beta.2 latest"$'\n'"dist-tag add $WRAPPER@0.1.0-beta.2 latest" \
+    "$(tags_log)"
 tag_reads="$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
 run "$publish" react-native "$d2"
 expect_equal "the newer beta run again: the release succeeds" 0 "$STATUS"
@@ -1187,8 +1325,9 @@ expect_contains "the newer beta skips the bindings" \
     "$BINDINGS@0.1.0-beta.2 is already on npm, skipped" "$OUT"
 expect_contains "the newer beta skips the wrapper" \
     "$WRAPPER@0.1.0-beta.2 is already on npm, skipped" "$OUT"
-expect_equal "the dist-tags of versions that are on npm are not read" "$tag_reads" \
-    "$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
+# Once per package, for latest: the dist-tag a version on npm was published under is not read.
+expect_equal "the dist-tags of versions that are on npm are read only for latest" \
+    "$((tag_reads + 2))" "$(grep -c dist-tags "$FAKE_NPM/calls" || true)"
 expect_equal "running the newer beta again uploads nothing" 2 \
     "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
 
@@ -1245,17 +1384,31 @@ expect_equal "web: npm publish is called once, for the web tarball" \
 expect_equal "web: SHA256SUMS lists the one tarball" "$(sha256 "$d/$WT")  $WT" \
     "$(cat "$d/SHA256SUMS")"
 expect_equal "web: SHA256SUMS is accepted by the checker" ok "$(check_sums "$d")"
+expect_equal "web: latest is moved to the beta" "dist-tag add $WEB@$VERSION latest" "$(tags_log)"
 run "$publish" web "$d"
 expect_equal "web: running the release again succeeds" 0 "$STATUS"
 expect_contains "web: the second run skips the package" \
     "$WEB@$VERSION is already on npm, skipped" "$OUT"
 expect_equal "web: the second run publishes nothing" 1 "$(wc -l <"$FAKE_NPM/log" | tr -d ' ')"
+expect_equal "web: the second run moves no dist-tag" "dist-tag add $WEB@$VERSION latest" \
+    "$(tags_log)"
 
 fresh_web 0.1.0
 run "$publish" web "$d"
 expect_equal "web: a final version is published" 0 "$STATUS"
 expect_equal "web: a final version goes under latest" \
     "publish $WT0 --tag latest --access public" "$(publish_log "$d")"
+expect_equal "web: a final version moves no other dist-tag" "" "$(tags_log)"
+
+# The web SDK's first release found latest on the placeholder its first version on npm is.
+fresh_web "$VERSION"
+registry_tags "$WEB" '{"latest":"0.0.0"}'
+run "$publish" web "$d"
+expect_equal "web: a beta over the placeholder is published" 0 "$STATUS"
+expect_equal "web: latest leaves the placeholder for the beta" "$VERSION" \
+    "$(registry_tag "$WEB" latest)"
+expect_equal "web: the placeholder's latest is moved once" "dist-tag add $WEB@$VERSION latest" \
+    "$(tags_log)"
 
 fresh_web "$VERSION"
 on_registry "$WEB" "$VERSION" "$d/$WT"

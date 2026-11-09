@@ -19,9 +19,11 @@ name: Web SDK Release
 # repository (a stray `pnpm publish -r`) away from it. The tarball `pack` makes
 # is the exception: it carries the version that `check` read from the tree, and
 # no `private`. It goes out as `X.Y.Z-beta.N` under the `beta` dist-tag and as
-# `X.Y.Z` under `latest`. Until its first version bump the package is at
-# `0.0.0` in the tree, which the release scripts read as "not released yet", so
-# a dry run on main then warns that the version cannot be released and packs
+# `X.Y.Z` under `latest`. A beta moves `latest` as well while `latest` is on
+# no `X.Y.Z`, so a plain install gets the newest beta until the first release.
+# Until its first version bump the package is at `0.0.0` in the tree, which
+# the release scripts read as "not released yet", so a dry run on main then
+# warns that the version cannot be released and packs
 # fedimint-web-sdk-0.0.0.tgz: it tries the build, the pack and the test, and is
 # no rehearsal of a release.
 #
@@ -403,14 +405,19 @@ jobs:
         with:
           persist-credentials: false
 
-      # For its npm: trusted publishing needs 11.5.1 or later, and the
-      # runner's own is older. No registry is configured here on purpose:
-      # that would write a placeholder token, and npm would fall back to it,
-      # with a misleading error, should the token exchange ever fail.
+      # No registry is configured here on purpose: that would write a
+      # placeholder token, and npm would fall back to it, with a misleading
+      # error, should the token exchange ever fail.
       - name: 'Set up Node'
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      # A beta moves `latest` too, and moving a dist-tag with trusted
+      # publishing needs npm 11.21.0 or later: the one Node comes with is
+      # older. scripts/sdk-npm-publish.sh checks the version.
+      - name: 'Install npm'
+        run: npm install --global npm@11.21.1
 
       - name: 'Download the tarball'
         uses: actions/download-artifact@v4
