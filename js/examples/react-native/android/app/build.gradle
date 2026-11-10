@@ -82,6 +82,11 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.reactnativeexample"
+    // The Geist fonts live once, in the example's assets/fonts, for both platforms; Android
+    // looks up a fontFamily in assets/fonts by file name.
+    sourceSets {
+        main { assets.srcDirs += ['../../assets'] }
+    }
     defaultConfig {
         applicationId "com.reactnativeexample"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -114,6 +119,8 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // The prompt behind showing the recovery phrase (OwnerAuthentication.kt).
+    implementation("androidx.biometric:biometric:1.1.0")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

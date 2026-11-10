@@ -6,10 +6,21 @@ This app serves two primary purposes:
 1. **Developer Sandbox:** A convenient environment for the SDK maintainers to test local changes to the native bindings and JavaScript APIs.
 2. **Usage Example:** A reference implementation for developers on how to initialize a Fedimint client, connect to a federation, and perform basic operations using the React Native SDK.
 
-It opens a wallet backed by a seed (generated on first launch or restored from
-existing words), joins a federation from an invite code, shows the ecash
-balance live, and walks through ecash, lightning and on-chain sends and
-receives against that federation.
+It follows the unified Fedimint demo-wallet design, the same screens, copy and
+behaviour as the iOS demo (`ios/Demo`): create a wallet and back up its recovery
+phrase, or restore one; join federations from an invite code, list every one this
+wallet holds and switch between them or reconnect one that is not running; then
+receive and send over Lightning, ecash and on-chain, with the history and each
+operation's live state. Showing the recovery phrase asks for Face ID, Touch ID or
+the device passcode. Copied ecash notes leave the clipboard after two minutes: on
+iOS they stay on this device, and on Android they are marked sensitive and, if the
+app is in the background by then, cleared when it comes back.
+
+The code is laid out like the iOS demo's: `src/model/DemoModel.ts` holds every SDK
+call and the rules around them, and `src/screens/` has one file per screen.
+
+On iOS the wallet lives in Application Support, excluded from backups. A wallet an
+earlier version of this example left in Documents is moved there on first launch.
 
 ## Prerequisites
 
@@ -57,6 +68,18 @@ With a device connected over USB debugging, start the application:
 
 ```sh
 pnpm android
+```
+
+On macOS, with an Android SDK of your own (Android Studio's), start the build with a clean
+environment. There the repository's Nix shell, which direnv loads from `.envrc`, sets compiler
+flags for Apple's toolchain that reach the Android build's CMake, which then fails with
+`unsupported option '-arch'`. `env -i` leaves them out, so this works from inside that shell too.
+The paths below are the macOS defaults for Homebrew, the JDK and Android Studio's SDK:
+
+```sh
+env -i HOME="$HOME" PATH="/usr/bin:/bin:/opt/homebrew/bin:$(dirname "$(which node)")" \
+  JAVA_HOME="$(/usr/libexec/java_home -v 17)" ANDROID_HOME="$HOME/Library/Android/sdk" \
+  pnpm android
 ```
 
 Without a device, the repository provides an emulator. From the repository root, boot it in one
