@@ -33,20 +33,24 @@ const dataDir = `${RNFS.DocumentDirectoryPath}/fedimint`
 let session: SdkSession | undefined
 let opening: Promise<SdkSession> | undefined
 let closing: Promise<void> | undefined
+// close() adds one. An open that finishes in an older generation was closed while it ran.
+let generation = 0
 
 /** Opens the SDK once. Every caller gets the same session. */
 export function open(): Promise<SdkSession> {
+  const mine = generation
   opening ??= (async () => {
     // A close that is still running holds the folder. Wait for it, or the open fails with StorageInUse.
     await closing?.catch(() => undefined)
     return openSdk({ dataDir })
   })().then(
     (opened) => {
-      session = opened
+      // If close() ran while this open was pending, close() closes this session. Do not publish it.
+      if (mine === generation) session = opened
       return opened
     },
     (err) => {
-      opening = undefined // let the next call try again
+      if (mine === generation) opening = undefined // let the next call try again
       throw err
     },
   )
@@ -56,6 +60,7 @@ export function open(): Promise<SdkSession> {
 /** Closes the session. Every federation and operation from it stops working. */
 export function close(): Promise<void> {
   const pending = opening
+  generation += 1
   session = undefined
   opening = undefined
   if (pending) closing = pending.then((s) => s.close())
