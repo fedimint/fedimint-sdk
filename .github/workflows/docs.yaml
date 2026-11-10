@@ -82,6 +82,25 @@ jobs:
       - name: 'Check the pages and VERSION against the newest release'
         run: python3 tools/set_version.py --check
 
+      # A pull request may pin a release still to come; a deploy may not. On a release tag,
+      # VERSION must be that tag. On main, both packages must be on npm at VERSION.
+      # `npm view pkg@<missing-version>` prints no version, and some npm versions exit 0, hence
+      # `test -n` on its output rather than its exit status.
+      - name: 'Check VERSION is the published release'
+        if: inputs.deploy
+        run: |
+          v=$(cat react-native/VERSION)
+          case "$GITHUB_REF" in
+            refs/tags/react-native-sdk-v*)
+              test "$GITHUB_REF" = "refs/tags/react-native-sdk-v$v" ||
+                { echo "::error::VERSION $v does not match $GITHUB_REF"; exit 1; } ;;
+            *)
+              for pkg in @fedimint/react-native @fedimint/react-native-bindings; do
+                test -n "$(npm view "$pkg@$v" version)" ||
+                  { echo "::error::$pkg@$v is not on npm"; exit 1; }
+              done ;;
+          esac
+
   pages:
     name: 'Check the code on the pages and build the site'
     runs-on: ubuntu-24.04
