@@ -69,6 +69,16 @@ import {
   type FederationLike,
 } from '@fedimint/react-native'
 
+/** A QuoteExpired for a quote that was already sent. [Errors](./errors.md) explains it. */
+function alreadyExecuted(err: unknown): boolean {
+  const details = Exception.hasInner(err)
+    ? Exception.getInner(err).details()
+    : undefined
+  if (details?.kind !== 'QuoteExpired' || details.payload.byteLength < 9)
+    return false
+  return new DataView(details.payload).getUint8(8) === 1
+}
+
 /** After the user tapped Confirm on the quote. Returns the string to hand over. */
 export async function sendEcash(fed: FederationLike, quote: EcashQuoteLike) {
   const ecash = fed.ecash()
@@ -81,10 +91,15 @@ export async function sendEcash(fed: FederationLike, quote: EcashQuoteLike) {
     const code = Exception.hasInner(err)
       ? Exception.getInner(err).code()
       : undefined
-    if (code === ErrorCode.QuoteExpired || code === ErrorCode.QuoteChanged) {
-      // The quote cannot be used. Quote again and ask the user to confirm the new numbers.
+    if (code === ErrorCode.QuoteChanged) {
+      // Nothing was spent. Quote again and ask the user to confirm the new numbers.
       return null
     }
+    if (code === ErrorCode.QuoteExpired && !alreadyExecuted(err)) {
+      // The quote ran out of time. Nothing was spent. Quote again, as above.
+      return null
+    }
+    // A quote that was already sent: its notes exist. Do not quote again, or you send twice.
     throw err
   }
 }
@@ -98,7 +113,7 @@ You will see a long string, and the balance drops by `total()`.
 It is also often too long for one QR code. Give the user a copy button as well as a QR, and handle the QR library's failure rather than showing an empty square.
 :::
 
-A quote is for one send. After `expiresAt()` the send fails with `QuoteExpired`. If another send spent the notes it planned to use first, it fails with `QuoteChanged`. The remedy for both is the same: quote again and ask the user to confirm the new numbers.
+A quote is for one send. After `expiresAt()` the send fails with `QuoteExpired`. If another send spent the notes it planned to use first, it fails with `QuoteChanged`. For both, nothing was spent: quote again and ask the user to confirm the new numbers. A quote that was already sent also fails with `QuoteExpired`, and then its notes exist. Do not quote again in that case. Find the earlier send in [History](./history.md) and follow it.
 
 ### 03 · Ecash: take it back <Badge type="info" text="JavaScript" /> {#step-03}
 

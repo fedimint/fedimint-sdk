@@ -22,7 +22,7 @@ The SDK does not throw an `Exception` object itself. It throws a wrapper, so `er
 | `reason()`  | The SDK's own sentence about what went wrong                                                                  | Log it. Never show it, and never match on it: its wording can change |
 | `details()` | `undefined`, or `{ version, kind, payload }`. `kind` names the detail, such as `"StorageInUse"`               | Log `kind`. Do not show it                                           |
 
-The SDK ships no helper for this. Put these two small functions in your app, and use them everywhere you catch an error.
+The SDK ships no helper for this. Put these small functions in your app, and use them everywhere you catch an error.
 
 ```ts [errors.ts]
 // errors.ts: your code. The SDK ships no helper for this.
@@ -39,6 +39,18 @@ export function explain(err: unknown): string {
   const e = Exception.getInner(err)
   const kind = e.details()?.kind
   return `${ErrorCode[e.code()]}: ${e.reason()}${kind ? ` (${kind})` : ''}`
+}
+
+/**
+ * True when a QuoteExpired failure means the quote was already used, so a payment from it
+ * exists. The detail payload is the expiry as 8 bytes, then this flag as 1 byte.
+ */
+export function quoteAlreadyExecuted(err: unknown): boolean {
+  if (!Exception.hasInner(err)) return false
+  const details = Exception.getInner(err).details()
+  if (details?.kind !== 'QuoteExpired' || details.payload.byteLength < 9)
+    return false
+  return new DataView(details.payload).getUint8(8) === 1
 }
 ```
 
@@ -81,17 +93,18 @@ export async function previewOrExplain(
 
 The codes you will meet first, and where:
 
-| Code                               | Means                                                                     | Usually from                                                                                         |
-| ---------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `InvalidInput`                     | A string that is not what it claims: invite, notes, invoice or seed words | The [join](./join.md), [receive](./receive.md), [send](./send.md) and [restore](./restore.md) guides |
-| `FederationUnreachable`, `Timeout` | No guardian answered, or not in time                                      | Any call that talks to a federation                                                                  |
-| `AlreadyJoined`                    | This wallet has joined that federation before                             | [The join guide](./join.md). Use `sdk.federation(id)` or `sdk.reopenFederation(id)`                  |
-| `InsufficientBalance`              | Not enough to cover the total                                             | [The send guide](./send.md)                                                                          |
-| `QuoteExpired`, `QuoteChanged`     | The quote cannot be used any more. Nothing was spent                      | [The send guide](./send.md). Quote again                                                             |
-| `Recovering`                       | A restore has not reached `Done`, so money cannot move yet                | [The restore guide](./restore.md)                                                                    |
-| `StorageInUse`                     | The wallet folder is already open                                         | Step 01 of [the seed words page](./seed-words.md)                                                    |
-| `SeedMismatch`                     | The folder holds a different seed from the words you passed               | [The restore guide](./restore.md)                                                                    |
-| `FederationClosed`                 | The federation or the whole SDK was closed                                | Any call after `session.close()`                                                                     |
+| Code                               | Means                                                                               | Usually from                                                                                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `InvalidInput`                     | A string that is not what it claims: invite, notes, invoice or seed words           | The [join](./join.md), [receive](./receive.md), [send](./send.md) and [restore](./restore.md) guides                                    |
+| `FederationUnreachable`, `Timeout` | No guardian answered, or not in time                                                | Any call that talks to a federation                                                                                                     |
+| `AlreadyJoined`                    | This wallet has joined that federation before                                       | [The join guide](./join.md). Use `sdk.federation(id)` or `sdk.reopenFederation(id)`                                                     |
+| `InsufficientBalance`              | Not enough to cover the total                                                       | [The send guide](./send.md)                                                                                                             |
+| `QuoteChanged`                     | The quote cannot be used any more. Nothing was spent                                | [The send guide](./send.md). Quote again                                                                                                |
+| `QuoteExpired`                     | The quote ran out of time, or it was already used. If it was used, a payment exists | [The send guide](./send.md). If `quoteAlreadyExecuted(err)`, follow the earlier operation and do not quote again. Otherwise quote again |
+| `Recovering`                       | A restore has not reached `Done`, so money cannot move yet                          | [The restore guide](./restore.md)                                                                                                       |
+| `StorageInUse`                     | The wallet folder is already open                                                   | Step 01 of [the seed words page](./seed-words.md)                                                                                       |
+| `SeedMismatch`                     | The folder holds a different seed from the words you passed                         | [The restore guide](./restore.md)                                                                                                       |
+| `FederationClosed`                 | The federation or the whole SDK was closed                                          | Any call after `session.close()`                                                                                                        |
 
 ::: info
 The SDK keeps its own time limits. A preview or a join whose guardians do not answer in time rejects with `Timeout` or `FederationUnreachable`, so you do not need a timer of your own around those two calls.
@@ -121,7 +134,7 @@ Every member of `ErrorCode`, with the meaning the SDK gives it. Compare with `==
 | <span id="code-seedmismatch"></span>`SeedMismatch`                   | Storage already holds a seed and it does not match the mnemonic supplied to open it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | <span id="code-storageinuse"></span>`StorageInUse`                   | The storage location is already open, in this process or another.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | <span id="code-storageorphaned"></span>`StorageOrphaned`             | Storage holds federation or client state but no usable seed, so it cannot be opened. The seed entry is either absent, or present and unusable. This is permanent, not transient: asking again does not change it, and the refusal changes nothing in the store. Do not retry and do not repair it automatically. Report it and offer the ways out, in this order: update the SDK or the app where the entry was present but unusable; point at a different location; or, as a last resort a person chooses explicitly, abandon the location by deleting its contents, which destroys any funds whose only backup was that seed. |
-| <span id="code-quoteexpired"></span>`QuoteExpired`                   | The quote passed to `send` is no longer valid: either its validity window has passed, or it has already been executed, and a quote funds exactly one payment. Both have the same remedy: obtain a fresh quote and retry.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| <span id="code-quoteexpired"></span>`QuoteExpired`                   | The quote passed to `send` is no longer valid: either its validity window has passed, or it has already been executed, and a quote funds exactly one payment. The two need different handling. If the window passed, nothing was spent: obtain a fresh quote and retry. If the quote was already executed (`quoteAlreadyExecuted(err)` in step 01), a payment from it exists: find it in `activity()` and follow it. Do not quote again, or an ecash or on-chain send can move the money twice.                                                                                                                                 |
 | <span id="code-quotechanged"></span>`QuoteChanged`                   | Conditions material to the quote (fees, routing, federation state) changed since it was issued. Obtain a fresh quote and retry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | <span id="code-amountlessinvoice"></span>`AmountlessInvoice`         | The bolt11 invoice specifies no amount, and such an invoice cannot be paid. No amount the caller supplies can make it payable, because Fedimint does not support paying amountless bolt11 invoices at all. The only remedy is a different invoice, one that names its own amount.                                                                                                                                                                                                                                                                                                                                               |
 | <span id="code-networkmismatch"></span>`NetworkMismatch`             | A supplied address or invoice is for a different network than the federation's.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
