@@ -23,11 +23,28 @@ function requireEnv(name: string): string {
 const SDK_LOG_FILTER =
   'warn,fm=info,fedimint=info,n0_dns_resolver::system_config=trace'
 
+/** Real-device only: what WebDriverAgent is signed with, from the
+ * environment so no team is written into the repo. */
+function signingCapabilities(): Record<string, string | boolean> {
+  if (process.env.IOS_REAL_DEVICE !== '1') return {}
+  return {
+    'appium:xcodeOrgId': requireEnv('IOS_TEAM_ID'),
+    'appium:xcodeSigningId': 'Apple Development',
+    // A free team needs a bundle id of its own for WebDriverAgent.
+    'appium:updatedWDABundleId':
+      process.env.IOS_WDA_BUNDLE_ID || `${requireEnv('BUNDLE_ID')}.wda`,
+    'appium:allowProvisioningDeviceRegistration': true,
+  }
+}
+
 /**
  * The iOS harness app (ios/Harness, `org.fedimint.harness`) on a simulator,
- * driven through XCUITest. scripts/e2e/ios.sh has already booted the
- * simulator, installed the app and started the SDK's log capture. The
- * simulator shares the host's network, so nothing is forwarded.
+ * or on a connected device when scripts/e2e/ios.sh was given IOS_DEVICE,
+ * driven through XCUITest. The script has already booted the simulator or
+ * found the device, installed the app and, on a simulator, started the SDK's
+ * log capture. The simulator shares the host's network, so nothing is
+ * forwarded; a device cannot reach the host's loopback at all, which is
+ * where devimint lives, so on a device only the federation-free tests run.
  *
  * Typing through XCUITest can drop or alter characters, so the client reads
  * every request back before running it (`verifyInput`).
@@ -69,6 +86,7 @@ export class IosTarget implements Target {
         'appium:simulatorStartupTimeout': 300000,
         'appium:newCommandTimeout': 600,
         'appium:showXcodeLog': !!process.env.DEBUG_MODE,
+        ...signingCapabilities(),
       },
     })
     this.backend = new AppiumConsoleBackend(this.driver, (id) => `~${id}`, true)

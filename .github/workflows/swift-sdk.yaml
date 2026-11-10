@@ -201,6 +201,18 @@ jobs:
             -scheme FedimintDemo \
             -destination 'generic/platform=iOS Simulator'
 
+      # The e2e harness js/e2e drives on the simulator (scripts/e2e/ios.sh).
+      # Compiled here so a change to the bindings that breaks it fails this
+      # job, before any device run.
+      - name: 'Compile the e2e harness for the simulator'
+        working-directory: ios/Harness
+        run: |
+          xcodegen generate
+          xcodebuild build \
+            -project FedimintHarness.xcodeproj \
+            -scheme FedimintHarness \
+            -destination 'generic/platform=iOS Simulator'
+
       - name: 'Upload the XCFramework'
         uses: actions/upload-artifact@v4
         with:

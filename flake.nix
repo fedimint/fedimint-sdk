@@ -580,6 +580,25 @@
               # each iOS/macOS triple; do not set a global SDKROOT.
             '';
           };
+
+          # For js/e2e's iOS target (scripts/e2e/ios.sh): devimint, plus the
+          # JS tooling Appium and the runner need. The simulator, simctl and
+          # the xcodebuild Appium runs to build WebDriverAgent come from the
+          # host's Xcode, so the nix SDK settings are cleared as in `ios`.
+          ios-tests = pkgs.mkShellNoCC {
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              # The shell hook and the run script find the repo root with git.
+              pkgs.git
+              # Backs the Appium health check in scripts/e2e/appium.sh.
+              pkgs.curl
+            ] ++ devimintNativeBuildInputs;
+            shellHook = ''
+              unset DEVELOPER_DIR SDKROOT NIX_CFLAGS_COMPILE NIX_LDFLAGS
+              REPO_ROOT=$(git rev-parse --show-toplevel)
+              export PATH="$REPO_ROOT/js/node_modules/.bin:$PATH"
+              export APPIUM_HOME="$REPO_ROOT/js/e2e/.appium"
+            '';
+          };
         };
         packages =
           # Cacheable cross-compiled builds of `rust/fedimint-sdk`'s `uniffi`

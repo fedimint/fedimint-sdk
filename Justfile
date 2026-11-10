@@ -49,14 +49,29 @@ test-e2e target="android" shape="v1":
     set -euo pipefail
     case "{{target}}" in
       android) shell=android-tests ;;
+      ios) shell=ios-tests ;;
       web) shell=wasm-tests ;;
-      *) echo "unknown e2e target '{{target}}' (known: android, web)" >&2; exit 1 ;;
+      *) echo "unknown e2e target '{{target}}' (known: android, ios, web)" >&2; exit 1 ;;
     esac
     just build-e2e-{{target}}
     FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config ".#$shell" -c scripts/setup_test_shell.sh bash scripts/e2e/run.sh {{target}}
 
 # The Android harness: the debug APK, whose harness.ConsoleActivity js/e2e drives.
 build-e2e-android: build-android-apk
+
+# The iOS harness: the XCFramework and Swift bindings, then the harness app js/e2e drives,
+# built for the simulator into ios/Harness/build.
+build-e2e-ios: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Harness && xcodegen generate'
+    cd ios/Harness && xcodebuild build -project FedimintHarness.xcodeproj -scheme FedimintHarness -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+
+# The iOS harness for a connected device, signed by `team` under `bundle_id` (a free team cannot
+# sign org.fedimint.harness). Run it with IOS_DEVICE=<udid> IOS_TEAM_ID=<team> set for
+# scripts/e2e/ios.sh; only the federation-free tests pass there, since a device cannot reach
+# devimint on the host's loopback.
+build-e2e-ios-device team bundle_id: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Harness && xcodegen generate'
+    cd ios/Harness && xcodebuild build -project FedimintHarness.xcodeproj -scheme FedimintHarness -destination 'generic/platform=iOS' -derivedDataPath build -allowProvisioningUpdates -allowProvisioningDeviceRegistration CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM={{team}} PRODUCT_BUNDLE_IDENTIFIER={{bundle_id}}
 
 # The web harness: the browser package over freshly generated bindings, and the harness page
 # js/e2e drives, bundled into js/web/sdk-harness/dist.

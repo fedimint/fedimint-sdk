@@ -7,11 +7,11 @@ and shows a JSON answer, as [PROTOCOL.md](PROTOCOL.md) defines. What this adds o
 compiling the bindings is a running device: the native library is loaded and the
 calls execute against a real devimint federation.
 
-| target    | harness                                           | driven by            | CI                                   |
-| --------- | ------------------------------------------------- | -------------------- | ------------------------------------ |
-| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml`                    |
-| `web`     | `js/web/sdk-harness` (served by `vite preview`)   | Playwright, Chromium | `verify.yml` `web-e2e`               |
-| `ios`     | `ios/Harness` (`org.fedimint.harness`)            | Appium, XCUITest     | not yet; runs locally on a simulator |
+| target    | harness                                           | driven by            | CI                                                |
+| --------- | ------------------------------------------------- | -------------------- | ------------------------------------------------- |
+| `android` | `android/app/src/debug/…/harness/ConsoleActivity` | Appium, UiAutomator2 | `android-e2e.yml`                                 |
+| `web`     | `js/web/sdk-harness` (served by `vite preview`)   | Playwright, Chromium | `verify.yml` `web-e2e`                            |
+| `ios`     | `ios/Harness` (`org.fedimint.harness`)            | Appium, XCUITest     | not yet; the harness compiles in `swift-sdk.yaml` |
 
 A target may list tests it cannot run yet in its `knownUnsupported`, with the reason;
 they are reported as `SKIPPED`, never silently dropped. The web target lists `errors`
@@ -22,6 +22,7 @@ today: a malformed invoice there throws an internal error instead of `INVALID_IN
 ```bash
 just test-e2e android        # a v1 federation (mint, wallet, ln)
 just test-e2e android v2     # a v2 federation (mintv2, walletv2, lnv2)
+just test-e2e ios v2         # on a simulator
 just test-e2e web v2
 ```
 
@@ -31,6 +32,13 @@ which provisions the device and runs [`src/runner.ts`](src/runner.ts). Building 
 running are separate on purpose: a Gradle build next to an emulator and a federation
 starved the emulator. `TESTS_TO_RUN` picks tests (names, or `all`); CI runs all.
 Screenshots, UI trees and logs land in `.artifacts/<target>-<shape>/`.
+
+**iOS on a device.** `just build-e2e-ios-device <team> <bundle id>` signs the harness
+for your team, and `IOS_DEVICE=<udid> IOS_TEAM_ID=<team>` makes `scripts/e2e/ios.sh`
+install it on that device and sign WebDriverAgent the same way. Only the
+federation-free tests pass there: devimint listens on the host's loopback, which a
+device cannot reach. Federation tests run on the simulator, which shares the host's
+network.
 
 ## The tests
 

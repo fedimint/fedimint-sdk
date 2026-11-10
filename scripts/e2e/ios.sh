@@ -9,10 +9,16 @@
 # Nothing is forwarded: the simulator shares the host's network, so the
 # 127.0.0.1 in devimint's invite code is devimint.
 #
+# With IOS_DEVICE=<udid> and IOS_TEAM_ID it uses that connected device
+# instead, with the signed build `just build-e2e-ios-device` leaves. A device
+# cannot reach the host's loopback, where devimint is, so only the
+# federation-free tests can pass there.
+#
 # It builds nothing: it installs the app `just build-e2e-ios` leaves in
 # ios/Harness/build (or CI's artifact, unpacked to the same place).
 
-IOS_APP_PATH="$REPO_ROOT/ios/Harness/build/Build/Products/Debug-iphonesimulator/FedimintHarness.app"
+IOS_PRODUCTS="$REPO_ROOT/ios/Harness/build/Build/Products"
+IOS_APP_PATH="$IOS_PRODUCTS/Debug-iphonesimulator/FedimintHarness.app"
 IOS_BUNDLE_ID="org.fedimint.harness"
 IOS_SIM_NAME="fedimint-e2e"
 
@@ -77,6 +83,10 @@ provision() {
       exit 1
     }
   done
+  if [[ -n "${IOS_DEVICE:-}" ]]; then
+    ios_provision_device
+    return
+  fi
   if [[ ! -d "$IOS_APP_PATH" ]]; then
     echo "No harness app at $IOS_APP_PATH. Build it first: just build-e2e-ios" >&2
     exit 1
@@ -92,4 +102,27 @@ provision() {
   BUNDLE_ID="$IOS_BUNDLE_ID"
   APP_PATH="$IOS_APP_PATH"
   export DEVICE_ID BUNDLE_ID APP_PATH SDK_LOG_FILE
+}
+
+# A connected device: the signed build, its own bundle id (a free team cannot
+# sign `org.fedimint.harness`), installed with devicectl. Its log is not
+# captured: os_log on a device is not reachable from here the way a
+# simulator's is.
+ios_provision_device() {
+  : "${IOS_TEAM_ID:?set IOS_TEAM_ID to the team the build and WebDriverAgent are signed with}"
+  IOS_APP_PATH="$IOS_PRODUCTS/Debug-iphoneos/FedimintHarness.app"
+  if [[ ! -d "$IOS_APP_PATH" ]]; then
+    echo "No device build at $IOS_APP_PATH. Build it first: just build-e2e-ios-device <team> <bundle id>" >&2
+    exit 1
+  fi
+  IOS_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$IOS_APP_PATH/Info.plist")
+  DEVICE_ID="$IOS_DEVICE"
+  echo "Installing $IOS_BUNDLE_ID on device $DEVICE_ID"
+  xcrun devicectl device uninstall app --device "$DEVICE_ID" "$IOS_BUNDLE_ID" >/dev/null 2>&1 || true
+  xcrun devicectl device install app --device "$DEVICE_ID" "$IOS_APP_PATH"
+  e2e_start_appium xcuitest
+  BUNDLE_ID="$IOS_BUNDLE_ID"
+  APP_PATH="$IOS_APP_PATH"
+  IOS_REAL_DEVICE=1
+  export DEVICE_ID BUNDLE_ID APP_PATH IOS_REAL_DEVICE IOS_TEAM_ID
 }
