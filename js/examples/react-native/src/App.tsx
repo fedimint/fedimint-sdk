@@ -1,1235 +1,674 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  Linking,
-  Alert,
-  SafeAreaView,
+  ActivityIndicator,
+  BackHandler,
+  LogBox,
+  Platform,
+  PlatformColor,
+  Pressable,
   StatusBar,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native'
-import Clipboard from '@react-native-clipboard/clipboard'
 import {
-  InviteCode,
-  Mnemonic,
-  Notes,
-  EcashSendState,
-  LnSendState_Tags,
-  LnReceiveState_Tags,
-  OnchainSendState_Tags,
-  Network,
-  type FederationPreview,
-  type EcashQuoteLike,
-  type EcashSendOperationLike,
-  type LnQuoteLike,
-  type OnchainQuoteLike,
-} from '@fedimint/react-native'
+  DefaultTheme,
+  NavigationContainer,
+  useNavigation,
+} from '@react-navigation/native'
 import {
-  current,
-  errorMessage,
-  federation,
-  generateWords,
-  msatToSat,
-  onChange,
-  open,
-  reset,
-  satToMsat,
-  walletExists,
-} from './sdk'
-import s from './styles'
+  createNativeStackNavigator,
+  type NativeStackNavigationProp,
+} from '@react-navigation/native-stack'
+import {
+  createBottomTabNavigator,
+  type BottomTabNavigationProp,
+} from '@react-navigation/bottom-tabs'
+import { createNativeBottomTabNavigator } from '@react-navigation/bottom-tabs/unstable'
+import type { ActivityItem } from '@fedimint/react-native'
+import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { Icon } from './components/Icon'
+import { model, useDemo } from './model/DemoModel'
+import { FedimintLogoOnDark } from './components/Brand'
+import { WelcomeScreen } from './screens/onboarding/WelcomeScreen'
+import { RestoreScreen } from './screens/onboarding/RestoreScreen'
+import { BackupScreen } from './screens/onboarding/BackupScreen'
+import { VerifyScreen } from './screens/onboarding/VerifyScreen'
+import { HomeScreen } from './screens/home/HomeScreen'
+import { ActivityScreen } from './screens/activity/ActivityScreen'
+import { OperationDetailScreen } from './screens/activity/OperationDetailScreen'
+import { ActivityText } from './components/Activity'
+import { FederationsScreen } from './screens/federations/FederationsScreen'
+import { JoinScreen } from './screens/federations/JoinScreen'
+import { FederationDetailScreen } from './screens/federations/FederationDetailScreen'
+import { RecoveryScreen } from './screens/federations/RecoveryScreen'
+import { ReceiveScreen } from './screens/receive/ReceiveScreen'
+import { SendScreen } from './screens/send/SendScreen'
+import { ReviewScreen } from './screens/send/ReviewScreen'
+import type { PaymentRail } from './components/Status'
+import { Metrics, Palette, Typeface } from './theme/tokens'
+import { Button } from './components/Buttons'
+import { reason } from './model/errors'
 
-const TESTNET_FEDERATION_CODE =
-  'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqqysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
+// An operation's screen is handed its activity item, whose amounts and time are BigInt. React
+// Navigation warns that such params cannot be serialised, which matters only to an app that
+// persists its navigation state or opens from links; this one does neither.
+LogBox.ignoreLogs([
+  'Non-serializable values were found in the navigation state',
+])
 
-type WalletState = { exists: boolean | undefined; joined: boolean }
+const theme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: Palette.ink,
+    background: Palette.background,
+    card: Palette.background,
+    text: Palette.ink,
+    border: Palette.border,
+  },
+}
+
+/** The bars the iOS demo uses: cream, an inline title, no hairline. */
+const stackOptions = {
+  headerStyle: { backgroundColor: Palette.background },
+  headerShadowVisible: false,
+  headerTitleStyle: {
+    fontFamily: 'Geist-SemiBold',
+    fontSize: 17,
+    color: Palette.ink,
+  },
+  headerTintColor: Palette.ink,
+  headerBackButtonDisplayMode: 'minimal' as const,
+  // Centred, as iOS sets every inline title; Android's own default is beside the back button.
+  headerTitleAlign: 'center' as const,
+}
+
+type OnboardingRoutes = { Welcome: undefined; Restore: undefined }
+const Onboarding = createNativeStackNavigator<OnboardingRoutes>()
+
+/** Everything before a wallet is open: Welcome, and Restore pushed from it. */
+function OnboardingStack() {
+  return (
+    <Onboarding.Navigator
+      screenOptions={stackOptions}
+      screenListeners={({ route }) => ({
+        // A failure from the screen just left is about that screen, not the one returned to. On
+        // leaving Restore, not on Welcome's focus: its first focus follows a reopen that failed,
+        // whose reason is shown there.
+        beforeRemove: () => {
+          if (route.name === 'Restore' && !model.isAttaching) {
+            model.clearFailure('wallet')
+          }
+        },
+      })}
+    >
+      <Onboarding.Screen name="Welcome" options={{ headerShown: false }}>
+        {({ navigation }) => (
+          <WelcomeScreen restore={() => navigation.navigate('Restore')} />
+        )}
+      </Onboarding.Screen>
+      <Onboarding.Screen
+        name="Restore"
+        component={RestoreScreen}
+        options={{ title: 'Restore' }}
+      />
+    </Onboarding.Navigator>
+  )
+}
+
+type BackupRoutes = { Backup: undefined; Verify: undefined }
+const Backup = createNativeStackNavigator<BackupRoutes>()
+
+/** Back up, then Verify, straight after a wallet is created and before it is used. */
+function BackupFlow({ done }: { done: () => void }) {
+  const state = useDemo()
+  // Hides the phrase on every way out: finishing, and on Android the back button, which closes
+  // the app while the model, and so the words, stay in memory for its next launch.
+  useEffect(() => () => model.hideSeed(), [])
+  return (
+    <Backup.Navigator screenOptions={{ ...stackOptions, title: '' }}>
+      <Backup.Screen name="Backup" options={{ headerBackVisible: false }}>
+        {({ navigation }) => (
+          <BackupScreen
+            next={() => navigation.navigate('Verify')}
+            later={done}
+          />
+        )}
+      </Backup.Screen>
+      <Backup.Screen name="Verify">
+        {() => <VerifyScreen words={state.seedWords} finish={done} />}
+      </Backup.Screen>
+    </Backup.Navigator>
+  )
+}
+
+type MainRoutes = {
+  Tabs: undefined
+  Send: undefined
+  Receive: undefined
+  RecoveryPhrase: undefined
+}
+const Main = createNativeStackNavigator<MainRoutes>()
+
+type HomeRoutes = {
+  HomeRoot: undefined
+  Operation: { item: ActivityItem }
+  Recovery: undefined
+  FederationDetail: undefined
+}
+const HomeStack = createNativeStackNavigator<HomeRoutes>()
+
+type ActivityRoutes = {
+  ActivityRoot: undefined
+  Operation: { item: ActivityItem }
+}
+
+type FederationsRoutes = {
+  FederationsRoot: undefined
+  Join: undefined
+  FederationDetail: undefined
+  Recovery: undefined
+}
+const FederationsStack = createNativeStackNavigator<FederationsRoutes>()
+const ActivityStack = createNativeStackNavigator<ActivityRoutes>()
+
+type TabRoutes = {
+  Home: undefined
+  Activity: undefined
+  Federations: undefined
+}
+const Tab = createBottomTabNavigator<TabRoutes>()
+// iOS uses the system tab bar, as the Swift demo's TabView does: from iOS 26 that is the floating
+// Liquid Glass bar, which a tab bar drawn in JS does not match.
+// The icons are the filled symbols SwiftUI's tab bar picks for the names the Swift demo gives.
+const NativeTab = createNativeBottomTabNavigator<TabRoutes>()
+
+function OperationRoute({
+  route,
+  navigation,
+}: {
+  route: { params: { item: ActivityItem } }
+  navigation: { goBack: () => void; canGoBack: () => boolean }
+}) {
+  const close = useCallback(() => {
+    if (navigation.canGoBack()) navigation.goBack()
+  }, [navigation])
+  return <OperationDetailScreen item={route.params.item} close={close} />
+}
+
+function operationTitle({
+  route,
+}: {
+  route: { params: { item: ActivityItem } }
+}) {
+  return { title: ActivityText.rail(route.params.item.kind) }
+}
+
+function HomeTab() {
+  const main = useNavigation<NativeStackNavigationProp<MainRoutes>>()
+  const tabs = useNavigation<BottomTabNavigationProp<TabRoutes>>()
+  return (
+    <HomeStack.Navigator screenOptions={stackOptions}>
+      {/* Home's header row stands in for a navigation bar. */}
+      <HomeStack.Screen name="HomeRoot" options={{ headerShown: false }}>
+        {({ navigation }) => (
+          <HomeScreen
+            receive={() => main.navigate('Receive')}
+            send={() => main.navigate('Send')}
+            showActivity={() => tabs.navigate('Activity')}
+            showFederations={() => tabs.navigate('Federations')}
+            showFederationDetails={() =>
+              navigation.navigate('FederationDetail')
+            }
+            showRecovery={() => navigation.navigate('Recovery')}
+            showRecoveryPhrase={() => main.navigate('RecoveryPhrase')}
+            showOperation={(item) => navigation.navigate('Operation', { item })}
+          />
+        )}
+      </HomeStack.Screen>
+      <HomeStack.Screen
+        name="Operation"
+        component={OperationRoute}
+        options={operationTitle}
+      />
+      <HomeStack.Screen
+        name="Recovery"
+        component={RecoveryRoute}
+        options={{ title: 'Recovery' }}
+      />
+      <HomeStack.Screen
+        name="FederationDetail"
+        options={{ title: 'Federation' }}
+      >
+        {({ navigation }) => (
+          <FederationDetailScreen
+            showRecovery={() => navigation.navigate('Recovery')}
+          />
+        )}
+      </HomeStack.Screen>
+    </HomeStack.Navigator>
+  )
+}
+
+function ActivityTab() {
+  return (
+    <ActivityStack.Navigator screenOptions={stackOptions}>
+      <ActivityStack.Screen name="ActivityRoot" options={{ title: 'Activity' }}>
+        {({ navigation }) => (
+          <ActivityScreen
+            showOperation={(item) => navigation.navigate('Operation', { item })}
+          />
+        )}
+      </ActivityStack.Screen>
+      <ActivityStack.Screen
+        name="Operation"
+        component={OperationRoute}
+        options={operationTitle}
+      />
+    </ActivityStack.Navigator>
+  )
+}
+
+function RecoveryRoute({
+  navigation,
+}: {
+  navigation: { goBack: () => void; canGoBack: () => boolean }
+}) {
+  const close = useCallback(() => {
+    if (navigation.canGoBack()) navigation.goBack()
+  }, [navigation])
+  return <RecoveryScreen close={close} />
+}
+
+function FederationsTab() {
+  return (
+    <FederationsStack.Navigator screenOptions={stackOptions}>
+      <FederationsStack.Screen
+        name="FederationsRoot"
+        options={({ navigation }) => ({
+          title: 'Federations',
+          ...(Platform.OS === 'ios'
+            ? {
+                unstable_headerRightItems: () => [
+                  {
+                    type: 'button' as const,
+                    label: 'Join a federation',
+                    icon: { type: 'sfSymbol' as const, name: 'plus' },
+                    onPress: () => navigation.navigate('Join'),
+                  },
+                ],
+              }
+            : {
+                headerRight: () => (
+                  <Pressable
+                    accessibilityLabel="Join a federation"
+                    hitSlop={8}
+                    onPress={() => navigation.navigate('Join')}
+                  >
+                    <Icon name="plus" size={20} color={Palette.ink} />
+                  </Pressable>
+                ),
+              }),
+        })}
+      >
+        {({ navigation }) => (
+          <FederationsScreen
+            join={() => navigation.navigate('Join')}
+            detail={() => navigation.navigate('FederationDetail')}
+          />
+        )}
+      </FederationsStack.Screen>
+      <FederationsStack.Screen name="Join" options={{ title: 'Join' }}>
+        {({ navigation }) => <JoinScreen close={navigation.goBack} />}
+      </FederationsStack.Screen>
+      <FederationsStack.Screen
+        name="FederationDetail"
+        options={{ title: 'Federation' }}
+      >
+        {({ navigation }) => (
+          <FederationDetailScreen
+            showRecovery={() => navigation.navigate('Recovery')}
+          />
+        )}
+      </FederationsStack.Screen>
+      <FederationsStack.Screen
+        name="Recovery"
+        component={RecoveryRoute}
+        options={{ title: 'Recovery' }}
+      />
+    </FederationsStack.Navigator>
+  )
+}
+
+function Tabs() {
+  if (Platform.OS === 'ios') {
+    return (
+      <NativeTab.Navigator
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: Palette.primary,
+          // UIKit's own unselected color: gray before iOS 26, the label color on the glass bar.
+          ...(parseInt(String(Platform.Version), 10) < 26 && {
+            tabBarInactiveTintColor: PlatformColor('systemGray'),
+          }),
+        }}
+      >
+        <NativeTab.Screen
+          name="Home"
+          component={HomeTab}
+          options={{ tabBarIcon: { type: 'sfSymbol', name: 'house.fill' } }}
+        />
+        <NativeTab.Screen
+          name="Activity"
+          component={ActivityTab}
+          options={{
+            tabBarIcon: { type: 'sfSymbol', name: 'waveform.path.ecg' },
+          }}
+        />
+        <NativeTab.Screen
+          name="Federations"
+          component={FederationsTab}
+          options={{
+            tabBarIcon: { type: 'sfSymbol', name: 'building.columns.fill' },
+          }}
+        />
+      </NativeTab.Navigator>
+    )
+  }
+  return (
+    <Tab.Navigator
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: Palette.primary,
+        tabBarInactiveTintColor: Palette.muted,
+        tabBarLabelStyle: Typeface.geist('Medium', 11),
+        tabBarStyle: { backgroundColor: Palette.surface },
+      }}
+    >
+      <Tab.Screen
+        name="Home"
+        component={HomeTab}
+        options={{
+          tabBarIcon: ({ color }) => (
+            <Icon name="house" size={22} color={color} />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Activity"
+        component={ActivityTab}
+        options={{
+          tabBarIcon: ({ color }) => (
+            <Icon name="waveform.path.ecg" size={22} color={color} />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Federations"
+        component={FederationsTab}
+        options={{
+          tabBarIcon: ({ color }) => (
+            <Icon name="building.columns" size={22} color={color} />
+          ),
+        }}
+      />
+    </Tab.Navigator>
+  )
+}
+
+type SendRoutes = { SendForm: undefined; Review: { rail: PaymentRail } }
+const SendStack = createNativeStackNavigator<SendRoutes>()
 
 /**
- * Tracks whether a wallet has been created on this device and whether it has
- * joined a federation. On mount it opens an existing wallet, if any;
- * `refresh` re-checks after an action that may have changed either. It also
- * re-checks on every `onChange` notification (another screen opened, restored
- * or reset the session), so every screen using this hook stays in sync;
- * `version` counts those notifications for `useBalance` to key its subscription on.
+ * "Close" on a sheet's leading edge, as the iOS demo's cancellation action. On iOS a native bar
+ * button, so it takes the system's own look, the glass capsule on iOS 26 and later, exactly as the
+ * SwiftUI toolbar button does; Android has no such item and draws the text.
  */
-const useWallet = () => {
-  const [state, setState] = useState<WalletState>({
-    exists: undefined,
-    joined: false,
-  })
-  const [version, setVersion] = useState(0)
-
-  const refresh = useCallback(() => {
-    setState({ exists: true, joined: federation() !== undefined })
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      const exists = await walletExists()
-      if (cancelled) return
-      if (!exists) {
-        setState({ exists: false, joined: false })
-        return
+function closeButton(close: () => void) {
+  return Platform.OS === 'ios'
+    ? {
+        unstable_headerLeftItems: () => [
+          { type: 'button' as const, label: 'Close', onPress: close },
+        ],
       }
-      try {
-        await open()
-        if (!cancelled) {
-          setState({ exists: true, joined: federation() !== undefined })
-        }
-      } catch {
-        if (!cancelled) setState({ exists: true, joined: false })
-      }
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(
-    () =>
-      onChange(() => {
-        setState({ exists: current() !== undefined, joined: federation() !== undefined })
-        setVersion((v) => v + 1)
-      }),
-    [],
-  )
-
-  return { ...state, refresh, version }
-}
-
-/** The joined federation's balance in sats, kept live through `balanceUpdates`. */
-const useBalance = (joined: boolean, version: number): number => {
-  const [balance, setBalance] = useState(0)
-
-  useEffect(() => {
-    if (!joined) {
-      setBalance(0)
-      return
-    }
-    const fed = federation()
-    if (!fed) return
-
-    const controller = new AbortController()
-    let cancelled = false
-
-    const subscribe = async () => {
-      try {
-        const initial = await fed.balance()
-        if (cancelled) return
-        setBalance(msatToSat(initial))
-        const updates = fed.balanceUpdates()
-        for (;;) {
-          const next = await updates.next({ signal: controller.signal })
-          if (cancelled) return
-          setBalance(msatToSat(next))
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          console.warn('balance updates stopped:', errorMessage(error))
-        }
-      }
-    }
-    subscribe()
-
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-    // `version` restarts the loop against the new session on every open/reset, so a
-    // closed session's iterator is never awaited past the session that owned it.
-  }, [joined, version])
-
-  return balance
-}
-
-const SectionCard: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => <View style={s.section}>{children}</View>
-
-const SectionTitle: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => <Text style={s.sectionTitle}>{String(children)}</Text>
-
-const Btn: React.FC<{
-  title: string
-  onPress: () => void
-  disabled?: boolean
-  active?: boolean
-  small?: boolean
-  primary?: boolean
-}> = ({ title, onPress, disabled, active, small, primary }) => (
-  <TouchableOpacity
-    onPress={onPress}
-    disabled={disabled}
-    style={[
-      s.btn,
-      active && s.btnActive,
-      small && s.btnSmall,
-      primary && s.btnPrimary,
-      disabled && s.btnDisabled,
-    ]}
-  >
-    <Text
-      style={[
-        s.btnText,
-        small && s.btnTextSmall,
-        disabled && s.btnTextDisabled,
-      ]}
-    >
-      {title}
-    </Text>
-  </TouchableOpacity>
-)
-
-const SuccessBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <View style={s.success}>
-    <Text style={s.successText}>{children}</Text>
-  </View>
-)
-
-const ErrorBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <View style={s.error}>
-    <Text style={s.errorText}>{children}</Text>
-  </View>
-)
-
-const Row: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <View style={s.row}>{children}</View>
-)
-
-const WalletStatus = ({
-  exists,
-  joined,
-  balance,
-  refresh,
-}: {
-  exists: boolean | undefined
-  joined: boolean
-  balance: number
-  refresh: () => void
-}) => {
-  const fed = joined ? federation() : undefined
-  const status =
-    exists !== true
-      ? 'No wallet yet'
-      : !fed
-        ? 'Wallet open, no federation'
-        : `${fed.name() ?? fed.id()} (${Network[fed.network()]})`
-
-  return (
-    <SectionCard>
-      <SectionTitle>Wallet Status</SectionTitle>
-      <Row>
-        <Text style={s.label}>Status:</Text>
-        <Text style={s.value}>{status}</Text>
-        <Btn title="Check" onPress={refresh} small />
-      </Row>
-      <Row>
-        <Text style={s.label}>Balance:</Text>
-        <Text style={s.balance}>{balance}</Text>
-        <Text style={s.value}> sats</Text>
-      </Row>
-    </SectionCard>
-  )
-}
-
-const MnemonicManager = ({
-  exists,
-  refresh,
-}: {
-  exists: boolean | undefined
-  refresh: () => void
-}) => {
-  const [words, setWords] = useState('')
-  const [visible, setVisible] = useState(false)
-  const [restoreInput, setRestoreInput] = useState('')
-  const [showRestore, setShowRestore] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<{
-    text: string
-    type: 'success' | 'error'
-  }>()
-
-  const handleGenerateOrShow = async () => {
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      if (exists) {
-        const session = current()
-        if (!session) throw new Error('wallet is not open')
-        const list = session.sdk.exportMnemonic().words()
-        setWords(list.join(' '))
-        setVisible(true)
-        setMessage({ text: 'Mnemonic retrieved!', type: 'success' })
-      } else {
-        // Seed the wallet with the exact words shown, so what the user backs up is
-        // what actually protects the wallet, not a seed generated and discarded later.
-        const list = generateWords()
-        await open(list)
-        setWords(list.join(' '))
-        setVisible(true)
-        setMessage({ text: 'Wallet created from a new mnemonic', type: 'success' })
-      }
-    } catch (error) {
-      setMessage({ text: errorMessage(error), type: 'error' })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const restoreWallet = async () => {
-    const restoreWords = restoreInput.trim().split(/\s+/).filter(Boolean)
-    if (restoreWords.length === 0) return
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      // Parse the seed before resetting, so a bad entry is caught while the current wallet
-      // is still there instead of after it has already been deleted.
-      Mnemonic.fromWords(restoreWords)
-      await reset()
-      await open(restoreWords)
-      refresh()
-      setRestoreInput('')
-      setShowRestore(false)
-      setMessage({ text: 'Wallet restored!', type: 'success' })
-    } catch (error) {
-      setMessage({ text: errorMessage(error), type: 'error' })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleRestore = () => {
-    const restoreWords = restoreInput.trim().split(/\s+/).filter(Boolean)
-    if (restoreWords.length === 0) return
-    Alert.alert(
-      'Restore wallet?',
-      'This deletes the wallet data on this device and replaces it with the seed you entered.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Restore', style: 'destructive', onPress: restoreWallet },
-      ],
-    )
-  }
-
-  const copyToClipboard = () => {
-    Clipboard.setString(words)
-    setMessage({ text: 'Copied to clipboard!', type: 'success' })
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>🔑 Mnemonic Manager</SectionTitle>
-
-      <Row>
-        <Btn
-          title={busy ? 'Working...' : exists ? 'Show' : 'Generate'}
-          onPress={handleGenerateOrShow}
-          disabled={busy}
-        />
-        <Btn
-          title="Restore"
-          onPress={() => setShowRestore(!showRestore)}
-          disabled={busy}
-          active={showRestore}
-        />
-      </Row>
-
-      {showRestore && (
-        <View style={s.formGroup}>
-          <TextInput
-            style={s.textArea}
-            placeholder="Enter 12 or 24 words separated by spaces"
-            placeholderTextColor="#888"
-            value={restoreInput}
-            onChangeText={setRestoreInput}
-            multiline
-            numberOfLines={2}
-          />
-          <Btn
-            title={busy ? 'Restoring...' : 'Restore Wallet'}
-            onPress={handleRestore}
-            disabled={busy || !restoreInput.trim()}
-            primary
-          />
-        </View>
-      )}
-
-      {!!words && (
-        <View style={s.mnemonicDisplay}>
-          <Text style={visible ? s.mnemonicText : s.mnemonicBlurred}>
-            {words}
-          </Text>
-          <Row>
-            <Btn
-              title={visible ? '👁️' : '👁️‍🗨️'}
-              onPress={() => setVisible(!visible)}
-              small
-            />
-            <Btn
-              title="📋"
-              onPress={copyToClipboard}
-              disabled={!visible}
-              small
-            />
-          </Row>
-        </View>
-      )}
-
-      {message &&
-        (message.type === 'success' ? (
-          <SuccessBox>{message.text}</SuccessBox>
-        ) : (
-          <ErrorBox>{message.text}</ErrorBox>
-        ))}
-    </SectionCard>
-  )
-}
-
-const JoinFederation = ({
-  joined,
-  refresh,
-}: {
-  joined: boolean
-  refresh: () => void
-}) => {
-  const [code, setCode] = useState(TESTNET_FEDERATION_CODE)
-  const [preview, setPreview] = useState<FederationPreview>()
-  const [previewing, setPreviewing] = useState(false)
-  const [joinResult, setJoinResult] = useState('')
-  const [joinError, setJoinError] = useState('')
-  const [joining, setJoining] = useState(false)
-
-  const previewFederation = async () => {
-    if (!code.trim()) return
-    setPreviewing(true)
-    setJoinError('')
-    try {
-      const session = await open()
-      const invite = InviteCode.parse(code.trim())
-      setPreview(await session.sdk.preview(invite))
-    } catch (error) {
-      setJoinError(errorMessage(error))
-      setPreview(undefined)
-    } finally {
-      setPreviewing(false)
-    }
-  }
-
-  const joinFederation = async () => {
-    setJoining(true)
-    setJoinError('')
-    try {
-      const session = await open()
-      const invite = InviteCode.parse(code.trim())
-      await session.sdk.join(invite)
-      setJoinResult('Joined!')
-      refresh()
-    } catch (error) {
-      setJoinError(errorMessage(error))
-      setJoinResult('')
-    } finally {
-      setJoining(false)
-    }
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Join Federation</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Invite Code..."
-        placeholderTextColor="#888"
-        value={code}
-        onChangeText={(text) => {
-          setCode(text)
-          setPreview(undefined)
-        }}
-        editable={!joined}
-      />
-      <Row>
-        <Btn
-          title={previewing ? 'Previewing...' : 'Preview'}
-          onPress={previewFederation}
-          disabled={previewing || !code.trim() || joined}
-        />
-        <Btn
-          title={joining ? 'Joining...' : 'Join'}
-          onPress={joinFederation}
-          disabled={joined || joining}
-          primary
-        />
-      </Row>
-
-      {preview && (
-        <View style={s.previewCard}>
-          <Text style={s.previewTitle}>Federation Preview</Text>
-          <Text style={s.label}>
-            Name: <Text style={s.value}>{preview.name ?? 'Unnamed'}</Text>
-          </Text>
-          <Text style={s.label}>
-            Network:{' '}
-            <Text style={s.value}>{Network[preview.network]}</Text>
-          </Text>
-          <Text style={s.label}>
-            Guardians: <Text style={s.value}>{preview.guardians}</Text>
-          </Text>
-          <Text style={s.label}>
-            Modules: <Text style={s.value}>{preview.modules.join(', ')}</Text>
-          </Text>
-        </View>
-      )}
-
-      {!joinResult && joined && (
-        <Text style={s.italic}>(You've already joined a federation)</Text>
-      )}
-      {!!joinResult && <SuccessBox>{joinResult}</SuccessBox>}
-      {!!joinError && <ErrorBox>{joinError}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const RedeemEcash = () => {
-  const [input, setInput] = useState('')
-  const [result, setResult] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const handleRedeem = async () => {
-    setBusy(true)
-    setResult('')
-    setError('')
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const ecash = fed.ecash()
-      if (!ecash) throw new Error('Ecash is not supported by this federation')
-      const notes = (() => {
-        try {
-          return Notes.parse(input.trim())
-        } catch (parseError) {
-          throw new Error(`Invalid ecash notes: ${errorMessage(parseError)}`)
-        }
-      })()
-      const operation = await ecash.receive(notes)
-      await operation.awaitFinal()
-      setResult(`Redeemed ${msatToSat(notes.value())} sats`)
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Redeem Ecash</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Long ecash string..."
-        placeholderTextColor="#888"
-        value={input}
-        onChangeText={setInput}
-      />
-      <Btn
-        title={busy ? 'Redeeming...' : 'Redeem'}
-        onPress={handleRedeem}
-        disabled={busy || !input.trim()}
-      />
-      {!!result && <SuccessBox>{result}</SuccessBox>}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-type Send = {
-  id: number
-  notes: string
-  status: string
-  final: boolean
-}
-
-const SendEcash = () => {
-  const [amount, setAmount] = useState('')
-  const [quote, setQuote] = useState<EcashQuoteLike>()
-  const [quoting, setQuoting] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [sends, setSends] = useState<Send[]>([])
-  // Operations are not render state; keyed by the same id as their entry in `sends`.
-  const operations = useRef(new Map<number, EcashSendOperationLike>())
-  const nextSendId = useRef(0)
-  const [error, setError] = useState('')
-  // A quote belongs to the input it was requested for: this counts each request so a quote
-  // that resolves after the amount has since changed can tell it is stale and drop itself.
-  const quoteGen = useRef(0)
-
-  const updateSend = (id: number, patch: Partial<Send>) =>
-    setSends((prev) =>
-      prev.map((send) => (send.id === id ? { ...send, ...patch } : send)),
-    )
-
-  const handleQuote = async () => {
-    const gen = ++quoteGen.current
-    setQuoting(true)
-    setError('')
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const ecash = fed.ecash()
-      if (!ecash) throw new Error('Ecash is not supported by this federation')
-      const next = await ecash.quote(satToMsat(amount.trim()))
-      if (gen !== quoteGen.current) return
-      setQuote(next)
-    } catch (error) {
-      setError(errorMessage(error))
-      setQuote(undefined)
-    } finally {
-      setQuoting(false)
-    }
-  }
-
-  const handleSend = async () => {
-    if (!quote) return
-    setSending(true)
-    setError('')
-    try {
-      const ecash = federation()?.ecash()
-      if (!ecash) throw new Error('Ecash is not supported by this federation')
-      const handle = await ecash.send(quote)
-      const id = nextSendId.current++
-      operations.current.set(id, handle.operation)
-      setSends((prev) => [
-        { id, notes: handle.notes.display(), status: '', final: false },
-        ...prev,
-      ])
-      setQuote(undefined)
-      // The federation never reports a redemption to the sender. The outcome is learnt when
-      // the notes are reclaimed: by the deadline in the details, or sooner through Cancel
-      // send, which fails against notes the receiver already redeemed and settles the state
-      // as Redeemed.
-      const details = await handle.operation.details()
-      const reclaimAt = new Date(Number(details.reclaimAt)).toLocaleString()
-      updateSend(id, {
-        status: `Outcome settles by ${reclaimAt}, or when you press Cancel send`,
-      })
-      handle.operation
-        .awaitFinal()
-        .then((state) => updateSend(id, { status: EcashSendState[state], final: true }))
-        .catch((error) => updateSend(id, { status: errorMessage(error) }))
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setSending(false)
-    }
-  }
-
-  const handleCancel = async (id: number) => {
-    const operation = operations.current.get(id)
-    if (!operation) return
-    setError('')
-    try {
-      await operation.requestCancel()
-      setSends((prev) =>
-        prev.map((send) =>
-          send.id === id && !send.final
-            ? {
-                ...send,
-                status: 'Cancel requested; unredeemed notes return to this wallet',
-              }
-            : send,
+    : {
+        headerLeft: () => (
+          <Pressable onPress={close} hitSlop={8}>
+            <Text style={[Typeface.body, { color: Palette.ink }]}>Close</Text>
+          </Pressable>
         ),
-      )
-    } catch (error) {
-      setError(errorMessage(error))
-    }
-  }
+      }
+}
 
-  const dismiss = (id: number) => {
-    operations.current.delete(id)
-    setSends((prev) => prev.filter((send) => send.id !== id))
-  }
-
-  const copyNotes = (notes: string) => {
-    Clipboard.setString(notes)
-  }
-
+/** The review, which becomes the result once the payment is sent. */
+function ReviewRoute({
+  route,
+  navigation,
+  done,
+}: {
+  route: { params: { rail: PaymentRail } }
+  navigation: NativeStackNavigationProp<SendRoutes, 'Review'>
+  done: () => void
+}) {
+  const [submitted, setSubmitted] = useState(false)
+  const { rail } = route.params
+  useEffect(() => {
+    navigation.setOptions({
+      title: submitted
+        ? rail === 'ecash'
+          ? 'Ecash notes'
+          : ''
+        : 'Review payment',
+      // Once sent there is no going back to the quote: it is spent.
+      headerBackVisible: !submitted,
+      gestureEnabled: !submitted,
+    })
+  }, [submitted, rail, navigation])
+  // Android's back button is not covered by the two options above: once sent it closes the
+  // sheet, as swiping it down does on iOS, rather than reopening the spent quote's form.
+  useEffect(() => {
+    if (!submitted) return
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        done()
+        return true
+      },
+    )
+    return () => subscription.remove()
+  }, [submitted, done])
   return (
-    <SectionCard>
-      <SectionTitle>Send Ecash</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Amount in sats"
-        placeholderTextColor="#888"
-        value={amount}
-        onChangeText={(text) => {
-          setAmount(text)
-          setQuote(undefined)
-          quoteGen.current += 1
-        }}
-        keyboardType="numeric"
-        editable={!quoting}
-      />
-      <Btn
-        title={quoting ? 'Quoting...' : 'Quote'}
-        onPress={handleQuote}
-        disabled={quoting || !amount.trim()}
-      />
-
-      {quote && (
-        <View style={s.resultBox}>
-          <Text style={s.label}>
-            Notes: <Text style={s.value}>{msatToSat(quote.notesValue())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
-          </Text>
-          <Btn
-            title={sending ? 'Sending...' : `Send ${msatToSat(quote.total())} sats`}
-            onPress={handleSend}
-            disabled={sending}
-            primary
-          />
-        </View>
-      )}
-      {sends.map((send) => (
-        <View key={send.id} style={s.invoiceBox}>
-          <Text style={s.label}>Notes to hand over:</Text>
-          <Text style={s.mono} selectable>
-            {send.notes}
-          </Text>
-          {!!send.status && <Text style={s.value}>{send.status}</Text>}
-          <Btn title="Copy" onPress={() => copyNotes(send.notes)} small />
-          {send.final ? (
-            <Btn title="Dismiss" onPress={() => dismiss(send.id)} small />
-          ) : (
-            <Btn
-              title="Cancel send"
-              onPress={() => handleCancel(send.id)}
-              small
-            />
-          )}
-        </View>
-      ))}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
+    <ReviewScreen
+      rail={rail}
+      done={done}
+      back={navigation.goBack}
+      submitted={submitted}
+      setSubmitted={() => setSubmitted(true)}
+    />
   )
 }
 
-const SendLightning = () => {
-  const [invoice, setInvoice] = useState('')
-  const [quote, setQuote] = useState<LnQuoteLike>()
-  const [quoting, setQuoting] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState('')
-  const [error, setError] = useState('')
-  // A quote belongs to the input it was requested for: this counts each request so a quote
-  // that resolves after the invoice has since changed can tell it is stale and drop itself.
-  const quoteGen = useRef(0)
-
-  const handleQuote = async () => {
-    const gen = ++quoteGen.current
-    setQuoting(true)
-    setError('')
-    setResult('')
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const lightning = fed.lightning()
-      if (!lightning) {
-        throw new Error('Lightning is not supported by this federation')
-      }
-      const next = await lightning.quote(invoice.trim())
-      if (gen !== quoteGen.current) return
-      setQuote(next)
-    } catch (error) {
-      setError(errorMessage(error))
-      setQuote(undefined)
-    } finally {
-      setQuoting(false)
-    }
-  }
-
-  const handlePay = async () => {
-    if (!quote) return
-    setSending(true)
-    setError('')
-    try {
-      const lightning = federation()?.lightning()
-      if (!lightning) {
-        throw new Error('Lightning is not supported by this federation')
-      }
-      const operation = await lightning.send(quote)
-      const state = await operation.awaitFinal()
-      setResult(LnSendState_Tags[state.tag])
-      setQuote(undefined)
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setSending(false)
-    }
-  }
-
+/** 14 Send, 06 Review and the result, in their own stack inside the Send sheet. */
+function SendFlow({ navigation }: { navigation: { goBack: () => void } }) {
+  const close = navigation.goBack
   return (
-    <SectionCard>
-      <SectionTitle>Pay Lightning</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="lnbc..."
-        placeholderTextColor="#888"
-        value={invoice}
-        onChangeText={(text) => {
-          setInvoice(text)
-          setQuote(undefined)
-          quoteGen.current += 1
-        }}
-        editable={!quoting}
-      />
-      <Btn
-        title={quoting ? 'Quoting...' : 'Quote'}
-        onPress={handleQuote}
-        disabled={quoting || !invoice.trim()}
-      />
-
-      {quote && (
-        <View style={s.resultBox}>
-          <Text style={s.label}>
-            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
-          </Text>
-          <Btn
-            title={sending ? 'Paying...' : `Pay ${msatToSat(quote.total())} sats`}
-            onPress={handlePay}
-            disabled={sending}
-            primary
-          />
-        </View>
-      )}
-      {!!result && <SuccessBox>{result}</SuccessBox>}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const GenerateLightningInvoice = () => {
-  const [amount, setAmount] = useState('')
-  const [description, setDescription] = useState('')
-  const [invoice, setInvoice] = useState('')
-  const [status, setStatus] = useState('')
-  const [error, setError] = useState('')
-  const [generating, setGenerating] = useState(false)
-
-  const handleGenerate = async () => {
-    setInvoice('')
-    setStatus('')
-    setError('')
-    setGenerating(true)
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const lightning = fed.lightning()
-      if (!lightning) {
-        throw new Error('Lightning is not supported by this federation')
-      }
-      const handle = await lightning.receive(satToMsat(amount), description)
-      setInvoice(handle.invoice)
-      setStatus('Waiting for payment')
-      handle.operation
-        .awaitFinal()
-        .then((state) => setStatus(LnReceiveState_Tags[state.tag]))
-        .catch((finalError) => setStatus(errorMessage(finalError)))
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setGenerating(false)
-    }
-  }
-
-  const copyInvoice = () => {
-    Clipboard.setString(invoice)
-    Alert.alert('Copied', 'Invoice copied to clipboard')
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Generate Lightning Invoice</SectionTitle>
-      <Text style={s.label}>Amount (sats):</Text>
-      <TextInput
-        style={s.input}
-        placeholder="Enter amount in sats"
-        placeholderTextColor="#888"
-        keyboardType="numeric"
-        value={amount}
-        onChangeText={setAmount}
-      />
-      <Text style={s.label}>Description:</Text>
-      <TextInput
-        style={s.input}
-        placeholder="Enter description"
-        placeholderTextColor="#888"
-        value={description}
-        onChangeText={setDescription}
-      />
-      <Btn
-        title={generating ? 'Generating...' : 'Generate Invoice'}
-        onPress={handleGenerate}
-        disabled={generating || !amount.trim()}
-        primary
-      />
-      <TouchableOpacity
-        onPress={() => Linking.openURL('https://faucet.mutinynet.com/')}
+    <SendStack.Navigator screenOptions={stackOptions}>
+      <SendStack.Screen
+        name="SendForm"
+        options={{ title: 'Send', ...closeButton(close) }}
       >
-        <Text style={s.link}>mutinynet faucet ↗</Text>
-      </TouchableOpacity>
-
-      {!!invoice && (
-        <View style={s.invoiceBox}>
-          <Text style={s.label}>Generated Invoice:</Text>
-          <Text style={s.mono} selectable>
-            {invoice}
-          </Text>
-          {!!status && <Text style={s.value}>{status}</Text>}
-          <Btn title="Copy" onPress={copyInvoice} small />
-        </View>
-      )}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const InviteCodeParser = () => {
-  const [code, setCode] = useState('')
-  const [result, setResult] = useState<{
-    federationId: string
-    display: string
-  }>()
-  const [error, setError] = useState('')
-
-  const handleParse = () => {
-    setResult(undefined)
-    setError('')
-    try {
-      const invite = InviteCode.parse(code.trim())
-      setResult({
-        federationId: invite.federationId(),
-        display: invite.display(),
-      })
-    } catch (error) {
-      setError(errorMessage(error))
-    }
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Parse Invite Code</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Enter invite code..."
-        placeholderTextColor="#888"
-        value={code}
-        onChangeText={setCode}
-      />
-      <Btn title="Parse" onPress={handleParse} disabled={!code.trim()} />
-      {result && (
-        <View style={s.resultBox}>
-          <Text style={s.label}>
-            Fed Id: <Text style={s.mono}>{result.federationId}</Text>
-          </Text>
-          <Text style={s.label}>
-            Display: <Text style={s.mono}>{result.display}</Text>
-          </Text>
-        </View>
-      )}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const QuoteLightningInvoice = () => {
-  const [invoice, setInvoice] = useState('')
-  const [quote, setQuote] = useState<LnQuoteLike>()
-  const [error, setError] = useState('')
-  const [quoting, setQuoting] = useState(false)
-
-  const handleQuote = async () => {
-    setQuote(undefined)
-    setError('')
-    setQuoting(true)
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const lightning = fed.lightning()
-      if (!lightning) {
-        throw new Error('Lightning is not supported by this federation')
-      }
-      setQuote(await lightning.quote(invoice.trim()))
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setQuoting(false)
-    }
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Quote Lightning Invoice</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Enter invoice..."
-        placeholderTextColor="#888"
-        value={invoice}
-        onChangeText={setInvoice}
-      />
-      <Btn
-        title={quoting ? 'Quoting...' : 'Quote'}
-        onPress={handleQuote}
-        disabled={quoting || !invoice.trim()}
-      />
-      {quote && (
-        <View style={s.resultBox}>
-          <Text style={s.label}>
-            Amount:{' '}
-            <Text style={s.value}>{msatToSat(quote.invoiceAmount())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Expires:{' '}
-            <Text style={s.value}>
-              {new Date(Number(quote.expiresAt())).toLocaleString()}
-            </Text>
-          </Text>
-        </View>
-      )}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const Deposit = () => {
-  const [address, setAddress] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  const handleGenerate = async () => {
-    setError('')
-    setLoading(true)
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const onchain = fed.onchain()
-      if (!onchain) {
-        throw new Error('On-chain is not supported by this federation')
-      }
-      setAddress(await onchain.receive())
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const copyAddress = () => {
-    Clipboard.setString(address)
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Generate Deposit Address</SectionTitle>
-      <Btn
-        title={loading ? 'Generating...' : 'Generate'}
-        onPress={handleGenerate}
-        disabled={loading}
-        primary
-      />
-      {!!address && (
-        <View style={s.invoiceBox}>
-          <Text style={s.label}>Deposit address:</Text>
-          <Text style={s.mono} selectable>
-            {address}
-          </Text>
-          <Btn title="Copy" onPress={copyAddress} small />
-        </View>
-      )}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
-  )
-}
-
-const SendOnchain = () => {
-  const [address, setAddress] = useState('')
-  const [amount, setAmount] = useState('')
-  const [quote, setQuote] = useState<OnchainQuoteLike>()
-  const [quoting, setQuoting] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState('')
-  const [error, setError] = useState('')
-  // A quote belongs to the input it was requested for: this counts each request so a quote
-  // that resolves after the amount or address has since changed can tell it is stale and drop
-  // itself.
-  const quoteGen = useRef(0)
-
-  const handleQuote = async () => {
-    const gen = ++quoteGen.current
-    setQuote(undefined)
-    setResult('')
-    setError('')
-    setQuoting(true)
-    try {
-      const fed = federation()
-      if (!fed) throw new Error('Join a federation first')
-      const onchain = fed.onchain()
-      if (!onchain) {
-        throw new Error('On-chain is not supported by this federation')
-      }
-      const next = await onchain.quote(address.trim(), BigInt(amount.trim()))
-      if (gen !== quoteGen.current) return
-      setQuote(next)
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setQuoting(false)
-    }
-  }
-
-  const handleSend = async () => {
-    if (!quote) return
-    setSending(true)
-    setError('')
-    try {
-      const onchain = federation()?.onchain()
-      if (!onchain) {
-        throw new Error('On-chain is not supported by this federation')
-      }
-      const operation = await onchain.send(quote)
-      const state = await operation.awaitFinal()
-      setResult(OnchainSendState_Tags[state.tag])
-      setQuote(undefined)
-    } catch (error) {
-      setError(errorMessage(error))
-    } finally {
-      setSending(false)
-    }
-  }
-
-  return (
-    <SectionCard>
-      <SectionTitle>Send Onchain</SectionTitle>
-      <TextInput
-        style={s.input}
-        placeholder="Enter amount in sats"
-        placeholderTextColor="#888"
-        keyboardType="numeric"
-        value={amount}
-        onChangeText={(text) => {
-          setAmount(text)
-          setQuote(undefined)
-          quoteGen.current += 1
-        }}
-        editable={!quoting}
-      />
-      <TextInput
-        style={s.input}
-        placeholder="Enter onchain address"
-        placeholderTextColor="#888"
-        value={address}
-        onChangeText={(text) => {
-          setAddress(text)
-          setQuote(undefined)
-          quoteGen.current += 1
-        }}
-        editable={!quoting}
-      />
-      <Btn
-        title={quoting ? 'Quoting...' : 'Quote'}
-        onPress={handleQuote}
-        disabled={quoting || !amount.trim() || !address.trim()}
-      />
-
-      {quote && (
-        <View style={s.resultBox}>
-          <Text style={s.label}>
-            Fee: <Text style={s.value}>{msatToSat(quote.fee())} sats</Text>
-          </Text>
-          <Text style={s.label}>
-            Total: <Text style={s.value}>{msatToSat(quote.total())} sats</Text>
-          </Text>
-          <Btn
-            title={sending ? 'Sending...' : `Send ${msatToSat(quote.total())} sats`}
-            onPress={handleSend}
-            disabled={sending}
-            primary
+        {({ navigation: stack }) => (
+          <SendScreen
+            review={(rail) => stack.navigate('Review', { rail })}
+            close={close}
           />
-        </View>
-      )}
-      {!!result && <SuccessBox>{result}</SuccessBox>}
-      {!!error && <ErrorBox>{error}</ErrorBox>}
-    </SectionCard>
+        )}
+      </SendStack.Screen>
+      <SendStack.Screen name="Review" options={{ title: 'Review payment' }}>
+        {(props) => <ReviewRoute {...props} done={close} />}
+      </SendStack.Screen>
+    </SendStack.Navigator>
   )
 }
 
-const App = () => {
-  const { exists, joined, refresh, version } = useWallet()
-  const balance = useBalance(joined, version)
-
+/** The recovery phrase again, later: the backup screen from the wallet's menu. */
+function RecoveryPhraseSheet({
+  navigation,
+}: {
+  navigation: { goBack: () => void }
+}) {
+  // Every way off the sheet, Close and swiping it away alike, so the phrase is never still
+  // revealed the next time it opens.
+  useEffect(() => () => model.hideSeed(), [])
   return (
-    <SafeAreaView style={s.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#1a1a2e" />
-      <ScrollView
-        style={s.container}
-        contentContainerStyle={s.contentContainer}
-        keyboardShouldPersistTaps="handled"
-      >
-        <Text style={s.header}>Fedimint Typescript Library Demo</Text>
+    <BackupScreen
+      next={navigation.goBack}
+      later={navigation.goBack}
+      step={null}
+    />
+  )
+}
 
-        <View style={s.stepsCard}>
-          <Text style={s.stepsTitle}>Steps to get started:</Text>
-          <Text style={s.stepItem}>
-            1. Join a Federation (persists across sessions)
-          </Text>
-          <Text style={s.stepItem}>2. Generate an Invoice</Text>
-          <Text style={s.stepItem}>
-            3. Pay the Invoice using the mutinynet faucet
-          </Text>
-          <TouchableOpacity
-            onPress={() => Linking.openURL('https://faucet.mutinynet.com/')}
-          >
-            <Text style={s.link}>
-              {'   '}https://faucet.mutinynet.com/ ↗
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <WalletStatus
-          exists={exists}
-          joined={joined}
-          balance={balance}
-          refresh={refresh}
+/** The wallet once one is open: the design's three tabs, with Send and Receive as sheets. */
+function MainTabs() {
+  return (
+    <Main.Navigator screenOptions={stackOptions}>
+      <Main.Screen
+        name="Tabs"
+        component={Tabs}
+        options={{ headerShown: false }}
+      />
+      <Main.Group screenOptions={{ presentation: 'modal' }}>
+        <Main.Screen
+          name="Send"
+          component={SendFlow}
+          options={{ headerShown: false }}
         />
-        <MnemonicManager exists={exists} refresh={refresh} />
-        <JoinFederation joined={joined} refresh={refresh} />
-        <GenerateLightningInvoice />
-        <RedeemEcash />
-        <SendEcash />
-        <SendLightning />
-        <InviteCodeParser />
-        <QuoteLightningInvoice />
-        <Deposit />
-        <SendOnchain />
-      </ScrollView>
-    </SafeAreaView>
+        <Main.Screen
+          name="Receive"
+          component={ReceiveScreen}
+          options={({ navigation }) => ({
+            title: 'Receive',
+            ...closeButton(navigation.goBack),
+          })}
+        />
+        <Main.Screen
+          name="RecoveryPhrase"
+          component={RecoveryPhraseSheet}
+          options={({ navigation }) => ({
+            title: '',
+            ...closeButton(navigation.goBack),
+          })}
+        />
+      </Main.Group>
+    </Main.Navigator>
   )
 }
 
-export default App
+/**
+ * Shown while a wallet left by an earlier launch is reopened, so the first frame is not a
+ * Welcome screen offering to create a wallet that already exists.
+ */
+function LaunchScreen({
+  failure,
+  retry,
+}: {
+  failure?: string
+  retry: () => void
+}) {
+  return (
+    <View style={styles.launch}>
+      <FedimintLogoOnDark height={32} />
+      {failure === undefined ? (
+        <ActivityIndicator color="#FFFFFF" />
+      ) : (
+        <View style={styles.launchFailure}>
+          <Text
+            selectable
+            style={[
+              Typeface.callout,
+              { color: '#FFFFFF', textAlign: 'center' },
+            ]}
+          >
+            Couldn't move the wallet out of Documents: {failure}
+          </Text>
+          <Button title="Try again" kind="primaryOnDark" onPress={retry} />
+        </View>
+      )}
+    </View>
+  )
+}
+
+/**
+ * The root: picks the stage the app is in, as the iOS demo's ContentView does. Reopening a
+ * stored wallet, onboarding, the backup step right after creation, or the wallet itself.
+ */
+export default function App() {
+  const state = useDemo()
+  /** Whether an earlier launch left a wallet behind, read once at launch. */
+  const [reopening, setReopening] = useState<boolean>()
+  /** Why the launch stopped before onboarding: the old wallet could not be moved. */
+  const [launchFailure, setLaunchFailure] = useState<string>()
+  const attaching = model.isAttaching
+
+  const launch = useCallback(() => {
+    setLaunchFailure(undefined)
+    model.start().then(
+      (stored) => {
+        setReopening(stored)
+        if (stored) model.openWallet()
+      },
+      (error) => setLaunchFailure(reason(error)),
+    )
+  }, [])
+
+  useEffect(() => {
+    // On Android the root remounts after the back button closes the app, while the JS runtime,
+    // and the wallet it opened, carry on. That wallet is still open, and opening it again would
+    // be refused as storage in use.
+    if (model.getState().hasSdk) return
+    launch()
+  }, [launch])
+
+  useEffect(() => {
+    // A reopen that failed falls back to onboarding, where its reason is shown.
+    if (!attaching && !state.hasSdk && reopening) setReopening(false)
+  }, [attaching, state.hasSdk, reopening])
+
+  let stage: React.ReactNode
+  let dark = false
+  if (state.hasSdk && state.walletOrigin === 'created' && !state.backedUp) {
+    stage = <BackupFlow done={() => model.markBackedUp()} />
+  } else if (state.hasSdk) {
+    stage = <MainTabs />
+  } else if (reopening !== false) {
+    stage = <LaunchScreen failure={launchFailure} retry={launch} />
+    dark = true
+  } else {
+    stage = <OnboardingStack />
+    dark = true
+  }
+
+  return (
+    <SafeAreaProvider>
+      <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />
+      <NavigationContainer theme={theme}>{stage}</NavigationContainer>
+    </SafeAreaProvider>
+  )
+}
+
+const styles = StyleSheet.create({
+  launch: {
+    flex: 1,
+    backgroundColor: Palette.navy,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Metrics.sectionGap,
+  },
+  launchFailure: {
+    alignSelf: 'stretch',
+    gap: Metrics.gap,
+    paddingHorizontal: Metrics.screenPadding,
+  },
+})
