@@ -37,6 +37,9 @@ A wallet folder can be open once at a time. The SDK holds the folder, and a seco
 import { openSdk, type SdkSession } from '@fedimint/react-native'
 
 let opening: Promise<SdkSession> | undefined
+let closing: Promise<void> | undefined
+// closeWallet() adds one. An open that fails in an older generation was closed while it ran.
+let generation = 0
 
 /**
  * The one wallet for the whole app. Every caller gets the same promise, so the
@@ -44,18 +47,30 @@ let opening: Promise<SdkSession> | undefined
  * dataDir is a plain path, such as `${RNFS.DocumentDirectoryPath}/fedimint`.
  */
 export function openWallet(dataDir: string): Promise<SdkSession> {
-  opening ??= openSdk({ dataDir }).catch((err: unknown) => {
-    opening = undefined // let the next caller try again
+  const mine = generation
+  opening ??= (async () => {
+    // A close that is still running holds the folder. Wait for it, or the open fails with StorageInUse.
+    await closing?.catch(() => undefined)
+    return openSdk({ dataDir })
+  })().catch((err: unknown) => {
+    if (mine === generation) opening = undefined // let the next caller try again
     throw err
   })
   return opening
 }
 
 /** When the app is finished with the wallet. Every object it handed out stops working. */
-export async function closeWallet(): Promise<void> {
-  const session = await opening
+export function closeWallet(): Promise<void> {
+  const pending = opening
+  generation += 1
   opening = undefined
-  await session?.close()
+  // An open that failed left nothing to close.
+  if (pending)
+    closing = pending.then(
+      (s) => s.close(),
+      () => undefined,
+    )
+  return closing ?? Promise.resolve()
 }
 ```
 

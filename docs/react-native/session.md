@@ -63,7 +63,12 @@ export function close(): Promise<void> {
   generation += 1
   session = undefined
   opening = undefined
-  if (pending) closing = pending.then((s) => s.close())
+  // An open that failed left nothing to close.
+  if (pending)
+    closing = pending.then(
+      (s) => s.close(),
+      () => undefined,
+    )
   return closing ?? Promise.resolve()
 }
 
