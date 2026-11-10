@@ -125,4 +125,5 @@ jobs:
             .#fedimint-sdk-android-aarch64-linux-android-deps \
             .#fedimint-sdk-android-x86_64-linux-android-deps \
             .#fedimint-sdk-android-jni \
+            .#fedimint-sdk-android-jni-arm64-v8a \
             | cachix push fedimint

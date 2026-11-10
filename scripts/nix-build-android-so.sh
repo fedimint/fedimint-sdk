@@ -3,9 +3,11 @@
 # Builds the Android native libraries via Nix and drops them where a binding
 # generator can read them.
 #
-#   scripts/nix-build-android-so.sh [dest-dir]
+#   scripts/nix-build-android-so.sh [dest-dir] [all|arm64-only]
+#   ANDROID_TARGETS=arm64-only scripts/nix-build-android-so.sh [dest-dir]
 #
-#   nix build .#fedimint-sdk-android-jni   (cachix-cached; see nix/ffi.nix)
+#   nix build .#fedimint-sdk-android-jni             (all ABIs, default; cachix-cached)
+#   nix build .#fedimint-sdk-android-jni-arm64-v8a   (arm64-only, for local emulator/device dev)
 #     -> <dest>/<abi>/{libfedimint_sdk,libc++_shared}.so
 #
 # This is the `.so`-only half — no bindings of any language. It stands on its
@@ -21,11 +23,29 @@
 # cross-compiles the crate (heavy: rocksdb + aws-lc from C).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="${1:-$ROOT/android/fedimint-sdk/src/main/jniLibs}"
+if (( $# > 2 )); then
+  echo "usage: $0 [dest-dir] [all|arm64-only]" >&2
+  exit 1
+fi
 
-echo "==> nix build .#fedimint-sdk-android-jni"
-out="$(nix build "$ROOT#fedimint-sdk-android-jni" \
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="${1:-}"
+if [[ -z "$DEST" ]]; then
+  DEST="$ROOT/android/fedimint-sdk/src/main/jniLibs"
+fi
+TARGETS="${2:-${ANDROID_TARGETS:-all}}"
+
+case "$TARGETS" in
+  all)        attr="fedimint-sdk-android-jni" ;;
+  arm64-only) attr="fedimint-sdk-android-jni-arm64-v8a" ;;
+  *)
+    echo "unknown targets: $TARGETS (expected all | arm64-only)" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> nix build .#$attr"
+out="$(nix build "$ROOT#$attr" \
   --accept-flake-config --no-link --print-out-paths)"
 
 echo "==> Syncing $out/jniLibs -> $DEST"
