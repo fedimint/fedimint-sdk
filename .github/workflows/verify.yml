@@ -216,6 +216,18 @@ jobs:
             pnpm --dir js test
           EOF
 
+      # The example that uses the package: type-checked against the built package and bundled by
+      # Vite with the module the build above staged, which the hosted jobs do not have. The
+      # release installs the package into a copy of this example from the tarball instead.
+      - name: Build the Vite example
+        shell: bash
+        run: |
+          nix develop --accept-flake-config --command bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js --filter vite-app-example typecheck
+            pnpm --dir js --filter vite-app-example build
+          EOF
+
   # Fails a pull request that makes the wasm module of the browser package, or the module after
   # `gzip -9`, grow by more than 5% of the base commit's (MAX_GROWTH_PERCENT in
   # scripts/sdk-web-wasm-size.sh), and writes a table of the sizes into its summary. The `test`

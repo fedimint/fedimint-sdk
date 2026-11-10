@@ -21,7 +21,7 @@
     "test:coverage": "vitest run --coverage",
     "test:lib": "vitest --project web-sdk",
     "test:reactnative": "vitest --project react-native",
-    "test:unit": "vitest --project unit",
+    "test:unit": "vitest --project unit --project vite-app",
     "test:ui": "vitest --browser.headless=false --ui",
     "format": "prettier --write .. --ignore-path ../.gitignore --ignore-path ../.prettierignore"
   },
