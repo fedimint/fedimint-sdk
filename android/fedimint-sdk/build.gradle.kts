@@ -74,7 +74,7 @@ dependencies {
     // and import kotlinx.coroutines directly (GlobalScope, Job, launch,
     // suspendCancellableCoroutine), so this is a compile requirement of the
     // generated code, not a convenience. `-android` is not needed here: only
-    // the demo touches Dispatchers.Main.
+    // the wallet app (android/app) touches Dispatchers.Main.
     implementation(libs.kotlinx.coroutines.core)
 
     implementation(libs.androidx.core.ktx)

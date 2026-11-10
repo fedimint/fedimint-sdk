@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Debug builds load the SDK before the Application is in place; see DebugApplication. -->
-    <application android:name=".DebugApplication" />
+    <!-- Debug builds load the SDK before the Application is in place; see DebugApplication.
+         It extends FedimintApp, so replacing main's application class keeps the wallet working. -->
+    <application
+        android:name=".DebugApplication"
+        tools:replace="android:name">
+
+        <!-- The console harness the cross-platform suite (js/e2e) drives over
+             js/e2e/PROTOCOL.md. No launcher entry: started by name with `am start -n`. -->
+        <activity
+            android:name=".harness.ConsoleActivity"
+            android:exported="true"
+            android:label="SDK console"
+            android:theme="@style/Theme.FedimintHarness"
+            android:windowSoftInputMode="stateAlwaysHidden" />
+    </application>
 
 </manifest>

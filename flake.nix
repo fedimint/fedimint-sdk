@@ -316,7 +316,7 @@
           # APPIUM_HOME + ANDROID_AVD_HOME (so driver installs and AVDs don't
           # land in ~/.appium / ~/.android on a contributor's machine), and
           # the pnpm-installed `appium` binary on PATH. Appium itself is a
-          # plain npm devDependency of js/android/integration-tests
+          # plain npm devDependency of js/e2e
           # (see its package.json), not a Nix package — only the Android SDK/
           # emulator toolchain it drives comes from Nix here.
           androidTestsShellHook = mkAndroidShellHook androidTestsSdk + ''
@@ -327,7 +327,7 @@
             # workspace package's binaries into the root node_modules/.bin.
             export PATH="$REPO_ROOT/js/node_modules/.bin:$PATH"
 
-            export APPIUM_HOME="$REPO_ROOT/js/android/integration-tests/.appium"
+            export APPIUM_HOME="$REPO_ROOT/js/e2e/.appium"
             mkdir -p "$APPIUM_HOME"
             export ANDROID_AVD_HOME="$APPIUM_HOME/avd"
             mkdir -p "$ANDROID_AVD_HOME"
@@ -473,7 +473,7 @@
             shellHook = commonShellHook + iosShellHook;
           };
 
-          # For js/android/integration-tests: everything `android` gives
+          # For js/e2e on Android: everything `android` gives
           # you, plus a bootable emulator, appium's PATH/APPIUM_HOME wiring,
           # and devimint, so the suite can run against the same local
           # federation the wasm tests use (scripts/setup_test_shell.sh execs
@@ -493,7 +493,7 @@
               pkgs.libclang
               androidToolchain
               # curl backs the Appium server health-check in
-              # scripts/e2e-android/setup-and-start-appium.sh (not assumed
+              # scripts/e2e/appium.sh (not assumed
               # present, like `ps`/`lsof`, on minimal self-hosted runners).
               pkgs.curl
               # avdmanager, the uiautomator2 driver, and ./gradlew need a JVM.
@@ -578,6 +578,25 @@
 
               # cc-rs supplies the target and SDK flags to Apple's clang for
               # each iOS/macOS triple; do not set a global SDKROOT.
+            '';
+          };
+
+          # For js/e2e's iOS target (scripts/e2e/ios.sh): devimint, plus the
+          # JS tooling Appium and the runner need. The simulator, simctl and
+          # the xcodebuild Appium runs to build WebDriverAgent come from the
+          # host's Xcode, so the nix SDK settings are cleared as in `ios`.
+          ios-tests = pkgs.mkShellNoCC {
+            nativeBuildInputs = commonNativeBuildInputs ++ [
+              # The shell hook and the run script find the repo root with git.
+              pkgs.git
+              # Backs the Appium health check in scripts/e2e/appium.sh.
+              pkgs.curl
+            ] ++ devimintNativeBuildInputs;
+            shellHook = ''
+              unset DEVELOPER_DIR SDKROOT NIX_CFLAGS_COMPILE NIX_LDFLAGS
+              REPO_ROOT=$(git rev-parse --show-toplevel)
+              export PATH="$REPO_ROOT/js/node_modules/.bin:$PATH"
+              export APPIUM_HOME="$REPO_ROOT/js/e2e/.appium"
             '';
           };
         };

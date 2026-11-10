@@ -1,7 +1,7 @@
 name: Android APK Build
 
-# Builds the example app (android/app) into a debug APK and nothing else: no
-# emulator, no federation. Runs entirely in the lean `.#android` Nix shell —
+# Runs the wallet's JVM unit tests and builds the app (android/app) into a debug
+# APK, and nothing else: no emulator, no federation. Runs entirely in the lean `.#android` Nix shell —
 # the Android SDK and a JDK, and none of the emulator system image or devimint
 # daemons that `.#android-tests` carries.
 #
@@ -86,14 +86,16 @@ jobs:
           name: ${{ inputs.bindings-artifact }}
           path: android/fedimint-sdk/src/main/java/org/fedimint/sdk/
 
-      # `.#android` is the whole toolchain: the Android SDK and the JDK.
-      - name: 'Assemble the APK'
+      # `.#android` is the whole toolchain: the Android SDK and the JDK. The
+      # wallet's JVM unit tests (android/app/src/test) run first: they need no
+      # device, and cover its payment-safety and paging rules.
+      - name: 'Run the unit tests and assemble the APK'
         shell: bash
         run: |
           nix develop --accept-flake-config .#android --command bash << 'EOF'
             set -euo pipefail
             cd android
-            ./gradlew :app:assembleDebug
+            ./gradlew :app:testDebugUnitTest :app:assembleDebug
           EOF
 
       - name: 'Upload the APK'

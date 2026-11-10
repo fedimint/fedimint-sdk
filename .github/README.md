@@ -43,8 +43,7 @@ fedimint-sdk
 ├── android
 ├── ios
 ├── js
-│   ├── android
-│   │   └── integration-tests
+│   ├── e2e
 │   ├── examples
 │   │   ├── expo-app
 │   │   └── react-native
@@ -52,6 +51,7 @@ fedimint-sdk
 │   │   ├── react-native
 │   │   └── react-native-bindings
 │   └── web
+│       ├── sdk-harness
 │       └── web-sdk
 ├── nix
 └── scripts

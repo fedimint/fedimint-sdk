@@ -13,8 +13,8 @@ These READMEs describe the parts of the repository:
 - [`android`](../android) and [`ios`](../ios): the Android and iOS SDKs.
 - [`js/react-native`](../js/react-native): the React Native packages.
 - [`js/web`](../js/web): the browser SDK.
-- [`js/android/integration-tests`](../js/android/integration-tests): the tests that drive the
-  Android example app on a device.
+- [`js/e2e`](../js/e2e): the tests that drive the SDK on a device, on Android, iOS and the
+  web.
 
 The JavaScript packages are a pnpm workspace rooted at `js/`. Run `pnpm --dir js install` once,
 and `pnpm --dir js lint:fix` before committing: it formats the repository with prettier, which

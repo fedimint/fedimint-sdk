@@ -216,6 +216,57 @@ jobs:
             pnpm --dir js test
           EOF
 
+  # The cross-platform SDK suite (js/e2e) on the web target: the web harness page
+  # (js/web/sdk-harness) in Playwright's Chromium against a devimint federation, one per module
+  # generation. The same tests the Android and iOS targets run; see js/e2e/README.md.
+  web-e2e:
+    name: Web E2E (${{ matrix.shape }})
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_web != false }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shape: [v1, v2]
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v7
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Install JS dependencies
+        shell: bash
+        run: nix develop --accept-flake-config --command pnpm --dir js install
+
+      - name: Build SDK web bindings
+        uses: ./.github/actions/build-sdk-web
+
+      - name: Run web E2E tests
+        shell: bash
+        env:
+          TESTS_TO_RUN: all
+          FM_SDK_SHAPE: ${{ matrix.shape }}
+        run: |
+          nix develop --accept-flake-config .#wasm-tests --command bash << 'EOF'
+            set -euo pipefail
+            pnpm --dir js build
+            pnpm --dir js/web/sdk-harness bundle
+            bash scripts/setup_test_shell.sh bash scripts/e2e/run.sh web
+          EOF
+
+      - name: Upload logs & screenshots
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: web-e2e-logs-${{ matrix.shape }}
+          include-hidden-files: true
+          path: js/e2e/.artifacts/**
+
   # Fails a pull request that makes the wasm module of the browser package, or the module after
   # `gzip -9`, grow by more than 5% of the base commit's (MAX_GROWTH_PERCENT in
   # scripts/sdk-web-wasm-size.sh), and writes a table of the sizes into its summary. The `test`

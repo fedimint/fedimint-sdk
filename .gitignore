@@ -172,9 +172,12 @@ js/react-native/react-native-bindings/ReactNativeBindings.podspec.orig
 android/fedimint-sdk/src/main/jniLibs
 android/fedimint-sdk/src/main/java/org/fedimint/sdk
 
-# js/android/integration-tests
-js/android/integration-tests/.appium/
-js/android/integration-tests/screenshots/
+# js/e2e: Appium's state and each run's screenshots, UI trees and logs
+js/e2e/.appium/
+js/e2e/.artifacts/
+# ios/Harness: the project xcodegen generates and what xcodebuild builds
+ios/Harness/FedimintHarness.xcodeproj/
+ios/Harness/build/
 # ios/: all of these are produced by scripts/build-ios-sdk.sh (run it inside
 # `nix develop .#ios`) and must never be committed, for the same reason as the
 # Android pair above. Sources/FedimintSdk is listed by file rather than by

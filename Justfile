@@ -21,24 +21,50 @@ test-android-sdk: build-android-sdk
 # from it, then Gradle, all in the lean `.#android` shell (Android SDK and a
 # JDK — no emulator, no devimint). CI runs the same three steps as one job each
 # (native, bindings, apk), each handed the last one's output. It is a separate
-# step from `test-android-e2e` on purpose: a Gradle
+# step from `test-e2e android` on purpose: a Gradle
 # build alongside an emulator and a devimint federation starves the emulator
 # until Android's System UI stops responding, so the build finishes — daemon
 # and all — before either of those starts.
 build-android-apk:
     nix develop --accept-flake-config .#android -c bash -c './scripts/build-android-sdk.sh && cd android && ./gradlew :app:assembleDebug'
 
-# Boot an emulator, install the example app and drive it with the Appium suite
-# (js/android/integration-tests) against a devimint federation — the Android
-# counterpart of `just test`, which does the same for the browser package's
-# tests (js/web/web-sdk), through the same scripts/setup_test_shell.sh. There is
-# deliberately no federation-free variant: one way to run this suite, so what CI
-# does and what you can reproduce are the same thing. Builds the APK first (see
-# build-android-apk); the script itself only installs one. `shape` picks the
-# federation's module generation: v1 (mint, wallet, ln) or v2 (mintv2, walletv2,
-# lnv2).
-test-android-e2e shape="v1": build-android-apk
-    FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
+# The cross-platform SDK suite (js/e2e) on one target against a devimint
+# federation: builds the target's harness first, then runs scripts/e2e/run.sh
+# inside the target's nix shell, which only installs it. `shape` is v1 (mint,
+# wallet, ln) or v2 (mintv2, walletv2, lnv2).
+test-e2e target="android" shape="v1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      android) shell=android-tests ;;
+      ios) shell=ios-tests ;;
+      web) shell=wasm-tests ;;
+      *) echo "unknown e2e target '{{target}}' (known: android, ios, web)" >&2; exit 1 ;;
+    esac
+    just build-e2e-{{target}}
+    FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config ".#$shell" -c scripts/setup_test_shell.sh bash scripts/e2e/run.sh {{target}}
+
+# The Android harness: the debug APK, whose harness.ConsoleActivity js/e2e drives.
+build-e2e-android: build-android-apk
+
+# The iOS harness: the XCFramework and Swift bindings, then the harness app js/e2e drives,
+# built for the simulator into ios/Harness/build.
+build-e2e-ios: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Harness && xcodegen generate'
+    cd ios/Harness && xcodebuild build -project FedimintHarness.xcodeproj -scheme FedimintHarness -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+
+# The iOS harness for a connected device, signed by `team` under `bundle_id` (a free team cannot
+# sign org.fedimint.harness). Run it with IOS_DEVICE=<udid> IOS_TEAM_ID=<team> set for
+# scripts/e2e/ios.sh; only the federation-free tests pass there, since a device cannot reach
+# devimint on the host's loopback.
+build-e2e-ios-device team bundle_id: build-swift
+    nix develop --accept-flake-config .#ios -c bash -c 'cd ios/Harness && xcodegen generate'
+    cd ios/Harness && xcodebuild build -project FedimintHarness.xcodeproj -scheme FedimintHarness -destination 'generic/platform=iOS' -derivedDataPath build -allowProvisioningUpdates -allowProvisioningDeviceRegistration CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM={{team}} PRODUCT_BUNDLE_IDENTIFIER={{bundle_id}}
+
+# The web harness: the browser package over freshly generated bindings, and the harness page
+# js/e2e drives, bundled into js/web/sdk-harness/dist.
+build-e2e-web: generate-sdk-web-bindings
+    nix develop --accept-flake-config .#wasm -c bash -c 'pnpm --dir js build && pnpm --dir js/web/sdk-harness bundle'
 
 # Test the release checks: the component, version and changelog scripts the
 # release, tag and bump workflows rely on. Needs only bash and git, no build.
