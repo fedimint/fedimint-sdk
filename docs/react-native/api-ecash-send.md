@@ -23,6 +23,10 @@ Runs a quote and makes the notes to hand over.
 
 **Throws.** [`QuoteExpired`](./errors.md#code-quoteexpired), [`QuoteChanged`](./errors.md#code-quotechanged), [`InsufficientBalance`](./errors.md#code-insufficientbalance), [`Recovering`](./errors.md#code-recovering), [`NotSupported`](./errors.md#code-notsupported), [`FederationUnreachable`](./errors.md#code-federationunreachable), [`Timeout`](./errors.md#code-timeout), [`Storage`](./errors.md#code-storage), [`FederationClosed`](./errors.md#code-federationclosed).
 
+::: warning
+The string is bearer money. Whoever has it can redeem it. Show it only to the recipient, and never log it, store it in plain text or send it to analytics.
+:::
+
 **Example**
 {#example}
 
@@ -31,9 +35,11 @@ import type { EcashLike, EcashQuoteLike } from '@fedimint/react-native'
 
 declare const ecash: EcashLike
 declare const quote: EcashQuoteLike
+declare function showToRecipient(text: string): void
 
 const { notes, operation } = await ecash.send(quote) // [!code focus]
-console.log(notes.display(), operation !== undefined)
+showToRecipient(notes.display())
+const final = await operation.awaitFinal()
 ```
 
 **Used in.** [Send, step 02](./send.md#step-02)

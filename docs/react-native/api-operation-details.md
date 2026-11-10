@@ -19,6 +19,10 @@ Reads the details of an ecash send.
 
 **Throws.** [`Storage`](./errors.md#code-storage), [`FederationClosed`](./errors.md#code-federationclosed), [`Internal`](./errors.md#code-internal).
 
+::: warning
+The string is bearer money. Whoever has it can redeem it. Show it only to the recipient, and never log it, store it in plain text or send it to analytics.
+:::
+
 **Example**
 {#example}
 
@@ -26,9 +30,10 @@ Reads the details of an ecash send.
 import type { EcashSendOperationLike } from '@fedimint/react-native'
 
 declare const operation: EcashSendOperationLike
+declare function showToRecipient(text: string): void
 
 const details = await operation.details() // [!code focus]
-console.log(details.notes.display())
+showToRecipient(details.notes.display())
 ```
 
 **Used in.** [History, step 04](./history.md#step-04)
