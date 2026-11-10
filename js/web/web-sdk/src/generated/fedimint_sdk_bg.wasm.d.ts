@@ -135,6 +135,7 @@ export const uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words: () =>
 export const uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate: () => number
 export const uniffi_fedimint_sdk_checksum_constructor_notes_parse: () => number
 export const uniffi_fedimint_sdk_checksum_func_create_fedimint_sdk: () => number
+export const uniffi_fedimint_sdk_checksum_func_default_discovery_relays: () => number
 export const uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive: () => number
 export const uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send: () => number
 export const uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive: () => number
@@ -245,6 +246,7 @@ export const uniffi_fedimint_sdk_checksum_method_recoveryoperation_state: () => 
 export const uniffi_fedimint_sdk_checksum_method_recoveryoperation_updates: () => number
 export const uniffi_fedimint_sdk_checksum_method_recoveryoperationupdates_next: () => number
 export const uniffi_fedimint_sdk_checksum_method_sdk_close_federation: () => number
+export const uniffi_fedimint_sdk_checksum_method_sdk_discover_federations: () => number
 export const uniffi_fedimint_sdk_checksum_method_sdk_export_mnemonic: () => number
 export const uniffi_fedimint_sdk_checksum_method_sdk_federation: () => number
 export const uniffi_fedimint_sdk_checksum_method_sdk_federation_status: () => number
@@ -355,6 +357,10 @@ export const uniffi_fedimint_sdk_fn_func_create_fedimint_sdk: (
   a: number,
   b: number,
 ) => bigint
+export const uniffi_fedimint_sdk_fn_func_default_discovery_relays: (
+  a: number,
+  b: number,
+) => void
 export const uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_receive: (
   a: number,
   b: bigint,
@@ -640,10 +646,6 @@ export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_details: (
 export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_state: (
   a: bigint,
 ) => bigint
-export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_updates: (
-  a: bigint,
-  b: number,
-) => bigint
 export const uniffi_fedimint_sdk_fn_method_lnreceiveoperationupdates_next: (
   a: bigint,
 ) => bigint
@@ -775,6 +777,10 @@ export const uniffi_fedimint_sdk_fn_method_recoveryoperationupdates_next: (
   a: bigint,
 ) => bigint
 export const uniffi_fedimint_sdk_fn_method_sdk_close_federation: (
+  a: bigint,
+  b: number,
+) => bigint
+export const uniffi_fedimint_sdk_fn_method_sdk_discover_federations: (
   a: bigint,
   b: number,
 ) => bigint
@@ -951,49 +957,37 @@ export const uniffi_fedimint_sdk_fn_clone_recoveryoperationupdates: (
   b: number,
 ) => bigint
 export const uniffi_fedimint_sdk_fn_clone_sdk: (a: bigint, b: number) => bigint
-export const ffi_fedimint_sdk_rust_future_cancel_rust_buffer: (
-  a: bigint,
-) => void
-export const ffi_fedimint_sdk_rust_future_free_i8: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_i8: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_rust_buffer: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_u64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_u16: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_u8: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_u8: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_i64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_i32: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_i32: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_u64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_u16: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_i64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_u32: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_u32: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_i16: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_i16: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_f64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_f64: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_cancel_void: (a: bigint) => void
-export const ffi_fedimint_sdk_rust_future_free_void: (a: bigint) => void
+export const uniffi_fedimint_sdk_fn_free_meta: (a: bigint, b: number) => void
+export const uniffi_fedimint_sdk_fn_free_onchain: (a: bigint, b: number) => void
 export const uniffi_fedimint_sdk_fn_free_lightning: (
   a: bigint,
   b: number,
 ) => void
-export const uniffi_fedimint_sdk_fn_free_onchain: (a: bigint, b: number) => void
-export const uniffi_fedimint_sdk_fn_free_meta: (a: bigint, b: number) => void
-export const uniffi_fedimint_sdk_fn_free_lnsendoperation: (
+export const ffi_fedimint_sdk_rust_future_cancel_rust_buffer: (
   a: bigint,
-  b: number,
 ) => void
-export const uniffi_fedimint_sdk_fn_free_recoveryoperation: (
-  a: bigint,
-  b: number,
-) => void
+export const ffi_fedimint_sdk_rust_future_free_rust_buffer: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_i8: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_i8: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_f64: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_f64: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_u8: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_u8: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_i32: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_i32: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_u32: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_u32: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_i16: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_i16: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_u16: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_u16: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_void: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_void: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_i64: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_i64: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_cancel_u64: (a: bigint) => void
+export const ffi_fedimint_sdk_rust_future_free_u64: (a: bigint) => void
 export const uniffi_fedimint_sdk_fn_free_ecashsendoperation: (
-  a: bigint,
-  b: number,
-) => void
-export const uniffi_fedimint_sdk_fn_free_lnreceiveoperation: (
   a: bigint,
   b: number,
 ) => void
@@ -1005,20 +999,17 @@ export const uniffi_fedimint_sdk_fn_free_onchainreceiveoperation: (
   a: bigint,
   b: number,
 ) => void
-export const uniffi_fedimint_sdk_fn_method_recoveryoperation_id: (
-  a: number,
-  b: bigint,
-  c: number,
+export const uniffi_fedimint_sdk_fn_free_recoveryoperation: (
+  a: bigint,
+  b: number,
 ) => void
-export const uniffi_fedimint_sdk_fn_method_lnsendoperation_id: (
-  a: number,
-  b: bigint,
-  c: number,
+export const uniffi_fedimint_sdk_fn_free_lnsendoperation: (
+  a: bigint,
+  b: number,
 ) => void
-export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_id: (
-  a: number,
-  b: bigint,
-  c: number,
+export const uniffi_fedimint_sdk_fn_free_lnreceiveoperation: (
+  a: bigint,
+  b: number,
 ) => void
 export const uniffi_fedimint_sdk_fn_method_ecashsendoperation_id: (
   a: number,
@@ -1031,6 +1022,25 @@ export const uniffi_fedimint_sdk_fn_method_onchainsendoperation_id: (
   c: number,
 ) => void
 export const uniffi_fedimint_sdk_fn_method_onchainreceiveoperation_id: (
+  a: number,
+  b: bigint,
+  c: number,
+) => void
+export const uniffi_fedimint_sdk_fn_method_recoveryoperation_id: (
+  a: number,
+  b: bigint,
+  c: number,
+) => void
+export const uniffi_fedimint_sdk_fn_method_lnsendoperation_id: (
+  a: number,
+  b: bigint,
+  c: number,
+) => void
+export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_updates: (
+  a: bigint,
+  b: number,
+) => bigint
+export const uniffi_fedimint_sdk_fn_method_lnreceiveoperation_id: (
   a: number,
   b: bigint,
   c: number,
@@ -1072,112 +1082,112 @@ export const __ubrn_alloc: (a: number, b: number) => number
 export const __ubrn_free: (a: number, b: number, c: number) => void
 export const __ubrn_install_panic_hook: () => void
 export const __ubrn_set_panic_log: (a: number) => void
-export const wasm_bindgen__convert__closures_____invoke__h752f9be1a2cb3a72: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______4_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__closure__destroy__h650343e7d83d0101: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__Fn_____Output________1_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h228ad9c552589e6a: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__closure__destroy__h68d9c59b3f7fecc7: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output_______: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h7da1ca32a108c6a6: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__closure__destroy__he47601eaccce8bc8: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__convert__closures_____invoke__he1d1d961bce34b11: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__closure__destroy__hc9b08897fa598b2a: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__convert__closures_____invoke__h5b6744cf071c458c: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____: (
   a: number,
   b: number,
   c: any,
 ) => void
-export const wasm_bindgen__closure__destroy__h2b44ccf80fbad77e: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output_______: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h4a73eb48ff08013f: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__closure__destroy__h4a44d2cb59468562: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__convert__closures_____invoke__he0f4ca75daa0aaac: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__closure__destroy__h1c82b8aed5688ff9: (
-  a: number,
-  b: number,
-) => void
-export const wasm_bindgen__convert__closures_____invoke__h0d4cc71cabf76c2f: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______1_: (
   a: number,
   b: number,
   c: any,
 ) => void
-export const wasm_bindgen__closure__destroy__h29705066e7afa896: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________1_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h9a8775a4f604653d: (
-  a: number,
-  b: number,
-  c: any,
-) => void
-export const wasm_bindgen__closure__destroy__he68115f07888f28d: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__hf5505406d2916fc5: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___wasm_bindgen_dbca670eb5e30824___JsValue_____: (
   a: number,
   b: number,
   c: any,
 ) => void
-export const wasm_bindgen__closure__destroy__h5b426cb53a99f738: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__wasm_bindgen_dbca670eb5e30824___JsValue____Output_______: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__hf98d924371272a8c: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______7_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________4_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_: (
   a: number,
   b: number,
   c: any,
 ) => void
-export const wasm_bindgen__closure__destroy__h21108575703177bd: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent____Output________2_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h0ef05b63118afc74: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent_____: (
+  a: number,
+  b: number,
+  c: any,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_9b23d8fcab3f1d02___features__gen_MessageEvent__MessageEvent____Output_______: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h0eb75c4b34caa1f3: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______2_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__closure__destroy__h25a4653296620188: (
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________1_: (
   a: number,
   b: number,
 ) => void
-export const wasm_bindgen__convert__closures_____invoke__h934e13c43092a8c2: (
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________2_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______6_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut_____Output________3_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__Fn_____Output_______: (
+  a: number,
+  b: number,
+) => void
+export const wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___wasm_bindgen_dbca670eb5e30824___JsValue__wasm_bindgen_dbca670eb5e30824___JsValue_____: (
   a: number,
   b: number,
   c: any,

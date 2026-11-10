@@ -25,6 +25,8 @@ mod tests;
 
 /// Specifies the source for discovering federations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[non_exhaustive]
 pub enum DiscoverySource {
     /// Dev mode: returns a hardcoded display-only test federation without network queries.
     ///

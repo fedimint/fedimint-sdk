@@ -1,6 +1,8 @@
 import { expectTypeOf, it } from 'vitest'
 import type {
   BalanceUpdatesLike,
+  DiscoverySource,
+  DiscoverySource_Tags,
   FederationLike,
   FederationStatus,
   FederationStatus_Tags,
@@ -8,6 +10,7 @@ import type {
   LnReceiveOperationLike,
   SdkLike,
 } from '../generated/fedimint_sdk'
+import type { SdkSession } from '../index'
 import type { Proxied, ProxiedValue } from '../types'
 
 it('maps objects to handles and records structurally', () => {
@@ -61,4 +64,20 @@ it('carries an activity cursor as a string, both ways', () => {
   expectTypeOf<Activity>()
     .returns.resolves.toHaveProperty('next')
     .toEqualTypeOf<string | undefined>()
+})
+
+it('maps DiscoverySource and defaultDiscoveryRelays across the session boundary', () => {
+  type Discover = Proxied<SdkLike>['discoverFederations']
+  expectTypeOf<Discover>()
+    .parameter(0)
+    .toEqualTypeOf<ProxiedValue<DiscoverySource>>()
+  expectTypeOf<
+    Extract<ProxiedValue<DiscoverySource>, { tag: DiscoverySource_Tags.Nostr }>
+  >().toMatchTypeOf<{
+    tag: DiscoverySource_Tags.Nostr
+    inner: { readonly relays: Array<string> }
+  }>()
+  expectTypeOf<
+    SdkSession['defaultDiscoveryRelays']
+  >().returns.resolves.toEqualTypeOf<Array<string>>()
 })

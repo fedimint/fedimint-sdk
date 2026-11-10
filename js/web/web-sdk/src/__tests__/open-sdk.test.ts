@@ -65,4 +65,27 @@ describe('openSdk', () => {
     expect(worker.terminated).toBe(true)
     expect(shutdowns(worker)).toHaveLength(1)
   })
+
+  it('routes defaultDiscoveryRelays through the worker', async () => {
+    const worker = new FakeWorker()
+    const session = await open(worker)
+
+    const relays = session.defaultDiscoveryRelays()
+    expect(worker.sent.at(-1)).toMatchObject({
+      kind: 'static',
+      cls: undefined,
+      fn: 'defaultDiscoveryRelays',
+      args: [],
+    })
+
+    worker.reply({
+      kind: 'ok',
+      id: 2,
+      value: ['wss://relay.damus.io', 'wss://nos.lol'],
+    })
+    await expect(relays).resolves.toEqual([
+      'wss://relay.damus.io',
+      'wss://nos.lol',
+    ])
+  })
 })

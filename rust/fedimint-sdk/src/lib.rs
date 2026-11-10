@@ -439,7 +439,7 @@ pub use sdk::{FederationInfo, FederationStatus, FederationStatusUpdates, Sdk, Sd
 // the `uniffi` feature; the rest of the surface is `#[uniffi::export]` methods on
 // `Sdk`, `Federation` and what they hand out, and derives on the value types.
 #[cfg(feature = "uniffi")]
-pub use ffi::create_fedimint_sdk;
+pub use ffi::{create_fedimint_sdk, default_discovery_relays};
 pub use storage::Storage;
 pub use types::{
     Address, Amount, Bolt11Invoice, Cursor, DiscoveredFederation, DiscoverySource, FederationId,

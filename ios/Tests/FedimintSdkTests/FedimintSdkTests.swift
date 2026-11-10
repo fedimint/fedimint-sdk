@@ -160,6 +160,49 @@ final class FedimintSdkTests: XCTestCase {
         held = nil
     }
 
+    // MARK: - Discovery
+
+    /// Proves `defaultDiscoveryRelays()` crosses the FFI boundary and returns
+    /// the expected default relay URLs.
+    func testDefaultDiscoveryRelaysReturnsExpectedRelays() {
+        let relays = defaultDiscoveryRelays()
+        XCTAssertEqual(relays.count, 3)
+        XCTAssertTrue(relays.contains("wss://relay.damus.io"))
+        XCTAssertTrue(relays.contains("wss://nos.lol"))
+        XCTAssertTrue(relays.contains("wss://relay.primal.net"))
+    }
+
+    /// Proves federation discovery over `DiscoverySource.dev` crosses the FFI boundary
+    /// end to end offline, returning the hardcoded dev federation and asserting all
+    /// nested fields (id, invite code handle, metadata map, modules, network).
+    func testDiscoverFederationsDevMode() async throws {
+        let dataDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDir) }
+
+        var sdk: Sdk? = try await withTimeout {
+            try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
+        }
+
+        let federations = try await withTimeout {
+            try await sdk!.discoverFederations(source: .dev)
+        }
+
+        XCTAssertEqual(federations.count, 1)
+        let fed = federations[0]
+        XCTAssertEqual(fed.id, Self.inviteFederationId)
+        XCTAssertEqual(fed.invite.federationId(), Self.inviteFederationId)
+        XCTAssertEqual(fed.invite.display(), Self.inviteCode)
+        XCTAssertEqual(fed.name, "Dev Test Federation")
+        XCTAssertEqual(fed.network, .regtest)
+        XCTAssertEqual(fed.modules, ["lightning", "wallet", "mint"])
+        XCTAssertEqual(fed.metadata["network"], "regtest")
+        XCTAssertEqual(fed.metadata["name"], "Dev Test Federation")
+        XCTAssertEqual(fed.metadata["modules"], "lightning,wallet,mint")
+
+        try await sdk?.shutdown()
+        sdk = nil
+    }
+
     // MARK: - Packaging
 
     /// Guards `Version.swift`'s `fedimintSdkVersion` against the crate it claims

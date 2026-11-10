@@ -48,6 +48,7 @@ async fn main() -> fedimint_sdk::Result<()> {
         DiscoverySource::Nostr { relays } => {
             println!("Querying Nostr NIP-87 relays: {}...\n", relays.join(", "))
         }
+        _ => println!("Discovering federations...\n"),
     }
 
     let federations = sdk.discover_federations(source).await?;

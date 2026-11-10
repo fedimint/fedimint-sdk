@@ -35,6 +35,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_func_default_discovery_relays: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive: {
       args: [],
       ret: FfiType.UInt16,
@@ -605,6 +610,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_sdk_discover_federations: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_sdk_export_mnemonic: {
       args: [],
       ret: FfiType.UInt16,
@@ -679,6 +689,11 @@ const DEFINITIONS = {
       args: [FfiType.RustBuffer, FfiType.RustBuffer],
       ret: FfiType.Handle,
       hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_fn_func_default_discovery_relays: {
+      args: [],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_receive: {
       args: [FfiType.Handle],
@@ -1256,6 +1271,11 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_fn_method_sdk_close_federation: {
+      args: [FfiType.Handle, FfiType.RustBuffer],
+      ret: FfiType.Handle,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_fn_method_sdk_discover_federations: {
       args: [FfiType.Handle, FfiType.RustBuffer],
       ret: FfiType.Handle,
       hasRustCallStatus: false,
@@ -1942,6 +1962,7 @@ const DEFINITIONS = {
 interface NativeModuleInterface {
   ffi_fedimint_sdk_uniffi_contract_version(): number
   uniffi_fedimint_sdk_checksum_func_create_fedimint_sdk(): number
+  uniffi_fedimint_sdk_checksum_func_default_discovery_relays(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send(): number
   uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive(): number
@@ -2056,6 +2077,7 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_recoveryoperation_updates(): number
   uniffi_fedimint_sdk_checksum_method_recoveryoperationupdates_next(): number
   uniffi_fedimint_sdk_checksum_method_sdk_close_federation(): number
+  uniffi_fedimint_sdk_checksum_method_sdk_discover_federations(): number
   uniffi_fedimint_sdk_checksum_method_sdk_export_mnemonic(): number
   uniffi_fedimint_sdk_checksum_method_sdk_federation(): number
   uniffi_fedimint_sdk_checksum_method_sdk_federation_status(): number
@@ -2074,6 +2096,9 @@ interface NativeModuleInterface {
     dataDir: Uint8Array,
     mnemonic: Uint8Array,
   ): bigint
+  uniffi_fedimint_sdk_fn_func_default_discovery_relays(
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
   uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_receive(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -2491,6 +2516,10 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_fn_method_sdk_close_federation(
     uniffiSelf: bigint,
     id: Uint8Array,
+  ): bigint
+  uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+    uniffiSelf: bigint,
+    source: Uint8Array,
   ): bigint
   uniffi_fedimint_sdk_fn_method_sdk_export_mnemonic(
     uniffiSelf: bigint,

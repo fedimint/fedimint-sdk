@@ -348,3 +348,22 @@ fn test_verify_signature_missing_sig() {
     };
     assert!(!raw.verify_signature());
 }
+
+#[test]
+fn default_discovery_relays_matches_nostr_default() {
+    let default_source = DiscoverySource::nostr_default();
+    match default_source {
+        DiscoverySource::Nostr { relays } => {
+            assert_eq!(relays.len(), 3);
+            assert_eq!(relays, DiscoverySource::DEFAULT_RELAYS);
+        }
+        _ => panic!("nostr_default should return Nostr variant"),
+    }
+}
+
+#[cfg(feature = "uniffi")]
+#[test]
+fn default_discovery_relays_returns_expected_relays() {
+    let relays = crate::default_discovery_relays();
+    assert_eq!(relays, DiscoverySource::DEFAULT_RELAYS);
+}

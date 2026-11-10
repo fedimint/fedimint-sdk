@@ -6,6 +6,7 @@ import type {
   MnemonicLike,
   Notes,
   SdkLike,
+  defaultDiscoveryRelays,
 } from './generated/fedimint_sdk'
 import type { Proxied, ProxiedValue } from './types'
 
@@ -15,6 +16,8 @@ export type * from './generated/fedimint_sdk'
 export {
   ActivityStatus,
   Direction,
+  DiscoverySource,
+  DiscoverySource_Tags,
   EcashReceiveState_Tags,
   EcashSendState,
   ErrorCode,
@@ -59,6 +62,7 @@ export interface SdkSession {
     fromWords: Static<typeof Mnemonic.fromWords>
     generate: Static<typeof Mnemonic.generate>
   }
+  defaultDiscoveryRelays: Static<typeof defaultDiscoveryRelays>
   /**
    * Shuts the SDK down and terminates the worker. Every handle from this session is dead
    * after. Calls after the first wait on the same teardown instead of starting another, and all
@@ -108,6 +112,10 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
           typeof Mnemonic.generate
         >,
       },
+      defaultDiscoveryRelays: (() =>
+        opened.callStatic(undefined, 'defaultDiscoveryRelays', [])) as Static<
+        typeof defaultDiscoveryRelays
+      >,
       async close() {
         // Every caller waits on the one teardown rather than starting another, so none of them
         // is told the session is closed while the worker is still running, and a failed

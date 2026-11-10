@@ -34,6 +34,7 @@ interface NativeModuleInterface {
   ): string
   ubrn_ffi_fedimint_sdk_uniffi_contract_version(): number
   ubrn_uniffi_fedimint_sdk_checksum_func_create_fedimint_sdk(): number
+  ubrn_uniffi_fedimint_sdk_checksum_func_default_discovery_relays(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive(): number
@@ -148,6 +149,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperation_updates(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_recoveryoperationupdates_next(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_close_federation(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_sdk_discover_federations(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_export_mnemonic(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_federation(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_federation_status(): number
@@ -166,6 +168,9 @@ interface NativeModuleInterface {
     dataDir: Uint8Array,
     mnemonic: Uint8Array,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_func_default_discovery_relays(
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
   ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_receive(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -591,6 +596,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_close_federation(
     uniffiSelf: bigint,
     id: Uint8Array,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
+    uniffiSelf: bigint,
+    source: Uint8Array,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_export_mnemonic(
     uniffiSelf: bigint,
@@ -1027,6 +1036,10 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): void
   ubrn_ffi_fedimint_sdk_rust_future_free_void(handle: bigint): void
+  ubrn_uniffi_internal_fn_method_invitecode_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject
   ubrn_uniffi_internal_fn_method_notes_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -1068,10 +1081,6 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject
   ubrn_uniffi_internal_fn_method_ecash_ffi__bless_pointer(
-    pointer: bigint,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): UniffiGcObject
-  ubrn_uniffi_internal_fn_method_invitecode_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): UniffiGcObject
