@@ -48,6 +48,7 @@ Replace `App.tsx` with this file. It does four things:
 
 1. `openWallet` opens the data folder once for the whole app. A second open of the same folder fails with `StorageInUse`. The first open of an empty folder creates the seed. [Share the session](./session.md) has the full detail.
 2. `connectTestnet` parses the invite code. Then it reconnects to the federation if this device holds it, or joins it on the first launch. [Join a federation](./join.md) has the full detail.
+   `connectWallet` runs the open and the connect once. React can run an effect twice, and a second `join` would fail with `AlreadyJoined`.
 3. `useBalance` returns the balance in msat, as a `bigint`. It is `undefined` until the first value arrives. Then it stays current. [Show a balance](./balance.md) has the full detail.
 4. `explain` turns a failure into its error code and reason. [Errors](./errors.md) has the full detail.
 
@@ -94,6 +95,19 @@ async function connectTestnet(session: SdkSession): Promise<FederationLike> {
   )
 }
 
+let connecting: Promise<FederationLike> | undefined
+
+/** Open and connect once. A second call, such as an effect that runs twice, gets the same promise. */
+function connectWallet(): Promise<FederationLike> {
+  connecting ??= openWallet()
+    .then(connectTestnet)
+    .catch((err: unknown) => {
+      connecting = undefined // let the next caller try again
+      throw err
+    })
+  return connecting
+}
+
 function explain(e: unknown): string {
   if (!Exception.hasInner(e)) return String(e)
   const inner = Exception.getInner(e)
@@ -106,16 +120,14 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
-    openWallet()
-      .then(connectTestnet)
-      .then(
-        (f) => {
-          if (!cancelled) setFed(f)
-        },
-        (e: unknown) => {
-          if (!cancelled) setError(explain(e))
-        },
-      )
+    connectWallet().then(
+      (f) => {
+        if (!cancelled) setFed(f)
+      },
+      (e: unknown) => {
+        if (!cancelled) setError(explain(e))
+      },
+    )
     return () => {
       cancelled = true
     }

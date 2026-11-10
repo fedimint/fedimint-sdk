@@ -28,8 +28,8 @@ Everything else in Expo still works. The router, the asset pipeline, the config 
 
 | Item                              | Version           | Note                                                                |
 | --------------------------------- | ----------------- | ------------------------------------------------------------------- |
-| `@fedimint/react-native`          | `0.1.0`    | Install the exact version                                           |
-| `@fedimint/react-native-bindings` | `0.1.0`    | The same version as the package above                               |
+| `@fedimint/react-native`          | `0.1.0`           | Install the exact version                                           |
+| `@fedimint/react-native-bindings` | `0.1.0`           | The same version as the package above                               |
 | React Native                      | `0.78` or newer   | `0.83` is recommended                                               |
 | React                             | `18` or newer     |                                                                     |
 | New Architecture                  | Required          | The bindings are a Turbo Module. There is no legacy bridge fallback |
@@ -179,18 +179,13 @@ Four things here will surprise you if you are coming from an ordinary library:
 1. `openSdk` takes a `dataDir`, because the SDK owns a database on disk. Your app chooses where it lives. Give a plain path, not a `file://` URI. `RNFS.DocumentDirectoryPath` is already a plain path.
 2. The first open of an empty folder creates a seed and stores it. Every later open reads the same seed back. You never generate one yourself.
 3. The probe counts the words and never shows them. Seed words are shown only to their owner, on a screen they asked for. [Seed words](./seed-words.md) has that screen.
-4. `session.close()` is required. It gives the folder back. Until then, a second open of the same folder fails with `StorageInUse`.
+4. `session.close()` is required. It gives the folder back. Until then, a second open of the same folder fails with `StorageInUse`. So a remount waits for the last close before it opens.
 
 ```tsx [screen/wallets/FedimintDebug.tsx]
 import React, { useEffect, useState } from 'react'
 import { SafeAreaView, Text, View } from 'react-native'
 import RNFS from 'react-native-fs'
-import {
-  ErrorCode,
-  Exception,
-  openSdk,
-  type SdkSession,
-} from '@fedimint/react-native'
+import { ErrorCode, Exception, openSdk } from '@fedimint/react-native'
 
 /** The error code and reason of a failure from the core, or the plain message. */
 function explain(e: unknown): string {
@@ -199,21 +194,23 @@ function explain(e: unknown): string {
   return `${ErrorCode[inner.code()]}: ${inner.reason()}`
 }
 
+// The last screen's close. The next open waits for it, or it fails with StorageInUse.
+let closing: Promise<void> = Promise.resolve()
+
 export default function FedimintDebug() {
   const [status, setStatus] = useState<string>('calling the rust core...')
 
   useEffect(() => {
     let cancelled = false
-    let session: SdkSession | undefined
 
     // Your app owns this path. Use the real documents directory from the start:
     // a simulator shortcut such as /tmp would not survive on a device.
     const dataDir = `${RNFS.DocumentDirectoryPath}/fedimint`
 
-    openSdk({ dataDir })
+    const opening = closing.then(() => openSdk({ dataDir }))
+    opening
       .then((opened) => {
-        if (cancelled) return opened.close()
-        session = opened
+        if (cancelled) return
         // Count the words. Never put them on a debug screen, and never log them.
         const count = opened.sdk.exportMnemonic().words().length
         setStatus(`the rust core answered: a ${count} word seed is stored`)
@@ -222,11 +219,11 @@ export default function FedimintDebug() {
         if (!cancelled) setStatus('FAILED: ' + explain(e))
       })
 
-    // Gives the folder back. The cancelled flag stops a late reply from
-    // setting state on a screen that has already gone.
+    // Gives the folder back, even if the open is still running. The cancelled
+    // flag stops a late reply from setting state on a screen that has already gone.
     return () => {
       cancelled = true
-      void session?.close()
+      closing = opening.then((s) => s.close()).catch(() => undefined)
     }
   }, [])
 
