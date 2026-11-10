@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
-    DiscoveredFederation, Federation, FederationId, FederationInfo, FederationStatus,
-    FederationStatusUpdates, InviteCode, Mnemonic, Network, Result, Sdk, Storage,
+    DiscoveredFederation, DiscoverySource, Federation, FederationId, FederationInfo,
+    FederationStatus, FederationStatusUpdates, InviteCode, Mnemonic, Network, Result, Sdk, Storage,
 };
 
 /// Opens an instance over `data_dir`: on native targets a directory path, in a browser the name
@@ -105,27 +105,6 @@ impl FederationStatusUpdates {
     }
 }
 
-/// The UniFFI view of [`crate::DiscoverySource`].
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum FfiDiscoverySource {
-    /// Dev mode: returns a hardcoded local/test federation without network queries.
-    Dev,
-    /// Production mode: queries the specified Nostr relays for NIP-87 announcements.
-    Nostr {
-        /// Nostr relay websocket URLs (e.g. `["wss://relay.damus.io"]`).
-        relays: Vec<String>,
-    },
-}
-
-impl From<FfiDiscoverySource> for crate::DiscoverySource {
-    fn from(source: FfiDiscoverySource) -> Self {
-        match source {
-            FfiDiscoverySource::Dev => crate::DiscoverySource::Dev,
-            FfiDiscoverySource::Nostr { relays } => crate::DiscoverySource::Nostr { relays },
-        }
-    }
-}
-
 // The UniFFI view of `Sdk::discover_federations`, under its real name but a different Rust
 // identifier: `DiscoveredFederation` carries a bare `InviteCode`, which is a UniFFI object and
 // must cross nested in a record behind `Arc<InviteCode>`.
@@ -136,11 +115,20 @@ impl Sdk {
     #[uniffi::method(name = "discover_federations")]
     pub async fn ffi_discover_federations(
         &self,
-        source: FfiDiscoverySource,
+        source: DiscoverySource,
     ) -> Result<Vec<FfiDiscoveredFederation>> {
-        let federations = self.discover_federations(source.into()).await?;
+        let federations = self.discover_federations(source).await?;
         Ok(federations.into_iter().map(Into::into).collect())
     }
+}
+
+/// Returns the default Nostr relay URLs used for federation discovery when no custom relays are specified.
+#[uniffi::export]
+pub fn default_discovery_relays() -> Vec<String> {
+    DiscoverySource::DEFAULT_RELAYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// The UniFFI view of [`DiscoveredFederation`], with `invite` crossing as `Arc<InviteCode>`:

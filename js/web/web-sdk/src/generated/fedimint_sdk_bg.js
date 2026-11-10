@@ -253,35 +253,35 @@ if (!('encodeInto' in cachedTextEncoder)) {
 
 let WASM_VECTOR_LEN = 0
 
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______2_(
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______4_(
   arg0,
   arg1,
 ) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______2_(
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______4_(
     arg0,
     arg1,
   )
 }
 
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_(
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______(
+  arg0,
+  arg1,
+) {
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______(
+    arg0,
+    arg1,
+  )
+}
+
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____(
   arg0,
   arg1,
   arg2,
 ) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_(
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____(
     arg0,
     arg1,
     arg2,
-  )
-}
-
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_(
-  arg0,
-  arg1,
-) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_(
-    arg0,
-    arg1,
   )
 }
 
@@ -297,21 +297,11 @@ function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_
   )
 }
 
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______(
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_(
   arg0,
   arg1,
 ) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke______(
-    arg0,
-    arg1,
-  )
-}
-
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_(
-  arg0,
-  arg1,
-) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_(
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_(
     arg0,
     arg1,
   )
@@ -339,13 +329,15 @@ function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______7_(
   )
 }
 
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______4_(
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_(
   arg0,
   arg1,
+  arg2,
 ) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______4_(
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent______2_(
     arg0,
     arg1,
+    arg2,
   )
 }
 
@@ -361,6 +353,26 @@ function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_
   )
 }
 
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______2_(
+  arg0,
+  arg1,
+) {
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______2_(
+    arg0,
+    arg1,
+  )
+}
+
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_(
+  arg0,
+  arg1,
+) {
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______5_(
+    arg0,
+    arg1,
+  )
+}
+
 function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______6_(
   arg0,
   arg1,
@@ -371,23 +383,11 @@ function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______6_(
   )
 }
 
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____(
-  arg0,
-  arg1,
-  arg2,
-) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke___web_sys_9b23d8fcab3f1d02___features__gen_CloseEvent__CloseEvent_____(
-    arg0,
-    arg1,
-    arg2,
-  )
-}
-
-function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_(
+function wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_(
   arg0,
   arg1,
 ) {
-  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______3_(
+  wasm.wasm_bindgen_dbca670eb5e30824___convert__closures_____invoke_______1_(
     arg0,
     arg1,
   )

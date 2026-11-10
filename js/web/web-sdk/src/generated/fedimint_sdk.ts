@@ -94,6 +94,25 @@ export async function createFedimintSdk(
   )
 }
 
+/**
+ * Returns the default Nostr relay URLs used for federation discovery when no custom relays are specified.
+ */
+export function defaultDiscoveryRelays(): Array<string> {
+  const __rb: Uint8Array = uniffiCaller.rustCall(
+    /*caller:*/ (callStatus) => {
+      return nativeModule().uniffi_fedimint_sdk_fn_func_default_discovery_relays(
+        callStatus,
+      )
+    },
+    /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+  )
+  try {
+    return FfiConverterSequenceString.lift(__rb)
+  } finally {
+    nativeModule().rustbuffer_free(__rb)
+  }
+}
+
 const stringConverter = (() => {
   // Lazily construct the codecs on first use. A module may be imported on a
   // runtime that lacks `TextDecoder` (e.g. Hermes) yet never marshal a
@@ -15027,50 +15046,53 @@ const FfiConverterTypeRecoveryHandle = (() => {
   return new FFIConverter()
 })()
 
-// Enum: FfiDiscoverySource
-export enum FfiDiscoverySource_Tags {
+// Enum: DiscoverySource
+export enum DiscoverySource_Tags {
   Dev = 'Dev',
   Nostr = 'Nostr',
 }
 /**
- * The UniFFI view of [`crate::DiscoverySource`].
+ * Specifies the source for discovering federations.
  */
 
-type FfiDiscoverySource_Dev_interface = {
+type DiscoverySource_Dev_interface = {
   /**
    * @private
    * This field is private and should not be used, use `tag` instead.
    */
-  readonly [uniffiTypeNameSymbol]: 'FfiDiscoverySource'
-  tag: FfiDiscoverySource_Tags.Dev
+  readonly [uniffiTypeNameSymbol]: 'DiscoverySource'
+  tag: DiscoverySource_Tags.Dev
 }
 
-type FfiDiscoverySource_Nostr_interface = {
+type DiscoverySource_Nostr_interface = {
   /**
    * @private
    * This field is private and should not be used, use `tag` instead.
    */
-  readonly [uniffiTypeNameSymbol]: 'FfiDiscoverySource'
-  tag: FfiDiscoverySource_Tags.Nostr
+  readonly [uniffiTypeNameSymbol]: 'DiscoverySource'
+  tag: DiscoverySource_Tags.Nostr
   inner: Readonly<{ relays: Array<string> }>
 }
-export type FfiDiscoverySource =
-  | FfiDiscoverySource_Dev_interface
-  | FfiDiscoverySource_Nostr_interface
+export type DiscoverySource =
+  | DiscoverySource_Dev_interface
+  | DiscoverySource_Nostr_interface
 
-export const FfiDiscoverySource = (() => {
+export const DiscoverySource = (() => {
   /**
-   * Dev mode: returns a hardcoded local/test federation without network queries.
+   * Dev mode: returns a hardcoded display-only test federation without network queries.
+   *
+   * This fixture uses a dummy test invite (`wss://foo.bar/`) intended for UI
+   * layout and offline rendering; previewing or joining it will fail to connect.
    */
-  class Dev_ extends UniffiEnum implements FfiDiscoverySource_Dev_interface {
+  class Dev_ extends UniffiEnum implements DiscoverySource_Dev_interface {
     /**
      * @private
      * This field is private and should not be used, use `tag` instead.
      */
-    readonly [uniffiTypeNameSymbol] = 'FfiDiscoverySource'
-    readonly tag = FfiDiscoverySource_Tags.Dev
+    readonly [uniffiTypeNameSymbol] = 'DiscoverySource'
+    readonly tag = DiscoverySource_Tags.Dev
     constructor() {
-      super('FfiDiscoverySource', 'Dev')
+      super('DiscoverySource', 'Dev')
     }
 
     static new(): Dev_ {
@@ -15078,25 +15100,22 @@ export const FfiDiscoverySource = (() => {
     }
 
     static instanceOf(obj: any): obj is Dev_ {
-      return obj.tag === FfiDiscoverySource_Tags.Dev
+      return obj.tag === DiscoverySource_Tags.Dev
     }
   }
   /**
-   * Production mode: queries the specified Nostr relays for NIP-87 announcements.
+   * Production mode: queries Nostr relays for NIP-87 (`kind:38173`) federation announcements.
    */
-  class Nostr_
-    extends UniffiEnum
-    implements FfiDiscoverySource_Nostr_interface
-  {
+  class Nostr_ extends UniffiEnum implements DiscoverySource_Nostr_interface {
     /**
      * @private
      * This field is private and should not be used, use `tag` instead.
      */
-    readonly [uniffiTypeNameSymbol] = 'FfiDiscoverySource'
-    readonly tag = FfiDiscoverySource_Tags.Nostr
+    readonly [uniffiTypeNameSymbol] = 'DiscoverySource'
+    readonly tag = DiscoverySource_Tags.Nostr
     readonly inner: Readonly<{ relays: Array<string> }>
     constructor(inner: { relays: Array<string> }) {
-      super('FfiDiscoverySource', 'Nostr')
+      super('DiscoverySource', 'Nostr')
 
       this.inner = Object.freeze(inner)
     }
@@ -15105,12 +15124,12 @@ export const FfiDiscoverySource = (() => {
     }
 
     static instanceOf(obj: any): obj is Nostr_ {
-      return obj.tag === FfiDiscoverySource_Tags.Nostr
+      return obj.tag === DiscoverySource_Tags.Nostr
     }
   }
 
-  function instanceOf(obj: any): obj is FfiDiscoverySource {
-    return obj[uniffiTypeNameSymbol] === 'FfiDiscoverySource'
+  function instanceOf(obj: any): obj is DiscoverySource {
+    return obj[uniffiTypeNameSymbol] === 'DiscoverySource'
   }
 
   return Object.freeze({
@@ -15120,16 +15139,16 @@ export const FfiDiscoverySource = (() => {
   })
 })()
 
-// FfiConverter for enum FfiDiscoverySource
-const FfiConverterTypeFfiDiscoverySource = (() => {
-  type TypeName = FfiDiscoverySource
+// FfiConverter for enum DiscoverySource
+const FfiConverterTypeDiscoverySource = (() => {
+  type TypeName = DiscoverySource
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
     readFromCursor(c: UniffiCursor): TypeName {
       switch (c.readI32()) {
         case 1:
-          return new FfiDiscoverySource.Dev()
+          return new DiscoverySource.Dev()
         case 2:
-          return new FfiDiscoverySource.Nostr({
+          return new DiscoverySource.Nostr({
             relays: FfiConverterSequenceString.readFromCursor(c),
           })
         default:
@@ -15138,27 +15157,27 @@ const FfiConverterTypeFfiDiscoverySource = (() => {
     }
     writeIntoCursor(value: TypeName, c: UniffiCursor): void {
       switch (value.tag) {
-        case FfiDiscoverySource_Tags.Dev: {
+        case DiscoverySource_Tags.Dev: {
           c.writeI32(1)
           return
         }
-        case FfiDiscoverySource_Tags.Nostr: {
+        case DiscoverySource_Tags.Nostr: {
           c.writeI32(2)
           const inner = value.inner
           FfiConverterSequenceString.writeIntoCursor(inner.relays, c)
           return
         }
         default:
-          // Throwing from here means that FfiDiscoverySource_Tags hasn't matched an ordinal.
+          // Throwing from here means that DiscoverySource_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
     }
     allocationSize(value: TypeName): number {
       switch (value.tag) {
-        case FfiDiscoverySource_Tags.Dev: {
+        case DiscoverySource_Tags.Dev: {
           return 4
         }
-        case FfiDiscoverySource_Tags.Nostr: {
+        case DiscoverySource_Tags.Nostr: {
           const inner = value.inner
           let size = 4
           size += FfiConverterSequenceString.allocationSize(inner.relays)
@@ -15790,7 +15809,7 @@ export interface SdkLike {
    * See [`Sdk::discover_federations`].
    */
   discoverFederations(
-    source: FfiDiscoverySource,
+    source: DiscoverySource,
     asyncOpts_?: { signal: AbortSignal },
   ) /*throws*/ : Promise<Array<DiscoveredFederation>>
   /**
@@ -16525,7 +16544,7 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    * See [`Sdk::discover_federations`].
    */
   async discoverFederations(
-    source: FfiDiscoverySource,
+    source: DiscoverySource,
     asyncOpts_?: { signal: AbortSignal },
   ): Promise<Array<DiscoveredFederation>> /*throws*/ {
     return await uniffiRustCallAsync(
@@ -16533,7 +16552,7 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
       /*rustFutureFunc:*/ () => {
         return nativeModule().uniffi_fedimint_sdk_fn_method_sdk_discover_federations(
           uniffiTypeSdkObjectFactory.clonePointer(this),
-          FfiConverterTypeFfiDiscoverySource.lower(
+          FfiConverterTypeDiscoverySource.lower(
             source,
             nativeModule().rustbuffer_alloc,
           ),
@@ -17776,6 +17795,14 @@ function uniffiEnsureInitialized() {
     )
   }
   if (
+    nativeModule().uniffi_fedimint_sdk_checksum_func_default_discovery_relays() !==
+    43030
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_func_default_discovery_relays',
+    )
+  }
+  if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive() !==
     63118
   ) {
@@ -18668,7 +18695,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_sdk_discover_federations() !==
-    21888
+    2929
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_sdk_discover_federations',
@@ -18800,6 +18827,7 @@ export default Object.freeze({
     FfiConverterTypeDiagnostic,
     FfiConverterTypeDirection,
     FfiConverterTypeDiscoveredFederation,
+    FfiConverterTypeDiscoverySource,
     FfiConverterTypeEcash,
     FfiConverterTypeEcashQuote,
     FfiConverterTypeEcashReceiveDetails,
@@ -18820,7 +18848,6 @@ export default Object.freeze({
     FfiConverterTypeFederationPreview,
     FfiConverterTypeFederationStatus,
     FfiConverterTypeFederationStatusUpdates,
-    FfiConverterTypeFfiDiscoverySource,
     FfiConverterTypeGatewayId,
     FfiConverterTypeInviteCode,
     FfiConverterTypeLightning,

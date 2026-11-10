@@ -55,4 +55,4 @@ pub(crate) mod types;
 
 pub(crate) use operation::ffi_operation;
 pub(crate) use quote::QuoteClaim;
-pub use sdk::create_fedimint_sdk;
+pub use sdk::{create_fedimint_sdk, default_discovery_relays};
