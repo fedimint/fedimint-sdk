@@ -99,7 +99,8 @@ export async function sendEcash(fed: FederationLike, quote: EcashQuoteLike) {
       // The quote ran out of time. Nothing was spent. Quote again, as above.
       return null
     }
-    // A quote that was already sent: its notes exist. Do not quote again, or you send twice.
+    // A quote that was already sent once. That send may have moved money. Check activity()
+    // and the balance before you quote again, or you may send twice.
     throw err
   }
 }
@@ -113,7 +114,7 @@ You will see a long string, and the balance drops by `total()`.
 It is also often too long for one QR code. Give the user a copy button as well as a QR, and handle the QR library's failure rather than showing an empty square.
 :::
 
-A quote is for one send. After `expiresAt()` the send fails with `QuoteExpired`. If another send spent the notes it planned to use first, it fails with `QuoteChanged`. For both, nothing was spent: quote again and ask the user to confirm the new numbers. A quote that was already sent also fails with `QuoteExpired`, and then its notes exist. Do not quote again in that case. Find the earlier send in [History](./history.md) and follow it.
+A quote is for one send. After `expiresAt()` the send fails with `QuoteExpired`. If another send spent the notes it planned to use first, it fails with `QuoteChanged`. For both, nothing was spent: quote again and ask the user to confirm the new numbers. A quote that was already sent once also fails with `QuoteExpired`. That earlier send may have moved money, or it may have failed. Check [History](./history.md) and the balance before you quote again, and follow the earlier send if it went through.
 
 ### 03 · Ecash: take it back <Badge type="info" text="JavaScript" /> {#step-03}
 
