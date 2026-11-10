@@ -38,6 +38,13 @@ export class WebTarget implements Target {
     // error instead of the SDK's INVALID_INPUT. Remove once the SDK maps it.
     errors:
       'a malformed invoice throws an internal error on web, not INVALID_INPUT (uniffi wasm handle_failed_lift)',
+    // fedimint-lnv2-client checks expiry with `Bolt11Invoice::is_expired`,
+    // which calls `SystemTime::now` and traps on wasm32. Remove once the
+    // SDK's fedimint pin includes fedimint/fedimint#9424.
+    ...(process.env.FM_SDK_SHAPE === 'v2' && {
+      lightningSend:
+        'lnv2 send panics on wasm: fedimint-lnv2-client calls SystemTime::now (fedimint/fedimint#9424)',
+    }),
   }
 
   private readonly url = requireEnv('HARNESS_URL')

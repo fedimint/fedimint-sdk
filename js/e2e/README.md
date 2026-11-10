@@ -16,6 +16,8 @@ calls execute against a real devimint federation.
 A target may list tests it cannot run yet in its `knownUnsupported`, with the reason;
 they are reported as `SKIPPED`, never silently dropped. The web target lists `errors`
 today: a malformed invoice there throws an internal error instead of `INVALID_INPUT`.
+On v2 it also lists `lightningSend`: the lnv2 client checks invoice expiry with
+`SystemTime::now`, which traps on wasm32 (fedimint/fedimint#9424).
 
 ## Running
 
