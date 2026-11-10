@@ -19,8 +19,8 @@ Repository layout:
 - `js/react-native/react-native` — the React Native API apps use
 - `js/web/web-sdk` — the browser SDK: the crate compiled to WebAssembly and
   hosted in a dedicated worker
-- `js/android/integration-tests` — Appium tests that drive the Android
-  example app against a real devimint federation
+- `js/e2e` — one suite that drives the SDK harness on Android, iOS and
+  the web against a real devimint federation
 - `js/examples/` — React Native example apps
 - `nix/`, `flake.nix` — the builds and the development shells
 

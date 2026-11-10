@@ -1,6 +1,5 @@
 packages:
   - 'e2e'
-  - 'android/*'
   - 'web/*'
   - 'react-native/*'
   - 'examples/*'

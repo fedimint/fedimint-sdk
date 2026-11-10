@@ -54,28 +54,6 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.19.11)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(happy-dom@20.7.0)(jsdom@20.0.3(supports-color@8.1.1))(vite@7.3.6(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2))
 
-  android/integration-tests:
-    dependencies:
-      appium:
-        specifier: ^3.6.0
-        version: 3.7.0(@types/node@22.19.11)(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)
-      appium-uiautomator2-driver:
-        specifier: ^8.5.0
-        version: 8.7.0(@types/node@22.19.11)(appium@3.7.0(@types/node@22.19.11)(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1))
-      webdriverio:
-        specifier: ^9.31.2
-        version: 9.31.9(supports-color@8.1.1)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.11
-        version: 22.19.11
-      ts-node:
-        specifier: ^10.9.2
-        version: 10.9.2(@types/node@22.19.11)(typescript@6.0.3)
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-
   e2e:
     dependencies:
       appium:

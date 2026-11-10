@@ -21,24 +21,12 @@ test-android-sdk: build-android-sdk
 # from it, then Gradle, all in the lean `.#android` shell (Android SDK and a
 # JDK — no emulator, no devimint). CI runs the same three steps as one job each
 # (native, bindings, apk), each handed the last one's output. It is a separate
-# step from `test-android-e2e` on purpose: a Gradle
+# step from `test-e2e android` on purpose: a Gradle
 # build alongside an emulator and a devimint federation starves the emulator
 # until Android's System UI stops responding, so the build finishes — daemon
 # and all — before either of those starts.
 build-android-apk:
     nix develop --accept-flake-config .#android -c bash -c './scripts/build-android-sdk.sh && cd android && ./gradlew :app:assembleDebug'
-
-# Boot an emulator, install the example app and drive it with the Appium suite
-# (js/android/integration-tests) against a devimint federation — the Android
-# counterpart of `just test`, which does the same for the browser package's
-# tests (js/web/web-sdk), through the same scripts/setup_test_shell.sh. There is
-# deliberately no federation-free variant: one way to run this suite, so what CI
-# does and what you can reproduce are the same thing. Builds the APK first (see
-# build-android-apk); the script itself only installs one. `shape` picks the
-# federation's module generation: v1 (mint, wallet, ln) or v2 (mintv2, walletv2,
-# lnv2).
-test-android-e2e shape="v1": build-android-apk
-    FM_SDK_SHAPE={{shape}} nix develop --accept-flake-config .#android-tests -c scripts/setup_test_shell.sh bash scripts/e2e-android/run-android-e2e.sh
 
 # The cross-platform SDK suite (js/e2e) on one target against a devimint
 # federation: builds the target's harness first, then runs scripts/e2e/run.sh

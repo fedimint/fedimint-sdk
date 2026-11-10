@@ -56,11 +56,10 @@ notes or the seed's origin, read [SECURITY.md](SECURITY.md).**
 
 ## The SDK harness
 
-The old one-screen page that calls every SDK export lives on as
-`harness/HarnessActivity.kt`, in **debug builds only** (`app/src/debug`). Upstream's
-Appium suite (`js/android/integration-tests`) drives it by view id, and now
-launches it instead of the wallet. Release builds contain only the wallet. It keeps
-its own data directory (`files/harness`), so it never touches the wallet's seed.
+The SDK console, `harness/ConsoleActivity.kt`, ships in **debug builds only**
+(`app/src/debug`). The cross-platform suite (`js/e2e`) drives it over
+`js/e2e/PROTOCOL.md`, and launches it instead of the wallet. Release builds contain only the wallet. It keeps
+its own data directory (`files/console`), so it never touches the wallet's seed.
 `DebugApplication` extends `FedimintApp`, and AppCompat and Material Components are
 `debugImplementation` only. Porting the suite to the wallet's screens is a follow-up.
 

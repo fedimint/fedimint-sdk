@@ -172,9 +172,6 @@ js/react-native/react-native-bindings/ReactNativeBindings.podspec.orig
 android/fedimint-sdk/src/main/jniLibs
 android/fedimint-sdk/src/main/java/org/fedimint/sdk
 
-# js/android/integration-tests
-js/android/integration-tests/.appium/
-js/android/integration-tests/screenshots/
 # js/e2e: Appium's state and each run's screenshots, UI trees and logs
 js/e2e/.appium/
 js/e2e/.artifacts/

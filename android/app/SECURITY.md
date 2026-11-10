@@ -63,6 +63,6 @@ Invite codes are shareable by design and not treated as secrets.
 
 ## The debug harness
 
-`app/src/debug/.../harness/HarnessActivity.kt` (debug builds only, for the
-Appium suite) shows the seed without `FLAG_SECURE` and keeps its own wallet in
-`files/harness`. It must never be moved into `src/main`.
+`app/src/debug/.../harness/ConsoleActivity.kt` (debug builds only, for the
+e2e suite) shows the seed without `FLAG_SECURE` and keeps its own wallet in
+`files/console`. It must never be moved into `src/main`.

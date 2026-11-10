@@ -175,15 +175,15 @@ just build-android-sdk        # both, in that order
 just build-android-aar        # build-android-sdk, then ./gradlew :fedimint-sdk:assembleRelease
 just test-android-sdk         # build-android-sdk, then compile the library + example app
 just build-android-apk        # the example APK, in the lean `.#android` shell
-just test-android-e2e         # build-android-apk, then drive the example app on an emulator
+just test-e2e android         # build-android-apk, then drive the example app on an emulator
 ```
 
-`test-android-e2e` is the only one of these that needs a device: it installs the
-example app on an emulator and drives it with the Appium suite in
-[`js/android/integration-tests`](../js/android/integration-tests), so the
+`test-e2e android` is the only one of these that needs a device: it installs the
+example app on an emulator and drives it with the cross-platform suite in
+[`js/e2e`](../js/e2e), so the
 bindings are loaded and the calls execute rather than merely compiling. The
-suite drives the SDK harness, a one-screen page with every call on it that ships
-in debug builds only (`app/src/debug`, launched as `harness.HarnessActivity`),
+suite drives the SDK console, a request field and a Run button that ships
+in debug builds only (`app/src/debug`, launched as `harness.ConsoleActivity`),
 not the wallet's own screens. It runs
 in the `.#android-tests` shell, which adds the emulator, a system image and
 devimint to what `.#android` provides.

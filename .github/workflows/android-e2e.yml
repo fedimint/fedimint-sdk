@@ -158,6 +158,5 @@ jobs:
           name: android-e2e-logs-${{ matrix.shape }}
           include-hidden-files: true
           path: |
-            js/android/integration-tests/.appium/*.log
-            js/android/integration-tests/screenshots/*
+            js/e2e/.appium/*.log
             js/e2e/.artifacts/**
