@@ -83,7 +83,7 @@ export AVD=android-34  # Run 'emulator -list-avds' to get this
 export DEVICE_ID=emulator-5554  # Run 'adb devices' to get this
 export BUNDLE_PATH=/path/to/app-debug.apk
 export APP_PACKAGE=org.fedimint.demo
-export APP_ACTIVITY=org.fedimint.demo.MainActivity
+export APP_ACTIVITY=org.fedimint.demo.harness.HarnessActivity
 export PLATFORM_VERSION=34  # Optional
         `.trim()
   }
