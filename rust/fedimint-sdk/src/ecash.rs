@@ -893,8 +893,13 @@ impl Operation<EcashSendState> {
     // cancelling *is* the reclaim, which is a federation round trip this call must not make —
     // so its driver drives it instead.
     pub async fn request_cancel(&self) -> Result<()> {
-        self.inner().federation.ensure_open()?;
-        self.inner().persist_cancel_request().await?;
+        self.inner()
+            .federation
+            .until_shut_down(async {
+                self.inner().federation.ensure_open()?;
+                self.inner().persist_cancel_request().await
+            })
+            .await?;
         // The cached record predates the write above, so the pending intent is asserted here
         // rather than read back off it.
         forward_cancel_request(

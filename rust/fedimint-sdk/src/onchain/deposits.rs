@@ -166,6 +166,11 @@ impl Subscription {
     /// [`FederationClosed`](ErrorCode::FederationClosed) once the federation stops running,
     /// [`Storage`](ErrorCode::Storage), and [`Internal`](ErrorCode::Internal).
     pub(super) async fn next(&self) -> Result<Operation<OnchainReceiveState>> {
+        self.federation.until_shut_down(self.next_now()).await
+    }
+
+    /// [`next`](Self::next), without the race against shutdown.
+    async fn next_now(&self) -> Result<Operation<OnchainReceiveState>> {
         let mut cursor = self.cursor.lock().await;
         let mut closed = self.federation.closed();
         loop {

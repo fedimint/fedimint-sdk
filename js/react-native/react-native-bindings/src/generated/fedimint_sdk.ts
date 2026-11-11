@@ -16360,22 +16360,27 @@ export interface SdkLike {
    * [`Sdk::federation_status`]) and the infallible accessors on
    * [`Federation`]. Shutdown is idempotent.
    *
-   * # It does not release the storage
+   * # It gives the storage back
    *
-   * The location stays claimed until the store on it is closed, which
-   * happens when the last handle built on this instance is dropped:
-   * every [`Sdk`], this one included, every [`Federation`], and every
-   * operation handle and subscriber taken from a federation. Until then a
-   * [`SdkBuilder::build`] against the same location is refused with
-   * [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
-   * than by waiting, whether the attempt comes from this process or
-   * another one.
+   * Once this returns `Ok`, the store is closed and the location can be
+   * opened again at once, by this process or another one, even while
+   * handles built on this instance are still alive: this [`Sdk`], a
+   * [`Federation`], an operation handle or a subscriber that a garbage
+   * collector has not got round to yet. Those handles keep answering as
+   * described above and never reach the location again, so an application
+   * can switch wallets or restore one in place without destroying them
+   * first. In a browser the location is handed back when the worker
+   * hosting the instance ends instead, which the web package does on
+   * `close()`.
    *
-   * So an application that opens a location, closes it and opens it
-   * again, to switch wallets or to restore one, has to let go of
-   * everything it holds from the first instance between the two. On a
-   * binding where handles are foreign objects, letting go means
-   * destroying them rather than waiting for a garbage collector.
+   * Closing waits for the storage transactions already running to end, up
+   * to a deadline of a few seconds. If one is still running then, this
+   * returns [`Storage`](crate::ErrorCode::Storage), and the store is closed
+   * as soon as that transaction ends; an attempt to open the location
+   * before then is refused with
+   * [`StorageInUse`](crate::ErrorCode::StorageInUse). Calling this again
+   * waits for that same close, under the same deadline, and returns `Ok`
+   * only once it has finished.
    *
    * # It is an optimisation, not a requirement
    *
@@ -16423,8 +16428,9 @@ export interface SdkLike {
    *
    * # Errors
    *
-   * [`Storage`](crate::ErrorCode::Storage) if the final flush fails. The
-   * instance is closed either way.
+   * [`Storage`](crate::ErrorCode::Storage) if the final flush fails, or
+   * if the storage could not be closed by the deadline above. The instance
+   * is closed either way.
    */
   shutdown(asyncOpts_?: { signal: AbortSignal }) /*throws*/ : Promise<void>
   /**
@@ -17562,22 +17568,27 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    * [`Sdk::federation_status`]) and the infallible accessors on
    * [`Federation`]. Shutdown is idempotent.
    *
-   * # It does not release the storage
+   * # It gives the storage back
    *
-   * The location stays claimed until the store on it is closed, which
-   * happens when the last handle built on this instance is dropped:
-   * every [`Sdk`], this one included, every [`Federation`], and every
-   * operation handle and subscriber taken from a federation. Until then a
-   * [`SdkBuilder::build`] against the same location is refused with
-   * [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
-   * than by waiting, whether the attempt comes from this process or
-   * another one.
+   * Once this returns `Ok`, the store is closed and the location can be
+   * opened again at once, by this process or another one, even while
+   * handles built on this instance are still alive: this [`Sdk`], a
+   * [`Federation`], an operation handle or a subscriber that a garbage
+   * collector has not got round to yet. Those handles keep answering as
+   * described above and never reach the location again, so an application
+   * can switch wallets or restore one in place without destroying them
+   * first. In a browser the location is handed back when the worker
+   * hosting the instance ends instead, which the web package does on
+   * `close()`.
    *
-   * So an application that opens a location, closes it and opens it
-   * again, to switch wallets or to restore one, has to let go of
-   * everything it holds from the first instance between the two. On a
-   * binding where handles are foreign objects, letting go means
-   * destroying them rather than waiting for a garbage collector.
+   * Closing waits for the storage transactions already running to end, up
+   * to a deadline of a few seconds. If one is still running then, this
+   * returns [`Storage`](crate::ErrorCode::Storage), and the store is closed
+   * as soon as that transaction ends; an attempt to open the location
+   * before then is refused with
+   * [`StorageInUse`](crate::ErrorCode::StorageInUse). Calling this again
+   * waits for that same close, under the same deadline, and returns `Ok`
+   * only once it has finished.
    *
    * # It is an optimisation, not a requirement
    *
@@ -17625,8 +17636,9 @@ export class Sdk extends UniffiAbstractObject implements SdkLike {
    *
    * # Errors
    *
-   * [`Storage`](crate::ErrorCode::Storage) if the final flush fails. The
-   * instance is closed either way.
+   * [`Storage`](crate::ErrorCode::Storage) if the final flush fails, or
+   * if the storage could not be closed by the deadline above. The instance
+   * is closed either way.
    */
   async shutdown(asyncOpts_?: {
     signal: AbortSignal
@@ -19048,7 +19060,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().ubrn_uniffi_fedimint_sdk_checksum_method_sdk_shutdown() !==
-    5792
+    7393
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_sdk_shutdown',

@@ -543,6 +543,15 @@ impl Sdk {
     /// federation that has no recovery is `Ok(None)`, never an error, that
     /// is the whole point of the `Option`.
     pub async fn recovery_status(&self, id: &FederationId) -> Result<Option<RecoveryState>> {
+        crate::sdk::until_shut_down(
+            Some(self.inner().shutdown_watch()),
+            self.recovery_status_now(id),
+        )
+        .await
+    }
+
+    /// [`recovery_status`](Self::recovery_status), without the race against shutdown.
+    async fn recovery_status_now(&self, id: &FederationId) -> Result<Option<RecoveryState>> {
         self.inner().alive()?;
         let upstream = id.inner();
         let federation = self

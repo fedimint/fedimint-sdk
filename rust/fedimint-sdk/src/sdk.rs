@@ -1160,22 +1160,27 @@ impl Sdk {
     /// [`Sdk::federation_status`]) and the infallible accessors on
     /// [`Federation`]. Shutdown is idempotent.
     ///
-    /// # It does not release the storage
+    /// # It gives the storage back
     ///
-    /// The location stays claimed until the store on it is closed, which
-    /// happens when the last handle built on this instance is dropped:
-    /// every [`Sdk`], this one included, every [`Federation`], and every
-    /// operation handle and subscriber taken from a federation. Until then a
-    /// [`SdkBuilder::build`] against the same location is refused with
-    /// [`StorageInUse`](crate::ErrorCode::StorageInUse), promptly rather
-    /// than by waiting, whether the attempt comes from this process or
-    /// another one.
+    /// Once this returns `Ok`, the store is closed and the location can be
+    /// opened again at once, by this process or another one, even while
+    /// handles built on this instance are still alive: this [`Sdk`], a
+    /// [`Federation`], an operation handle or a subscriber that a garbage
+    /// collector has not got round to yet. Those handles keep answering as
+    /// described above and never reach the location again, so an application
+    /// can switch wallets or restore one in place without destroying them
+    /// first. In a browser the location is handed back when the worker
+    /// hosting the instance ends instead, which the web package does on
+    /// `close()`.
     ///
-    /// So an application that opens a location, closes it and opens it
-    /// again, to switch wallets or to restore one, has to let go of
-    /// everything it holds from the first instance between the two. On a
-    /// binding where handles are foreign objects, letting go means
-    /// destroying them rather than waiting for a garbage collector.
+    /// Closing waits for the storage transactions already running to end, up
+    /// to a deadline of a few seconds. If one is still running then, this
+    /// returns [`Storage`](crate::ErrorCode::Storage), and the store is closed
+    /// as soon as that transaction ends; an attempt to open the location
+    /// before then is refused with
+    /// [`StorageInUse`](crate::ErrorCode::StorageInUse). Calling this again
+    /// waits for that same close, under the same deadline, and returns `Ok`
+    /// only once it has finished.
     ///
     /// # It is an optimisation, not a requirement
     ///
@@ -1223,14 +1228,17 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// [`Storage`](crate::ErrorCode::Storage) if the final flush fails. The
-    /// instance is closed either way.
+    /// [`Storage`](crate::ErrorCode::Storage) if the final flush fails, or
+    /// if the storage could not be closed by the deadline above. The instance
+    /// is closed either way.
     pub async fn shutdown(&self) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock().await;
-        if self.inner.shutdown_tx.send_replace(true) {
-            // Idempotent: a second call has nothing left to stop.
-            return Ok(());
-        }
+        // Every call does the whole of the work rather than returning early once the flag is set:
+        // a first call that was cancelled, or that timed out waiting for the storage to close, has
+        // not finished it, and a later call must not report that it has. Stopping a federation
+        // that has already stopped does nothing, and the storage is closed by one task whose
+        // outcome every call waits for.
+        self.inner.shutdown_tx.send_replace(true);
 
         // Shut the federations down together rather than one after another: upstream waits up to
         // thirty seconds per client, and a wallet with several federations should not pay that
@@ -1242,6 +1250,10 @@ impl Sdk {
                 outcome
             }))
             .await;
+
+        // Closed even when a federation failed to stop: the instance is closed either way, and
+        // the location is given back with it.
+        self.close_storage().await?;
 
         for outcome in results {
             outcome?;
@@ -1257,6 +1269,44 @@ impl Sdk {
     /// The shared state behind this handle, for the crate's own internals.
     pub(crate) fn inner(&self) -> &Arc<SdkInner> {
         &self.inner
+    }
+
+    /// Closes the storage under this instance, or waits for the close an earlier call started.
+    ///
+    /// The close runs in a task of its own, started by the first call to get here, and publishes
+    /// its outcome once it ends. It is not tied to any one call, so a call that is cancelled, or
+    /// that gives up at [`CLOSE_DEADLINE`], leaves it running, and the next call waits for that
+    /// same close instead of starting another or assuming it is done.
+    async fn close_storage(&self) -> Result<()> {
+        let closer = self
+            .inner
+            .closer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(closer) = closer {
+            let published = self.inner.store_closed.clone();
+            fedimint_core::runtime::spawn("sdk-storage-close", async move {
+                published.send_replace(Some(closer.close().await));
+            });
+        }
+
+        let mut closed = self.inner.store_closed.subscribe();
+        match fedimint_core::runtime::timeout(CLOSE_DEADLINE, closed.wait_for(Option::is_some))
+            .await
+        {
+            Ok(Ok(outcome)) => outcome.clone().unwrap_or(Ok(())),
+            // The sender lives in `SdkInner`, which `self` holds, so it cannot be gone: only the
+            // deadline lands here.
+            _ => Err(crate::Error::new(
+                crate::ErrorCode::Storage,
+                format!(
+                    "the storage at {} is still held by a transaction in progress: it is given \
+                     back once that transaction ends",
+                    self.inner.location
+                ),
+            )),
+        }
     }
 
     /// Records a phase-2 refusal: nothing deleted, and the federation left stopped.
@@ -1471,7 +1521,7 @@ impl SdkBuilder {
         let location = storage.location();
 
         // Step 1: open the location and claim it. Nothing has been touched if this fails.
-        let db = storage.open().await?;
+        let (db, closer) = storage.open().await?;
 
         // Step 2: reconcile the seed, under that claim and before any write this call makes.
         let mnemonic = reconcile_seed(&db, &location, self.mnemonic).await?;
@@ -1495,6 +1545,8 @@ impl SdkBuilder {
             federations: std::sync::RwLock::new(BTreeMap::new()),
             status_tx: tokio::sync::broadcast::Sender::new(STATUS_CAPACITY),
             shutdown_tx: tokio::sync::watch::Sender::new(false),
+            closer: std::sync::Mutex::new(Some(closer)),
+            store_closed: tokio::sync::watch::Sender::new(None),
         });
 
         // Steps 3 and 4: finish committed erases, then reopen everything else. They run
@@ -1848,6 +1900,12 @@ pub(crate) struct SdkInner {
     status_tx: tokio::sync::broadcast::Sender<FederationInfo>,
     /// Set once, by `shutdown`; every subscriber and every fallible call watches it.
     shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Closes the store under `db`, which is what gives the location back while handles over
+    /// this instance are still alive. Taken by the first `shutdown` to get that far.
+    closer: std::sync::Mutex<Option<crate::storage::StoreCloser>>,
+    /// The outcome of closing the store, published once by the task that closes it, and waited
+    /// for by every `shutdown`.
+    store_closed: tokio::sync::watch::Sender<Option<Result<()>>>,
 }
 
 impl core::fmt::Debug for SdkInner {
@@ -2402,11 +2460,63 @@ struct StatusCursor {
     shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
+/// Runs a call that uses storage without holding a federation's client, and answers
+/// `FederationClosed` instead if the instance shuts down before the call ends.
+///
+/// `shutdown` closes the store under every handle, and a transaction asked for after that never
+/// starts (see `storage::ClaimedStore`). A call that passed its closed check just before the
+/// shutdown would otherwise wait for good, and so would the promise or coroutine a binding holds
+/// over it. Dropping the call at that point is safe: it holds neither the store nor the claim, and
+/// every write it made either committed or did not happen.
+///
+/// `shutdown` is `None` when the instance has already been dropped. Nothing can shut it down any
+/// more then, and if it was shut down first the call's own closed check refuses it.
+pub(crate) async fn until_shut_down<T>(
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    work: impl core::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let shut_down = async move {
+        // `wait_for` looks at the current value first, so a shutdown that happened before this
+        // subscribed is seen too. It fails only once the instance is gone without one, and then
+        // nothing will close the store.
+        if let Some(mut shutdown) = shutdown
+            && shutdown.wait_for(|down| *down).await.is_ok()
+        {
+            return;
+        }
+        core::future::pending::<()>().await;
+    };
+    // Biased so the work is polled first: a call that can answer on its own gets its own answer
+    // after a shutdown too, rather than one picked at random. A parked call stays pending, and the
+    // shutdown branch still ends it.
+    tokio::select! {
+        biased;
+        result = work => result,
+        () = shut_down => Err(crate::Error::new(
+            crate::ErrorCode::FederationClosed,
+            "this SDK instance has been shut down",
+        )),
+    }
+}
+
 /// How many status changes a subscriber may fall behind before it is re-synchronised.
 ///
 /// A subscriber that falls further behind is given a fresh snapshot of every federation rather
 /// than an error, so a slow list screen goes stale and then correct, never broken.
 const STATUS_CAPACITY: usize = 256;
+
+/// How long `shutdown` waits for the storage transactions still running before it reports the
+/// location as held.
+///
+/// The federations have stopped by the time this starts, so what is left is a call on a handle
+/// that was already past its closed check: short work that ends in well under this.
+#[cfg(not(test))]
+const CLOSE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(10);
+/// Shortened under `cfg(test)` so a test that holds a transaction across a shutdown does not
+/// have to sit out the production deadline to see it reported. Every shutdown in the suite must
+/// close its store within this, so it leaves room for a slow runner.
+#[cfg(test)]
+const CLOSE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(2);
 
 /// Establishes the instance's seed, or refuses in a way that changes nothing.
 ///
@@ -2720,12 +2830,12 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn a_location_is_refused_while_the_instance_on_it_is_still_held() {
-            // A shut-down instance still holds its location: what releases it is dropping the
-            // last handle over it, and until that happens a second build has to be told so.
-            // This used to be a build that never returned: the claim came free at `shutdown`
-            // while the store behind it stayed open, so the next opener took the free claim and
-            // then waited inside the store's own file lock, which has no timeout and no error.
+        async fn a_held_instance_keeps_its_location_until_it_is_shut_down() {
+            // Until `shutdown`, an instance that is still held holds its location, and a second
+            // build has to be told so rather than left waiting inside the store's own file lock,
+            // which has no timeout and no error. `shutdown` closes the store and gives the
+            // location back even though the handle is still alive, which is what a foreign
+            // binding needs: it cannot make its garbage collector drop the handle on demand.
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
 
@@ -2734,7 +2844,6 @@ mod tests {
                 .build()
                 .await
                 .expect("an instance opens");
-            sdk.shutdown().await.expect("shutdown succeeds");
 
             let err = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -2744,23 +2853,36 @@ mod tests {
             )
             .await
             .expect("the second build answers rather than waiting on the first")
-            .expect_err("a location whose instance is still held cannot be opened again");
+            .expect_err("a location whose instance is still running cannot be opened again");
             assert_eq!(err.code, crate::ErrorCode::StorageInUse);
 
-            drop(sdk);
+            sdk.shutdown().await.expect("shutdown succeeds");
 
-            Sdk::builder()
-                .storage(Storage::at(&path).expect("a valid path"))
-                .build()
+            let reopened = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .build(),
+            )
+            .await
+            .expect("the build answers")
+            .expect("the location is free once the instance on it is shut down");
+
+            let id =
+                crate::FederationId::from_upstream(fedimint_core::config::FederationId::dummy());
+            let err = sdk
+                .reopen_federation(&id)
                 .await
-                .expect("the location comes free once nothing holds it any more");
+                .expect_err("the shut-down handle still refuses");
+            assert_eq!(err.code, crate::ErrorCode::FederationClosed);
+            drop((sdk, reopened));
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn a_federation_handle_holds_the_location_on_its_own() {
-            // What made the hang survive letting go of the instance once a federation had been
-            // joined: a federation gets its own slice of the store, so a handle on one holds the
-            // whole store open after the `Sdk` it came from is gone.
+        async fn a_federation_handle_does_not_outlive_shutdown() {
+            // A federation gets its own slice of the store, so before #513 a handle on one held
+            // the whole location after the `Sdk` it came from was shut down and dropped. Now the
+            // shutdown closes the store under it, and the handle fails closed instead.
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
 
@@ -2780,6 +2902,54 @@ mod tests {
             sdk.shutdown().await.expect("shutdown succeeds");
             drop(sdk);
 
+            let reopened = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .build(),
+            )
+            .await
+            .expect("the build answers rather than waiting on the handle")
+            .expect("a federation handle no longer holds the location");
+            assert_eq!(
+                reopened.stored_federations().len(),
+                1,
+                "the reopened instance sees what the first one stored"
+            );
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                federation.activity(None, 10),
+            )
+            .await
+            .expect("the stale handle answers rather than waiting on a closed store")
+            .expect_err("the stale handle refuses");
+            assert_eq!(err.code, crate::ErrorCode::FederationClosed);
+            drop((federation, reopened));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_location_comes_free_once_every_handle_is_dropped_without_shutdown() {
+            // The path that does not go through `shutdown`: the store closes, and the claim is
+            // given back, when the last handle over it is dropped, and not before. A federation
+            // gets its own slice of the store, so a handle on one is enough to hold it.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            let planted = fedimint_core::config::FederationId::dummy();
+            plant_closed_federation(&sdk, planted).await;
+            let federation = crate::Federation::new(
+                sdk.inner()
+                    .federation_inner(&planted)
+                    .expect("the planted federation is there"),
+            );
+            drop(sdk);
+
             let err = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 Sdk::builder()
@@ -2787,7 +2957,7 @@ mod tests {
                     .build(),
             )
             .await
-            .expect("the second build answers rather than waiting on the handle")
+            .expect("the build answers rather than waiting on the handle")
             .expect_err("a federation handle is enough to hold the location");
             assert_eq!(err.code, crate::ErrorCode::StorageInUse);
 
@@ -2798,6 +2968,94 @@ mod tests {
                 .build()
                 .await
                 .expect("the location comes free once the last handle goes");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_shutdown_retried_after_its_deadline_waits_for_the_same_close() {
+            // A first call that gives up waiting for the storage to close has not finished
+            // shutting down, and a retry must not report that it has: it waits for the close
+            // the first call started, and returns `Ok` only once the location is free.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            let running = sdk.inner().db.begin_transaction_nc().await;
+
+            let err = sdk
+                .shutdown()
+                .await
+                .expect_err("the store cannot close under a running transaction");
+            assert_eq!(err.code, crate::ErrorCode::Storage);
+            let err = sdk
+                .shutdown()
+                .await
+                .expect_err("a retry waits for the same close rather than reporting it done");
+            assert_eq!(err.code, crate::ErrorCode::Storage);
+
+            drop(running);
+            sdk.shutdown()
+                .await
+                .expect("the close finishes once the transaction ends");
+            Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("the location is free once shutdown has returned Ok");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_call_waiting_on_a_closed_store_ends_when_the_instance_shuts_down() {
+            // A call that passed its closed check just before a shutdown asks the closed store
+            // for a transaction, which never starts. Raced against the shutdown, it ends with
+            // `FederationClosed` instead of leaving its caller waiting for good.
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().to_str().expect("a utf-8 path").to_owned();
+
+            let sdk = Sdk::builder()
+                .storage(Storage::at(&path).expect("a valid path"))
+                .build()
+                .await
+                .expect("an instance opens");
+            let db = sdk.inner().db.clone();
+            sdk.shutdown().await.expect("shutdown succeeds");
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                super::super::until_shut_down(Some(sdk.inner().shutdown_watch()), async {
+                    let _transaction = db.begin_transaction_nc().await;
+                    Ok(())
+                }),
+            )
+            .await
+            .expect("the call answers rather than waiting on the closed store")
+            .expect_err("the call is refused");
+            assert_eq!(err.code, crate::ErrorCode::FederationClosed);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_call_that_answers_at_once_keeps_its_answer_after_shutdown() {
+            // Both branches are ready on the first poll here. The call's own answer wins every
+            // time, so a binding sees the same outcome on every run.
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            sdk.shutdown().await.expect("shutdown succeeds");
+
+            for _ in 0..64 {
+                let answer =
+                    super::super::until_shut_down(Some(sdk.inner().shutdown_watch()), async {
+                        Ok(7)
+                    })
+                    .await
+                    .expect("the call keeps its own answer");
+                assert_eq!(answer, 7);
+            }
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2864,7 +3122,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
             {
-                let db = Storage::at(&path)
+                let (db, _closer) = Storage::at(&path)
                     .expect("a valid path")
                     .open()
                     .await
@@ -2894,7 +3152,7 @@ mod tests {
                 other => panic!("expected the orphan detail, got {other:?}"),
             }
 
-            let db = Storage::at(&path)
+            let (db, _closer) = Storage::at(&path)
                 .expect("a valid path")
                 .open()
                 .await
@@ -2916,7 +3174,7 @@ mod tests {
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
             let planted: &[u8] = b"\xff\xff\xff";
             {
-                let db = Storage::at(&path)
+                let (db, _closer) = Storage::at(&path)
                     .expect("a valid path")
                     .open()
                     .await
@@ -2941,7 +3199,7 @@ mod tests {
                 other => panic!("expected the orphan detail, got {other:?}"),
             }
 
-            let db = Storage::at(&path)
+            let (db, _closer) = Storage::at(&path)
                 .expect("a valid path")
                 .open()
                 .await

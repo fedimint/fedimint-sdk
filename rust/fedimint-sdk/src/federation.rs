@@ -293,8 +293,12 @@ impl Federation {
     /// be read, [`FederationClosed`](crate::ErrorCode::FederationClosed) if
     /// the federation is closed.
     pub async fn operation(&self, id: &OperationId) -> Result<Option<AnyOperation>> {
-        self.inner.ensure_open()?;
-        self.inner.operation(id.upstream()).await
+        self.inner
+            .until_shut_down(async {
+                self.inner.ensure_open()?;
+                self.inner.operation(id.upstream()).await
+            })
+            .await
     }
 }
 
@@ -336,7 +340,9 @@ impl Federation {
     /// is not one this federation issued or for a `limit` of zero, and
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn activity(&self, cursor: Option<Cursor>, limit: u16) -> Result<ActivityPage> {
-        crate::activity::page(&self.inner, cursor, limit).await
+        self.inner
+            .until_shut_down(crate::activity::page(&self.inner, cursor, limit))
+            .await
     }
 }
 
@@ -914,6 +920,17 @@ impl FederationInner {
             client.task_group().shutdown();
         }
         taken
+    }
+
+    /// Runs a public call on this federation that uses storage without holding its client, and
+    /// answers `FederationClosed` if the instance shuts down first. See
+    /// [`crate::sdk::until_shut_down`].
+    pub(crate) async fn until_shut_down<T>(
+        &self,
+        work: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let shutdown = self.sdk.upgrade().map(|sdk| sdk.shutdown_watch());
+        crate::sdk::until_shut_down(shutdown, work).await
     }
 
     /// Retires the federation and shuts its client down.
