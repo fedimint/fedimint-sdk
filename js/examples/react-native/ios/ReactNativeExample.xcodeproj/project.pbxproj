@@ -9,22 +9,40 @@
 /* Begin PBXBuildFile section */
 		0C80B921A6F3F58F76C31292 /* libPods-ReactNativeExample.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-ReactNativeExample.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		1BC6399209FB9B450C2229D2 /* Geist-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 8DA85B6A689BE151C3F5C32F /* Geist-SemiBold.ttf */; };
+		603C51CA04F48A83E8E1C084 /* Geist-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0E60BB342769E1921600A151 /* Geist-Medium.ttf */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		B5F80FC0BBEC514F83B6EFD4 /* GeistMono-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B00F201CC0B50DB817F17821 /* GeistMono-SemiBold.ttf */; };
 		C37B16222CF5C0762FA8DB09 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		C7FC9F9726C4151E19C7AB1D /* GeistMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = E973D6B87B674CD51419B88B /* GeistMono-Medium.ttf */; };
+		CCCC28349749879EB0B11D01 /* BearerPasteboard.m in Sources */ = {isa = PBXBuildFile; fileRef = D0855820E976506F089F8B1B /* BearerPasteboard.m */; };
+		CCCC28349749879EB0B11D02 /* OwnerAuthentication.m in Sources */ = {isa = PBXBuildFile; fileRef = D0855820E976506F089F8B1C /* OwnerAuthentication.m */; };
+		D211323932E3F96511C66D9C /* GeistMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 69157669A04D7742FA6A56A3 /* GeistMono-Regular.ttf */; };
+		DACA43470A734B388BD28C38 /* Geist-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 262CE6672EB9B62185AC7FAF /* Geist-Regular.ttf */; };
+		FC61769721FC0B06F12B8023 /* Geist-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F71A90E3C8A2155C5EA91EA0 /* Geist-Bold.ttf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0E60BB342769E1921600A151 /* Geist-Medium.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "Geist-Medium.ttf"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* ReactNativeExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReactNativeExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = ReactNativeExample/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = ReactNativeExample/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = ReactNativeExample/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		262CE6672EB9B62185AC7FAF /* Geist-Regular.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "Geist-Regular.ttf"; sourceTree = "<group>"; };
 		3B4392A12AC88292D35C810B /* Pods-ReactNativeExample.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ReactNativeExample.debug.xcconfig"; path = "Target Support Files/Pods-ReactNativeExample/Pods-ReactNativeExample.debug.xcconfig"; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-ReactNativeExample.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ReactNativeExample.release.xcconfig"; path = "Target Support Files/Pods-ReactNativeExample/Pods-ReactNativeExample.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-ReactNativeExample.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ReactNativeExample.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		69157669A04D7742FA6A56A3 /* GeistMono-Regular.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "GeistMono-Regular.ttf"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ReactNativeExample/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ReactNativeExample/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		8DA85B6A689BE151C3F5C32F /* Geist-SemiBold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "Geist-SemiBold.ttf"; sourceTree = "<group>"; };
+		B00F201CC0B50DB817F17821 /* GeistMono-SemiBold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "GeistMono-SemiBold.ttf"; sourceTree = "<group>"; };
+		D0855820E976506F089F8B1B /* BearerPasteboard.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = BearerPasteboard.m; path = ReactNativeExample/BearerPasteboard.m; sourceTree = "<group>"; };
+		D0855820E976506F089F8B1C /* OwnerAuthentication.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = OwnerAuthentication.m; path = ReactNativeExample/OwnerAuthentication.m; sourceTree = "<group>"; };
+		E973D6B87B674CD51419B88B /* GeistMono-Medium.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "GeistMono-Medium.ttf"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		F71A90E3C8A2155C5EA91EA0 /* Geist-Bold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "Geist-Bold.ttf"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,8 +65,25 @@
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
+				D0855820E976506F089F8B1B /* BearerPasteboard.m */,
+				D0855820E976506F089F8B1C /* OwnerAuthentication.m */,
 			);
 			name = ReactNativeExample;
+			sourceTree = "<group>";
+		};
+		179E5EF862B060749C78A5CE /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				F71A90E3C8A2155C5EA91EA0 /* Geist-Bold.ttf */,
+				0E60BB342769E1921600A151 /* Geist-Medium.ttf */,
+				262CE6672EB9B62185AC7FAF /* Geist-Regular.ttf */,
+				8DA85B6A689BE151C3F5C32F /* Geist-SemiBold.ttf */,
+				E973D6B87B674CD51419B88B /* GeistMono-Medium.ttf */,
+				69157669A04D7742FA6A56A3 /* GeistMono-Regular.ttf */,
+				B00F201CC0B50DB817F17821 /* GeistMono-SemiBold.ttf */,
+			);
+			name = Fonts;
+			path = ../assets/fonts;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
@@ -75,6 +110,7 @@
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
+				179E5EF862B060749C78A5CE /* Fonts */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -161,6 +197,13 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				C37B16222CF5C0762FA8DB09 /* PrivacyInfo.xcprivacy in Resources */,
+				FC61769721FC0B06F12B8023 /* Geist-Bold.ttf in Resources */,
+				603C51CA04F48A83E8E1C084 /* Geist-Medium.ttf in Resources */,
+				DACA43470A734B388BD28C38 /* Geist-Regular.ttf in Resources */,
+				1BC6399209FB9B450C2229D2 /* Geist-SemiBold.ttf in Resources */,
+				C7FC9F9726C4151E19C7AB1D /* GeistMono-Medium.ttf in Resources */,
+				D211323932E3F96511C66D9C /* GeistMono-Regular.ttf in Resources */,
+				B5F80FC0BBEC514F83B6EFD4 /* GeistMono-SemiBold.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +290,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				CCCC28349749879EB0B11D01 /* BearerPasteboard.m in Sources */,
+				CCCC28349749879EB0B11D02 /* OwnerAuthentication.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
