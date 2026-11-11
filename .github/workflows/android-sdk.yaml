@@ -26,9 +26,10 @@ name: Android SDK
 #
 # `e2e` is the one job that needs the single self-hosted Mac, so it does not
 # run on every pull request. A pull request gets it only when it carries the
-# `ci-android-e2e` label; the merge queue runs it for every pull request,
-# whatever it touched, so nothing reaches main without it. The `changes` job
-# decides, and `result` is the one check branch protection requires from here.
+# `ci-android-e2e` label; the merge queue runs the whole chain unless every
+# changed file matches a known Android-unrelated exclude list, so nothing
+# reaching main can skip a check it might depend on. The `changes` job decides,
+# and `result` is the one check branch protection requires from here.
 
 on:
   workflow_dispatch:
@@ -52,7 +53,8 @@ on:
   # starts on every pull request and the `changes` job holds the path list.
   pull_request:
   # The merge queue's run: main plus the PRs queued ahead, tested before main
-  # moves. It always gets the whole chain, e2e included; see `changes`.
+  # moves. Runs the whole chain, e2e included, unless every changed path matches
+  # `changes`'s fail-closed exclude list.
   merge_group:
     types: [checks_requested]
 
@@ -69,16 +71,18 @@ permissions:
   contents: read
 
 jobs:
-  # Decides what this run builds. A pull request gets the build its diff needs,
-  # and e2e only with the `ci-android-e2e` label. Every other event gets the
-  # whole chain, e2e included: a merge group, a manual run, or the release and
-  # snapshot workflows calling this one.
+  # Decides what this run builds. A pull request uses an allow-list so unrelated
+  # PRs skip the build, and runs e2e only with the `ci-android-e2e` label.
   #
-  # The queue ignores the path list on purpose. It is the last check before
-  # main, and e2e also depends on files outside the list: the setup-nix action,
-  # the JS lockfile the suite installs from, and devimint-shape.sh, which
-  # setup_test_shell.sh sources. Running it for every queued PR costs few runs,
-  # since most merges touch Android anyway.
+  # A merge group is the last check before main, and e2e also depends on files
+  # outside Android proper (`setup-nix`, `devimint-shape.sh`, the full `js`
+  # workspace whose `pnpm install` runs workspace `prepare` scripts such as
+  # `js/web/web-sdk` and `react-native-bindings`, and `rust/ubrn` pulled into
+  # `.#android` and `.#android-tests`). An allow-list there fails open on any
+  # omitted dependency, so `merge_group` uses a fail-closed exclude list
+  # instead: the whole chain (e2e included) runs unless every changed path is
+  # one the chain cannot depend on. Every other event (manual dispatch, release,
+  # snapshot) runs the whole chain.
   changes:
     name: 'Detect changes'
     runs-on: ubuntu-24.04
@@ -103,6 +107,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           E2E_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-android-e2e') }}
         run: |
           set -euo pipefail
@@ -124,14 +130,25 @@ jobs:
 
           case "$EVENT_NAME" in
             pull_request)
-              diff_args=("$PR_BASE_SHA...$PR_HEAD_SHA")
               # Asking for e2e asks for the chain it needs, whatever the PR
               # touched.
               if [[ "$E2E_LABEL" == true ]]; then
                 run_everything
+                emit_outputs
+                exit 0
               fi
+              diff_args=("$PR_BASE_SHA...$PR_HEAD_SHA")
               ;;
-            # A merge group, a manual run, or a release or snapshot call.
+            merge_group)
+              if [[ -z "$MERGE_GROUP_BASE_SHA" || -z "$MERGE_GROUP_HEAD_SHA" ]]; then
+                echo "Missing merge_group commit SHAs; building the whole chain." >&2
+                run_everything
+                emit_outputs
+                exit 0
+              fi
+              diff_args=("$MERGE_GROUP_BASE_SHA" "$MERGE_GROUP_HEAD_SHA")
+              ;;
+            # A manual run, or a release or snapshot call.
             *)
               run_everything
               emit_outputs
@@ -144,24 +161,63 @@ jobs:
           changed_files="$RUNNER_TEMP/changed-files"
           if ! git diff --no-renames --name-only -z "${diff_args[@]}" > "$changed_files"; then
             echo "Could not determine changed paths; building the whole chain." >&2
-            android=true
+            if [[ "$EVENT_NAME" == merge_group ]]; then
+              run_everything
+            else
+              android=true
+            fi
             emit_outputs
             exit 0
           fi
 
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              # Everything the chain builds from, and the e2e suite and the
-              # workflows that run it. The Nix and flake paths are here because
-              # a change to the derivations is validated by building what they
-              # produce and then generating against it, which is a stronger
-              # check than building the `.so` alone. None of these turns e2e on:
-              # on a pull request only the label does.
-              android/*|rust/fedimint-sdk/*|rust/uniffi-bindgen/*|nix/*|flake.nix|flake.lock|scripts/nix-build-android-so.sh|scripts/generate-android-bindings.sh|scripts/build-android-sdk.sh|scripts/e2e-android/*|js/android/integration-tests/*|scripts/setup_test_shell.sh|scripts/devimint-modules.sh|.github/workflows/android-sdk.yaml|.github/workflows/android-native.yaml|.github/workflows/android-apk.yaml|.github/workflows/android-e2e.yml|.github/workflows/android-e2e-label.yml)
-                android=true
-                ;;
-            esac
-          done < "$changed_files"
+          if [[ "$EVENT_NAME" == merge_group ]]; then
+            # Fail closed: run the whole chain unless every changed path
+            # matches a location the Android chain cannot depend on. `js/*`
+            # (non-Markdown) and `rust/ubrn/*` are intentionally omitted so
+            # changes that can break `pnpm --dir js install` workspace
+            # `prepare` scripts or `.#android` / `.#android-tests` shells never
+            # skip the queue.
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                # Markdown, docs site, skills, native Swift SDK, formatting/license.
+                *.md|docs/*|skills/*|ios/*|LICENSE|.prettierignore|.prettierrc.json)
+                  ;;
+                # Repo metadata and non-Android GitHub Actions / workflows.
+                .github/CODEOWNERS|.github/dependabot.yml|.github/icon.png)
+                  ;;
+                .github/actions/build-rn-android/*|.github/actions/build-rn-ios/*|.github/actions/build-sdk-web/*|.github/actions/install-deps/*)
+                  ;;
+                .github/workflows/docs.yaml|.github/workflows/ios-native.yaml|.github/workflows/pull-request.yml|.github/workflows/react-native-sdk-release.yaml|.github/workflows/rust-sdk-ci.yaml|.github/workflows/rust-sdk-release.yaml|.github/workflows/sdk-release-scripts.yaml|.github/workflows/sdk-tag.yaml|.github/workflows/sdk-version-bump.yaml|.github/workflows/swift-sdk.yaml|.github/workflows/verify.yml|.github/workflows/web-sdk-release.yaml)
+                  ;;
+                # Explicit iOS, Web, React Native, Rust-only, and release scripts.
+                scripts/assemble-ios-xcframework.sh|scripts/assemble-rn-ios-xcframework.sh|scripts/build-ios-lib.sh|scripts/build-ios-sdk.sh|scripts/build-sdk-rn-ios.sh|scripts/generate-swift-bindings.sh|scripts/hide-ios-symbols.sh|scripts/nix-build-ios-lib.sh)
+                  ;;
+                scripts/generate-sdk-rn-bindings.sh|scripts/generate-sdk-web-bindings.sh|scripts/nix-build-sdk-wasm.sh|scripts/react-native-sdk-example.sh|scripts/react-native-sdk-pack.sh|scripts/react-native-sdk-smoke.js|scripts/react-native-sdk-smoke.sh|scripts/rn-android-emulator.sh|scripts/rn-android-example.sh|scripts/sdk-web-wasm-size.sh|scripts/web-sdk-pack.sh|scripts/web-sdk-smoke.sh|scripts/web-sdk-smoke/*)
+                  ;;
+                scripts/run-sdk-examples.sh|scripts/run-sdk-examples-inner.sh|scripts/run-sdk-integration-tests.sh|scripts/rust-sdk-publish.sh|scripts/sdk-changelog.sh|scripts/sdk-components.sh|scripts/sdk-npm-publish.sh|scripts/sdk-release.sh|scripts/sdk-version.sh|scripts/test-assemble-rn-ios-xcframework.sh|scripts/test-build-sdk-rn-ios.sh|scripts/test-hide-ios-symbols.sh|scripts/test-react-native-sdk-scripts.sh|scripts/test-sdk-release-scripts.sh|scripts/test-sdk-web-wasm-size.sh|scripts/test-web-sdk-scripts.sh)
+                  ;;
+                *)
+                  run_everything
+                  break
+                  ;;
+              esac
+            done < "$changed_files"
+          else
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                # Everything the chain builds from, and the e2e suite and the
+                # workflows/actions that run it. The Nix and flake paths are
+                # here because a change to the derivations is validated by
+                # building what they produce and then generating against it,
+                # which is a stronger check than building the `.so` alone. None
+                # of these turns e2e on: on a pull request only the label does.
+                android/*|rust/fedimint-sdk/*|rust/uniffi-bindgen/*|nix/*|flake.nix|flake.lock|scripts/nix-build-android-so.sh|scripts/generate-android-bindings.sh|scripts/build-android-sdk.sh|scripts/e2e-android/*|js/android/integration-tests/*|scripts/setup_test_shell.sh|scripts/devimint-modules.sh|.github/actions/setup-nix/*|.github/workflows/android-sdk.yaml|.github/workflows/android-native.yaml|.github/workflows/android-apk.yaml|.github/workflows/android-e2e.yml|.github/workflows/android-e2e-label.yml)
+                  android=true
+                  break
+                  ;;
+              esac
+            done < "$changed_files"
+          fi
 
           emit_outputs
 
