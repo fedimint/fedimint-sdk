@@ -1,0 +1,433 @@
+{
+  "title": "Fedimint SDK for React Native",
+  "summary": "Add ecash to a React Native wallet with the Fedimint npm packages: install them, join a federation, show a balance, receive and send ecash and Lightning, list history, share the session with React hooks, and restore from seed words.",
+  "groups": [
+    {
+      "title": "Getting started",
+      "pages": [
+        {
+          "slug": "index",
+          "title": "Welcome",
+          "description": "What the SDK does, what is proven, and where to start."
+        },
+        {
+          "slug": "quickstart",
+          "title": "Quickstart",
+          "description": "From an empty app to a balance on screen in one page."
+        },
+        {
+          "slug": "installation",
+          "title": "Installation",
+          "description": "Install the two npm packages, link them on iOS and Android, and see the SDK answer on a device."
+        }
+      ]
+    },
+    {
+      "title": "Guides",
+      "pages": [
+        {
+          "slug": "join",
+          "title": "Join a federation",
+          "description": "Read an invite code, preview a federation, join it, and reconnect on every launch."
+        },
+        {
+          "slug": "balance",
+          "title": "Show a balance",
+          "description": "Read the balance once, then follow it as it changes."
+        },
+        {
+          "slug": "receive",
+          "title": "Receive money",
+          "description": "Redeem ecash, and create and watch a Lightning invoice."
+        },
+        {
+          "slug": "send",
+          "title": "Send money",
+          "description": "Quote and send ecash, take it back, and pay a Lightning invoice."
+        },
+        {
+          "slug": "history",
+          "title": "See the history",
+          "description": "Page through operations and turn each one into a row."
+        },
+        {
+          "slug": "session",
+          "title": "Share the session",
+          "description": "Open the SDK once in a module your app owns, share the session, and follow it with hooks."
+        },
+        {
+          "slug": "restore",
+          "title": "Restore from seed words",
+          "description": "Open a wallet from seed words and recover each federation."
+        }
+      ]
+    },
+    {
+      "title": "Reference",
+      "pages": [
+        {
+          "slug": "errors",
+          "title": "Errors",
+          "description": "Exception and its codes, and how to explain a failure."
+        },
+        {
+          "slug": "amounts",
+          "title": "Amounts",
+          "description": "Units, conversion, and the amount types."
+        },
+        {
+          "slug": "seed-words",
+          "title": "Seed words",
+          "description": "Open the wallet once, and show the seed words only to their owner."
+        }
+      ]
+    },
+    {
+      "title": "API",
+      "pages": [
+        {
+          "slug": "api",
+          "title": "Overview",
+          "description": "Every method the guides use, in groups, with a link to a page for each."
+        }
+      ],
+      "sections": [
+        {
+          "title": "Session",
+          "pages": [
+            {
+              "slug": "api-session-opensdk",
+              "title": "openSdk()",
+              "description": "Opens the SDK on a data directory and gives you a session."
+            },
+            {
+              "slug": "api-session-close",
+              "title": "close()",
+              "description": "Shuts down the SDK and destroys it."
+            },
+            {
+              "slug": "api-session-usesession",
+              "title": "useSession()",
+              "description": "Gives the session from the nearest SessionProvider."
+            },
+            {
+              "slug": "api-session-usebalance",
+              "title": "useBalance()",
+              "description": "A React hook that follows the balance of a federation."
+            },
+            {
+              "slug": "api-session-useoperation",
+              "title": "useOperation()",
+              "description": "A React hook that follows the state of an operation."
+            }
+          ]
+        },
+        {
+          "title": "Sdk",
+          "pages": [
+            {
+              "slug": "api-sdk-preview",
+              "title": "preview()",
+              "description": "Looks up a federation from its invite code."
+            },
+            {
+              "slug": "api-sdk-join",
+              "title": "join()",
+              "description": "Joins a federation."
+            },
+            {
+              "slug": "api-sdk-recover",
+              "title": "recover()",
+              "description": "Joins a federation again and restores its funds from the seed."
+            },
+            {
+              "slug": "api-sdk-resumerecovery",
+              "title": "resumeRecovery()",
+              "description": "Continues the recovery of a federation."
+            },
+            {
+              "slug": "api-sdk-recoverystatus",
+              "title": "recoveryStatus()",
+              "description": "Reads the recovery state of a federation."
+            },
+            {
+              "slug": "api-sdk-federation",
+              "title": "federation()",
+              "description": "Looks up an open federation by its id."
+            },
+            {
+              "slug": "api-sdk-federations",
+              "title": "federations()",
+              "description": "Lists the open federations."
+            },
+            {
+              "slug": "api-sdk-storedfederations",
+              "title": "storedFederations()",
+              "description": "Lists every federation in storage, running or not."
+            },
+            {
+              "slug": "api-sdk-reopenfederation",
+              "title": "reopenFederation()",
+              "description": "Starts a stored federation again, without an invite code."
+            },
+            {
+              "slug": "api-sdk-exportmnemonic",
+              "title": "exportMnemonic()",
+              "description": "Gives the seed phrase object of the wallet."
+            }
+          ]
+        },
+        {
+          "title": "Federation",
+          "pages": [
+            {
+              "slug": "api-federation-id",
+              "title": "id()",
+              "description": "Gives the id of this federation."
+            },
+            {
+              "slug": "api-federation-name",
+              "title": "name()",
+              "description": "Gives the name from the configuration of the federation."
+            },
+            {
+              "slug": "api-federation-network",
+              "title": "network()",
+              "description": "Gives the Bitcoin network of the federation."
+            },
+            {
+              "slug": "api-federation-balance",
+              "title": "balance()",
+              "description": "Reads the balance of the federation once."
+            },
+            {
+              "slug": "api-federation-balanceupdates",
+              "title": "balanceUpdates()",
+              "description": "Opens a new cursor on the balance."
+            },
+            {
+              "slug": "api-federation-activity",
+              "title": "activity()",
+              "description": "Reads one page of the local history."
+            },
+            {
+              "slug": "api-federation-operation",
+              "title": "operation()",
+              "description": "Looks up one operation by its id."
+            },
+            {
+              "slug": "api-federation-ecash",
+              "title": "ecash()",
+              "description": "Gives the ecash facade."
+            },
+            {
+              "slug": "api-federation-lightning",
+              "title": "lightning()",
+              "description": "Gives the Lightning facade."
+            },
+            {
+              "slug": "api-federation-capabilities",
+              "title": "capabilities()",
+              "description": "Tells what the federation can do."
+            },
+            {
+              "slug": "api-federation-invitecode",
+              "title": "inviteCode()",
+              "description": "Gives an invite code that you can share."
+            },
+            {
+              "slug": "api-federation-meta",
+              "title": "meta()",
+              "description": "Gives the metadata of the federation."
+            },
+            {
+              "slug": "api-federation-onchain",
+              "title": "onchain()",
+              "description": "Gives the on-chain facade."
+            }
+          ]
+        },
+        {
+          "title": "Ecash",
+          "pages": [
+            {
+              "slug": "api-ecash-quote",
+              "title": "quote()",
+              "description": "Plans a send of ecash."
+            },
+            {
+              "slug": "api-ecash-send",
+              "title": "send()",
+              "description": "Runs a quote and makes the notes to hand over."
+            },
+            {
+              "slug": "api-ecash-receive",
+              "title": "receive()",
+              "description": "Redeems ecash notes."
+            },
+            {
+              "slug": "api-ecash-requestedamount",
+              "title": "requestedAmount()",
+              "description": "Gives the amount that was asked for."
+            },
+            {
+              "slug": "api-ecash-notesvalue",
+              "title": "notesValue()",
+              "description": "Gives the value of the notes in the quote."
+            },
+            {
+              "slug": "api-ecash-fee",
+              "title": "fee()",
+              "description": "Gives the fee of the quote."
+            },
+            {
+              "slug": "api-ecash-total",
+              "title": "total()",
+              "description": "Gives the total cost of the quote."
+            }
+          ]
+        },
+        {
+          "title": "Lightning",
+          "pages": [
+            {
+              "slug": "api-lightning-quote",
+              "title": "quote()",
+              "description": "Plans the payment of an invoice."
+            },
+            {
+              "slug": "api-lightning-send",
+              "title": "send()",
+              "description": "Pays the invoice of a quote."
+            },
+            {
+              "slug": "api-lightning-receive",
+              "title": "receive()",
+              "description": "Creates an invoice that the wallet can get paid on."
+            },
+            {
+              "slug": "api-lightning-invoiceamount",
+              "title": "invoiceAmount()",
+              "description": "Gives the amount of the invoice."
+            },
+            {
+              "slug": "api-lightning-fee",
+              "title": "fee()",
+              "description": "Gives the fee of the payment."
+            },
+            {
+              "slug": "api-lightning-total",
+              "title": "total()",
+              "description": "Gives the total cost of the payment."
+            }
+          ]
+        },
+        {
+          "title": "Operation",
+          "pages": [
+            {
+              "slug": "api-operation-state",
+              "title": "state()",
+              "description": "Reads the current state of the operation."
+            },
+            {
+              "slug": "api-operation-updates",
+              "title": "updates()",
+              "description": "Opens a cursor on the states of the operation."
+            },
+            {
+              "slug": "api-operation-awaitfinal",
+              "title": "awaitFinal()",
+              "description": "Waits for the final state of the operation."
+            },
+            {
+              "slug": "api-operation-requestcancel",
+              "title": "requestCancel()",
+              "description": "Asks to take back the ecash of a send."
+            },
+            {
+              "slug": "api-operation-asecashsend",
+              "title": "asEcashSend()",
+              "description": "Turns an untyped operation into an ecash send handle."
+            },
+            {
+              "slug": "api-operation-kind",
+              "title": "kind()",
+              "description": "Tells the kind of an operation."
+            },
+            {
+              "slug": "api-operation-details",
+              "title": "details()",
+              "description": "Reads the details of an ecash send."
+            }
+          ]
+        },
+        {
+          "title": "Values",
+          "pages": [
+            {
+              "slug": "api-values-invitecode-parse",
+              "title": "parse()",
+              "description": "Checks an invite code string and gives you a checked invite code."
+            },
+            {
+              "slug": "api-values-invitecode-federationid",
+              "title": "federationId()",
+              "description": "Reads the federation id from the invite code."
+            },
+            {
+              "slug": "api-values-notes-parse",
+              "title": "parse()",
+              "description": "Checks an ecash string and gives you checked notes."
+            },
+            {
+              "slug": "api-values-notes-value",
+              "title": "value()",
+              "description": "Reads the value inside the notes."
+            },
+            {
+              "slug": "api-values-notes-display",
+              "title": "display()",
+              "description": "Gives the string to hand over."
+            },
+            {
+              "slug": "api-values-mnemonic-words",
+              "title": "words()",
+              "description": "Reads the seed words."
+            }
+          ]
+        },
+        {
+          "title": "Errors (Exception)",
+          "pages": [
+            {
+              "slug": "api-errors-hasinner",
+              "title": "hasInner()",
+              "description": "Tells whether a caught value carries an SDK Exception."
+            },
+            {
+              "slug": "api-errors-getinner",
+              "title": "getInner()",
+              "description": "Gives the Exception inside a caught value."
+            },
+            {
+              "slug": "api-errors-code",
+              "title": "code()",
+              "description": "Gives the stable error code."
+            },
+            {
+              "slug": "api-errors-reason",
+              "title": "reason()",
+              "description": "Gives the human message."
+            },
+            {
+              "slug": "api-errors-details",
+              "title": "details()",
+              "description": "Gives the structured detail of the failure, where there is any."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
