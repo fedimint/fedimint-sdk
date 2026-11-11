@@ -80,7 +80,7 @@ jobs:
           persist-credentials: false
 
       - name: 'Install Nix'
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@v30
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
@@ -109,7 +109,7 @@ jobs:
         run: ./scripts/nix-build-ios-lib.sh
 
       - name: 'Upload Apple slices'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apple-slices
           path: |
