@@ -34,7 +34,7 @@ function sidebarFrom(
 
 export default defineConfig({
   title: 'Fedimint SDK',
-  description: 'Documentation for the Fedimint SDK.',
+  description: 'Ecash and Lightning for apps, products and AI agents.',
   cleanUrls: true,
   lastUpdated: false,
   // Only pages are content. Tools, tests, fixtures and their node_modules are not.
