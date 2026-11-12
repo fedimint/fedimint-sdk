@@ -127,8 +127,27 @@ if ! command -v appium >/dev/null 2>&1; then
   exit 1
 fi
 
-LOG_DIR="${APPIUM_HOME:-$PKG_DIR/.appium}"
+APPIUM_HOME="${APPIUM_HOME:-$PKG_DIR/.appium}"
+export APPIUM_HOME
+LOG_DIR="$APPIUM_HOME/runs/$FM_SDK_SHAPE"
 mkdir -p "$LOG_DIR"
+export APPIUM_STATE_DIR="$LOG_DIR"
+export APPIUM_LOG_DIR="$LOG_DIR"
+export SCREENSHOTS_DIR="$PKG_DIR/screenshots/$FM_SDK_SHAPE"
+
+# Partition Appium, UiAutomator2 systemPort, and emulator console port ranges
+# per shape so concurrent v1/v2 runs never race or collide on a shared host.
+if [[ "$FM_SDK_SHAPE" == v2 ]]; then
+  export APPIUM_BASE_PORT="${APPIUM_BASE_PORT:-4727}"
+  export APPIUM_SYSTEM_PORT="${APPIUM_SYSTEM_PORT:-8202}"
+  EMU_PORT_START=5580
+  EMU_PORT_END=5682
+else
+  export APPIUM_BASE_PORT="${APPIUM_BASE_PORT:-4723}"
+  export APPIUM_SYSTEM_PORT="${APPIUM_SYSTEM_PORT:-8200}"
+  EMU_PORT_START=5554
+  EMU_PORT_END=5578
+fi
 
 # Appium is started with nohup, so it outlives this script unless stopped, and
 # neither a developer machine nor CI's self-hosted runner goes away with the
@@ -136,7 +155,7 @@ mkdir -p "$LOG_DIR"
 # Stops whichever server the PID file names, including one a previous run
 # left behind and this run reused, so the next run starts with current flags.
 stop_appium() {
-  local state_dir="${APPIUM_HOME:-$LOG_DIR}"
+  local state_dir="${APPIUM_STATE_DIR:-$LOG_DIR}"
   local pid_file="$state_dir/appium_pid.txt"
   if [[ -f "$pid_file" ]]; then
     kill "$(cat "$pid_file")" 2>/dev/null || true
@@ -147,16 +166,16 @@ trap stop_appium EXIT
 
 bash "$REPO_ROOT/scripts/e2e-android/setup-and-start-appium.sh"
 
-# setup-and-start-appium.sh retries on the next port up if 4723 is taken, and
-# records where it landed. Without this the runner would fall back to its
+# setup-and-start-appium.sh retries on the next port up if its base port is taken,
+# and records where it landed. Without this the runner would fall back to its
 # 4723 default and talk to nothing.
-if [[ -f "${APPIUM_HOME:-$LOG_DIR}/appium_port.txt" ]]; then
-  APPIUM_PORT=$(cat "${APPIUM_HOME:-$LOG_DIR}/appium_port.txt")
+if [[ -f "${APPIUM_STATE_DIR:-$LOG_DIR}/appium_port.txt" ]]; then
+  APPIUM_PORT=$(cat "${APPIUM_STATE_DIR:-$LOG_DIR}/appium_port.txt")
   export APPIUM_PORT
-  echo "Appium is serving on port $APPIUM_PORT"
+  echo "Appium is serving on port $APPIUM_PORT (systemPort=$APPIUM_SYSTEM_PORT)"
 fi
 
-AVD_NAME="fedimint-e2e"
+AVD_NAME="fedimint-e2e-$FM_SDK_SHAPE"
 
 ensure_avd_exists() {
   if emulator -list-avds | grep -qx "$AVD_NAME"; then return; fi
@@ -183,19 +202,18 @@ boot_failure_log() {
   echo "--- end of emulator.log ---" >&2
 }
 
-# The first even console port, from the emulator's own 5554-5682 range, that
-# no attached emulator is using. An emulator's adb serial is
-# `emulator-<console port>`, so choosing the port is how this script knows
-# which device it booted.
+# The first even console port in this shape's range ($EMU_PORT_START-$EMU_PORT_END)
+# that no attached emulator is using. Partitioning the range per shape prevents
+# two concurrent boots from picking the same port before `adb devices` lists them.
 free_emulator_port() {
   local port
-  for port in $(seq 5554 2 5682); do
+  for port in $(seq "$EMU_PORT_START" 2 "$EMU_PORT_END"); do
     if ! adb devices | awk 'NR>1 {print $1}' | grep -qx "emulator-$port"; then
       echo "$port"
       return
     fi
   done
-  echo "No free emulator console port in 5554-5682." >&2
+  echo "No free emulator console port in $EMU_PORT_START-$EMU_PORT_END." >&2
   exit 1
 }
 
@@ -236,15 +254,28 @@ get_device_ids() {
   adb devices | awk 'NR>1 && $2=="device" {print $1}'
 }
 
+find_running_avd_serial() {
+  local id avd
+  while IFS= read -r id; do
+    [[ "$id" == emulator-* ]] || continue
+    avd=$(adb -s "$id" emu avd name 2>/dev/null | head -n1 | tr -d '\r' || true)
+    if [[ "$avd" == "$AVD_NAME" ]]; then
+      echo "$id"
+      return 0
+    fi
+  done < <(get_device_ids)
+  return 1
+}
+
 if [[ "${CI:-}" == "true" ]]; then
-  # Non-interactive: reuse a running device if one exists, else boot the AVD.
-  device_ids=()
-  while IFS= read -r line; do device_ids+=("$line"); done < <(get_device_ids)
-  if [[ ${#device_ids[@]} -eq 0 ]]; then
+  # Reuse a running emulator only if its AVD matches this shape ($AVD_NAME);
+  # otherwise boot a dedicated AVD so concurrent shapes never share a device.
+  DEVICE_ID=$(find_running_avd_serial || true)
+  if [[ -n "$DEVICE_ID" ]]; then
+    echo "Reusing running emulator $DEVICE_ID for AVD '$AVD_NAME'"
+  else
     boot_avd
     DEVICE_ID=$BOOTED_SERIAL
-  else
-    DEVICE_ID=${device_ids[0]}
   fi
   TESTS_TO_RUN=${TESTS_TO_RUN:-all}
 else

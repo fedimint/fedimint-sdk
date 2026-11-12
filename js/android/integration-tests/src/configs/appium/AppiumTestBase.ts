@@ -315,7 +315,7 @@ export class AppiumTestBase {
   async saveScreenshot(label: string): Promise<void> {
     try {
       const png = await this.driver.takeScreenshot()
-      const dir = path.join(process.cwd(), 'screenshots')
+      const dir = AppiumManager.screenshotsDir()
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
       const file = path.join(dir, `${label}.png`)
       fs.writeFileSync(file, png, 'base64')
