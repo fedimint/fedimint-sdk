@@ -3,7 +3,7 @@ layout: home
 hero:
   name: Fedimint SDK
   text: Ecash and Lightning for apps, products and AI agents.
-  tagline: Add it to an app you have, start a new one, or give an agent a wallet.
+  tagline: Add it to an app you have, start a new one, or let a coding agent add it for you.
   actions:
     - theme: brand
       text: React Native

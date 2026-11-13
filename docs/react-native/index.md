@@ -3,7 +3,7 @@ title: 'Welcome'
 description: 'What the SDK does, what is proven, and where to start.'
 ---
 
-# Add ecash and Lightning to the app you already have
+# Add ecash and Lightning to your app
 
 Join a federation, hold ecash, send and receive it, and restore from seed words, with one typed SDK.
 {.subtitle}
