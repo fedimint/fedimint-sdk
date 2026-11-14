@@ -2,7 +2,8 @@
 layout: home
 hero:
   name: Fedimint SDK
-  tagline: Add ecash and Lightning to the app you already have.
+  text: Ecash and Lightning for apps, products and AI agents.
+  tagline: Add it to an app you have, start a new one, or let a coding agent add it for you.
   actions:
     - theme: brand
       text: React Native
@@ -11,4 +12,7 @@ features:
   - title: React Native
     details: Install the npm packages, join a federation, show a balance, send and receive, and restore from seed words.
     link: /react-native/
+  - title: AI agents
+    details: Give a coding agent the whole guide as one plain-Markdown file, and a skill for a first install.
+    link: /react-native/#for-ai-agents
 ---
