@@ -30,5 +30,13 @@ target 'ReactNativeExample' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+    # fmt 11.0.2 enables consteval under C++20, which the Xcode 27 clang rejects in
+    # format-inl.h. Compiling fmt alone as C++17 turns it off.
+    installer.pods_project.targets.each do |target|
+      next unless target.name == 'fmt'
+      target.build_configurations.each do |build_config|
+        build_config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+      end
+    end
   end
 end
