@@ -54,6 +54,22 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'vite-app',
+          environment: 'happy-dom',
+          include: ['examples/vite-app/src/**/*.test.tsx'],
+        },
+        resolve: {
+          alias: {
+            // The tests hand the example fakes of the SDK's objects, so the package comes from
+            // its source, which needs neither a build nor the wasm module.
+            '@fedimint/web-sdk': fileURLToPath(
+              new URL('./web/web-sdk/src/index.ts', import.meta.url),
+            ),
+          },
+        },
+      },
+      {
+        test: {
           name: 'react-native',
           environment: 'node',
           include: ['react-native/react-native/**/*.test.ts'],
