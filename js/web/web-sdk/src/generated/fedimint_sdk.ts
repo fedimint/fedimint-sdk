@@ -2168,6 +2168,18 @@ export interface NotesLike {
    */
   display(): string
   /**
+   * The id of the federation that issued these notes, if the token names it.
+   *
+   * This reads the token and does not contact the federation. A mintv2 token
+   * always names it. A v1 token carries only an id prefix, so this returns
+   * `None` for one unless it also carries an invite code.
+   */
+  federationId(): FederationId | undefined
+  /**
+   * See [`Notes::invite_code`].
+   */
+  inviteCode(): InviteCodeLike | undefined
+  /**
    * Returns the total value carried by these notes.
    *
    * This reads the value encoded in the notes themselves and does not
@@ -2265,6 +2277,50 @@ export class Notes extends UniffiAbstractObject implements NotesLike {
     )
     try {
       return FfiConverterString.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * The id of the federation that issued these notes, if the token names it.
+   *
+   * This reads the token and does not contact the federation. A mintv2 token
+   * always names it. A v1 token carries only an id prefix, so this returns
+   * `None` for one unless it also carries an invite code.
+   */
+  federationId(): FederationId | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_notes_federation_id(
+          uniffiTypeNotesObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeFederationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * See [`Notes::invite_code`].
+   */
+  inviteCode(): InviteCodeLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_notes_invite_code(
+          uniffiTypeNotesObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeInviteCode.lift(__rb)
     } finally {
       nativeModule().rustbuffer_free(__rb)
     }
@@ -17625,6 +17681,16 @@ export type MetaMap = Map<string, string>
 // FfiConverter for MetaMap, a type alias for Map<string, string>.
 const FfiConverterTypeMetaMap = FfiConverterMapStringString
 
+// FfiConverter for FederationId | undefined
+const FfiConverterOptionalTypeFederationId = new FfiConverterOptional(
+  FfiConverterTypeFederationId,
+)
+
+// FfiConverter for InviteCodeLike | undefined
+const FfiConverterOptionalTypeInviteCode = new FfiConverterOptional(
+  FfiConverterTypeInviteCode,
+)
+
 // FfiConverter for NotesLike | undefined
 const FfiConverterOptionalTypeNotes = new FfiConverterOptional(
   FfiConverterTypeNotes,
@@ -18466,6 +18532,22 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_notes_display',
+    )
+  }
+  if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_notes_federation_id() !==
+    34225
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_notes_federation_id',
+    )
+  }
+  if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_notes_invite_code() !==
+    26359
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_notes_invite_code',
     )
   }
   if (
