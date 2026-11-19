@@ -123,7 +123,13 @@ else
     done
 fi
 
-for abi in arm64-v8a x86_64; do
+abis=(arm64-v8a x86_64)
+if [[ "$MODE" == "nix" ]]; then
+    case "${ANDROID_TARGETS:-all}" in
+        arm64|arm64-v8a|arm64-only) abis=(arm64-v8a) ;;
+    esac
+fi
+for abi in "${abis[@]}"; do
     [[ -f "$JNI_LIBS/$abi/lib${LIB_NAME}.so" ]] \
         || {
             echo "missing $abi/lib${LIB_NAME}.so after build" >&2

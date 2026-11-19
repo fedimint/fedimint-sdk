@@ -104,6 +104,8 @@ jobs:
       # The shared artifact: jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so,
       # laid out the way AGP expects so a consumer needs no extra wiring.
       - name: 'Assemble the jniLibs tree'
+        env:
+          ANDROID_TARGETS: all
         run: ./scripts/nix-build-android-so.sh
 
       - name: 'Upload jniLibs'
@@ -125,4 +127,5 @@ jobs:
             .#fedimint-sdk-android-aarch64-linux-android-deps \
             .#fedimint-sdk-android-x86_64-linux-android-deps \
             .#fedimint-sdk-android-jni \
+            .#fedimint-sdk-android-jni-arm64-v8a \
             | cachix push fedimint
