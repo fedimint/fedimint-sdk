@@ -119,6 +119,8 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_display(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_notes_federation_id(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_notes_invite_code(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_notes_value(): number
   ubrn_uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_onchain_deposits(): number
@@ -489,6 +491,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_notes_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_notes_federation_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_method_notes_invite_code(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array

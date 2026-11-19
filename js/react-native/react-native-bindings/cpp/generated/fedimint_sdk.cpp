@@ -498,7 +498,11 @@ void uniffi_fedimint_sdk_fn_free_notes(
 /*handle*/ uint64_t
 uniffi_fedimint_sdk_fn_constructor_notes_parse(RustBuffer notes,
                                                RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_notes_invite_code(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 RustBuffer uniffi_fedimint_sdk_fn_method_notes_display(
+    /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
+RustBuffer uniffi_fedimint_sdk_fn_method_notes_federation_id(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
 uint64_t uniffi_fedimint_sdk_fn_method_notes_value(
     /*handle*/ uint64_t ptr, RustCallStatus *uniffi_out_err);
@@ -755,7 +759,9 @@ uint16_t uniffi_fedimint_sdk_checksum_method_sdk_stored_federations();
 uint16_t uniffi_fedimint_sdk_checksum_method_invitecode_display();
 uint16_t uniffi_fedimint_sdk_checksum_method_invitecode_federation_id();
 uint16_t uniffi_fedimint_sdk_checksum_method_mnemonic_words();
+uint16_t uniffi_fedimint_sdk_checksum_method_notes_invite_code();
 uint16_t uniffi_fedimint_sdk_checksum_method_notes_display();
+uint16_t uniffi_fedimint_sdk_checksum_method_notes_federation_id();
 uint16_t uniffi_fedimint_sdk_checksum_method_notes_value();
 uint16_t uniffi_fedimint_sdk_checksum_constructor_invitecode_parse();
 uint16_t uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words();
@@ -4384,6 +4390,17 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_fn_constructor_notes_parse(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_notes_invite_code"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_notes_invite_code"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_notes_invite_code(
+                rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_fn_method_notes_display"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -4393,6 +4410,17 @@ NativeFedimintSdk::NativeFedimintSdk(
           [this](jsi::Runtime &rt, const jsi::Value &thisVal,
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_fedimint_sdk_fn_method_notes_display(
+                rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_fn_method_notes_federation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_fn_method_notes_federation_id"),
+          1,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_fedimint_sdk_fn_method_notes_federation_id(
                 rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_fn_method_notes_value"] =
@@ -6466,6 +6494,18 @@ NativeFedimintSdk::NativeFedimintSdk(
             return this->cpp_uniffi_fedimint_sdk_checksum_method_mnemonic_words(
                 rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_notes_invite_code"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt, "ubrn_uniffi_fedimint_sdk_checksum_method_notes_invite_code"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_notes_invite_code(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_notes_display"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -6476,6 +6516,19 @@ NativeFedimintSdk::NativeFedimintSdk(
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_fedimint_sdk_checksum_method_notes_display(
                 rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_method_notes_federation_id"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_checksum_method_notes_federation_id"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_method_notes_federation_id(
+                    rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_notes_value"] =
       jsi::Function::createFromHostFunction(
@@ -10276,12 +10329,44 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_constructor_notes_parse(
   return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
                                                          value);
 }
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_notes_invite_code(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_notes_invite_code(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
 jsi::Value NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_notes_display(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   RustCallStatus status =
       uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
   auto value = uniffi_fedimint_sdk_fn_method_notes_display(
+      uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
+                                                        args[0]),
+      &status);
+  uniffi::fedimint_sdk::Bridging<RustCallStatus>::copyIntoJs(
+      rt, callInvoker, status, args[count - 1]);
+
+  return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
+                                                          value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_method_notes_federation_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  RustCallStatus status =
+      uniffi::fedimint_sdk::Bridging<RustCallStatus>::rustSuccess(rt);
+  auto value = uniffi_fedimint_sdk_fn_method_notes_federation_id(
       uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker,
                                                         args[0]),
       &status);
@@ -11914,10 +11999,26 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_mnemonic_words(
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_notes_invite_code(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_notes_invite_code();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
 NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_notes_display(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_method_notes_display();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_checksum_method_notes_federation_id(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_method_notes_federation_id();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }

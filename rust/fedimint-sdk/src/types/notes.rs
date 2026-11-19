@@ -6,7 +6,7 @@ use fedimint_core::encoding::Encodable;
 use fedimint_mint_client::OOBNotes;
 use fedimint_mintv2_client::ECash;
 
-use super::Amount;
+use super::{Amount, FederationId, InviteCode};
 use crate::{Error, ErrorCode};
 
 /// An out-of-band ecash token string, handed from a sender to a receiver
@@ -88,6 +88,19 @@ impl Notes {
     pub fn display(&self) -> String {
         self.to_string()
     }
+
+    /// The id of the federation that issued these notes, if the token names it.
+    ///
+    /// This reads the token and does not contact the federation. A mintv2 token
+    /// always names it. A v1 token carries only an id prefix, so this returns
+    /// `None` for one unless it also carries an invite code.
+    pub fn federation_id(&self) -> Option<FederationId> {
+        let id = match &self.notes {
+            NotesInner::V1(notes) => notes.federation_invite()?.federation_id(),
+            NotesInner::V2 { ecash, .. } => ecash.mint()?,
+        };
+        Some(FederationId::from_upstream(id))
+    }
 }
 
 impl Notes {
@@ -129,6 +142,21 @@ impl Notes {
                 }
             }
         }
+    }
+
+    /// An invite code for the federation that issued these notes, if the token
+    /// carries one.
+    ///
+    /// This reads the token and does not contact the federation. Hand the
+    /// result to [`Sdk::preview`](crate::Sdk::preview) to show the receiver
+    /// which federation the notes come from before they join it. The invite
+    /// can carry an API secret, so treat it with the same care as the notes.
+    pub fn invite_code(&self) -> Option<InviteCode> {
+        let code = match &self.notes {
+            NotesInner::V1(notes) => notes.federation_invite(),
+            NotesInner::V2 { ecash, .. } => ecash.federation_invite(),
+        }?;
+        Some(InviteCode::from_upstream(code))
     }
 
     /// Returns a clone of the underlying upstream `OOBNotes` if this is a v1 token.
@@ -380,6 +408,59 @@ mod tests {
             // the rejected string.
             assert_eq!(error.message, "invalid ecash notes");
         }
+    }
+
+    /// An invite to the upstream dummy federation, the same code the invite tests use.
+    const INVITE: &str = "fed11qgqpqrnhwden5te0vehk7tnzv9ez7qqpyq4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z5wa8phk";
+    /// The id of that federation: 32 bytes of `0x2a`.
+    const INVITE_FEDERATION_ID: &str =
+        "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
+
+    fn upstream_invite() -> fedimint_core::invite_code::InviteCode {
+        INVITE.parse().expect("a valid invite code")
+    }
+
+    #[test]
+    fn a_v1_token_without_an_invite_names_no_federation_or_invite() {
+        let notes = TOKEN.parse::<Notes>().expect("a valid ecash token");
+        assert!(notes.federation_id().is_none());
+        assert!(notes.invite_code().is_none());
+    }
+
+    #[test]
+    fn a_v1_token_with_an_invite_names_its_federation_and_invite() {
+        let token = TOKEN.parse::<OOBNotes>().expect("a valid ecash token");
+        let with_invite = OOBNotes::new_with_invite(token.notes().clone(), &upstream_invite());
+        let notes = Notes::from_upstream(with_invite);
+        let federation_id = notes
+            .federation_id()
+            .expect("the token names its federation");
+        assert_eq!(federation_id.to_string(), INVITE_FEDERATION_ID);
+        let invite = notes.invite_code().expect("the token carries an invite");
+        assert_eq!(invite.display(), INVITE);
+    }
+
+    #[test]
+    fn a_mintv2_token_without_an_invite_still_names_its_federation() {
+        let ecash = ECash::new(fedimint_core::config::FederationId::dummy(), vec![]);
+        let notes = Notes::from_mintv2(ecash);
+        let federation_id = notes
+            .federation_id()
+            .expect("the token names its federation");
+        assert_eq!(federation_id.to_string(), INVITE_FEDERATION_ID);
+        assert!(notes.invite_code().is_none());
+    }
+
+    #[test]
+    fn a_mintv2_token_with_an_invite_names_its_federation_and_invite() {
+        let ecash = ECash::new_with_invite(vec![], &upstream_invite());
+        let notes = Notes::from_mintv2(ecash);
+        let federation_id = notes
+            .federation_id()
+            .expect("the token names its federation");
+        assert_eq!(federation_id.to_string(), INVITE_FEDERATION_ID);
+        let invite = notes.invite_code().expect("the token carries an invite");
+        assert_eq!(invite.display(), INVITE);
     }
 
     #[test]
