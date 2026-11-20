@@ -416,6 +416,7 @@ impl Sdk {
         SdkBuilder {
             storage: None,
             mnemonic: None,
+            create_if_missing: true,
             #[cfg(feature = "extension-api")]
             extensions: Vec::new(),
         }
@@ -1332,6 +1333,7 @@ impl Sdk {
 pub struct SdkBuilder {
     storage: Option<Storage>,
     mnemonic: Option<Mnemonic>,
+    create_if_missing: bool,
     #[cfg(feature = "extension-api")]
     extensions: Vec<Arc<dyn crate::Extension>>,
 }
@@ -1379,6 +1381,17 @@ impl SdkBuilder {
         self
     }
 
+    /// Controls whether empty storage may be initialized, even with a supplied mnemonic.
+    ///
+    /// Defaults to `true`. With `false`, empty storage returns
+    /// [`WalletNotFound`](crate::ErrorCode::WalletNotFound) without storing a seed.
+    /// The SDK may still create the directory and database files to take the storage claim
+    /// and check its contents.
+    pub fn create_if_missing(mut self, create: bool) -> Self {
+        self.create_if_missing = create;
+        self
+    }
+
     /// Adds an [`Extension`](crate::Extension) to the instance: client modules this crate does
     /// not ship, and work that runs on each client a federation starts.
     ///
@@ -1422,8 +1435,10 @@ impl SdkBuilder {
     ///      mnemonic was supplied, the call fails with
     ///      [`SeedMismatch`](crate::ErrorCode::SeedMismatch).
     ///    - *The storage is proven empty*, no seed and no state of any kind
-    ///      belonging to this SDK. The supplied or freshly generated
-    ///      mnemonic is written durably now, before any federation-derived
+    ///      belonging to this SDK. When creation is disabled, the call fails
+    ///      with [`WalletNotFound`](crate::ErrorCode::WalletNotFound).
+    ///      Otherwise, the supplied or freshly generated mnemonic is
+    ///      written durably now, before any federation-derived
     ///      state can exist. Generating a fresh mnemonic can itself fail
     ///      (see [`Mnemonic::generate`]): if the platform's secure random
     ///      source fails, the call fails with
@@ -1489,6 +1504,8 @@ impl SdkBuilder {
     /// refused before the storage is opened),
     /// [`StorageInUse`](crate::ErrorCode::StorageInUse),
     /// [`SeedMismatch`](crate::ErrorCode::SeedMismatch),
+    /// [`WalletNotFound`](crate::ErrorCode::WalletNotFound) when creation is
+    /// disabled and storage is empty,
     /// [`Entropy`](crate::ErrorCode::Entropy) if a fresh seed had to be
     /// generated and the platform's secure random source failed,
     /// [`Storage`](crate::ErrorCode::Storage) for a root-storage failure,
@@ -1524,7 +1541,8 @@ impl SdkBuilder {
         let (db, closer) = storage.open().await?;
 
         // Step 2: reconcile the seed, under that claim and before any write this call makes.
-        let mnemonic = reconcile_seed(&db, &location, self.mnemonic).await?;
+        let mnemonic =
+            reconcile_seed(&db, &location, self.mnemonic, self.create_if_missing).await?;
 
         // The instance exists before any federation does, which is what lets `export_mnemonic`
         // answer even when every federation goes on to quarantine itself.
@@ -2527,6 +2545,7 @@ async fn reconcile_seed(
     db: &Database,
     location: &str,
     supplied: Option<Mnemonic>,
+    create_if_missing: bool,
 ) -> Result<Mnemonic> {
     let sdk_db = db.with_prefix(crate::db::sdk_prefix().to_vec());
 
@@ -2576,6 +2595,13 @@ async fn reconcile_seed(
 
     if !crate::db::is_empty(db).await? {
         return Err(orphaned(false));
+    }
+
+    if !create_if_missing {
+        return Err(crate::Error::new(
+            crate::ErrorCode::WalletNotFound,
+            "no wallet exists in this storage",
+        ));
     }
 
     let established = match supplied {
@@ -2807,6 +2833,43 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread")]
+        async fn existing_only_open_leaves_empty_storage_available_for_restore() {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let storage = || Storage::at(dir.path().to_str().unwrap()).unwrap();
+
+            for supplied in [None, Some(mnemonic(ONE))] {
+                let mut builder = Sdk::builder().storage(storage()).create_if_missing(false);
+                if let Some(seed) = supplied {
+                    builder = builder.mnemonic(seed);
+                }
+                let err = builder
+                    .build()
+                    .await
+                    .expect_err("the wallet does not exist");
+                assert_eq!(err.code, crate::ErrorCode::WalletNotFound);
+            }
+
+            let restored = Sdk::builder()
+                .storage(storage())
+                .mnemonic(mnemonic(TWO))
+                .build()
+                .await
+                .expect("restore can establish a seed without removing the directory");
+            restored
+                .shutdown()
+                .await
+                .expect("the storage claim is released");
+
+            let reopened = Sdk::builder()
+                .storage(storage())
+                .create_if_missing(false)
+                .build()
+                .await
+                .expect("the restored wallet now exists");
+            assert_eq!(reopened.export_mnemonic().words(), mnemonic(TWO).words());
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         async fn a_fresh_store_keeps_the_seed_it_was_given() {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().to_str().expect("a utf-8 path").to_owned();
@@ -2849,6 +2912,7 @@ mod tests {
                 std::time::Duration::from_secs(10),
                 Sdk::builder()
                     .storage(Storage::at(&path).expect("a valid path"))
+                    .create_if_missing(false)
                     .build(),
             )
             .await
@@ -3096,6 +3160,7 @@ mod tests {
             let err = Sdk::builder()
                 .storage(Storage::at(&path).expect("a valid path"))
                 .mnemonic(mnemonic(TWO))
+                .create_if_missing(false)
                 .build()
                 .await
                 .expect_err("a second seed over the first is refused");
@@ -3137,6 +3202,7 @@ mod tests {
 
             let err = Sdk::builder()
                 .storage(Storage::at(&path).expect("a valid path"))
+                .create_if_missing(false)
                 .build()
                 .await
                 .expect_err("orphaned storage is refused");
@@ -3190,6 +3256,7 @@ mod tests {
 
             let err = Sdk::builder()
                 .storage(Storage::at(&path).expect("a valid path"))
+                .create_if_missing(false)
                 .build()
                 .await
                 .expect_err("an unreadable seed is refused");

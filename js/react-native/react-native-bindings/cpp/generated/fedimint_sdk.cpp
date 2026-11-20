@@ -507,6 +507,9 @@ uniffi_fedimint_sdk_fn_func_create_fedimint_sdk(RustBuffer data_dir,
                                                 RustBuffer mnemonic);
 RustBuffer uniffi_fedimint_sdk_fn_func_default_discovery_relays(
     RustCallStatus *uniffi_out_err);
+/*handle*/ uint64_t
+uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(RustBuffer data_dir,
+                                                       RustBuffer mnemonic);
 RustBuffer ffi_fedimint_sdk_rustbuffer_alloc(uint64_t size,
                                              RustCallStatus *uniffi_out_err);
 RustBuffer
@@ -627,6 +630,7 @@ void ffi_fedimint_sdk_rust_future_complete_void(
     /*handle*/ uint64_t handle, RustCallStatus *uniffi_out_err);
 uint16_t uniffi_fedimint_sdk_checksum_func_create_fedimint_sdk();
 uint16_t uniffi_fedimint_sdk_checksum_func_default_discovery_relays();
+uint16_t uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk();
 uint16_t uniffi_fedimint_sdk_checksum_method_ecash_quote();
 uint16_t uniffi_fedimint_sdk_checksum_method_ecash_receive();
 uint16_t uniffi_fedimint_sdk_checksum_method_ecash_send();
@@ -4429,6 +4433,19 @@ NativeFedimintSdk::NativeFedimintSdk(
                 ->cpp_uniffi_fedimint_sdk_fn_func_default_discovery_relays(
                     rt, thisVal, args, count);
           });
+  props["ubrn_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(
+              rt,
+              "ubrn_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk"),
+          2,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(
+                    rt, thisVal, args, count);
+          });
   props["ubrn_ffi_fedimint_sdk_rust_future_poll_u8"] =
       jsi::Function::createFromHostFunction(
           rt,
@@ -4979,6 +4996,18 @@ NativeFedimintSdk::NativeFedimintSdk(
                  const jsi::Value *args, size_t count) -> jsi::Value {
             return this
                 ->cpp_uniffi_fedimint_sdk_checksum_func_default_discovery_relays(
+                    rt, thisVal, args, count);
+          });
+  props["ubrn_uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk"] =
+      jsi::Function::createFromHostFunction(
+          rt,
+          jsi::PropNameID::forAscii(rt, "ubrn_uniffi_fedimint_sdk_checksum_"
+                                        "func_open_existing_fedimint_sdk"),
+          0,
+          [this](jsi::Runtime &rt, const jsi::Value &thisVal,
+                 const jsi::Value *args, size_t count) -> jsi::Value {
+            return this
+                ->cpp_uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk(
                     rt, thisVal, args, count);
           });
   props["ubrn_uniffi_fedimint_sdk_checksum_method_ecash_quote"] =
@@ -10331,6 +10360,19 @@ NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_func_default_discovery_relays(
   return uniffi::fedimint_sdk::Bridging<RustBuffer>::toJs(rt, callInvoker,
                                                           value);
 }
+jsi::Value
+NativeFedimintSdk::cpp_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(
+    jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+    size_t count) {
+  auto value = uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[0]),
+      uniffi::fedimint_sdk::Bridging<RustBuffer>::fromJs(rt, callInvoker,
+                                                         args[1]));
+
+  return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker,
+                                                         value);
+}
 jsi::Value NativeFedimintSdk::cpp_ffi_fedimint_sdk_rust_future_poll_u8(
     jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
     size_t count) {
@@ -10899,6 +10941,14 @@ jsi::Value NativeFedimintSdk::
         jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
         size_t count) {
   auto value = uniffi_fedimint_sdk_checksum_func_default_discovery_relays();
+
+  return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeFedimintSdk::
+    cpp_uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk(
+        jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+        size_t count) {
+  auto value = uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk();
 
   return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }

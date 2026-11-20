@@ -81,6 +81,15 @@ export async function createFedimintSdk(
   return new Sdk(dataDir, mnemonic)
 }
 
+export const existingWalletCalls: Parameters<typeof createFedimintSdk>[] = []
+
+export async function openExistingFedimintSdk(
+  ...args: Parameters<typeof createFedimintSdk>
+): Promise<Sdk> {
+  existingWalletCalls.push(args)
+  return createFedimintSdk(...args)
+}
+
 // The types `react.ts` reads, as narrow as it uses them.
 export type Amount = bigint
 export interface FederationLike {
