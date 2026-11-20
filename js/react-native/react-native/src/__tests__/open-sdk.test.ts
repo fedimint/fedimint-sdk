@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { openSdk } from '../index'
-import { InviteCode, Mnemonic, Notes, Sdk } from './bindings-stub'
+import {
+  InviteCode,
+  Mnemonic,
+  Notes,
+  Sdk,
+  existingWalletCalls,
+} from './bindings-stub'
 
 describe('openSdk', () => {
   beforeEach(() => {
+    existingWalletCalls.length = 0
     Sdk.instances = []
     Sdk.failNext = undefined
     Mnemonic.fromWordsCalls = []
@@ -19,6 +26,17 @@ describe('openSdk', () => {
     expect(Sdk.instances[0]!.dataDir).toBe('/data/fedimint')
     expect(Sdk.instances[0]!.mnemonic).toBeUndefined()
     expect(session.sdk).toBe(Sdk.instances[0])
+    expect(existingWalletCalls).toEqual([])
+  })
+
+  it('uses existing-only open and propagates refusal without falling back to creation', async () => {
+    const missing = new Error('WalletNotFound')
+    Sdk.failNext = missing
+    await expect(
+      openSdk({ dataDir: '/data/fedimint', createIfMissing: false }),
+    ).rejects.toBe(missing)
+    expect(existingWalletCalls).toEqual([['/data/fedimint', undefined]])
+    expect(Sdk.instances).toHaveLength(0)
   })
 
   it('turns given words into a Mnemonic before creating the SDK', async () => {

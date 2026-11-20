@@ -123,6 +123,56 @@ export function defaultDiscoveryRelays(): Array<string> {
   }
 }
 
+/**
+ * Opens an existing wallet without initializing empty storage.
+ *
+ * Returns [`WalletNotFound`](crate::ErrorCode::WalletNotFound) if the location is empty.
+ * Other storage errors follow the same rules as [`create_fedimint_sdk`].
+ */
+export async function openExistingFedimintSdk(
+  dataDir: string,
+  mnemonic: MnemonicLike | undefined,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<SdkLike> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(
+          FfiConverterString.lower(dataDir, nativeModule().rustbuffer_alloc),
+          FfiConverterOptionalTypeMnemonic.lower(
+            mnemonic,
+            nativeModule().rustbuffer_alloc,
+          ),
+        )
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_poll_u64,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_fedimint_sdk_rust_future_cancel_u64,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_fedimint_sdk_rust_future_complete_u64,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_fedimint_sdk_rust_future_free_u64,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      /*liftFunc:*/ FfiConverterTypeSdk.lift.bind(FfiConverterTypeSdk),
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeError__as_error.lift.bind(
+        FfiConverterTypeError__as_error,
+      ),
+    )
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack
+    }
+    throw __error
+  }
+}
+
 // Hermes (React Native ≥ 0.74) ships TextEncoder and encodeInto, but not
 // TextDecoder. For single-string decode (bytesToString), we polyfill via the
 // C++ string_from_buffer helper using a duck-typed object matching the
@@ -1326,6 +1376,13 @@ export enum ErrorCode {
    * is available.
    */
   Internal,
+  /**
+   * Storage is empty and the caller asked to open an existing wallet.
+   *
+   * The SDK did not establish a seed. The caller can let the user choose
+   * whether to create a new wallet or restore one with a mnemonic.
+   */
+  WalletNotFound,
 }
 
 const FfiConverterTypeErrorCode = (() => {
@@ -1379,6 +1436,8 @@ const FfiConverterTypeErrorCode = (() => {
           return ErrorCode.Storage
         case 23:
           return ErrorCode.Internal
+        case 24:
+          return ErrorCode.WalletNotFound
         default:
           throw new UniffiInternalError.UnexpectedEnumCase()
       }
@@ -1431,6 +1490,8 @@ const FfiConverterTypeErrorCode = (() => {
           return c.writeI32(22)
         case ErrorCode.Internal:
           return c.writeI32(23)
+        case ErrorCode.WalletNotFound:
+          return c.writeI32(24)
       }
     }
     allocationSize(value: TypeName): number {
@@ -18043,6 +18104,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_func_default_discovery_relays',
+    )
+  }
+  if (
+    nativeModule().ubrn_uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk() !==
+    50677
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk',
     )
   }
   if (

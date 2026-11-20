@@ -35,6 +35,7 @@ interface NativeModuleInterface {
   ubrn_ffi_fedimint_sdk_uniffi_contract_version(): number
   ubrn_uniffi_fedimint_sdk_checksum_func_create_fedimint_sdk(): number
   ubrn_uniffi_fedimint_sdk_checksum_func_default_discovery_relays(): number
+  ubrn_uniffi_fedimint_sdk_checksum_func_open_existing_fedimint_sdk(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_receive(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ecash_send(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_anyoperation_as_ln_receive(): number
@@ -171,6 +172,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_func_default_discovery_relays(
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array
+  ubrn_uniffi_fedimint_sdk_fn_func_open_existing_fedimint_sdk(
+    dataDir: Uint8Array,
+    mnemonic: Uint8Array,
+  ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_anyoperation_as_ecash_receive(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,

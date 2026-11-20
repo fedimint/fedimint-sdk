@@ -1443,6 +1443,11 @@ pub enum ErrorCode {
     /// generally indicates a bug; `message` carries what diagnostic detail
     /// is available.
     Internal,
+    /// Storage is empty and the caller asked to open an existing wallet.
+    ///
+    /// The SDK did not establish a seed. The caller can let the user choose
+    /// whether to create a new wallet or restore one with a mnemonic.
+    WalletNotFound,
 }
 
 /// Crate-wide result alias: every fallible call in this crate returns

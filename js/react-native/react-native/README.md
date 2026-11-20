@@ -61,6 +61,13 @@ try {
 }
 ```
 
+To look for an existing wallet at startup, call
+`openSdk({ dataDir, createIfMissing: false })` and check the exception code for
+`ErrorCode.WalletNotFound`. In that case, offer Create or Restore. Use the
+default open mode once the user chooses, passing their mnemonic for Restore.
+The existing-only attempt may create storage files, but leaves an empty store
+without a seed.
+
 Pass what the user pastes or scans to the SDK as it is. `InviteCode.parse`, `Notes.parse` and the
 string-typed values (a `Bolt11Invoice`, an `Address`) ignore whitespace around the text. A
 `Bolt11Invoice`, such as the one `lightning.quote(invoice)` takes, also accepts a `lightning:`

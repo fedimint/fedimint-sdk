@@ -24,6 +24,27 @@ pub async fn create_fedimint_sdk(
     data_dir: String,
     mnemonic: Option<Arc<Mnemonic>>,
 ) -> Result<Arc<Sdk>> {
+    open_sdk(data_dir, mnemonic, true).await
+}
+
+/// Opens an existing wallet without initializing empty storage.
+///
+/// Returns [`WalletNotFound`](crate::ErrorCode::WalletNotFound) if the location is empty.
+/// Other storage errors follow the same rules as [`create_fedimint_sdk`].
+#[cfg_attr(not(target_family = "wasm"), uniffi::export(async_runtime = "tokio"))]
+#[cfg_attr(target_family = "wasm", uniffi::export)]
+pub async fn open_existing_fedimint_sdk(
+    data_dir: String,
+    mnemonic: Option<Arc<Mnemonic>>,
+) -> Result<Arc<Sdk>> {
+    open_sdk(data_dir, mnemonic, false).await
+}
+
+async fn open_sdk(
+    data_dir: String,
+    mnemonic: Option<Arc<Mnemonic>>,
+    create_if_missing: bool,
+) -> Result<Arc<Sdk>> {
     // A Kotlin host has no way to install a Rust log subscriber, or to hand the SDK the `Context`
     // its DNS resolver needs, so on Android the SDK does both itself, here: the first call a host
     // is certain to make, and one made once its `Application` exists. Idempotent. See
@@ -43,7 +64,9 @@ pub async fn create_fedimint_sdk(
     let storage = Storage::at(&data_dir)?;
     #[cfg(target_family = "wasm")]
     let storage = Storage::in_browser(&data_dir)?;
-    let mut builder = Sdk::builder().storage(storage);
+    let mut builder = Sdk::builder()
+        .storage(storage)
+        .create_if_missing(create_if_missing);
     if let Some(mnemonic) = mnemonic {
         // `Mnemonic` crosses as an opaque object, so the binding hands over an `Arc`; the builder
         // wants it by value and `Mnemonic` is a cheap clone.
