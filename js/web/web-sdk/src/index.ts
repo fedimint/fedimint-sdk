@@ -44,6 +44,8 @@ export interface OpenOptions {
    * storage.
    */
   mnemonic?: string[]
+  /** Set to false to require a stored seed. Empty storage then returns WalletNotFound. */
+  createIfMissing?: boolean
   /** Supplies the worker; defaults to this package's own `./worker.js` as a module worker. */
   createWorker?: () => WorkerLike
 }
@@ -90,7 +92,11 @@ export async function openSdk(options: OpenOptions): Promise<SdkSession> {
           options.mnemonic,
         ])) as Proxied<MnemonicLike>)
       : undefined
-    const sdk = (await opened.callStatic(undefined, 'createFedimintSdk', [
+    const open =
+      options.createIfMissing === false
+        ? 'openExistingFedimintSdk'
+        : 'createFedimintSdk'
+    const sdk = (await opened.callStatic(undefined, open, [
       options.storage,
       mnemonic,
     ])) as Proxied<SdkLike>

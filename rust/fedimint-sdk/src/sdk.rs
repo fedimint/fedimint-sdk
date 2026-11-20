@@ -2912,7 +2912,6 @@ mod tests {
                 std::time::Duration::from_secs(10),
                 Sdk::builder()
                     .storage(Storage::at(&path).expect("a valid path"))
-                    .create_if_missing(false)
                     .build(),
             )
             .await
@@ -3157,17 +3156,19 @@ mod tests {
                 .expect("the first seed is established");
             drop(sdk);
 
-            let err = Sdk::builder()
-                .storage(Storage::at(&path).expect("a valid path"))
-                .mnemonic(mnemonic(TWO))
-                .create_if_missing(false)
-                .build()
-                .await
-                .expect_err("a second seed over the first is refused");
-            assert_eq!(err.code, crate::ErrorCode::SeedMismatch);
-            match err.detail() {
-                Some(ErrorDetails::SeedMismatch { location }) => assert_eq!(location, &path),
-                other => panic!("expected the location and nothing else, got {other:?}"),
+            for create_if_missing in [true, false] {
+                let err = Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .mnemonic(mnemonic(TWO))
+                    .create_if_missing(create_if_missing)
+                    .build()
+                    .await
+                    .expect_err("a second seed over the first is refused");
+                assert_eq!(err.code, crate::ErrorCode::SeedMismatch);
+                match err.detail() {
+                    Some(ErrorDetails::SeedMismatch { location }) => assert_eq!(location, &path),
+                    other => panic!("expected the location and nothing else, got {other:?}"),
+                }
             }
 
             let reopened = Sdk::builder()
@@ -3200,22 +3201,24 @@ mod tests {
                 drop(db);
             }
 
-            let err = Sdk::builder()
-                .storage(Storage::at(&path).expect("a valid path"))
-                .create_if_missing(false)
-                .build()
-                .await
-                .expect_err("orphaned storage is refused");
-            assert_eq!(err.code, crate::ErrorCode::StorageOrphaned);
-            match err.detail() {
-                Some(ErrorDetails::StorageOrphaned {
-                    location,
-                    seed_present,
-                }) => {
-                    assert_eq!(location, &path);
-                    assert!(!seed_present);
+            for create_if_missing in [true, false] {
+                let err = Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .create_if_missing(create_if_missing)
+                    .build()
+                    .await
+                    .expect_err("orphaned storage is refused");
+                assert_eq!(err.code, crate::ErrorCode::StorageOrphaned);
+                match err.detail() {
+                    Some(ErrorDetails::StorageOrphaned {
+                        location,
+                        seed_present,
+                    }) => {
+                        assert_eq!(location, &path);
+                        assert!(!seed_present);
+                    }
+                    other => panic!("expected the orphan detail, got {other:?}"),
                 }
-                other => panic!("expected the orphan detail, got {other:?}"),
             }
 
             let (db, _closer) = Storage::at(&path)
@@ -3254,16 +3257,20 @@ mod tests {
                 drop(db);
             }
 
-            let err = Sdk::builder()
-                .storage(Storage::at(&path).expect("a valid path"))
-                .create_if_missing(false)
-                .build()
-                .await
-                .expect_err("an unreadable seed is refused");
-            assert_eq!(err.code, crate::ErrorCode::StorageOrphaned);
-            match err.detail() {
-                Some(ErrorDetails::StorageOrphaned { seed_present, .. }) => assert!(seed_present),
-                other => panic!("expected the orphan detail, got {other:?}"),
+            for create_if_missing in [true, false] {
+                let err = Sdk::builder()
+                    .storage(Storage::at(&path).expect("a valid path"))
+                    .create_if_missing(create_if_missing)
+                    .build()
+                    .await
+                    .expect_err("an unreadable seed is refused");
+                assert_eq!(err.code, crate::ErrorCode::StorageOrphaned);
+                match err.detail() {
+                    Some(ErrorDetails::StorageOrphaned { seed_present, .. }) => {
+                        assert!(seed_present)
+                    }
+                    other => panic!("expected the orphan detail, got {other:?}"),
+                }
             }
 
             let (db, _closer) = Storage::at(&path)

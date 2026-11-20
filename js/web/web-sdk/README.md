@@ -68,6 +68,13 @@ export default defineConfig({
 A host that has to load the worker from a URL of its own passes `createWorker` to `openSdk`;
 the worker's entry point is exported as `@fedimint/web-sdk/worker`.
 
+## Opening an existing wallet
+
+At startup, use `openSdk({ storage, createIfMissing: false })` to require a stored seed.
+If the SDK rejects with `SdkError` and `ErrorCode.WalletNotFound`, offer the user a choice
+to create or restore a wallet. Once they choose, use the default open mode and pass
+the mnemonic for restore.
+
 ## Recovering a wallet
 
 `sdk.recover(invite)` joins a federation and rescans its history for what the seed owns. It
