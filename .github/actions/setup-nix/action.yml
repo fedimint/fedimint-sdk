@@ -24,6 +24,17 @@ runs:
         authToken: ${{ inputs.cachix_auth_token }}
       continue-on-error: true
 
+    - name: Recheck what Cachix has after an hour
+      # Nix trusts for 30 days that a cache has a path, and under which file name. Cachix
+      # garbage-collects, so on a runner that keeps its Nix state the file can be gone: Nix then
+      # builds the path from source, even when Cachix has it again under a new name.
+      shell: bash
+      run: |
+        conf="${XDG_CONFIG_HOME:-$HOME/.config}/nix/nix.conf"
+        line='narinfo-cache-positive-ttl = 3600'
+        mkdir -p "$(dirname "$conf")"
+        grep -qxF "$line" "$conf" 2>/dev/null || echo "$line" >> "$conf"
+
     - name: Expose fedimint ref, Node, PNPM from dev shell
       shell: bash
       run: |
