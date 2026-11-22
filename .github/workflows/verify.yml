@@ -88,8 +88,9 @@ jobs:
     name: Test
     if: ${{ github.event_name == 'workflow_dispatch' || inputs.run_web != false }}
     runs-on: [self-hosted, linux, x64]
-    # 15 of the minutes are for the three steps of the size check: the sum of their own limits.
-    timeout-minutes: 60
+    # Building the test shell from source, when no cache has it, takes over an hour. 25 of the
+    # minutes are for the size check's three steps and the Cachix push: the sum of their limits.
+    timeout-minutes: 90
     outputs:
       # For the `wasm-size` job: the sizes of the two modules, as
       # `scripts/sdk-web-wasm-size.sh measure` prints them, and how measuring the pull request's
@@ -99,6 +100,11 @@ jobs:
       wasm-size-head-outcome: ${{ steps.head-size.outcome }}
 
     steps:
+      - name: Note when the job runs out of time
+        # For the push to Cachix, the last step. The 90 is the `timeout-minutes` of the job.
+        shell: bash
+        run: echo "JOB_DEADLINE=$(($(date +%s) + 90 * 60))" >>"$GITHUB_ENV"
+
       - name: Clone repository
         uses: actions/checkout@v7
         with:
@@ -210,11 +216,37 @@ jobs:
       - name: Run pnpm tests
         shell: bash
         run: |
-          nix develop --accept-flake-config .#wasm-tests --command bash << 'EOF'
+          # The profile is a link to the shell in the store, for the push below.
+          nix develop --accept-flake-config .#wasm-tests \
+            --profile "$RUNNER_TEMP/wasm-tests-shell" --command bash << 'EOF'
             set -euo pipefail
             pnpm --dir js build
             pnpm --dir js test
           EOF
+
+      - name: Push the test shell to Cachix
+        # cachix-action pushes only what this job built, so a shell that the runner's store already
+        # held is never pushed again once Cachix has dropped it. This pushes what is missing of its
+        # closure, with the token of this job. A job without one, as on a fork, does not push.
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [[ -z "$CACHIX_AUTH_TOKEN" ]]; then
+            echo "This job has no Cachix token, so the test shell is not pushed."
+            exit 0
+          fi
+          # `continue-on-error` does not cover the time limit of the job, so the push ends three
+          # minutes before it, which leaves the steps after this one time to clean up.
+          left=$((JOB_DEADLINE - $(date +%s) - 180))
+          if ((left < 60)); then
+            echo "The job is almost out of time, so the test shell is not pushed."
+            exit 0
+          fi
+          timeout -k 10 "$((left < 570 ? left : 570))" \
+            cachix push fedimint "$RUNNER_TEMP/wasm-tests-shell"
 
   # Fails a pull request that makes the wasm module of the browser package, or the module after
   # `gzip -9`, grow by more than 5% of the base commit's (MAX_GROWTH_PERCENT in
