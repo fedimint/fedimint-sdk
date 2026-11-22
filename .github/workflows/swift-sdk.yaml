@@ -160,8 +160,15 @@ jobs:
 
       - name: 'Install xcodegen'
         # Generates ios/Demo/FedimintDemo.xcodeproj from the committed
-        # project.yml. cmake, perl and go are already on the runner image.
-        run: brew install xcodegen
+        # project.yml. Pinned to 2.47.0 (with checksum verification) to prevent
+        # unannounced Homebrew updates from changing project generation behavior in CI.
+        run: |
+          curl -fsSL https://github.com/yonaskolb/XcodeGen/releases/download/2.47.0/xcodegen.zip -o /tmp/xcodegen.zip
+          echo "6ef12a3ef5327c2c713397f46d9160550f8b1cdc5c925cd884d65c77c9f696cd  /tmp/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q /tmp/xcodegen.zip -d /tmp
+          sudo /tmp/xcodegen/install.sh "$(brew --prefix)"
+          rm -rf /tmp/xcodegen*
+          xcodegen --version
 
       # The `native` job builds all four slices, so there is no IOS_TARGETS
       # subset here any more — the expensive half is cached, and halving it

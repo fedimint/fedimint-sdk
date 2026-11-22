@@ -32,13 +32,21 @@ targets:
     type: application
     platform: iOS
     sources:
-      # Swift in every subfolder: the screens and the shared pieces live under
-      # Views/.
+      # Root-level Swift files only (ContentView, DemoModel, FedimintDemoApp).
+      # `*.swift` rather than `**/*.swift`: XcodeGen 2.47.0 writes the files a
+      # recursive glob finds under `path: .` without their folder
+      # (`ios/Demo/ActivityRow.swift`), so xcodebuild cannot find them.
+      # XcodeGen 2.46.0 did not.
       - path: .
         includes:
-          - '**/*.swift'
+          - '*.swift'
         excludes:
           - 'FedimintDemo.xcodeproj/**'
+      # The screens and shared pieces. Declared as its own source root so
+      # XcodeGen resolves every nested file relative to this group.
+      - path: Views
+        includes:
+          - '**/*.swift'
       # The fonts, their licence and the asset catalog, copied into the bundle.
       # OFL.txt ships with the fonts because the licence requires it.
       - path: Resources
