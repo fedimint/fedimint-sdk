@@ -5,6 +5,7 @@
 #   .#fedimint-sdk-android-<triple>        the cross-compiled cdylib
 #   .#fedimint-sdk-android-<triple>-deps   crane deps-only build (cache seed)
 #   .#fedimint-sdk-android-jni             jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so
+#   .#fedimint-sdk-android-jni-<abi>       single-ABI jniLibs/<abi>/{libfedimint_sdk,libc++_shared}.so
 #   .#fedimint-sdk-wasm                    the wasm32-unknown-unknown module (lib/fedimint_sdk.wasm)
 #   .#fedimint-sdk-wasm-deps               crane deps-only build (cache seed)
 #   .#fedimint-uniffi-bindgen              host build of rust/uniffi-bindgen
@@ -395,18 +396,22 @@ let
   # The library's symbol table is stripped, all but the `UNIFFI_META_*` symbols
   # the binding generators read: 73 MB to 33 MB on arm64. The loader only reads
   # the dynamic symbols. The unstripped library stays in the per-target package.
-  androidJni = pkgs.runCommand "fedimint-sdk-android-jni" { } ''
-    ${lib.concatMapStringsSep "\n" (t: ''
-      mkdir -p "$out/jniLibs/${t.abi}"
-      cp ${perTarget.${t.rustTarget}.lib}/lib/libfedimint_sdk.so "$out/jniLibs/${t.abi}/"
-      libcxx=$(find ${androidSdk} -name libc++_shared.so -path '*/${t.ndkTriple}/*' | head -n1)
-      test -n "$libcxx" || { echo "no libc++_shared.so for ${t.ndkTriple} in the NDK" >&2; exit 1; }
-      cp "$libcxx" "$out/jniLibs/${t.abi}/"
-      chmod u+w "$out/jniLibs/${t.abi}"/*.so
-      ${pkgs.llvm}/bin/llvm-strip --strip-all --wildcard --keep-symbol='UNIFFI_META_*' \
-        "$out/jniLibs/${t.abi}/libfedimint_sdk.so"
-    '') androidShipped}
-  '';
+  mkAndroidJni =
+    name: targets:
+    pkgs.runCommand name { } ''
+      ${lib.concatMapStringsSep "\n" (t: ''
+        mkdir -p "$out/jniLibs/${t.abi}"
+        cp ${perTarget.${t.rustTarget}.lib}/lib/libfedimint_sdk.so "$out/jniLibs/${t.abi}/"
+        libcxx=$(find ${androidSdk} -name libc++_shared.so -path '*/${t.ndkTriple}/*' | head -n1)
+        test -n "$libcxx" || { echo "no libc++_shared.so for ${t.ndkTriple} in the NDK" >&2; exit 1; }
+        cp "$libcxx" "$out/jniLibs/${t.abi}/"
+        chmod u+w "$out/jniLibs/${t.abi}"/*.so
+        ${pkgs.llvm}/bin/llvm-strip --strip-all --wildcard --keep-symbol='UNIFFI_META_*' \
+          "$out/jniLibs/${t.abi}/libfedimint_sdk.so"
+      '') targets}
+    '';
+
+  androidJni = mkAndroidJni "fedimint-sdk-android-jni" androidShipped;
 
   # Host `uniffi-bindgen` — pinned to the same `uniffi` `rust/fedimint-sdk`
   # links, so it reads the metadata baked into the `.so` correctly. A version
@@ -432,6 +437,14 @@ in
   fedimint-sdk-wasm = wasm.lib;
   fedimint-sdk-wasm-deps = wasm.deps;
 }
+// lib.listToAttrs (
+  map (
+    t:
+    lib.nameValuePair "fedimint-sdk-android-jni-${t.abi}" (
+      mkAndroidJni "fedimint-sdk-android-jni-${t.abi}" [ t ]
+    )
+  ) androidShipped
+)
 // lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}" b.lib) perTarget
 // lib.mapAttrs' (t: b: lib.nameValuePair "fedimint-sdk-android-${t}-deps" b.deps) perTarget
 // lib.optionalAttrs pkgs.stdenv.isDarwin (
