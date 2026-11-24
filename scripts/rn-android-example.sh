@@ -34,8 +34,8 @@ if [[ "$(adb get-state 2>/dev/null || true)" != "device" ]]; then
   exit 1
 fi
 if [[ ! -d "$DIR/android" ]]; then
-  echo "$DIR/android does not exist; for the Expo app run 'pnpm --dir $DIR exec expo prebuild'" \
-    "once to generate it" >&2
+  echo "$DIR/android does not exist; for the Expo app run" \
+    "'pnpm --dir $DIR exec expo prebuild --clean --no-install' to generate it" >&2
   exit 1
 fi
 

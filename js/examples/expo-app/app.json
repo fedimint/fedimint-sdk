@@ -5,21 +5,43 @@
     "version": "1.0.0",
     "scheme": "fedimint-expo-app",
     "platforms": ["ios", "android"],
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "light",
     "splash": {
-      "backgroundColor": "#1a1a2e"
+      "backgroundColor": "#0A0A2A"
     },
     "ios": {
       "bundleIdentifier": "org.fedimint.expoapp",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Confirm it is you before the wallet's recovery phrase is shown."
+      }
     },
     "android": {
       "package": "org.fedimint.expoapp",
+      "allowBackup": false,
       "adaptiveIcon": {
-        "backgroundColor": "#1a1a2e"
+        "backgroundColor": "#0A0A2A"
       }
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "./plugins/with-scene-lifecycle",
+      "./plugins/with-android-theme",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Geist-Regular.ttf",
+            "./assets/fonts/Geist-Medium.ttf",
+            "./assets/fonts/Geist-SemiBold.ttf",
+            "./assets/fonts/Geist-Bold.ttf",
+            "./assets/fonts/GeistMono-Regular.ttf",
+            "./assets/fonts/GeistMono-Medium.ttf",
+            "./assets/fonts/GeistMono-SemiBold.ttf"
+          ]
+        }
+      ]
+    ],
     "extra": {
       "router": {}
     }

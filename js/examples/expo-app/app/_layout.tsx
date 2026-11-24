@@ -1,148 +1,130 @@
-import React, { useCallback, useState } from 'react'
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { useCallback, useEffect, useState } from 'react'
+import {
+  ActivityIndicator,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native'
 import { Stack } from 'expo-router'
-import { StatusBar } from 'expo-status-bar'
-import { errorMessage, open, reset, walletExists } from '../src/sdk'
-import SplashScreen from '../src/screens/SplashScreen'
-import OnboardingScreen from '../src/screens/OnboardingScreen'
-import s from '../src/styles'
+import { ThemeProvider } from '@react-navigation/native'
+import { model, useDemo } from '../src/model/DemoModel'
+import { FedimintLogoOnDark } from '../src/components/Brand'
+import { Button } from '../src/components/Buttons'
+import { reason } from '../src/model/errors'
+import { theme } from '../src/navigation/options'
+import { Metrics, Palette, Typeface } from '../src/theme/tokens'
 
-type AppPhase = 'splash' | 'checking' | 'onboarding' | 'ready' | 'error'
-
-export default function RootLayout() {
-  const [phase, setPhase] = useState<AppPhase>('splash')
-  const [openError, setOpenError] = useState('')
-
-  const checkWallet = useCallback(async () => {
-    setPhase('checking')
-    try {
-      const exists = await walletExists()
-      if (!exists) {
-        setPhase('onboarding')
-        return
-      }
-      await open()
-      setPhase('ready')
-    } catch (error) {
-      // A wallet directory exists but could not be opened (a storage error, most likely).
-      // Restoring against it without clearing it first would just fail the same way, so
-      // this stops short of onboarding and offers a retry or a full reset instead.
-      setOpenError(errorMessage(error))
-      setPhase('error')
-    }
-  }, [])
-
-  const onSplashFinish = useCallback(() => {
-    checkWallet()
-  }, [checkWallet])
-
-  const onOnboardingComplete = useCallback(() => {
-    setPhase('ready')
-  }, [])
-
-  const confirmResetWallet = useCallback(() => {
-    Alert.alert(
-      'Reset wallet?',
-      'This permanently deletes the wallet data stored on this device. You will need your ' +
-        'recovery phrase to restore it afterwards.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset wallet',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await reset()
-              setPhase('onboarding')
-            } catch (error) {
-              setOpenError(errorMessage(error))
-              setPhase('error')
-            }
-          },
-        },
-      ],
-    )
-  }, [])
-
-  if (phase === 'splash' || phase === 'checking') {
-    return (
-      <>
-        <StatusBar style="light" backgroundColor="#1a1a2e" />
-        <SplashScreen onFinish={onSplashFinish} />
-      </>
-    )
-  }
-
-  if (phase === 'onboarding') {
-    return (
-      <>
-        <StatusBar style="light" backgroundColor="#1a1a2e" />
-        <OnboardingScreen onComplete={onOnboardingComplete} />
-      </>
-    )
-  }
-
-  if (phase === 'error') {
-    return (
-      <>
-        <StatusBar style="light" backgroundColor="#1a1a2e" />
-        <View style={[s.container, errorStyles.center]}>
-          <Text style={s.header}>Could not open wallet</Text>
-          <Text style={errorStyles.message}>{openError}</Text>
-          <View style={errorStyles.buttonRow}>
-            <TouchableOpacity style={s.actionBtn} onPress={checkWallet}>
-              <Text style={s.actionBtnText}>Retry</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.actionBtn} onPress={confirmResetWallet}>
-              <Text style={s.actionBtnText}>Reset wallet</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </>
-    )
-  }
-
+/**
+ * Shown while a wallet left by an earlier launch is reopened, so the first frame is not a
+ * Welcome screen offering to create a wallet that already exists.
+ */
+function LaunchScreen({
+  failure,
+  retry,
+}: {
+  failure?: string
+  retry: () => void
+}) {
   return (
-    <>
-      <StatusBar style="light" backgroundColor="#1a1a2e" />
-      <Stack
-        screenOptions={{
-          headerStyle: { backgroundColor: '#1a1a2e' },
-          headerTintColor: '#ffffff',
-          headerTitleStyle: { fontWeight: '700' },
-          contentStyle: { backgroundColor: '#1a1a2e' },
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="send"
-          options={{ title: 'Send', presentation: 'card' }}
-        />
-        <Stack.Screen
-          name="receive"
-          options={{ title: 'Receive', presentation: 'card' }}
-        />
-      </Stack>
-    </>
+    <View style={styles.launch}>
+      <FedimintLogoOnDark height={32} />
+      {failure === undefined ? (
+        <ActivityIndicator color="#FFFFFF" />
+      ) : (
+        <View style={styles.launchFailure}>
+          <Text
+            selectable
+            style={[
+              Typeface.callout,
+              { color: '#FFFFFF', textAlign: 'center' },
+            ]}
+          >
+            Couldn't move the wallet out of Documents: {failure}
+          </Text>
+          <Button title="Try again" kind="primaryOnDark" onPress={retry} />
+        </View>
+      )}
+    </View>
   )
 }
 
-const errorStyles = StyleSheet.create({
-  center: {
-    justifyContent: 'center',
+/**
+ * The root: picks the stage the app is in. Reopening a stored wallet, onboarding, the backup
+ * step right after creation, or the wallet itself, each a route group behind a guard.
+ */
+export default function RootLayout() {
+  const state = useDemo()
+  /** Whether an earlier launch left a wallet behind, read once at launch. */
+  const [reopening, setReopening] = useState<boolean>()
+  /** Why the launch stopped before onboarding: the old wallet could not be moved. */
+  const [launchFailure, setLaunchFailure] = useState<string>()
+  const attaching = model.isAttaching
+
+  const launch = useCallback(() => {
+    setLaunchFailure(undefined)
+    model.start().then(
+      (stored) => {
+        setReopening(stored)
+        if (!stored) return
+        // Never a phrase: on Android, words from a Restore abandoned before the back button
+        // closed the app outlive the remount, and would turn this reopen into a restore.
+        model.setRestoreWords('')
+        model.openWallet()
+      },
+      (error) => setLaunchFailure(reason(error)),
+    )
+  }, [])
+
+  useEffect(() => {
+    // On Android the back button remounts the root while the JS runtime and its open wallet
+    // carry on: opening that wallet again would be refused as storage in use.
+    if (model.getState().hasSdk) return
+    launch()
+  }, [launch])
+
+  useEffect(() => {
+    // A reopen that failed falls back to onboarding, where its reason is shown.
+    if (!attaching && !state.hasSdk && reopening) setReopening(false)
+  }, [attaching, state.hasSdk, reopening])
+
+  const backingUp =
+    state.hasSdk && state.walletOrigin === 'created' && !state.backedUp
+  const onboarding = !state.hasSdk && reopening === false
+
+  return (
+    <ThemeProvider value={theme}>
+      <StatusBar barStyle={state.hasSdk ? 'dark-content' : 'light-content'} />
+      {!state.hasSdk && reopening !== false ? (
+        <LaunchScreen failure={launchFailure} retry={launch} />
+      ) : (
+        <Stack screenOptions={{ headerShown: false, animation: 'none' }}>
+          <Stack.Protected guard={onboarding}>
+            <Stack.Screen name="(onboarding)" />
+          </Stack.Protected>
+          <Stack.Protected guard={backingUp}>
+            <Stack.Screen name="(backup)" />
+          </Stack.Protected>
+          <Stack.Protected guard={state.hasSdk && !backingUp}>
+            <Stack.Screen name="(main)" />
+          </Stack.Protected>
+        </Stack>
+      )}
+    </ThemeProvider>
+  )
+}
+
+const styles = StyleSheet.create({
+  launch: {
+    flex: 1,
+    backgroundColor: Palette.navy,
     alignItems: 'center',
-    padding: 24,
+    justifyContent: 'center',
+    gap: Metrics.sectionGap,
   },
-  message: {
-    color: '#b0b0b0',
-    fontSize: 15,
-    textAlign: 'center',
-    marginTop: 12,
-    marginBottom: 24,
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 12,
-    width: '100%',
+  launchFailure: {
+    alignSelf: 'stretch',
+    gap: Metrics.gap,
+    paddingHorizontal: Metrics.screenPadding,
   },
 })
