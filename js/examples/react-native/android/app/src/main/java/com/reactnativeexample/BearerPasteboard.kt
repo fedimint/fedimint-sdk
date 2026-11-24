@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.PersistableBundle
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
@@ -50,7 +51,7 @@ class BearerPasteboardModule(context: ReactApplicationContext) :
   override fun getName() = "BearerPasteboard"
 
   @ReactMethod
-  fun copy(value: String, lifetime: Double) {
+  fun copy(value: String, lifetime: Double, promise: Promise) {
     val clip = ClipData.newPlainText(LABEL, value)
     clip.description.extras = PersistableBundle().apply {
       putBoolean(
@@ -59,13 +60,21 @@ class BearerPasteboardModule(context: ReactApplicationContext) :
       )
     }
     main.post {
-      clipboard.setPrimaryClip(clip)
+      // Refused, for a bundle too large for the clipboard among others: rejected rather than
+      // thrown on the main thread, which would end the app.
+      try {
+        clipboard.setPrimaryClip(clip)
+      } catch (error: RuntimeException) {
+        promise.reject("copy_failed", error.message, error)
+        return@post
+      }
       copied = value
       copiedAt = if (Build.VERSION.SDK_INT >= 26) clipboard.primaryClipDescription?.timestamp else null
       expired = false
       focused = true
       main.removeCallbacks(expire)
       main.postDelayed(expire, (lifetime * 1000).toLong())
+      promise.resolve(null)
     }
   }
 

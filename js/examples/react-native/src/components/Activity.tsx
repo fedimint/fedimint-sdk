@@ -1,4 +1,4 @@
-import React from 'react'
+import { useEffect, useState } from 'react'
 import { Text } from 'react-native'
 import type { IconName } from './Icon'
 import {
@@ -21,13 +21,18 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
   const settledCredit =
     item.direction === Direction.Incoming &&
     item.status === ActivityStatus.Success
+  const amount =
+    item.amount !== undefined
+      ? ActivityText.sign(item) + SatsFormat.grouped(item.amount)
+      : undefined
   return (
     <ListRow
       icon={ActivityText.icon(item.kind)}
       title={ActivityText.title(item)}
       subtitle={subtitle(item)}
+      trailingLabel={amount}
       trailing={
-        item.amount !== undefined && (
+        amount !== undefined && (
           <Text
             style={[
               Typeface.figure,
@@ -40,7 +45,7 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
               },
             ]}
           >
-            {ActivityText.sign(item) + SatsFormat.grouped(item.amount)}
+            {amount}
           </Text>
         )
       }
@@ -179,22 +184,23 @@ export const ActivityTime = {
     if (sameDay(date, new Date()))
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     if (sameDay(date, yesterday())) return 'Yesterday'
-    return date.toLocaleDateString([], {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
+    return fullDate(date)
   },
   /** "Today", "Yesterday", or the date: the Activity list's day headers. */
   day(date: Date): string {
     if (sameDay(date, new Date())) return 'Today'
     if (sameDay(date, yesterday())) return 'Yesterday'
-    return date.toLocaleDateString([], {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
+    return fullDate(date)
   },
+}
+
+/** "19 Nov 2026", in the device's locale. */
+function fullDate(date: Date): string {
+  return date.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
 }
 
 function sameDay(a: Date, b: Date): boolean {
@@ -209,4 +215,20 @@ function yesterday(): Date {
   const date = new Date()
   date.setDate(date.getDate() - 1)
   return date
+}
+
+/**
+ * Why the history did not load, kept on screen while the next load runs (starting one clears it
+ * in the model), and dropped once a load ends without failing.
+ */
+export function useHistoryFailure(
+  failure: string | undefined,
+  loading: boolean,
+): string | undefined {
+  const [kept, setKept] = useState(failure)
+  useEffect(() => {
+    if (failure !== undefined) setKept(failure)
+    else if (!loading) setKept(undefined)
+  }, [failure, loading])
+  return failure ?? kept
 }

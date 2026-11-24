@@ -1,4 +1,4 @@
-import React from 'react'
+import type { ReactNode } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Icon, type IconName } from '../../components/Icon'
@@ -40,7 +40,7 @@ export function SendResult({
   const failure = state.failures[section]
   const lost = state.watchFailures[section]
 
-  let outcome: React.ReactNode
+  let outcome: ReactNode
   if (failure) {
     // The call itself failed, so there may be no payment at all. The SDK's reason as it came.
     outcome = (
@@ -199,7 +199,7 @@ function Outcome({
   title: string
   detail: string
   busy?: boolean
-  extra?: React.ReactNode
+  extra?: ReactNode
 }) {
   return (
     <View style={styles.outcome}>
@@ -211,7 +211,12 @@ function Outcome({
           color={toneColors[tone].fg}
         />
       </View>
-      <Text style={[Typeface.title, { color: Palette.ink }]}>{title}</Text>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
+        {title}
+      </Text>
       <Text
         selectable
         style={[

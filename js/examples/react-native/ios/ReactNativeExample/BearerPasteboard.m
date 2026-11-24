@@ -23,13 +23,17 @@ RCT_EXPORT_MODULE()
   return dispatch_get_main_queue();
 }
 
-RCT_EXPORT_METHOD(copy : (NSString *)value lifetime : (double)seconds)
+RCT_EXPORT_METHOD(copy : (NSString *)value
+                  lifetime : (double)seconds
+                  resolve : (RCTPromiseResolveBlock)resolve
+                  reject : (RCTPromiseRejectBlock)reject)
 {
   [UIPasteboard.generalPasteboard setItems:@[ @{UTTypePlainText.identifier : value} ]
                                    options:@{
                                      UIPasteboardOptionLocalOnly : @YES,
                                      UIPasteboardOptionExpirationDate : [NSDate dateWithTimeIntervalSinceNow:seconds],
                                    }];
+  resolve(nil);
 }
 
 @end

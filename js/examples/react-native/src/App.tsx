@@ -84,6 +84,12 @@ const stackOptions = {
   headerTitleAlign: 'center' as const,
 }
 
+/** A tab's stack: as `stackOptions`, with the bar's controls in the primary colour. */
+const tabStackOptions = {
+  ...stackOptions,
+  headerTintColor: Palette.primary,
+}
+
 type OnboardingRoutes = { Welcome: undefined; Restore: undefined }
 const Onboarding = createNativeStackNavigator<OnboardingRoutes>()
 
@@ -209,9 +215,14 @@ function HomeTab() {
   const main = useNavigation<NativeStackNavigationProp<MainRoutes>>()
   const tabs = useNavigation<BottomTabNavigationProp<TabRoutes>>()
   return (
-    <HomeStack.Navigator screenOptions={stackOptions}>
-      {/* Home's header row stands in for a navigation bar. */}
-      <HomeStack.Screen name="HomeRoot" options={{ headerShown: false }}>
+    <HomeStack.Navigator screenOptions={tabStackOptions}>
+      {/* Home's header row stands in for a navigation bar. Its title is what the back button
+          of a screen pushed from it reads as, "HomeRoot" otherwise; screens further in keep
+          the title of the one before. */}
+      <HomeStack.Screen
+        name="HomeRoot"
+        options={{ headerShown: false, title: 'Back' }}
+      >
         {({ navigation }) => (
           <HomeScreen
             receive={() => main.navigate('Receive')}
@@ -253,7 +264,7 @@ function HomeTab() {
 
 function ActivityTab() {
   return (
-    <ActivityStack.Navigator screenOptions={stackOptions}>
+    <ActivityStack.Navigator screenOptions={tabStackOptions}>
       <ActivityStack.Screen name="ActivityRoot" options={{ title: 'Activity' }}>
         {({ navigation }) => (
           <ActivityScreen
@@ -283,7 +294,7 @@ function RecoveryRoute({
 
 function FederationsTab() {
   return (
-    <FederationsStack.Navigator screenOptions={stackOptions}>
+    <FederationsStack.Navigator screenOptions={tabStackOptions}>
       <FederationsStack.Screen
         name="FederationsRoot"
         options={({ navigation }) => ({
@@ -295,6 +306,8 @@ function FederationsTab() {
                     type: 'button' as const,
                     label: 'Join a federation',
                     icon: { type: 'sfSymbol' as const, name: 'plus' },
+                    // Its own tint: from iOS 26 the glass item does not take the bar's.
+                    tintColor: Palette.primary,
                     onPress: () => navigation.navigate('Join'),
                   },
                 ],
@@ -306,7 +319,7 @@ function FederationsTab() {
                     hitSlop={8}
                     onPress={() => navigation.navigate('Join')}
                   >
-                    <Icon name="plus" size={20} color={Palette.ink} />
+                    <Icon name="plus" size={20} color={Palette.primary} />
                   </Pressable>
                 ),
               }),
@@ -351,6 +364,13 @@ function Tabs() {
           // UIKit's own unselected color: gray before iOS 26, the label color on the glass bar.
           ...(parseInt(String(Platform.Version), 10) < 26 && {
             tabBarInactiveTintColor: PlatformColor('systemGray'),
+            // The screen's own ground with no hairline. This navigator gives UIKit one look for
+            // both the bar's states, so it stays so with a list scrolled under it.
+            tabBarStyle: {
+              backgroundColor: Palette.background,
+              shadowColor: 'transparent',
+            },
+            tabBarBlurEffect: 'none',
           }),
         }}
       >
@@ -617,7 +637,11 @@ export default function App() {
     model.start().then(
       (stored) => {
         setReopening(stored)
-        if (stored) model.openWallet()
+        if (!stored) return
+        // Never a phrase: on Android, words from a Restore abandoned before the back button
+        // closed the app outlive the remount, and would turn this reopen into a restore.
+        model.setRestoreWords('')
+        model.openWallet()
       },
       (error) => setLaunchFailure(reason(error)),
     )

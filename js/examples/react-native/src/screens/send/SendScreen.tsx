@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Text, View } from 'react-native'
 import Clipboard from '@react-native-clipboard/clipboard'
 import {
@@ -49,10 +49,8 @@ export function SendScreen({
         ? state.ecashQuote !== undefined
         : state.onchainQuote !== undefined
 
-  // The review opens when its quote lands, not when the button is tapped: a quote that fails
-  // leaves the user here, with the reason. On the change only, as SwiftUI's `onChange`, and on
-  // the rail it was asked for: a quote still held, from a review the user backed out of, does
-  // not reopen it when Send appears or when the user switches back to its rail.
+  // Review opens when its quote lands, so a failed quote leaves the user here with the reason.
+  // Only on a new quote for the same rail: one still held does not reopen it on a rail switch.
   const last = useRef({ rail, ready: quoteReady })
   useEffect(() => {
     const was = last.current
@@ -110,16 +108,16 @@ export function SendScreen({
               multiline
               value={state.lnInvoice}
               onChangeText={(text) => model.setLnInvoice(text)}
-              style={{ minHeight: 100, textAlignVertical: 'top' }}
+              textHeight={100}
             />
             <Button
               title="Paste"
               icon="doc.on.clipboard"
               kind="secondary"
               onPress={() =>
-                Clipboard.getString().then(
-                  (text) => text && model.setLnInvoice(text.trim()),
-                )
+                Clipboard.getString()
+                  .then((text) => text && model.setLnInvoice(text.trim()))
+                  .catch(() => {})
               }
             />
           </View>

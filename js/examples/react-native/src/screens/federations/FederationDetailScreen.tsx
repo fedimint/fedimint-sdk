@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Share, Text, View } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import { FederationStatus_Tags, type Diagnostic } from '@fedimint/react-native'
@@ -26,7 +26,7 @@ export function FederationDetailScreen({
 
   // Only this screen's own Reconnect: not a switch failed on the list.
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       model.clearFailure('switching')
     }, []),
   )
@@ -138,7 +138,11 @@ export function FederationDetailScreen({
             <Button
               title="Share invite code"
               icon="square.and.arrow.up"
-              onPress={() => Share.share({ message: state.federationInvite! })}
+              onPress={() =>
+                Share.share({ message: state.federationInvite! }).catch(
+                  () => {},
+                )
+              }
             />
           </Card>
         ) : (

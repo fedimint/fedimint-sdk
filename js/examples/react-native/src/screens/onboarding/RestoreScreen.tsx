@@ -1,5 +1,6 @@
-import React, { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
+  Platform,
   Pressable,
   StatusBar,
   StyleSheet,
@@ -84,11 +85,14 @@ export function RestoreScreen() {
         />
       }
     >
-      {/* Restore is cream under a navy Welcome: dark status-bar text while it is up, as iOS's
-          light scheme once Restore is pushed. Unmounting restores the one beneath. */}
+      {/* Restore is cream over a navy Welcome: dark status-bar text while it is up. Unmounting
+          restores the one beneath. */}
       <StatusBar barStyle="dark-content" />
       <Caption text="Restore" />
-      <Text style={[Typeface.title, { color: Palette.ink }]}>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
         Enter your recovery phrase
       </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>
@@ -144,7 +148,12 @@ export function RestoreScreen() {
             placeholderTextColor={Palette.border}
             autoCorrect={false}
             autoCapitalize="none"
-            keyboardType="ascii-capable"
+            // `ascii-capable` is iOS only; on Android `visible-password` stops keyboards such as
+            // Gboard suggesting or learning the seed words.
+            keyboardType={
+              Platform.OS === 'android' ? 'visible-password' : 'ascii-capable'
+            }
+            importantForAutofill="no"
             returnKeyType={index === words.length - 1 ? 'done' : 'next'}
             blurOnSubmit={index === words.length - 1}
             onSubmitEditing={() => inputs.current[index + 1]?.focus()}

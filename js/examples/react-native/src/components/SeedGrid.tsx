@@ -1,4 +1,4 @@
-import React from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { Metrics, Palette, Typeface } from '../theme/tokens'
 
@@ -14,7 +14,7 @@ export function SeedGrid({
   count: number
   /** The cell being typed into, tinted the way the design marks focus. */
   highlighted?: number
-  cell: (index: number) => React.ReactNode
+  cell: (index: number) => ReactNode
 }) {
   const rows: number[] = []
   for (let left = 0; left < count; left += 2) rows.push(left)
@@ -31,14 +31,14 @@ export function SeedGrid({
   return (
     <View style={styles.grid}>
       {rows.map((left) => (
-        <React.Fragment key={left}>
+        <Fragment key={left}>
           {left > 0 && <View style={styles.hRule} />}
           <View style={styles.row}>
             {slot(left)}
             <View style={styles.vRule} />
             {left + 1 < count ? slot(left + 1) : <View style={{ flex: 1 }} />}
           </View>
-        </React.Fragment>
+        </Fragment>
       ))}
     </View>
   )

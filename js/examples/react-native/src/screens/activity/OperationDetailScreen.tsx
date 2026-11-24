@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Share, StyleSheet, Text, View, Pressable } from 'react-native'
 import { Icon } from '../../components/Icon'
 import {
@@ -19,7 +19,7 @@ import {
   type OnchainReceiveState,
   type OnchainSendState,
 } from '@fedimint/react-native'
-import { model, useCloseOnAttach, useDemo } from '../../model/DemoModel'
+import { free, model, useCloseOnAttach, useDemo } from '../../model/DemoModel'
 import { isAbort, reason } from '../../model/errors'
 import { Button } from '../../components/Buttons'
 import {
@@ -70,7 +70,7 @@ function formatDate(epochMillis: bigint): string {
   })
 }
 
-// MARK: States to steps, the same ones the iOS demo shows.
+// MARK: Each operation's states as the steps the screen shows.
 
 function lnSendStage(s: LnSendState): Stage {
   switch (s.tag) {
@@ -253,8 +253,7 @@ function onchainReceiveStage(s: OnchainReceiveState): Stage {
 
 /**
  * Looks one operation up, reads its details, and follows its state while the screen is open.
- * Unlike the Swift bindings, the wait here can be cancelled, so leaving the screen stops it and a
- * later visit follows afresh.
+ * Leaving the screen cancels the wait, and a later visit follows afresh.
  */
 function useOperationFollower(item: ActivityItem) {
   const [facts, setFacts] = useState<Facts>()
@@ -279,12 +278,16 @@ function useOperationFollower(item: ActivityItem) {
       updates: { next(o: { signal: AbortSignal }): Promise<S | undefined> },
       toStage: (s: S) => Stage,
     ) {
-      for (;;) {
-        const state = await updates.next({ signal })
-        if (signal.aborted || state === undefined) return
-        setStage(toStage(state))
-        // A state read after a cancel request reflects it, whichever way.
-        setCancelling(false)
+      try {
+        for (;;) {
+          const state = await updates.next({ signal })
+          if (signal.aborted || state === undefined) return
+          setStage(toStage(state))
+          // A state read after a cancel request reflects it, whichever way.
+          setCancelling(false)
+        }
+      } finally {
+        free(updates)
       }
     }
 
@@ -523,14 +526,14 @@ export function OperationDetailScreen({
             value={state.federationName ?? 'Unnamed'}
           />
           {facts.rows.map((row) => (
-            <React.Fragment key={row.label}>
+            <Fragment key={row.label}>
               <RowDivider />
               <ReviewRow
                 label={row.label}
                 value={row.value}
                 monospaced={row.monospaced}
               />
-            </React.Fragment>
+            </Fragment>
           ))}
           <RowDivider />
           <ReviewRow label="Created" value={formatDate(facts.createdAt)} />
@@ -588,7 +591,9 @@ export function OperationDetailScreen({
             <Pressable
               accessibilityLabel="Share"
               hitSlop={6}
-              onPress={() => Share.share({ message: notes.display() })}
+              onPress={() =>
+                Share.share({ message: notes.display() }).catch(() => {})
+              }
             >
               <Icon name="square.and.arrow.up" color={Palette.ink} />
             </Pressable>

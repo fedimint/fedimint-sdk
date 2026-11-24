@@ -1,4 +1,3 @@
-import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { Icon } from '../../components/Icon'
 import { model, useDemo } from '../../model/DemoModel'
@@ -44,7 +43,10 @@ export function BackupScreen({
       }
     >
       {step && <Caption text={step} />}
-      <Text style={[Typeface.title, { color: Palette.ink }]}>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
         Write down your recovery phrase
       </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>
@@ -54,7 +56,7 @@ export function BackupScreen({
       <View style={{ marginTop: Metrics.gap }}>
         {words.length === 0 ? (
           <Card padding={24} style={styles.reveal}>
-            <Icon name="lock" size={28} color={Palette.muted} />
+            <Icon name="lock" size={28} color={Palette.muted} standalone />
             <Text style={[Typeface.callout, { color: Palette.muted }]}>
               Confirm it's you to see the words.
             </Text>

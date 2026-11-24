@@ -1,4 +1,4 @@
-import React from 'react'
+import type { ReactNode } from 'react'
 import {
   Pressable,
   StyleSheet,
@@ -15,7 +15,7 @@ export function Field({
   children,
 }: {
   label: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <View style={{ gap: 8 }}>
@@ -27,18 +27,42 @@ export function Field({
   )
 }
 
+/** iOS's `placeholderText` colour in the light scheme. */
+export const placeholder = 'rgba(60, 60, 67, 0.3)'
+
+const inputPaddingVertical = 12
+const inputPaddingHorizontal = 14
+/** A multiline box's text inset, on top of its padding. */
+const editorInset = { top: 8, bottom: 4, left: 5 }
+
 /** The design's input box. */
 export function Input({
   monospaced = false,
+  textHeight,
   style,
   ...props
-}: TextInputProps & { monospaced?: boolean }) {
+}: TextInputProps & {
+  monospaced?: boolean
+  /** A multiline box's minimum text height, padding excluded. */
+  textHeight?: number
+}) {
   return (
     <TextInput
-      placeholderTextColor={Palette.muted}
+      placeholderTextColor={placeholder}
       autoCorrect={false}
       autoCapitalize="none"
-      style={[styles.input, monospaced ? Typeface.code : Typeface.body, style]}
+      style={[
+        styles.input,
+        monospaced ? Typeface.code : Typeface.body,
+        textHeight !== undefined && {
+          minHeight: textHeight + 2 * inputPaddingVertical,
+          paddingTop: inputPaddingVertical + editorInset.top,
+          paddingBottom: inputPaddingVertical + editorInset.bottom,
+          paddingLeft: inputPaddingHorizontal + editorInset.left,
+          textAlignVertical: 'top',
+        },
+        style,
+      ]}
       {...props}
     />
   )
@@ -89,8 +113,8 @@ export function RailPicker<Rail extends string>({
 const styles = StyleSheet.create({
   input: {
     color: Palette.ink,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: inputPaddingHorizontal,
+    paddingVertical: inputPaddingVertical,
     minHeight: Metrics.buttonHeight,
     backgroundColor: Palette.surface,
     borderRadius: Metrics.controlRadius,

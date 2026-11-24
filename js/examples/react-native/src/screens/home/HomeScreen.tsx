@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useFocusEffect } from '@react-navigation/native'
 import {
   ActivityIndicator,
@@ -21,7 +21,7 @@ import { Button } from '../../components/Buttons'
 import { AmountView, Caption, toneColors } from '../../components/Labels'
 import { Card, CardList, Screen } from '../../components/Surfaces'
 import { ListRow } from '../../components/Rows'
-import { ActivityRow } from '../../components/Activity'
+import { ActivityRow, useHistoryFailure } from '../../components/Activity'
 import { FederationStatusStyle } from '../../components/Status'
 import { FedimintMark } from '../../components/Brand'
 import { Metrics, Palette, Typeface } from '../../theme/tokens'
@@ -51,22 +51,26 @@ export function HomeScreen({
 }) {
   const state = useDemo()
   const [menuOpen, setMenuOpen] = useState(false)
-  /** Where the menu hangs: under the button that opens it, as iOS's `Menu` does. */
+  /** Where the Android menu hangs: under the button that opens it. */
   const [menuTop, setMenuTop] = useState(0)
   const more = useRef<View>(null)
   // The SDK refuses sends and receives until a recovery is done.
   const recovering =
     state.federationStatus?.tag === FederationStatus_Tags.Recovering
 
-  // Once per attach, which empties the list, even one that reattaches the same federation,
-  // and again on coming back to a list still empty, as iOS's `.task(id:)` runs on every
-  // appearance. Otherwise later loads are a pull or a tap, so a redraw never goes back to the
-  // SDK behind the user.
+  // Once per attach, which empties the list (even reattaching the same federation), and again
+  // on coming back to a list still empty. Otherwise later loads are a pull or a tap, so a redraw
+  // never goes back to the SDK behind the user.
   useFocusEffect(
     useCallback(() => {
       const now = model.getState()
       if (now.hasFederation && now.activityItems.length === 0) model.activity()
     }, [state.attachments]),
+  )
+
+  const historyFailure = useHistoryFailure(
+    state.failures.activity,
+    state.working.has('activity'),
   )
 
   const rails = state.capabilities
@@ -94,10 +98,17 @@ export function HomeScreen({
               : 'Fedimint'}
           </Text>
           {Platform.OS === 'ios' ? (
-            // The system menu, as the Swift demo's `Menu`: from iOS 26 it opens in Liquid Glass.
+            // The system menu: from iOS 26 it opens in Liquid Glass.
             <MenuView
               actions={[
-                { id: 'phrase', title: 'Recovery phrase', image: 'key' },
+                {
+                  id: 'phrase',
+                  title: 'Recovery phrase',
+                  image: 'key',
+                  // Set explicitly: left unset, the library sends 0, which draws the symbol fully
+                  // transparent. Black is the menu's label colour.
+                  imageColor: '#000000',
+                },
               ]}
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === 'phrase') showRecoveryPhrase()
@@ -189,7 +200,7 @@ export function HomeScreen({
             </View>
 
             {recovering && (
-              <Pressable onPress={showRecovery}>
+              <Pressable accessibilityRole="button" onPress={showRecovery}>
                 <Card padding={0}>
                   <ListRow
                     icon="arrow.clockwise"
@@ -236,7 +247,11 @@ export function HomeScreen({
             <View style={{ gap: Metrics.gap }}>
               <View style={styles.recentHeader}>
                 <Caption text="Recent activity" />
-                <Pressable onPress={showActivity} hitSlop={8}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={showActivity}
+                  hitSlop={8}
+                >
                   <Text
                     style={[
                       Typeface.geist('Medium', 15),
@@ -249,15 +264,28 @@ export function HomeScreen({
               </View>
               {state.activityItems.length === 0 ? (
                 <Card padding={20}>
-                  <Text style={[Typeface.callout, { color: Palette.muted }]}>
-                    No activity yet. Receive something to get started.
-                  </Text>
+                  {/* Not "No activity yet." when the history did not load: nothing is known
+                      about it then. A pull, as on Activity, loads it again. */}
+                  {historyFailure !== undefined ? (
+                    <Text
+                      selectable
+                      style={[Typeface.callout, { color: Palette.danger }]}
+                    >
+                      Couldn't load the history: {historyFailure}. Pull down to
+                      try again.
+                    </Text>
+                  ) : (
+                    <Text style={[Typeface.callout, { color: Palette.muted }]}>
+                      No activity yet. Receive something to get started.
+                    </Text>
+                  )}
                 </Card>
               ) : (
                 <CardList>
                   {state.activityItems.slice(0, recentCount).map((item) => (
                     <Pressable
                       key={item.operationId}
+                      accessibilityRole="button"
                       onPress={() => showOperation(item)}
                     >
                       <ActivityRow item={item} />
@@ -286,8 +314,8 @@ export function HomeScreen({
         )}
       </Screen>
 
-      {/* Android's menu. A modal, so that like iOS's menu it covers the tab bar too: any touch
-          outside it, or the back button, closes it. */}
+      {/* Android's menu. A modal, so it covers the tab bar too: any touch outside it, or the back
+          button, closes it. */}
       <Modal
         transparent
         statusBarTranslucent

@@ -1,4 +1,3 @@
-import React from 'react'
 import {
   ActivityIndicator,
   Pressable,
@@ -58,13 +57,15 @@ export function Button({
   kind?: Kind
   disabled?: boolean
   busy?: boolean
-  /** Shown before the title, as the iOS demo's `Label` with a system image. */
+  /** Shown before the title. */
   icon?: IconName
   style?: ViewStyle
 }) {
   return (
     <Pressable
       accessibilityRole="button"
+      // The title alone: gathered from the children, it would include the symbol's name.
+      accessibilityLabel={title}
       accessibilityState={{ disabled, busy }}
       disabled={disabled}
       onPress={onPress}
@@ -72,14 +73,19 @@ export function Button({
         styles.button,
         {
           backgroundColor: background[kind],
-          borderColor: border[kind] ?? 'transparent',
+          borderColor: border[kind],
           borderWidth: border[kind] ? Metrics.borderWidth : 0,
           opacity: disabled ? 0.4 : pressed ? 0.8 : 1,
         },
         style,
       ]}
     >
-      <View style={styles.label}>
+      {/* Dims further when disabled. Never flattened: React Native would move the title out of
+          it on enabling, which crashes Android when the same commit removes the button. */}
+      <View
+        collapsable={false}
+        style={[styles.label, disabled && { opacity: 0.45 }]}
+      >
         {busy && <ActivityIndicator color={foreground[kind]} />}
         {icon && !busy && <Icon name={icon} color={foreground[kind]} />}
         <Text style={[Typeface.button, { color: foreground[kind] }]}>
@@ -99,7 +105,13 @@ export function TextButton({
   onPress: () => void
 }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={styles.text}>
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      // A padding's reach without its height.
+      hitSlop={{ top: 6, bottom: 6 }}
+      style={styles.text}
+    >
       {({ pressed }) => (
         <Text
           style={[
@@ -115,7 +127,7 @@ export function TextButton({
 }
 
 const styles = StyleSheet.create({
-  text: { alignSelf: 'center', paddingVertical: 6 },
+  text: { alignSelf: 'center' },
   button: {
     minHeight: Metrics.buttonHeight,
     borderRadius: Metrics.controlRadius,

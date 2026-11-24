@@ -3,6 +3,7 @@
 This is a sample application demonstrating how to integrate and use the `@fedimint/react-native` SDK.
 
 This app serves two primary purposes:
+
 1. **Developer Sandbox:** A convenient environment for the SDK maintainers to test local changes to the native bindings and JavaScript APIs.
 2. **Usage Example:** A reference implementation for developers on how to initialize a Fedimint client, connect to a federation, and perform basic operations using the React Native SDK.
 
@@ -24,7 +25,7 @@ earlier version of this example left in Documents is moved there on first launch
 
 ## Prerequisites
 
-Before running this example, ensure you have the standard React Native environment set up for your platform (Node.js, Watchman, Xcode for iOS, Android Studio for Android). 
+Before running this example, ensure you have the standard React Native environment set up for your platform (Node.js, Watchman, Xcode for iOS, Android Studio for Android).
 
 You must also build the local monorepo packages first, as this example depends on the local workspace versions of the Fedimint SDK.
 
@@ -47,7 +48,7 @@ cd js/examples/react-native
 
 ### Running on iOS
 
-First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install *after* the `just build-rn-ios` step above.
+First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install _after_ the `just build-rn-ios` step above.
 
 ```sh
 cd ios

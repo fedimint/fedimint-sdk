@@ -43,7 +43,7 @@ import {
 } from './storage'
 import { authenticateOwner } from './auth'
 
-/** The mutinynet federation the iOS and Android demos also pre-fill. */
+/** The Mutinynet test federation Join is pre-filled with. */
 const testnetFederationCode =
   'fed11qgqrgvnhwden5te0v9k8q6rp9ekh2arfdeukuet595cr2ttpd3jhq6rzve6zuer9wchxvetyd938gcewvdhk6tcqq' +
   'ysptkuvknc7erjgf4em3zfh90kffqf9srujn6q53d6r056e4apze5cw27h75'
@@ -181,7 +181,7 @@ interface DemoState {
   isSendingEcash: boolean
   isPayingLightning: boolean
   isSendingOnchain: boolean
-  /** Wallet opens, joins, recoveries and switches in flight. A count, as on iOS. */
+  /** Wallet opens, joins, recoveries and switches in flight: a count, as they can overlap. */
   attachesInFlight: number
 
   hasSdk: boolean
@@ -232,6 +232,11 @@ interface Updates<T> {
   next(asyncOpts_?: { signal: AbortSignal }): Promise<T | undefined>
 }
 
+/** Frees a cursor once done with, as the SDK's `useUpdates` does, not whenever the collector runs. */
+export function free(cursor: object | undefined) {
+  ;(cursor as { uniffiDestroy?(): void } | undefined)?.uniffiDestroy?.()
+}
+
 /** Joining the federation that is already attached and running. */
 class AlreadyAttached extends Error {
   constructor() {
@@ -241,11 +246,8 @@ class AlreadyAttached extends Error {
 
 /**
  * Every SDK handle the screens hold, and one `run` helper that funnels each action's outcome,
- * including an SDK error, into one result line. The TypeScript twin of the iOS demo's
- * `DemoModel`: the same sections, guards and rules, so both demos behave the same.
- *
- * Unlike the Swift bindings, every SDK call here takes an `AbortSignal`, so a superseded run or
- * a replaced watcher is actually cancelled, not only ignored when it returns.
+ * including an SDK error, into one result line. Every SDK call takes an `AbortSignal`, so a
+ * superseded run or a replaced watcher is cancelled, not only ignored when it returns.
  */
 export class DemoModel {
   private state = initialState
@@ -653,9 +655,8 @@ export class DemoModel {
 
   ecashReceive() {
     if (this.isWorking('ecashReceive')) return
-    // The SDK calls take no signal, as the iOS demo's ignore cancellation: an attach drops this
-    // run's result, but notes already handed to the federation may still be redeemed, and once
-    // they are, the field must clear.
+    // No signal: an attach drops this run's result, but notes already handed to the federation
+    // may still be redeemed, and once they are, the field must clear.
     this.run('ecashReceive', async () => {
       const ecash = this.federation?.ecash()
       if (!ecash) return 'this federation has no mint module'
@@ -667,8 +668,11 @@ export class DemoModel {
       let outcome: string
       switch (state.tag) {
         case EcashReceiveState_Tags.Done:
-          // Spent now, so a second Redeem cannot report it as invalid.
-          this.set({ ecashNotes: '' })
+          // Spent now, so cleared, but only if the field still holds them: it stays editable while
+          // they redeem, and newer notes were not spent. The same text is the same notes, spent
+          // even if another federation was attached since.
+          if (this.state.ecashNotes.trim() === text)
+            this.set({ ecashNotes: '' })
           outcome = `Redeemed ${formatMsats(notes.value())}`
           break
         case EcashReceiveState_Tags.Failed:
@@ -809,8 +813,17 @@ export class DemoModel {
       const onchain = this.federation?.onchain()
       if (!onchain) return 'this federation has no wallet module'
       const deposits = await onchain.deposits({ signal })
-      const address = await onchain.receive({ signal })
-      if (signal.aborted) return 'superseded by a newer request'
+      let address: string
+      try {
+        address = await onchain.receive({ signal })
+      } catch (error) {
+        free(deposits)
+        throw error
+      }
+      if (signal.aborted) {
+        free(deposits)
+        return 'superseded by a newer request'
+      }
       // Stopped only now, so a request that fails leaves the address on screen still followed.
       this.stopWatching('deposit')
       this.set({
@@ -1121,6 +1134,8 @@ export class DemoModel {
           if (sdkError(error)?.code === ErrorCode.FederationClosed) return
           // A storage or internal failure. A new subscription replays every federation's state.
           await new Promise<void>((resolve) => setTimeout(resolve, 5000))
+        } finally {
+          free(updates)
         }
       }
     })()
@@ -1136,11 +1151,12 @@ export class DemoModel {
     this.balanceWatch = controller
     const { signal } = controller
     ;(async () => {
+      let updates: Updates<bigint> | undefined
       try {
         const initial = await joined.balance({ signal })
         if (signal.aborted) return
         this.set({ balanceMsats: initial, balanceFailure: undefined })
-        const updates = joined.balanceUpdates()
+        updates = joined.balanceUpdates()
         for (;;) {
           const next = await updates.next({ signal })
           if (signal.aborted) return
@@ -1150,6 +1166,8 @@ export class DemoModel {
       } catch (error) {
         if (signal.aborted || isAbort(error)) return
         this.set({ balanceFailure: reason(error) })
+      } finally {
+        free(updates)
       }
     })()
   }
@@ -1216,8 +1234,8 @@ export class DemoModel {
 
   /**
    * Runs `block` as `section`'s action, cancelling the section's previous run. The block reads
-   * `signal.aborted` after every await, as the iOS model reads `isSuperseded`: it guards the
-   * writes a block makes on its way, which the result-text check below cannot.
+   * `signal.aborted` after every await: it guards the writes a block makes on its way, which the
+   * result-text check below cannot.
    */
   private run(
     section: Section,
@@ -1283,6 +1301,8 @@ export class DemoModel {
         if (!controller.signal.aborted && !isAbort(error)) {
           this.setIn('watchFailures', section, reason(error))
         }
+      } finally {
+        free(updates)
       }
     })()
   }
@@ -1315,6 +1335,9 @@ export class DemoModel {
         // payer.
         if (!signal.aborted && !isAbort(error))
           this.setIn('watchFailures', 'deposit', reason(error))
+      } finally {
+        // The deposit found, if any, is followed through its own cursor, which `watch` frees.
+        free(deposits)
       }
     })()
   }
@@ -1325,7 +1348,7 @@ export function parseAmount(text: string): bigint | undefined {
   const trimmed = text.trim()
   if (!/^\d+$/.test(trimmed)) return undefined
   const value = BigInt(trimmed)
-  // The SDK takes a u64, as Swift's `UInt64(_:)` does: anything larger is no amount at all.
+  // The SDK takes a u64: anything larger is no amount at all.
   return value <= maxU64 ? value : undefined
 }
 
@@ -1333,7 +1356,7 @@ const maxU64 = 2n ** 64n - 1n
 
 /**
  * A whole, positive number of sats in msats, or `undefined` when there is none or it does not
- * fit a u64 once multiplied, as iOS's `multipliedReportingOverflow`.
+ * fit a u64 once multiplied.
  */
 export function satsToMsats(text: string): bigint | undefined {
   const sats = parseAmount(text)
@@ -1342,15 +1365,15 @@ export function satsToMsats(text: string): bigint | undefined {
   return msats <= maxU64 ? msats : undefined
 }
 
-/** "1012 sat", or "1012 sat (1012250 msat)" when there is a remainder, as on iOS. */
+/** "1012 sat", or "1012 sat (1012250 msat)" when there is a remainder. */
 function formatMsats(msats: bigint): string {
   const sats = msats / 1000n
   return msats % 1000n === 0n ? `${sats} sat` : `${sats} sat (${msats} msat)`
 }
 
 /**
- * A federation's status, or none when it cannot be read, as iOS's `try?`: the status is shown
- * as unknown, and the attach or recovery it is read for carries on.
+ * A federation's status, or none when it cannot be read: the status is shown as unknown, and the
+ * attach or recovery it is read for carries on.
  */
 function statusOf(sdk: SdkLike, id: string): FederationStatus | undefined {
   try {

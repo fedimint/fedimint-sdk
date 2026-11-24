@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { Button } from '../../components/Buttons'
 import { Caption } from '../../components/Labels'
@@ -77,7 +77,10 @@ export function VerifyScreen({
       }
     >
       <Caption text="Step 2 of 2" />
-      <Text style={[Typeface.title, { color: Palette.ink }]}>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
         Confirm three words
       </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>

@@ -1,4 +1,4 @@
-import React from 'react'
+import { useCallback } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import {
@@ -21,9 +21,9 @@ export function RecoveryScreen({ close }: { close: () => void }) {
   const state = useDemo()
   const recovery = state.recoveryState
 
-  // On every appearance, as iOS's `onAppear`: coming back to a watcher that stopped resumes it.
+  // On every appearance: coming back to a watcher that stopped resumes it.
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       model.followRecovery()
     }, []),
   )
@@ -41,7 +41,7 @@ export function RecoveryScreen({ close }: { close: () => void }) {
   const headline =
     recovery?.tag === RecoveryState_Tags.Done
       ? '100%'
-      : recovery?.tag === RecoveryState_Tags.Running && fraction !== undefined
+      : fraction !== undefined
         ? `${Math.floor(fraction * 100)}%`
         : '…'
   const title =
@@ -66,21 +66,22 @@ export function RecoveryScreen({ close }: { close: () => void }) {
     >
       <Caption text="Restoring wallet" />
       <Text style={[Typeface.amount, { color: Palette.ink }]}>{headline}</Text>
-      <Text style={[Typeface.title, { color: Palette.ink }]}>{title}</Text>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
+        {title}
+      </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>
         Scanning the federation's history for ecash issued to your recovery
         phrase. This can take a few minutes, and keeps running if you leave this
         screen.
       </Text>
       <Card style={{ gap: 10, marginTop: Metrics.gap }}>
-        {recovery?.tag === RecoveryState_Tags.Running &&
-        progress &&
-        progress.total > 0 ? (
+        {progress && fraction !== undefined ? (
           <>
             <View style={styles.track}>
-              <View
-                style={[styles.fill, { width: `${(fraction ?? 0) * 100}%` }]}
-              />
+              <View style={[styles.fill, { width: `${fraction * 100}%` }]} />
             </View>
             <Text
               style={[Typeface.mono('Regular', 13), { color: Palette.muted }]}

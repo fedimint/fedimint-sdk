@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Text, View } from 'react-native'
 import Clipboard from '@react-native-clipboard/clipboard'
 import type { FederationPreview } from '@fedimint/react-native'
@@ -57,7 +57,10 @@ export function JoinScreen({ close }: { close: () => void }) {
         />
       }
     >
-      <Text style={[Typeface.title, { color: Palette.ink }]}>
+      <Text
+        lineBreakStrategyIOS="standard"
+        style={[Typeface.title, { color: Palette.ink }]}
+      >
         Join a federation
       </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>
@@ -70,7 +73,7 @@ export function JoinScreen({ close }: { close: () => void }) {
             multiline
             value={state.invite}
             onChangeText={(text) => model.setInvite(text)}
-            style={{ minHeight: 110, textAlignVertical: 'top' }}
+            textHeight={110}
           />
         </Field>
       </View>
@@ -81,9 +84,9 @@ export function JoinScreen({ close }: { close: () => void }) {
           kind="secondary"
           style={{ flex: 1 }}
           onPress={() =>
-            Clipboard.getString().then(
-              (text) => text && model.setInvite(text.trim()),
-            )
+            Clipboard.getString()
+              .then((text) => text && model.setInvite(text.trim()))
+              .catch(() => {})
           }
         />
         <Button

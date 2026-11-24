@@ -1,4 +1,3 @@
-import React from 'react'
 import { ActivityIndicator, Share, Text, View } from 'react-native'
 import { EcashSendState } from '@fedimint/react-native'
 import { model, useDemo } from '../../model/DemoModel'
@@ -37,7 +36,7 @@ export function EcashReady({ done }: { done: () => void }) {
               <Button
                 title="Share notes"
                 icon="square.and.arrow.up"
-                onPress={() => Share.share({ message: token })}
+                onPress={() => Share.share({ message: token }).catch(() => {})}
               />
               <Button
                 title="Reclaim notes"

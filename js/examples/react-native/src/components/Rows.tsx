@@ -1,4 +1,4 @@
-import React from 'react'
+import type { ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { Icon, type IconName } from './Icon'
 import { Metrics, Palette, Typeface } from '../theme/tokens'
@@ -18,14 +18,24 @@ export function ListRow({
   title,
   subtitle,
   trailing,
+  trailingLabel,
 }: {
   icon: IconName
   title: string
   subtitle?: string
-  trailing?: React.ReactNode
+  trailing?: ReactNode
+  /** What `trailing` reads as, when it is a figure rather than decoration. */
+  trailingLabel?: string
 }) {
   return (
-    <View style={styles.row} accessible>
+    <View
+      style={styles.row}
+      accessible
+      // The text alone: gathered from the children, it would start with the icon's symbol name.
+      accessibilityLabel={[title, subtitle, trailingLabel]
+        .filter((part) => part !== undefined)
+        .join(', ')}
+    >
       <IconTile icon={icon} />
       <View style={styles.text}>
         <Text style={[Typeface.headline, { color: Palette.ink }]}>{title}</Text>
@@ -52,7 +62,7 @@ export function ReviewRow({
   value: string
   monospaced?: boolean
   emphasised?: boolean
-  trailing?: React.ReactNode
+  trailing?: ReactNode
 }) {
   const valueFont = emphasised
     ? Typeface.geist('SemiBold', 16)

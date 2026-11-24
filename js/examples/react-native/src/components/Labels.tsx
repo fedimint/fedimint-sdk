@@ -1,4 +1,3 @@
-import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { Palette, Typeface } from '../theme/tokens'
 
@@ -10,7 +9,12 @@ export function Caption({
   text: string
   color?: string
 }) {
-  return <Text style={[Typeface.label, { color }]}>{text}</Text>
+  return (
+    // Read as written, not in capitals.
+    <Text accessibilityLabel={text} style={[Typeface.label, { color }]}>
+      {text}
+    </Text>
+  )
 }
 
 export type Tone = 'success' | 'warning' | 'danger' | 'neutral'
@@ -25,7 +29,7 @@ export const toneColors: Record<Tone, { fg: string; tint: string }> = {
 
 /**
  * A coloured dot and a word, for a federation's status or an operation's state. `center` for a
- * pill in a centred stack: SwiftUI places it by its parent's alignment, React Native by its own.
+ * pill in a centred stack: React Native aligns it by its own `alignSelf`, not its parent's.
  */
 export function StatusPill({
   text,

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NativeModules, Pressable } from 'react-native'
 import Clipboard from '@react-native-clipboard/clipboard'
 import { Icon } from './Icon'
@@ -9,7 +9,7 @@ const bearerLifetime = 120
 
 /** The example's own native module: ios/ReactNativeExample/BearerPasteboard.m and its Android twin. */
 const BearerPasteboard = NativeModules.BearerPasteboard as {
-  copy(value: string, lifetimeSeconds: number): void
+  copy(value: string, lifetimeSeconds: number): Promise<void>
 }
 
 /**
@@ -19,8 +19,8 @@ const BearerPasteboard = NativeModules.BearerPasteboard as {
  * two minutes, as in the iOS demo. The other values keep the plain copy, because pasting an
  * invoice or address on another device is the point.
  */
-export function copy(value: string, bearer = false) {
-  if (bearer) BearerPasteboard.copy(value, bearerLifetime)
+async function copy(value: string, bearer = false): Promise<void> {
+  if (bearer) await BearerPasteboard.copy(value, bearerLifetime)
   else Clipboard.setString(value)
 }
 
@@ -32,10 +32,13 @@ export function CopyIconButton({
   value: string
   bearer?: boolean
 }) {
-  const [copied, setCopied] = useState(false)
+  /** What the last tap came to, shown for a moment. */
+  const [outcome, setOutcome] = useState<'copied' | 'failed'>()
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const mounted = useRef(true)
   useEffect(
     () => () => {
+      mounted.current = false
       if (timer.current) clearTimeout(timer.current)
     },
     [],
@@ -43,7 +46,13 @@ export function CopyIconButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={copied ? 'Copied' : 'Copy'}
+      accessibilityLabel={
+        outcome === 'copied'
+          ? 'Copied'
+          : outcome === 'failed'
+            ? 'Copy failed'
+            : 'Copy'
+      }
       hitSlop={6}
       style={{
         width: 32,
@@ -52,15 +61,35 @@ export function CopyIconButton({
         justifyContent: 'center',
       }}
       onPress={() => {
-        copy(value, bearer)
-        setCopied(true)
-        if (timer.current) clearTimeout(timer.current)
-        timer.current = setTimeout(() => setCopied(false), 2000)
+        // The checkmark only for a copy that happened, and a warning for one that did not: the
+        // clipboard then still holds whatever was copied before, which must not pass for this.
+        const show = (result: 'copied' | 'failed') => {
+          if (!mounted.current) return
+          setOutcome(result)
+          if (timer.current) clearTimeout(timer.current)
+          timer.current = setTimeout(() => setOutcome(undefined), 2000)
+        }
+        copy(value, bearer).then(
+          () => show('copied'),
+          () => show('failed'),
+        )
       }}
     >
       <Icon
-        name={copied ? 'checkmark' : 'doc.on.doc'}
-        color={copied ? Palette.success : Palette.ink}
+        name={
+          outcome === 'copied'
+            ? 'checkmark'
+            : outcome === 'failed'
+              ? 'exclamationmark.triangle'
+              : 'doc.on.doc'
+        }
+        color={
+          outcome === 'copied'
+            ? Palette.success
+            : outcome === 'failed'
+              ? Palette.danger
+              : Palette.ink
+        }
       />
     </Pressable>
   )

@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react'
 import { NavigationContext } from '@react-navigation/native'
+import { BottomTabBarHeightContext } from '@react-navigation/bottom-tabs'
 import {
   Keyboard,
   LayoutAnimation,
@@ -19,6 +20,7 @@ import {
   type ViewStyle,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { SafeAreaView } from 'react-native-screens/experimental'
 import { Metrics, Palette } from '../theme/tokens'
 
 /** The design's card: a white surface with a hairline border. */
@@ -56,8 +58,7 @@ export function RowDivider({ inset = 20 }: { inset?: number }) {
 
 /**
  * A screen's scrolling body on the design's ground, with its padding and block spacing.
- * `footer` is pinned under it, above the home indicator, the way the iOS demo pins a screen's
- * main buttons with `safeAreaInset(edge: .bottom)`.
+ * `footer` is pinned under it, 16 points above the safe area.
  */
 export function Screen({
   children,
@@ -76,6 +77,8 @@ export function Screen({
   topInset?: boolean
 }) {
   const insets = useSafeAreaInsets()
+  // Set only inside a tab drawn by the JS tab bar, Android's, which sits over the bottom inset.
+  const inTab = useContext(BottomTabBarHeightContext) !== undefined
   const ground = useRef<View>(null)
   const keyboard = useKeyboardOverlap(ground)
   return (
@@ -102,30 +105,45 @@ export function Screen({
       >
         {children}
       </ScrollView>
-      {footer && (
-        <View
-          style={[
-            styles.footer,
-            { paddingBottom: Math.max(insets.bottom, Metrics.screenPadding) },
-          ]}
-        >
-          {footer}
-        </View>
-      )}
+      {footer &&
+        (Platform.OS === 'ios' ? (
+          // The screen's own safe area, which includes the tab bar; the window's, from
+          // `useSafeAreaInsets`, does not. With the keyboard up the screen pads to it instead.
+          // `flex: 0`: this view fills the screen by default.
+          <SafeAreaView
+            edges={{ bottom: keyboard.overlap === 0 }}
+            style={{ flex: 0 }}
+          >
+            <View style={styles.footer}>{footer}</View>
+          </SafeAreaView>
+        ) : (
+          // Inside a tab its bar already covers the inset, and with the keyboard up the screen
+          // pads to the keyboard instead, as on iOS.
+          <View
+            style={[
+              styles.footer,
+              {
+                paddingBottom:
+                  (inTab || keyboard.overlap > 0 ? 0 : insets.bottom) +
+                  Metrics.screenPadding,
+              },
+            ]}
+          >
+            {footer}
+          </View>
+        ))}
     </View>
   )
 }
 
 /**
- * How far the keyboard reaches over the screen, so it can pad its bottom by that much and keep
- * its pinned buttons above the keyboard, as iOS's `safeAreaInset` does. Measured rather than
- * assumed: a screen in a sheet starts lower than one pushed onto the main stack, and on Android,
- * drawn edge to edge, the window no longer shrinks for the keyboard itself. Android measures
- * from below the status bar but places the keyboard from the top of the screen, hence its
- * status bar's height.
+ * How far the keyboard reaches over the screen, so the screen pads its bottom by that much and
+ * keeps its pinned buttons above it. Measured, not assumed: a sheet starts lower than a pushed
+ * screen, and an edge-to-edge Android window no longer shrinks for the keyboard. Android measures
+ * from below the status bar but places the keyboard from the top of the screen, hence its height.
  *
- * Measured when the keyboard moves while this screen is in front, and when it comes to the
- * front or is laid out with the keyboard already up, such as Review opening from a focused field.
+ * Measured when the keyboard moves while this screen is in front, and when it comes to the front
+ * or is laid out with the keyboard already up, such as Review opening from a focused field.
  */
 function useKeyboardOverlap(view: React.RefObject<View | null>) {
   const [overlap, setOverlap] = useState(0)
@@ -191,6 +209,7 @@ const styles = StyleSheet.create({
     gap: Metrics.gap,
     paddingHorizontal: Metrics.screenPadding,
     paddingTop: Metrics.gap,
+    paddingBottom: Metrics.screenPadding,
     backgroundColor: Palette.background,
   },
 })

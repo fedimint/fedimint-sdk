@@ -1,4 +1,4 @@
-import React from 'react'
+import { Fragment, useCallback } from 'react'
 import { ActivityIndicator, Pressable, Text, View } from 'react-native'
 import { Icon } from '../../components/Icon'
 import { useFocusEffect } from '@react-navigation/native'
@@ -11,8 +11,8 @@ import { FederationStatusStyle } from '../../components/Status'
 import { Metrics, Palette, Typeface } from '../../theme/tokens'
 
 /**
- * Orders two strings by Unicode code point, as Swift compares them. JavaScript's `<` compares
- * UTF-16 units, which puts a character outside the BMP before U+E000 to U+FFFF.
+ * Orders two strings by Unicode code point. JavaScript's `<` compares UTF-16 units, which puts a
+ * character outside the BMP before U+E000 to U+FFFF.
  */
 function byCodePoint(a: string, b: string): number {
   const x = Array.from(a)
@@ -41,13 +41,13 @@ export function FederationsScreen({
   // On focus, which includes coming back from a pushed screen: a failed switch belongs to the
   // visit it happened in.
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       model.clearFailure('switching')
     }, []),
   )
 
   // Everything but the attached federation, in a stable order: the SDK lists them in none. By
-  // name, then id, compared by code point as iOS compares them, not by locale.
+  // name, then id, compared by code point, not by locale.
   const others = state.storedFederations
     .filter((info) => info.id !== state.federationId)
     .sort(
@@ -63,7 +63,7 @@ export function FederationsScreen({
       {state.hasFederation && (
         <View style={{ gap: Metrics.gap }}>
           <Caption text="Active" />
-          <Pressable onPress={detail}>
+          <Pressable accessibilityRole="button" onPress={detail}>
             <Card padding={0}>
               {/* With the failure of a Reconnect started from the detail screen, which can land
                   after the user is back here. */}
@@ -100,11 +100,15 @@ export function FederationsScreen({
           <Card padding={0}>
             {others.map((info, index) => {
               const action = FederationStatusStyle.action(info.status)
+              const disabled = action === undefined || attaching || sending
+              const busy = switching && state.switchTarget === info.id
               return (
-                <React.Fragment key={info.id}>
+                <Fragment key={info.id}>
                   {index > 0 && <RowDivider />}
                   <Pressable
-                    disabled={action === undefined || attaching || sending}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled }}
+                    disabled={disabled}
                     onPress={() => model.switchFederation(info.id)}
                   >
                     <FederationRow
@@ -116,8 +120,9 @@ export function FederationsScreen({
                           ? state.failures.switching
                           : undefined
                       }
+                      trailingLabel={busy ? undefined : action}
                       trailing={
-                        switching && state.switchTarget === info.id ? (
+                        busy ? (
                           <ActivityIndicator />
                         ) : action ? (
                           <Text
@@ -129,7 +134,7 @@ export function FederationsScreen({
                       }
                     />
                   </Pressable>
-                </React.Fragment>
+                </Fragment>
               )
             })}
           </Card>

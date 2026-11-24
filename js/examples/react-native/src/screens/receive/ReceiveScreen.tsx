@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Share, StyleSheet, Text, TextInput, View } from 'react-native'
 import {
   LnReceiveState_Tags,
@@ -16,7 +16,7 @@ import {
   TrackingStopped,
 } from '../../components/Labels'
 import { Card, RowDivider, Screen } from '../../components/Surfaces'
-import { Field, Input, RailPicker } from '../../components/Inputs'
+import { Field, Input, RailPicker, placeholder } from '../../components/Inputs'
 import { ReviewRow } from '../../components/Rows'
 import { PaymentRails, type PaymentRail } from '../../components/Status'
 import { CopyIconButton, middleTruncated } from '../../components/Pasteboard'
@@ -30,8 +30,8 @@ export function ReceiveScreen() {
   const state = useDemo()
   const rails = PaymentRails.available(state.capabilities)
   const [rail, setRail] = useState<PaymentRail>(rails[0] ?? 'lightning')
-  // Held here, not in the Lightning form, as on iOS: a new invoice being composed survives a
-  // look at another rail.
+  // Held here, not in the Lightning form, so a new invoice being composed survives a look at
+  // another rail.
   const [sats, setSats] = useState('5000')
   const [composing, setComposing] = useState(false)
 
@@ -116,7 +116,7 @@ function LightningReceive({
                 onChangeText={setSats}
                 keyboardType="number-pad"
                 placeholder="0"
-                placeholderTextColor={Palette.muted}
+                placeholderTextColor={placeholder}
                 style={[
                   Typeface.amount,
                   { color: Palette.ink, padding: 0, textAlign: 'right' },
@@ -165,7 +165,9 @@ function LightningReceive({
           <Button
             title="Share invoice"
             icon="square.and.arrow.up"
-            onPress={() => Share.share({ message: state.lastInvoice! })}
+            onPress={() =>
+              Share.share({ message: state.lastInvoice! }).catch(() => {})
+            }
           />
           <Button
             title="New invoice"
@@ -261,7 +263,7 @@ function EcashReceive() {
           multiline
           value={state.ecashNotes}
           onChangeText={(notes) => model.setEcashNotes(notes)}
-          style={{ minHeight: 120, textAlignVertical: 'top' }}
+          textHeight={120}
         />
       </Field>
       {notesValue !== undefined ? (
@@ -325,7 +327,9 @@ function OnchainReceive() {
           <Button
             title="Share address"
             icon="square.and.arrow.up"
-            onPress={() => Share.share({ message: state.lastAddress! })}
+            onPress={() =>
+              Share.share({ message: state.lastAddress! }).catch(() => {})
+            }
           />
           {/* One payment per address: a second one to the same address may go unnoticed for a
               long time on the v1 wallet module. */}

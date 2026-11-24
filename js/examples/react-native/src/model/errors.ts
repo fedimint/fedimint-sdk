@@ -9,7 +9,7 @@ export function sdkError(
   return { code: inner.code(), reason: inner.reason() }
 }
 
-/** A code as the iOS demo prints it, the Swift case name: `unsupportedFederation`. */
+/** A code's name in camelCase: `unsupportedFederation`. */
 export function codeName(code: ErrorCode): string {
   const name = ErrorCode[code]
   return name.charAt(0).toLowerCase() + name.slice(1)
@@ -18,14 +18,16 @@ export function codeName(code: ErrorCode): string {
 /** The reason alone, for a line that already says what stopped. */
 export function reason(error: unknown): string {
   const sdk = sdkError(error)
-  if (sdk) return sdk.reason
-  return error instanceof Error ? error.message : String(error)
+  return sdk ? sdk.reason : message(error)
 }
 
-/** What a failed action says, in the iOS demo's words, written without its dashes. */
+/**
+ * What a failed action says: a sentence for the errors a user can act on, otherwise the code and
+ * its reason.
+ */
 export function describe(error: unknown): string {
   const sdk = sdkError(error)
-  if (!sdk) return error instanceof Error ? error.message : String(error)
+  if (!sdk) return message(error)
   switch (sdk.code) {
     case ErrorCode.InvalidInput:
       return `That input isn't valid.\n\n${sdk.reason}`
@@ -45,6 +47,11 @@ export function describe(error: unknown): string {
     default:
       return `${codeName(sdk.code)}: ${sdk.reason}`
   }
+}
+
+/** An error's message, whatever was thrown. */
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Whether `error` is the rejection an aborted SDK call ends with. */

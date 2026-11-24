@@ -1,16 +1,20 @@
-import React, { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { OperationKind, type ActivityItem } from '@fedimint/react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import { model, useDemo } from '../../model/DemoModel'
 import { Button } from '../../components/Buttons'
-import { Caption } from '../../components/Labels'
+import { Caption, FailureText } from '../../components/Labels'
 import { Card, CardList, Screen } from '../../components/Surfaces'
-import { ActivityRow, ActivityTime } from '../../components/Activity'
+import {
+  ActivityRow,
+  ActivityTime,
+  useHistoryFailure,
+} from '../../components/Activity'
 import { Metrics, Palette, Typeface } from '../../theme/tokens'
 
-type Filter = 'All' | 'Lightning' | 'Ecash' | 'Onchain'
-const filters: Filter[] = ['All', 'Lightning', 'Ecash', 'Onchain']
+const filters = ['All', 'Lightning', 'Ecash', 'Onchain'] as const
+type Filter = (typeof filters)[number]
 
 function includes(filter: Filter, kind: OperationKind): boolean {
   switch (filter) {
@@ -39,10 +43,10 @@ export function ActivityScreen({
   const state = useDemo()
   const [filter, setFilter] = useState<Filter>('All')
 
-  // On every appearance, as iOS's `.task`: a list still empty, after a load that failed, is
-  // tried again on coming back.
+  // On every appearance: a list still empty, after a load that failed, is tried again on coming
+  // back.
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       const now = model.getState()
       if (now.hasFederation && now.activityItems.length === 0) model.activity()
     }, []),
@@ -71,6 +75,24 @@ export function ActivityScreen({
         items: groups.get(day)!,
       }))
   }, [state.activityItems, filter])
+
+  const loading = state.working.has('activity')
+  const loadFailure = useHistoryFailure(state.failures.activity, loading)
+
+  const failedLoad = (reason: string) => (
+    <Card padding={20} style={{ gap: Metrics.gap }}>
+      <Text selectable style={[Typeface.callout, { color: Palette.danger }]}>
+        Couldn't load the history: {reason}
+      </Text>
+      <Button
+        title="Try again"
+        kind="secondary"
+        busy={loading}
+        disabled={loading}
+        onPress={() => model.activity()}
+      />
+    </Card>
+  )
 
   const empty = (text: string) => (
     <Card padding={20}>
@@ -113,27 +135,36 @@ export function ActivityScreen({
 
       {!state.hasFederation
         ? empty('Join a federation to see its history.')
-        : days.length === 0
-          ? empty(
-              filter === 'All'
-                ? 'No activity yet.'
-                : `No ${filter.toLowerCase()} activity loaded.`,
-            )
-          : days.map((day) => (
-              <View key={day.title} style={{ gap: Metrics.gap }}>
-                <Caption text={day.title} />
-                <CardList>
-                  {day.items.map((item) => (
-                    <Pressable
-                      key={item.operationId}
-                      onPress={() => showOperation(item)}
-                    >
-                      <ActivityRow item={item} />
-                    </Pressable>
-                  ))}
-                </CardList>
-              </View>
-            ))}
+        : loadFailure !== undefined && state.activityItems.length === 0
+          ? // Not "No activity yet.": nothing loaded, so nothing is known about the history.
+            failedLoad(loadFailure)
+          : days.length === 0
+            ? empty(
+                filter === 'All'
+                  ? 'No activity yet.'
+                  : `No ${filter.toLowerCase()} activity loaded.`,
+              )
+            : days.map((day) => (
+                <View key={day.title} style={{ gap: Metrics.gap }}>
+                  <Caption text={day.title} />
+                  <CardList>
+                    {day.items.map((item) => (
+                      <Pressable
+                        key={item.operationId}
+                        accessibilityRole="button"
+                        onPress={() => showOperation(item)}
+                      >
+                        <ActivityRow item={item} />
+                      </Pressable>
+                    ))}
+                  </CardList>
+                </View>
+              ))}
+
+      {/* A refresh or a further page that failed, under the rows already loaded. */}
+      {state.hasFederation && state.activityItems.length > 0 && (
+        <FailureText text={loadFailure} />
+      )}
 
       {state.activityNext !== undefined && (
         <Button
@@ -157,7 +188,7 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: Palette.navy },
   chipIdle: {
     backgroundColor: Palette.surface,
-    borderWidth: 1,
+    borderWidth: Metrics.borderWidth,
     borderColor: Palette.border,
   },
 })

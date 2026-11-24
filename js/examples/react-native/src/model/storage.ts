@@ -41,7 +41,7 @@ export async function prepareDataDir(): Promise<string> {
 /**
  * Whether an earlier launch left a wallet in the data directory. Only a hint for which screen to
  * start on; whether that storage really opens is still the SDK's answer. A directory that cannot
- * be read counts as empty, as on iOS (`try? contentsOfDirectory`).
+ * be read counts as empty.
  */
 export async function hasStoredWallet(): Promise<boolean> {
   try {
@@ -65,8 +65,8 @@ export async function recoversOnJoin(origin: WalletOrigin): Promise<boolean> {
       await RNFS.writeFile(createdMarker, '').catch(() => {})
       return false
     case 'restored':
-      if (await RNFS.exists(createdMarker).catch(() => false))
-        await RNFS.unlink(createdMarker).catch(() => {})
+      // A marker already absent is fine: the unlink's failure is ignored either way.
+      await RNFS.unlink(createdMarker).catch(() => {})
       return true
     case 'reopened':
       // Unreadable counts as not created here: recovering a wallet that needed none costs a

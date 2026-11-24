@@ -1,4 +1,3 @@
-import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { model, useDemo } from '../../model/DemoModel'
@@ -24,7 +23,7 @@ export function WelcomeScreen({ restore }: { restore: () => void }) {
     <View style={styles.ground}>
       {/* Bleeds off the trailing edge, the way the design crops it. */}
       <View
-        style={styles.mark}
+        style={[styles.mark, { top: insets.top + 150 }]}
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
       >
@@ -44,7 +43,10 @@ export function WelcomeScreen({ restore }: { restore: () => void }) {
         <FedimintLogoOnDark height={26} />
         <View style={{ flex: 1, minHeight: Metrics.sectionGap }} />
         <Caption text="Fedimint SDK · Demo wallet" color={Palette.accent} />
-        <Text style={[Typeface.title, styles.title]}>
+        <Text
+          lineBreakStrategyIOS="standard"
+          style={[Typeface.title, styles.title]}
+        >
           Bitcoin custody, shared by people you trust.
         </Text>
         <Text style={[Typeface.callout, styles.subtitle]}>
@@ -84,7 +86,7 @@ export function WelcomeScreen({ restore }: { restore: () => void }) {
 
 const styles = StyleSheet.create({
   ground: { flex: 1, backgroundColor: Palette.navy },
-  mark: { position: 'absolute', right: -48, top: 150 },
+  mark: { position: 'absolute', right: -48 },
   content: { flex: 1 },
   title: { color: '#FFFFFF', marginTop: 10 },
   subtitle: { color: 'rgba(255,255,255,0.65)', marginTop: Metrics.gap },
