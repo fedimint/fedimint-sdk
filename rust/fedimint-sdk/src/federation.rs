@@ -559,8 +559,8 @@ pub(crate) struct FederationInner {
     /// bring-up.
     runs_multisig: std::sync::RwLock<bool>,
     /// The sweep of multisig payouts last started on this federation; see
-    /// [`SweepLock`](crate::multisig::spv2::SweepLock).
-    multisig_sweep: crate::multisig::spv2::SweepLock,
+    /// [`SweepLock`](crate::multisig::SweepLock).
+    multisig_sweep: crate::multisig::SweepLock,
 }
 
 /// Which client instance, of however many a `FederationInner` sees installed over its life, a
@@ -620,7 +620,7 @@ impl FederationInner {
             reclaim_starts: tokio::sync::Mutex::new(()),
             deposit_records: tokio::sync::Mutex::new(()),
             runs_multisig: std::sync::RwLock::new(false),
-            multisig_sweep: crate::multisig::spv2::SweepLock::default(),
+            multisig_sweep: crate::multisig::SweepLock::default(),
         }
     }
 
@@ -767,7 +767,7 @@ impl FederationInner {
     pub(crate) fn set_module_kinds(&self, kinds: &[String]) {
         let runs = kinds
             .iter()
-            .any(|kind| kind == crate::multisig::spv2::MODULE_KIND);
+            .any(|kind| kind == crate::multisig::MODULE_KIND);
         *write_lock(&self.runs_multisig) = runs;
     }
 
@@ -789,7 +789,7 @@ impl FederationInner {
     }
 
     /// The lock that keeps two sweeps of multisig payouts on this federation apart.
-    pub(crate) fn multisig_sweep(&self) -> &crate::multisig::spv2::SweepLock {
+    pub(crate) fn multisig_sweep(&self) -> &crate::multisig::SweepLock {
         &self.multisig_sweep
     }
 
@@ -2926,10 +2926,7 @@ mod tests {
         assert!(federation.multisig().is_none(), "the module is not run");
         assert!(!federation.capabilities().multisig);
 
-        inner.set_module_kinds(&[
-            "mint".to_owned(),
-            crate::multisig::spv2::MODULE_KIND.to_owned(),
-        ]);
+        inner.set_module_kinds(&["mint".to_owned(), crate::multisig::MODULE_KIND.to_owned()]);
         assert!(federation.multisig().is_some());
         assert!(federation.capabilities().multisig);
         // The other capabilities still come from the record.
@@ -2967,7 +2964,7 @@ mod tests {
             modules: BTreeMap::from([(
                 0,
                 ClientModuleConfig {
-                    kind: ModuleKind::clone_from_str(crate::multisig::spv2::MODULE_KIND),
+                    kind: ModuleKind::clone_from_str(crate::multisig::MODULE_KIND),
                     version: ModuleConsensusVersion::new(0, 0),
                     config: DynRawFallback::Raw {
                         module_instance_id: 0,

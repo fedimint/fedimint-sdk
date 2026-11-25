@@ -7,8 +7,10 @@ use fedimint_core::bitcoin::hashes::{Hash, HashEngine, sha256};
 use fedimint_core::config;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fedimint_core::secp256k1::{Message, PublicKey, SECP256K1, schnorr};
-use stability_pool_common::{AccountType, BtcTransferRequest};
+use fedimint_core::secp256k1::{Keypair, Message, PublicKey, SECP256K1, schnorr};
+use stability_pool_common::{
+    AccountType, BtcTransferRequest, SignedBtcTransferRequest, TransferRequestId,
+};
 
 use crate::{
     Amount, Error, ErrorCode, FederationId, MemberKey, MultisigAccount, MultisigAccountId, Policy,
@@ -433,6 +435,41 @@ pub(crate) fn approvals_for(proposal: &Proposal, approvals: &[Approval]) -> Resu
     Ok(by_member.into_values().collect())
 }
 
+/// `key`'s signature over `request`, as the stability pool checks a member's approval.
+pub(crate) fn sign_request(key: &Keypair, request: &BtcTransferRequest) -> schnorr::Signature {
+    key.sign_schnorr(Message::from(&TransferRequestId::from(request)))
+}
+
+/// `proposal`'s request signed with `approvals`, each filed under the index of its member's key
+/// in the stability pool's account.
+pub(crate) fn signed_request(
+    proposal: &Proposal,
+    approvals: &[Approval],
+) -> Result<SignedBtcTransferRequest> {
+    let request = proposal.request();
+    let mut signatures = BTreeMap::new();
+    for approval in approvals {
+        let key = approval.member().upstream();
+        let index = request
+            .from()
+            .pub_keys()
+            .position(|member| *member == key)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    "an approval is not from one of the account's members",
+                )
+            })?;
+        signatures.insert(index as u64, approval.signature());
+    }
+    SignedBtcTransferRequest::new(request.clone(), signatures).map_err(|err| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("the approvals do not sign the payout: {err}"),
+        )
+    })
+}
+
 /// A proposal as it is encoded, after the version byte.
 #[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
 struct ProposalWire {
@@ -546,7 +583,7 @@ pub(crate) fn test_proposal(msats: u64) -> Proposal {
 fn test_request(msats: u64) -> BtcTransferRequest {
     let [a, b, c] = super::account::test_keys();
     let account = MultisigAccount::derive(&Policy::new(vec![a, b, c], 2)).expect("a valid policy");
-    let from = super::spv2::module_account(&account).expect("a valid account");
+    let from = account.module_account().expect("a valid account");
     let to = stability_pool_common::Account::single(a.upstream(), AccountType::BtcDepositor);
     BtcTransferRequest::new(
         7,
@@ -689,7 +726,7 @@ mod tests {
     fn a_request_that_is_no_payout_out_of_a_multisig_account_is_refused() {
         let [a, ..] = test_keypairs();
         let [key_a, ..] = test_keys();
-        let from = crate::multisig::spv2::module_account(&account()).expect("valid");
+        let from = account().module_account().expect("valid");
         let own = Account::single(key_a.upstream(), AccountType::BtcDepositor);
         let seeker = Account::single(key_a.upstream(), AccountType::Seeker);
         // Built as decoding builds them, without the constructor's checks.
@@ -745,11 +782,7 @@ mod tests {
         let again = signed_with([2; 32]);
         assert_ne!(first.to_string(), again.to_string());
 
-        let approval = Approval::new(
-            first.digest(),
-            key_b,
-            crate::multisig::spv2::sign_request(&b, first.request()),
-        );
+        let approval = Approval::new(first.digest(), key_b, sign_request(&b, first.request()));
         assert!(approval.approves(&again));
     }
 
@@ -761,7 +794,7 @@ mod tests {
         let approval = Approval::new(
             proposal.digest(),
             key_a,
-            crate::multisig::spv2::sign_request(&a, proposal.request()),
+            sign_request(&a, proposal.request()),
         );
         let parsed: Approval = approval.to_string().parse().expect("parses");
         assert_eq!(parsed, approval);
@@ -812,7 +845,7 @@ mod tests {
             Approval::new(
                 proposal.digest(),
                 MemberKey::from_upstream(pair.public_key()),
-                crate::multisig::spv2::sign_request(pair, proposal.request()),
+                sign_request(pair, proposal.request()),
             )
         };
 
@@ -836,8 +869,7 @@ mod tests {
         let [pair_a, pair_b, _] = test_keypairs();
         let [a, b, _] = test_keys();
         let proposal = test_proposal(5_000);
-        let signature =
-            |pair: &Keypair| crate::multisig::spv2::sign_request(pair, proposal.request());
+        let signature = |pair: &Keypair| sign_request(pair, proposal.request());
 
         let elsewhere = Approval::new(
             sha256::Hash::hash(b"another proposal"),
@@ -880,15 +912,14 @@ mod tests {
             Approval::new(
                 proposal.digest(),
                 MemberKey::from_upstream(pair.public_key()),
-                crate::multisig::spv2::sign_request(pair, proposal.request()),
+                sign_request(pair, proposal.request()),
             )
         };
         for approvals in [
             vec![approval(&pair_c), approval(&pair_b)],
             vec![approval(&pair_a), approval(&pair_c)],
         ] {
-            let signed = crate::multisig::spv2::signed_request(&proposal, &approvals)
-                .expect("the approvals verify");
+            let signed = signed_request(&proposal, &approvals).expect("the approvals verify");
             signed
                 .validate_signatures()
                 .expect("as the module checks them");

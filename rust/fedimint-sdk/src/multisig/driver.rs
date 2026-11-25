@@ -11,16 +11,20 @@ use fedimint_client::Client;
 use fedimint_core::core::OperationId as UpstreamOperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use stability_pool_client::{
+    StabilityPoolDepositOperationState, StabilityPoolTransferOperationState,
+    StabilityPoolWithdrawalOperationState,
+};
 
 use super::{
-    MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails, MultisigSweepState,
-    MultisigTransferDetails, MultisigTransferState,
+    MODULE_KIND, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, chain, internal, module,
 };
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
-use crate::multisig::spv2;
 use crate::operation::{Driver, OperationState, first_state, settled, until_final};
 use crate::{Amount, Error, ErrorCode, Result, Timestamp};
 
@@ -107,14 +111,13 @@ where
             }
             // An operation made by a build whose multisig ran on another module, as a build with
             // the extension API could have, means nothing to the stability pool.
-            if record.module != spv2::MODULE_KIND {
+            if record.module != MODULE_KIND {
                 return Err(Error::new(
                     ErrorCode::NotSupported,
                     format!(
                         "this operation was made with the {} module, and this build's multisig \
                          runs on {}",
-                        record.module,
-                        spv2::MODULE_KIND
+                        record.module, MODULE_KIND
                     ),
                 ));
             }
@@ -234,7 +237,22 @@ impl MultisigKind for MultisigDepositState {
         client: &Client,
         id: UpstreamOperationId,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
-        Box::pin(spv2::deposit_updates(client, id))
+        Box::pin(async move {
+            let updates = module(client)?
+                .subscribe_deposit_operation(id)
+                .await
+                .map_err(|err| {
+                    internal(format!(
+                        "cannot follow the deposit: {}",
+                        chain(err.as_ref())
+                    ))
+                })?;
+            // `Box::pin` rather than `boxed`: a stream is not `Send` on wasm.
+            Ok(
+                Box::pin(updates.into_stream().map(|state| Ok(deposit_state(state))))
+                    as BoxStream<'static, Result<Self>>,
+            )
+        })
     }
 
     fn encode(&self) -> String {
@@ -269,7 +287,18 @@ impl MultisigKind for MultisigTransferState {
         client: &Client,
         id: UpstreamOperationId,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
-        Box::pin(spv2::transfer_updates(client, id))
+        Box::pin(async move {
+            let updates = module(client)?
+                .subscribe_transfer_operation(id)
+                .await
+                .map_err(|err| {
+                    internal(format!("cannot follow the payout: {}", chain(err.as_ref())))
+                })?;
+            Ok(
+                Box::pin(updates.into_stream().map(|state| Ok(transfer_state(state))))
+                    as BoxStream<'static, Result<Self>>,
+            )
+        })
     }
 
     fn encode(&self) -> String {
@@ -302,7 +331,11 @@ impl MultisigKind for MultisigSweepState {
         client: &Client,
         id: UpstreamOperationId,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
-        Box::pin(spv2::sweep_updates(client, id))
+        Box::pin(async move {
+            let updates = withdrawal_updates(client, id).await?;
+            Ok(Box::pin(updates.map(|state| Ok(sweep_state(state))))
+                as BoxStream<'static, Result<Self>>)
+        })
     }
 
     fn encode(&self) -> String {
@@ -352,6 +385,83 @@ impl MultisigKind for MultisigSweepState {
                 format!("could not encode multisig operation details: {err}"),
             )
         })
+    }
+}
+
+/// The states of the sweep `id`: a withdrawal that unlocks first, or one of idle balance only.
+async fn withdrawal_updates(
+    client: &Client,
+    id: UpstreamOperationId,
+) -> Result<BoxStream<'static, StabilityPoolWithdrawalOperationState>> {
+    let module = module(client)?;
+    let updates = match module.subscribe_withdraw(id).await {
+        Ok(updates) => updates,
+        Err(_) => module
+            .subscribe_withdraw_idle_balance(id)
+            .await
+            .map_err(|err| internal(format!("cannot follow the sweep: {}", chain(err.as_ref()))))?,
+    };
+    Ok(updates.into_stream())
+}
+
+/// Waits for the sweep `id` to end, however it ends, or the refusal that says why that cannot be
+/// known.
+pub(super) async fn sweep_finished(client: &Client, id: UpstreamOperationId) -> Result<()> {
+    let mut updates = withdrawal_updates(client, id).await?;
+    while let Some(state) = updates.next().await {
+        if matches!(
+            sweep_state(state),
+            MultisigSweepState::Done { .. } | MultisigSweepState::Failed { .. }
+        ) {
+            return Ok(());
+        }
+    }
+    Err(internal(
+        "the previous sweep on this federation stopped reporting before it ended",
+    ))
+}
+
+fn deposit_state(state: StabilityPoolDepositOperationState) -> MultisigDepositState {
+    match state {
+        StabilityPoolDepositOperationState::Initiated => MultisigDepositState::Created,
+        StabilityPoolDepositOperationState::TxAccepted => MultisigDepositState::Accepted,
+        StabilityPoolDepositOperationState::Success => MultisigDepositState::Done,
+        StabilityPoolDepositOperationState::TxRejected(reason)
+        | StabilityPoolDepositOperationState::PrimaryOutputError(reason) => {
+            MultisigDepositState::Failed { reason }
+        }
+    }
+}
+
+fn transfer_state(state: StabilityPoolTransferOperationState) -> MultisigTransferState {
+    match state {
+        StabilityPoolTransferOperationState::Initiated => MultisigTransferState::Created,
+        StabilityPoolTransferOperationState::Success => MultisigTransferState::Done,
+        StabilityPoolTransferOperationState::TxRejected(reason) => {
+            MultisigTransferState::Failed { reason }
+        }
+    }
+}
+
+fn sweep_state(state: StabilityPoolWithdrawalOperationState) -> MultisigSweepState {
+    match state {
+        StabilityPoolWithdrawalOperationState::Initiated
+        | StabilityPoolWithdrawalOperationState::UnlockTxAccepted
+        | StabilityPoolWithdrawalOperationState::WithdrawalInitiated(_) => {
+            MultisigSweepState::Created
+        }
+        StabilityPoolWithdrawalOperationState::WithdrawalTxAccepted(_) => {
+            MultisigSweepState::Accepted
+        }
+        StabilityPoolWithdrawalOperationState::Success(amount) => MultisigSweepState::Done {
+            amount: Amount::from_msats(amount.msats),
+        },
+        StabilityPoolWithdrawalOperationState::UnlockTxRejected(reason)
+        | StabilityPoolWithdrawalOperationState::UnlockProcessingError(reason)
+        | StabilityPoolWithdrawalOperationState::WithdrawalTxRejected(reason)
+        | StabilityPoolWithdrawalOperationState::PrimaryOutputError(reason) => {
+            MultisigSweepState::Failed { reason }
+        }
     }
 }
 
@@ -644,7 +754,7 @@ mod tests {
             .current(
                 &federation,
                 UpstreamOperationId([1u8; 32]),
-                &pending(spv2::MODULE_KIND),
+                &pending(MODULE_KIND),
             )
             .await
             .expect_err("no client to follow it with");

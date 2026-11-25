@@ -1,29 +1,63 @@
 //! Accounts held by a group, paid out of with the approval of enough of its members.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use fedimint_api_client::api::FederationError;
+use fedimint_client::Client;
+use fedimint_client::module::{ClientModuleInstance, TransactionSubmitError};
 use fedimint_core::bitcoin::hashes::Hash;
-use fedimint_core::secp256k1::Message;
+use fedimint_core::core::OperationId as UpstreamOperationId;
+use fedimint_core::module::ModuleConsensusVersion;
+use fedimint_core::secp256k1::{Keypair, Message};
+use stability_pool_client::api::StabilityPoolApiExt as _;
+use stability_pool_client::{OwnAccount, StabilityPoolClientModule};
+use stability_pool_common::{
+    BTC_BALANCE_DEPOSIT_CONSENSUS_VERSION, BTC_TRANSFER_CONSENSUS_VERSION,
+    BtcBalanceDepositMetadata, BtcTransferOutput, BtcTransferRequest, FiatOrAll,
+    StabilityPoolOutput, StabilityPoolOutputV2,
+};
 
 use crate::federation::FederationInner;
 use crate::operation::{DetailedOperationState, OperationDetails, OperationState, kinds, sealed};
-use crate::{Amount, Error, ErrorCode, Operation, Result, Timestamp};
+use crate::{Amount, Error, ErrorCode, ErrorDetails, Operation, Result, Timestamp};
 
 mod account;
 mod activity;
 mod driver;
 mod proposal;
-pub(crate) mod spv2;
 
 pub use account::{MemberKey, MultisigAccount, MultisigAccountId, Policy};
 pub(crate) use driver::{MultisigDepositDriver, MultisigSweepDriver, MultisigTransferDriver};
 pub use proposal::{Approval, Proposal};
 
+/// The module kind multisig runs on: `stability_pool_common::KIND`, which is not a `const`
+/// string.
+pub(crate) const MODULE_KIND: &str = "multi_sig_stability_pool";
+
+/// How long a proposal stays valid: the federation refuses to pay one out once this has passed
+/// since it was made.
+const PROPOSAL_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How long a sweep waits for the previous one on the same federation to finish.
+///
+/// Nothing locks in a payout account, so a sweep finishes as soon as the federation has accepted
+/// its transactions. A sweep still running after this is reported as a `Timeout`, and no other
+/// starts until it has ended.
+const PREVIOUS_SWEEP_WAIT: Duration = Duration::from_secs(60);
+
+/// The sweep last started on a federation, until it is known to have ended.
+///
+/// A sweep reads what the payout account holds, and one started while the previous one is still
+/// claiming that would claim it again, and fail. Each federation has one of its own, so that one
+/// slow to answer holds up no other.
+pub(crate) type SweepLock = tokio::sync::Mutex<Option<UpstreamOperationId>>;
+
 /// The multisig facade for one federation.
 ///
 /// Obtained from [`Federation::multisig`](crate::Federation::multisig), which returns `None`
-/// unless the federation runs Fedi's stability pool module, which holds the accounts. An account
-/// holds bitcoin.
+/// unless the federation runs Fedi's stability pool module (v2), which holds the accounts. An
+/// account holds bitcoin.
 ///
 /// A multisig account belongs to a group: several members, each with a key, and a threshold of
 /// how many of them it takes to pay anything out. The account is described by its [`Policy`] and
@@ -51,6 +85,18 @@ pub use proposal::{Approval, Proposal};
 /// application stops before that, the federation can still carry it out, and the activity then
 /// lists it as an operation of [`Unknown`](crate::OperationKind::Unknown) kind. Check the
 /// account's [`balance`](Multisig::balance) before starting it again.
+///
+/// What the federation's stability pool adds:
+///
+/// - The federation has a minimum amount for deposits and payouts. A deposit below it, and a
+///   proposal to pay out less than it without emptying the account, are refused with
+///   [`InvalidInput`](crate::ErrorCode::InvalidInput).
+/// - A proposal stays valid for a week. Executing it later ends the payout
+///   [`Failed`](MultisigTransferState::Failed).
+/// - Deposits need the federation's stability pool at version 2.1 or later, and payouts at 2.2
+///   or later. Until then they are refused with [`NotSupported`](crate::ErrorCode::NotSupported).
+/// - A payout goes to the proposer's own payout account in the stability pool, which
+///   [`sweep`](Multisig::sweep) empties into the ecash balance.
 ///
 /// Like every other facade's, a call that needs the federation fails with
 /// [`FederationClosed`](crate::ErrorCode::FederationClosed) once it is closed. The one that does
@@ -92,7 +138,8 @@ impl Multisig {
     pub async fn member_key(&self, group: &str) -> Result<MemberKey> {
         check_group(group)?;
         let client = self.inner.federation.client(false).await?;
-        spv2::member_key(&client, group)
+        let key = module(&client)?.derive_multispend_group_key(group.to_owned());
+        Ok(MemberKey::from_upstream(key.public_key()))
     }
 
     /// What `account` holds.
@@ -106,7 +153,13 @@ impl Multisig {
     /// [`FederationClosed`](crate::ErrorCode::FederationClosed).
     pub async fn balance(&self, account: &MultisigAccount) -> Result<Amount> {
         let client = self.inner.federation.client(false).await?;
-        spv2::balance(&client, account).await
+        let sync = module(&client)?
+            .api
+            .account_sync(account.module_account()?.id())
+            .await
+            .map_err(unreachable)?;
+        let held = sync.staged_balance + sync.locked_balance + sync.idle_balance;
+        Ok(Amount::from_msats(held.msats))
     }
 
     /// Approves `proposal`, as this member of `group`.
@@ -129,7 +182,7 @@ impl Multisig {
         self.check_origin(proposal)?;
         let client = self.inner.federation.client(false).await?;
         let key = self.member_keypair_of(&client, group, &proposal.account())?;
-        let signature = spv2::sign_request(&key, proposal.request());
+        let signature = proposal::sign_request(&key, proposal.request());
         Ok(Approval::new(
             proposal.digest(),
             MemberKey::from_upstream(key.public_key()),
@@ -171,7 +224,30 @@ impl Multisig {
         }
         let client = self.inner.federation.client(false).await?;
         let key = self.member_keypair_of(&client, group, account)?;
-        let request = spv2::payout_request(&client, account, amount).await?;
+        let module = module(&client)?;
+        let from = account.module_account()?;
+        let amount = fedimint_core::Amount::from_msats(amount.msats());
+        let sync = module
+            .api
+            .account_sync(from.id())
+            .await
+            .map_err(unreachable)?;
+        // The module would refuse to pay this out, and leave what remains stuck below it.
+        let minimum = module.cfg.min_allowed_seek;
+        if amount < minimum && amount != sync.staged_balance {
+            return Err(invalid(format!(
+                "the federation pays out of multisig accounts {minimum} or more, or all they hold"
+            )));
+        }
+        let valid_until_cycle = sync.current_cycle.idx
+            + PROPOSAL_LIFETIME
+                .as_secs()
+                .div_ceil(module.cfg.cycle_duration.as_secs().max(1));
+        // The payout goes to the proposer's own payout account, which `sweep` empties.
+        let to = module.own_account(OwnAccount::MultispendBtcPayout).id();
+        let request =
+            BtcTransferRequest::new(nonce(), from, amount, to, Vec::new(), valid_until_cycle)
+                .map_err(|err| invalid(format!("the payout cannot be proposed: {err}")))?;
         let federation = self.inner.federation.id;
         let proposer = MemberKey::from_upstream(key.public_key());
         let digest = Proposal::digest_of(federation, proposer, &request);
@@ -231,7 +307,30 @@ impl Multisig {
         let federation = &self.inner.federation;
         federation.ensure_open()?;
         let client = federation.client(true).await?;
-        let id = spv2::deposit(&client, account, amount).await?;
+        let module = module(&client)?;
+        let to = account.module_account()?;
+        let msats = fedimint_core::Amount::from_msats(amount.msats());
+        let minimum = module.cfg.min_allowed_seek;
+        if msats < minimum {
+            return Err(invalid(format!(
+                "the federation takes deposits into multisig accounts of {minimum} or more"
+            )));
+        }
+        require_version(
+            &module,
+            BTC_BALANCE_DEPOSIT_CONSENSUS_VERSION,
+            "deposits into multisig accounts",
+        )
+        .await?;
+        let id = module
+            .deposit_to_btc_balance(to.id(), msats, BtcBalanceDepositMetadata(Vec::new()), ())
+            .await;
+        let id = match id {
+            Ok(id) => id,
+            Err(err) => {
+                return Err(submit_error(&client, err.as_ref(), Some(msats), "the deposit").await);
+            }
+        };
         let details = MultisigDepositDetails {
             account_id: account.id(),
             amount,
@@ -242,7 +341,7 @@ impl Multisig {
             .create_operation(
                 id,
                 kinds::MULTISIG_DEPOSIT,
-                spv2::MODULE_KIND,
+                MODULE_KIND,
                 &driver::DepositDetailsWire::from(&details),
                 Arc::new(MultisigDepositDriver::default()),
             )
@@ -276,11 +375,28 @@ impl Multisig {
         self.check_origin(proposal)?;
         let approvals = proposal::approvals_for(proposal, approvals)?;
         // Checked before the federation is asked anything, so a bad approval is named as one.
-        spv2::signed_request(proposal, &approvals)?;
+        let signed_request = proposal::signed_request(proposal, &approvals)?;
         let federation = &self.inner.federation;
         federation.ensure_open()?;
         let client = federation.client(true).await?;
-        let id = spv2::execute(&client, proposal, &approvals).await?;
+        let module = module(&client)?;
+        require_version(
+            &module,
+            BTC_TRANSFER_CONSENSUS_VERSION,
+            "payouts out of multisig accounts",
+        )
+        .await?;
+        let output =
+            StabilityPoolOutput::V2(StabilityPoolOutputV2::BtcTransfer(BtcTransferOutput {
+                signed_request,
+            }));
+        let id = match module
+            .submit_transfer(output, OwnAccount::MultispendBtcPayout, ())
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => return Err(submit_error(&client, err.as_ref(), None, "the payout").await),
+        };
         let details = MultisigTransferDetails {
             account_id: proposal.account_id(),
             amount: proposal.amount(),
@@ -290,7 +406,7 @@ impl Multisig {
             .create_operation(
                 id,
                 kinds::MULTISIG_TRANSFER,
-                spv2::MODULE_KIND,
+                MODULE_KIND,
                 &driver::TransferDetailsWire::from(&details),
                 Arc::new(MultisigTransferDriver::default()),
             )
@@ -318,9 +434,55 @@ impl Multisig {
         let federation = &self.inner.federation;
         federation.ensure_open()?;
         let client = federation.client(true).await?;
-        let Some(id) = spv2::sweep(&client, federation.multisig_sweep()).await? else {
+        // Held until this sweep has started or found nothing to start. A call dropped on the way
+        // leaves the previous sweep recorded, for the next call to wait for.
+        let mut pending = federation.multisig_sweep().lock().await;
+        if let Some(previous) = *pending {
+            match fedimint_core::runtime::timeout(
+                PREVIOUS_SWEEP_WAIT,
+                driver::sweep_finished(&client, previous),
+            )
+            .await
+            {
+                Ok(Ok(())) => *pending = None,
+                Ok(Err(err)) => return Err(err),
+                Err(_) => {
+                    return Err(Error::new(
+                        ErrorCode::Timeout,
+                        "the previous sweep on this federation has not finished yet",
+                    ));
+                }
+            }
+        }
+        let module = module(&client)?;
+        let payout = module.own_account(OwnAccount::MultispendBtcPayout);
+        let sync = module
+            .api
+            .account_sync(payout.id())
+            .await
+            .map_err(unreachable)?;
+        if sync.staged_balance + sync.idle_balance == fedimint_core::Amount::ZERO {
             return Ok(None);
+        }
+        // Nothing locks in a payout account, so unlocking everything frees what is staged when
+        // the federation runs the unlock, and the withdrawal that follows claims it along with any
+        // idle balance. How much that was, the sweep's `Done` state says. Idle balance alone is
+        // what an unlock leaves when its withdrawal never completed.
+        let started = if sync.staged_balance != fedimint_core::Amount::ZERO {
+            module
+                .withdraw(OwnAccount::MultispendBtcPayout, FiatOrAll::All, ())
+                .await
+        } else {
+            module
+                .withdraw_idle_balance(OwnAccount::MultispendBtcPayout, sync.idle_balance, ())
+                .await
         };
+        let (id, _) = match started {
+            Ok(started) => started,
+            Err(err) => return Err(submit_error(&client, err.as_ref(), None, "the sweep").await),
+        };
+        *pending = Some(id);
+        drop(pending);
         let details = MultisigSweepDetails {
             amount: None,
             created_at: Timestamp::from_epoch_millis(crate::db::now_millis()),
@@ -329,7 +491,7 @@ impl Multisig {
             .create_operation(
                 id,
                 kinds::MULTISIG_SWEEP,
-                spv2::MODULE_KIND,
+                MODULE_KIND,
                 &driver::SweepDetailsWire::from(&details),
                 Arc::new(MultisigSweepDriver::default()),
             )
@@ -347,11 +509,13 @@ impl Multisig {
     /// This member's key pair for `group`, whose public key has to be one of `account`'s members.
     fn member_keypair_of(
         &self,
-        client: &fedimint_client::Client,
+        client: &Client,
         group: &str,
         account: &MultisigAccount,
-    ) -> Result<fedimint_core::secp256k1::Keypair> {
-        let key = spv2::member_keypair(client, group)?;
+    ) -> Result<Keypair> {
+        // The same group always gives the same key, from the client's seed, and different groups
+        // give unrelated keys.
+        let key = module(client)?.derive_multispend_group_key(group.to_owned());
         if !account
             .members()
             .contains(&MemberKey::from_upstream(key.public_key()))
@@ -382,6 +546,111 @@ fn check_group(group: &str) -> Result<()> {
         return Err(Error::new(ErrorCode::InvalidInput, "a group needs a name"));
     }
     Ok(())
+}
+
+/// The stability pool module of `client`.
+fn module(client: &Client) -> Result<ClientModuleInstance<'_, StabilityPoolClientModule>> {
+    client
+        .get_first_module::<StabilityPoolClientModule>()
+        .map_err(|err| internal(format!("the stability pool module is not running: {err}")))
+}
+
+/// Refuses what the federation's stability pool cannot do yet, `what` saying what that is.
+async fn require_version(
+    module: &ClientModuleInstance<'_, StabilityPoolClientModule>,
+    version: ModuleConsensusVersion,
+    what: &str,
+) -> Result<()> {
+    let active = module
+        .api
+        .module_consensus_version()
+        .await
+        .map_err(unreachable)?;
+    if active < version {
+        return Err(Error::new(
+            ErrorCode::NotSupported,
+            format!(
+                "the federation's stability pool takes {what} from version {version}, and runs \
+                 {active}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A random nonce for a payout request, so that two requests for the same payout differ.
+fn nonce() -> u64 {
+    let id = UpstreamOperationId::new_random();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&id.0[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::InvalidInput, message)
+}
+
+fn internal(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::Internal, message)
+}
+
+fn unreachable(err: impl core::fmt::Display) -> Error {
+    Error::new(
+        ErrorCode::FederationUnreachable,
+        format!("the federation did not answer: {err}"),
+    )
+}
+
+/// `err` and every error under it, outermost first: what the module's errors are made of.
+fn causes<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> impl Iterator<Item = &'a (dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(err), |err| err.source())
+}
+
+/// `err` with every error under it, as one message.
+fn chain(err: &(dyn std::error::Error + 'static)) -> String {
+    causes(err)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// What a transaction the module could not submit is reported as, `what` naming it.
+///
+/// A transaction that needs more ecash than the balance holds is refused for that. When it was to
+/// spend `required`, the balance is read again for the figures.
+async fn submit_error(
+    client: &Client,
+    err: &(dyn std::error::Error + Send + Sync + 'static),
+    required: Option<fedimint_core::Amount>,
+    what: &str,
+) -> Error {
+    if let Some(err) = causes(err).find_map(|err| err.downcast_ref::<FederationError>()) {
+        return unreachable(err);
+    }
+    let short = causes(err).any(|err| {
+        err.downcast_ref::<TransactionSubmitError>()
+            .is_some_and(TransactionSubmitError::is_insufficient_funds)
+    });
+    if !short {
+        return internal(format!("{what} could not be submitted: {}", chain(err)));
+    }
+    let message = format!("the ecash balance cannot fund {what}");
+    let Some(required) = required else {
+        return Error::new(ErrorCode::InsufficientBalance, message);
+    };
+    match client.get_balance_for_btc().await {
+        Ok(available) => Error::with_details(
+            ErrorCode::InsufficientBalance,
+            message,
+            ErrorDetails::InsufficientBalance {
+                required: Amount::from_msats(required.msats),
+                available: Amount::from_msats(available.msats),
+            },
+        ),
+        Err(_) => Error::new(ErrorCode::InsufficientBalance, message),
+    }
 }
 
 /// The federation a [`Multisig`] facade operates on.
@@ -584,8 +853,13 @@ mod tests {
         Approval::new(
             proposal.digest(),
             MemberKey::from_upstream(pair.public_key()),
-            spv2::sign_request(pair, proposal.request()),
+            proposal::sign_request(pair, proposal.request()),
         )
+    }
+
+    #[test]
+    fn the_module_kind_is_the_stability_pools() {
+        assert_eq!(MODULE_KIND, stability_pool_common::KIND.as_str());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -642,7 +916,7 @@ mod tests {
         let forged = Approval::new(
             ours.digest(),
             MemberKey::from_upstream(b.public_key()),
-            spv2::sign_request(&c, ours.request()),
+            proposal::sign_request(&c, ours.request()),
         );
         let err = multisig
             .execute(&ours, &[approval(&a, &ours), forged])
@@ -656,7 +930,7 @@ mod tests {
         let elsewhere = Approval::new(
             ours.digest(),
             MemberKey::from_upstream(b.public_key()),
-            spv2::sign_request(&b, other.request()),
+            proposal::sign_request(&b, other.request()),
         );
         let err = multisig
             .execute(&ours, &[approval(&a, &ours), elsewhere])

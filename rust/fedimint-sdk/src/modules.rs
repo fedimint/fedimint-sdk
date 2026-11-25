@@ -108,7 +108,7 @@ pub(crate) fn capabilities_of(kinds: &[String]) -> Capabilities {
         ecash: has("mint") || has("mintv2"),
         lightning: has("ln") || has("lnv2"),
         onchain: has("wallet") || has("walletv2"),
-        multisig: has(crate::multisig::spv2::MODULE_KIND),
+        multisig: has(crate::multisig::MODULE_KIND),
     }
 }
 

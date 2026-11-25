@@ -3,6 +3,7 @@
 use fedimint_core::bitcoin::hashes::{Hash, sha256};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::secp256k1::PublicKey;
+use stability_pool_common::{Account, AccountType, AccountUnchecked};
 
 use crate::{Error, ErrorCode, Result};
 
@@ -195,6 +196,24 @@ impl MultisigAccount {
     /// How many members have to approve a payment.
     pub(crate) fn threshold(&self) -> u32 {
         self.policy.threshold
+    }
+
+    /// The stability pool's account for this one: a bitcoin account whose keys are the policy's
+    /// members and whose threshold is the policy's.
+    pub(crate) fn module_account(&self) -> Result<Account> {
+        Account::try_from(AccountUnchecked {
+            acc_type: AccountType::BtcDepositor,
+            pub_keys: self.members().iter().map(MemberKey::upstream).collect(),
+            threshold: u64::from(self.threshold()),
+        })
+        // Only a policy that `derive` accepted gets here, so this is a policy the module does not
+        // accept although the facade does.
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("the stability pool refuses the policy: {err}"),
+            )
+        })
     }
 }
 
