@@ -103,8 +103,8 @@ fedimint-walletv2-common = "=0.13.0"
 # Fedi's stability pool module, which the `Multisig` facade runs on: bitcoin multisig accounts on
 # the federations that run it. Not published yet, so taken from the fedibtc/stability-pool branch
 # that builds against the fedimint release above.
-stability-pool-client = { git = "https://github.com/fedibtc/stability-pool", rev = "4f8e5297b9c7c163526dc57b8109ee044ba30e80", package = "fedi-stability-pool-client" }
-stability-pool-common = { git = "https://github.com/fedibtc/stability-pool", rev = "4f8e5297b9c7c163526dc57b8109ee044ba30e80", package = "fedi-stability-pool-common" }
+stability-pool-client = { git = "https://github.com/fedibtc/stability-pool", rev = "b36a1c3e7166c064766a0059ad4768b9b3b12ef9", package = "fedi-stability-pool-client" }
+stability-pool-common = { git = "https://github.com/fedibtc/stability-pool", rev = "b36a1c3e7166c064766a0059ad4768b9b3b12ef9", package = "fedi-stability-pool-common" }
 
 # `bip39` is named directly only to switch its `zeroize` feature on, which
 # `fedimint-bip39` does not: features are unioned, so this is the same single
