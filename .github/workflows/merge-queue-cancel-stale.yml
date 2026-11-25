@@ -21,18 +21,31 @@ name: Merge Queue Cleanup
 # Not a required check: nothing waits for it, and if it fails the stale runs
 # just finish on their own, as they did before.
 #
-# It cannot cancel a stale run for a PR that is dropped and never queued again,
-# since no new queue build starts to notice it.
+# A PR that is dropped and never queued again starts no new queue build, so
+# its runs are also cancelled when it leaves the queue (`dequeued`): on #518
+# they held the Mac for about 20 minutes after it left, while the PRs queued
+# behind it waited for their e2e. A dequeue because the PR merged is skipped;
+# what is left of its runs is no longer holding anything up. A PR queued again
+# within seconds of leaving could lose its new runs too, since "earlier" is
+# this run's creation time; it is then dropped again and needs requeueing.
+#
+# `pull_request_target` rather than `pull_request`, because a fork's
+# `pull_request` run gets a read-only token and could cancel nothing. It runs
+# the base branch's copy of this file, checks nothing out and runs no code from
+# the PR: its only inputs are the PR number and its base branch.
 
 on:
   merge_group:
     types: [checks_requested]
+  pull_request_target:
+    types: [dequeued]
 
 permissions: {}
 
 jobs:
   cancel:
     name: 'Cancel stale queue runs for this PR'
+    if: ${{ github.event_name == 'merge_group' || !github.event.pull_request.merged }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -43,16 +56,28 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
           QUEUE_REF: ${{ github.ref }}
-          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          BASE_REF: ${{ github.event.merge_group.base_ref || github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
-          if [[ ! "$QUEUE_REF" =~ /pr-([0-9]+)- ]]; then
+          # A dequeue has no queue build of its own, so every earlier
+          # unfinished queue run for the PR is stale. A queue build's own
+          # commit is the one to spare; on `pull_request_target`, GITHUB_SHA
+          # is the base branch's and must not be used.
+          if [[ "$EVENT_NAME" == pull_request_target ]]; then
+            pr="$PR_NUMBER"
+            own_sha=""
+          elif [[ "$QUEUE_REF" =~ /pr-([0-9]+)- ]]; then
+            pr="${BASH_REMATCH[1]}"
+            own_sha="$GITHUB_SHA"
+          else
             echo "Not a queue branch, nothing to cancel: $QUEUE_REF"
             exit 0
           fi
-          prefix="gh-readonly-queue/${BASE_REF#refs/heads/}/pr-${BASH_REMATCH[1]}-"
+          prefix="gh-readonly-queue/${BASE_REF#refs/heads/}/pr-${pr}-"
 
           # Run ids are unique but not documented to increase over time, so
           # "earlier" is decided by creation time.
@@ -77,11 +102,11 @@ jobs:
           ids=$(
             gh api --paginate \
               "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&created=%3E%3D$since&per_page=100" |
-              jq -r --arg prefix "$prefix" --arg sha "$GITHUB_SHA" --arg created "$created" '
+              jq -r --arg prefix "$prefix" --arg sha "$own_sha" --arg created "$created" '
                 .workflow_runs[]
                 | select(.status != "completed"
                     and ((.head_branch // "") | startswith($prefix))
-                    and .head_sha != $sha
+                    and ($sha == "" or .head_sha != $sha)
                     and .created_at < $created)
                 | .id' |
               sort -u
