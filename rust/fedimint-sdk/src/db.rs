@@ -174,9 +174,8 @@ impl From<StoredCapabilities> for Capabilities {
             ecash: stored.ecash,
             lightning: stored.lightning,
             onchain: stored.onchain,
-            // Not stored: it depends on the build as well as on the configuration, and
-            // `Federation::capabilities` fills it in.
-            #[cfg(feature = "multisig")]
+            // Not stored: the record's capabilities predate the facade, and
+            // `Federation::capabilities` fills it in from the configuration.
             multisig: false,
         }
     }

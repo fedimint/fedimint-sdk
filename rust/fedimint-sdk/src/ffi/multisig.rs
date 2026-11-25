@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use super::ffi_operation;
 use crate::{
-    Amount, AnyOperation, Approval, Federation, MemberKey, Multisig, MultisigAccount,
-    MultisigAccountId, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
-    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal, Result,
+    Amount, AnyOperation, Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId,
+    MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails, MultisigSweepState,
+    MultisigTransferDetails, MultisigTransferState, Policy, Proposal, Result,
 };
 
 uniffi::custom_type!(MemberKey, String, {
@@ -18,18 +18,6 @@ uniffi::custom_type!(MultisigAccountId, String, {
     lower: |id| id.to_string(),
     try_lift: |s| s.parse::<MultisigAccountId>().map_err(Into::into),
 });
-
-// The UniFFI view of `Federation::multisig`, under its real name but a different Rust identifier
-// so it can wrap the facade in `Arc`, as `ffi/federation.rs` does for the other facades. In a
-// block of its own because the facade is behind the `multisig` feature.
-#[uniffi::export]
-impl Federation {
-    /// See [`Federation::multisig`].
-    #[uniffi::method(name = "multisig")]
-    pub fn ffi_multisig(&self) -> Option<Arc<Multisig>> {
-        self.multisig().map(Arc::new)
-    }
-}
 
 // The downcasts to the three multisig operations, as `ffi/operation.rs` has them for the other
 // kinds.

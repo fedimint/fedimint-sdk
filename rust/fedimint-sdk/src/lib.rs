@@ -8,7 +8,8 @@
 //! after a restart. This crate does that work once and exposes the result as
 //! a small set of handles: an [`Sdk`] built over one [`Storage`] and one
 //! [`Mnemonic`], a [`Federation`] for each federation joined, a facade per
-//! capability ([`Ecash`], [`Lightning`], [`Onchain`], [`Meta`]), and an
+//! capability ([`Ecash`], [`Lightning`], [`Onchain`], [`Meta`],
+//! [`Multisig`]), and an
 //! [`Operation`] for anything that takes longer than a single call.
 //!
 //! It is also the *one* place that surface is defined: the Swift, Kotlin and
@@ -25,10 +26,9 @@
 //! requires at an exact version. The Kotlin, Swift and JavaScript SDKs are
 //! generated from this surface, behind the `uniffi` feature.
 //!
-//! The `Multisig` facade, behind the `multisig` feature, is the one with no
-//! module behind it in this crate: a build that carries one adds it with the
-//! `extension-api` feature, and everywhere else `Federation::multisig` is
-//! `None`.
+//! The [`Multisig`] facade runs on Fedi's stability pool module, which this
+//! crate registers itself: [`Federation::multisig`] is there on every
+//! federation that runs that module, and `None` everywhere else.
 //!
 //! # A worked example
 //!
@@ -162,8 +162,8 @@
 //!
 //! Not every federation runs every module. Rather than making an application
 //! find that out by attempting an operation and catching the failure,
-//! [`Federation::ecash`], [`Federation::lightning`] and [`Federation::onchain`]
-//! (and `Federation::multisig`, behind its feature) return `Option`, and
+//! [`Federation::ecash`], [`Federation::lightning`], [`Federation::onchain`]
+//! and [`Federation::multisig`] return `Option`, and
 //! [`Federation::capabilities`] reports the same information as plain
 //! booleans so a screen can be laid out before the user touches anything. An
 //! absent capability is an ordinary value to branch on.
@@ -366,8 +366,6 @@ mod db;
 mod discovery;
 mod ecash;
 mod error;
-#[cfg(feature = "extension-api")]
-mod extension;
 mod federation;
 #[cfg(feature = "uniffi")]
 mod ffi;
@@ -378,7 +376,6 @@ mod lightning;
 mod logging;
 mod meta;
 mod modules;
-#[cfg(feature = "multisig")]
 mod multisig;
 mod onchain;
 mod operation;
@@ -409,21 +406,16 @@ pub use error::{
     DetailEnvelope, Diagnostic, Error, ErrorCode, ErrorDetails, ModuleGeneration, RawErrorDetails,
     Result,
 };
-#[cfg(feature = "extension-api")]
-pub use extension::Extension;
 pub use federation::{BalanceUpdates, Capabilities, Federation};
 pub use lightning::{
     Lightning, LightningRoute, LnFeeBreakdown, LnQuote, LnReceive, LnReceiveDetails,
     LnReceiveState, LnSendDetails, LnSendState,
 };
 pub use meta::{ConsensusMetadata, Meta};
-#[cfg(all(feature = "extension-api", feature = "multisig"))]
-pub use multisig::MultisigBackend;
-#[cfg(feature = "multisig")]
 pub use multisig::{
-    Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId, MultisigAmount,
-    MultisigDenomination, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
-    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Policy, Proposal,
+    Approval, MemberKey, Multisig, MultisigAccount, MultisigAccountId, MultisigDepositDetails,
+    MultisigDepositState, MultisigSweepDetails, MultisigSweepState, MultisigTransferDetails,
+    MultisigTransferState, Policy, Proposal,
 };
 pub use onchain::{
     Onchain, OnchainDeposits, OnchainQuote, OnchainReceiveDetails, OnchainReceiveFeeBreakdown,

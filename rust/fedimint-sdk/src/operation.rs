@@ -38,7 +38,6 @@ use crate::{
     EcashReceiveState, EcashSendState, Error, ErrorCode, LnReceiveState, LnSendState,
     OnchainReceiveState, OnchainSendState, OperationId, RecoveryState, Result,
 };
-#[cfg(feature = "multisig")]
 use crate::{MultisigDepositState, MultisigSweepState, MultisigTransferState};
 
 // The sealing module for `OperationState` and `OperationDetails`. `pub(crate)` so the facade
@@ -111,14 +110,11 @@ pub trait OperationState: sealed::Sealed + Clone + Send + Sync + 'static {
 /// A caller never needs to have seen an earlier state: whatever it takes to
 /// render or complete a reattached operation, [`Operation::details`] and the
 /// current state supply between them.
-#[cfg_attr(
-    feature = "multisig",
-    doc = "
-One value is in both although its state carries it for good: what a sweep moved, which
-[`MultisigSweepState::Done`](crate::MultisigSweepState::Done) announces and
-[`MultisigSweepDetails::amount`](crate::MultisigSweepDetails::amount) keeps, so that the activity
-history reads it off the record like every other figure."
-)]
+///
+/// One value is in both although its state carries it for good: what a sweep moved, which
+/// [`MultisigSweepState::Done`](crate::MultisigSweepState::Done) announces and
+/// [`MultisigSweepDetails::amount`](crate::MultisigSweepDetails::amount) keeps, so that the activity
+/// history reads it off the record like every other figure.
 // The client's own operation log is authoritative for an operation's existence; this record is a
 // decoration over it, written immediately after the module call returns and before the creating
 // call hands back a handle. A crash in the gap between the two commits leaves a log entry with no
@@ -967,8 +963,6 @@ impl AnyOperation {
     /// `None` for any other kind, for a record this build cannot interpret,
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     pub fn as_multisig_deposit(&self) -> Option<Operation<MultisigDepositState>> {
         match driver_for(self.inner.kind)? {
             ErasedDriver::MultisigDeposit(driver) => {
@@ -983,8 +977,6 @@ impl AnyOperation {
     /// `None` for any other kind, for a record this build cannot interpret,
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     pub fn as_multisig_transfer(&self) -> Option<Operation<MultisigTransferState>> {
         match driver_for(self.inner.kind)? {
             ErasedDriver::MultisigTransfer(driver) => {
@@ -999,8 +991,6 @@ impl AnyOperation {
     /// `None` for any other kind, for a record this build cannot interpret,
     /// and for a record of *this* kind whose typed state this build cannot
     /// observe; see the type documentation for how to tell those apart.
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     pub fn as_multisig_sweep(&self) -> Option<Operation<MultisigSweepState>> {
         match driver_for(self.inner.kind)? {
             ErasedDriver::MultisigSweep(driver) => self.typed(OperationKind::MultisigSweep, driver),
@@ -1134,18 +1124,12 @@ pub enum OperationKind {
     Recovery,
     /// A deposit into a multisig account, tracked by
     /// [`MultisigDepositState`](crate::MultisigDepositState).
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     MultisigDeposit,
     /// A payment out of a multisig account, tracked by
     /// [`MultisigTransferState`](crate::MultisigTransferState).
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     MultisigTransfer,
     /// Moving multisig payouts into the ecash balance, tracked by
     /// [`MultisigSweepState`](crate::MultisigSweepState).
-    #[cfg(feature = "multisig")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "multisig")))]
     MultisigSweep,
     /// An operation this SDK version cannot interpret.
     ///
@@ -1240,7 +1224,6 @@ impl OperationKind {
             | OperationKind::OnchainSend
             | OperationKind::OnchainReceive
             | OperationKind::Recovery => READABLE_STATE_SCHEMA,
-            #[cfg(feature = "multisig")]
             OperationKind::MultisigDeposit
             | OperationKind::MultisigTransfer
             | OperationKind::MultisigSweep => READABLE_STATE_SCHEMA,
@@ -1340,13 +1323,10 @@ pub(crate) mod kinds {
     /// Restoring a wallet from its seed.
     pub(crate) const RECOVERY: &str = "recovery";
     /// A deposit into a multisig account.
-    #[cfg(feature = "multisig")]
     pub(crate) const MULTISIG_DEPOSIT: &str = "multisig_deposit";
     /// A payment out of a multisig account.
-    #[cfg(feature = "multisig")]
     pub(crate) const MULTISIG_TRANSFER: &str = "multisig_transfer";
     /// Moving multisig payouts into the ecash balance.
-    #[cfg(feature = "multisig")]
     pub(crate) const MULTISIG_SWEEP: &str = "multisig_sweep";
 
     /// Every tag above, so a test can walk every kind this build writes.
@@ -1360,11 +1340,8 @@ pub(crate) mod kinds {
         ONCHAIN_SEND,
         ONCHAIN_RECEIVE,
         RECOVERY,
-        #[cfg(feature = "multisig")]
         MULTISIG_DEPOSIT,
-        #[cfg(feature = "multisig")]
         MULTISIG_TRANSFER,
-        #[cfg(feature = "multisig")]
         MULTISIG_SWEEP,
     ];
 }
@@ -1383,11 +1360,8 @@ pub(crate) fn kind_of_tag(tag: &str) -> OperationKind {
         kinds::ONCHAIN_SEND => OperationKind::OnchainSend,
         kinds::ONCHAIN_RECEIVE => OperationKind::OnchainReceive,
         kinds::RECOVERY => OperationKind::Recovery,
-        #[cfg(feature = "multisig")]
         kinds::MULTISIG_DEPOSIT => OperationKind::MultisigDeposit,
-        #[cfg(feature = "multisig")]
         kinds::MULTISIG_TRANSFER => OperationKind::MultisigTransfer,
-        #[cfg(feature = "multisig")]
         kinds::MULTISIG_SWEEP => OperationKind::MultisigSweep,
         _ => OperationKind::Unknown,
     }
@@ -1636,13 +1610,10 @@ pub(crate) enum ErasedDriver {
     /// Observes [`RecoveryState`](crate::RecoveryState).
     Recovery(Arc<dyn Driver<RecoveryState>>),
     /// Observes [`MultisigDepositState`](crate::MultisigDepositState).
-    #[cfg(feature = "multisig")]
     MultisigDeposit(Arc<dyn Driver<MultisigDepositState>>),
     /// Observes [`MultisigTransferState`](crate::MultisigTransferState).
-    #[cfg(feature = "multisig")]
     MultisigTransfer(Arc<dyn Driver<MultisigTransferState>>),
     /// Observes [`MultisigSweepState`](crate::MultisigSweepState).
-    #[cfg(feature = "multisig")]
     MultisigSweep(Arc<dyn Driver<MultisigSweepState>>),
 }
 
@@ -1688,15 +1659,12 @@ pub(crate) fn driver_for(kind: OperationKind) -> Option<ErasedDriver> {
         OperationKind::Recovery => Some(ErasedDriver::Recovery(Arc::new(
             crate::recovery::RecoveryDriver,
         ))),
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigDeposit => Some(ErasedDriver::MultisigDeposit(Arc::new(
             crate::multisig::MultisigDepositDriver::default(),
         ))),
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigTransfer => Some(ErasedDriver::MultisigTransfer(Arc::new(
             crate::multisig::MultisigTransferDriver::default(),
         ))),
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigSweep => Some(ErasedDriver::MultisigSweep(Arc::new(
             crate::multisig::MultisigSweepDriver::default(),
         ))),
@@ -2649,11 +2617,8 @@ mod tests {
         OperationKind::OnchainSend,
         OperationKind::OnchainReceive,
         OperationKind::Recovery,
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigDeposit,
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigTransfer,
-        #[cfg(feature = "multisig")]
         OperationKind::MultisigSweep,
     ];
 
@@ -2685,7 +2650,6 @@ mod tests {
         let _: fn(&AnyOperation) -> Option<Operation<OnchainReceiveState>> =
             AnyOperation::as_onchain_receive;
         let _: fn(&AnyOperation) -> Option<Operation<RecoveryState>> = AnyOperation::as_recovery;
-        #[cfg(feature = "multisig")]
         {
             let _: fn(&AnyOperation) -> Option<Operation<MultisigDepositState>> =
                 AnyOperation::as_multisig_deposit;

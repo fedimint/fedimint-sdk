@@ -33,23 +33,15 @@ The design is tracked in
 [fedimint-sdk#344](https://github.com/fedimint/fedimint-sdk/issues/344), the
 RFC this crate implements.
 
-## Extensions
+## Multisig
 
-With the `extension-api` feature, off by default, another crate can add
-client modules this one does not ship. `SdkBuilder::extension` registers an
-`Extension`: its modules run in every federation whose configuration has a
-module of their kind, it can run work on each client a federation starts, and
-`Federation::client` hands it the running client to reach its modules
-through. An extension works with fedimint's own types, so it has to be built
-against the exact fedimint release this crate requires, and this part of the
-API is not covered by this crate's semver.
-
-With the `multisig` feature too, an extension can back the `Multisig` facade,
-accounts that a group's members pay out of together, by providing a
-`MultisigBackend`. This crate defines the facade and ships no module behind
-it, so without such an extension `Federation::multisig` is `None`. The
-facade is off by default, and the Kotlin, Swift and JavaScript SDKs built
-from this crate do not carry it.
+`Federation::multisig` hands out the `Multisig` facade: bitcoin accounts that
+a group's members pay out of together, once enough of them approve. It runs
+on Fedi's stability pool module, which this crate registers itself, so it is
+there on every federation that runs that module and `None` everywhere else.
+The module's client crates are not published yet, and come from
+[fedibtc/stability-pool](https://github.com/fedibtc/stability-pool) as a git
+dependency.
 
 ## Releases
 
