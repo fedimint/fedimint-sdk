@@ -89,11 +89,13 @@ impl Notes {
         self.to_string()
     }
 
-    /// The id of the federation that issued these notes, if the token names it.
+    /// An unverified federation ID hint from the token, if present.
     ///
-    /// This reads the token and does not contact the federation. A mintv2 token
-    /// always names it. A v1 token carries only an id prefix, so this returns
-    /// `None` for one unless it also carries an invite code.
+    /// Reads token metadata without contacting a federation or verifying the
+    /// issuer. For v1 notes, no full ID is available without an extractable
+    /// invite. For mintv2 notes, no ID is available if the mint ID field is absent.
+    /// The mintv2 ID and invite ID can disagree. If they do, do not present
+    /// either as the verified issuer.
     pub fn federation_id(&self) -> Option<FederationId> {
         let id = match &self.notes {
             NotesInner::V1(notes) => notes.federation_invite()?.federation_id(),
@@ -144,13 +146,16 @@ impl Notes {
         }
     }
 
-    /// An invite code for the federation that issued these notes, if the token
-    /// carries one.
+    /// An unverified invite hint extracted from the token, if available.
     ///
-    /// This reads the token and does not contact the federation. Hand the
-    /// result to [`Sdk::preview`](crate::Sdk::preview) to show the receiver
-    /// which federation the notes come from before they join it. The invite
-    /// can carry an API secret, so treat it with the same care as the notes.
+    /// Reads token metadata without contacting a federation or verifying the
+    /// issuer. An invite field may exist without usable peer endpoints, so an
+    /// invite may not be available. The invite’s federation ID can conflict with
+    /// the mintv2 ID from [`Notes::federation_id`]. If they disagree, do not present either as the
+    /// verified issuer. [`Sdk::preview`](crate::Sdk::preview) contacts the
+    /// invite’s guardians and checks their configuration, but does not prove
+    /// they issued these notes. The invite can contain an API secret; protect it
+    /// like the notes.
     pub fn invite_code(&self) -> Option<InviteCode> {
         let code = match &self.notes {
             NotesInner::V1(notes) => notes.federation_invite(),

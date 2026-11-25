@@ -36,7 +36,15 @@ impl Ecash {
 // the optional object can cross behind an `Arc`.
 #[uniffi::export]
 impl Notes {
-    /// See [`Notes::invite_code`].
+    /// An unverified invite hint extracted from the token, if available.
+    ///
+    /// Reads token metadata without contacting a federation or verifying the
+    /// issuer. An invite field may exist without usable peer endpoints, so an
+    /// invite may not be available. The invite’s federation ID can conflict with
+    /// the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+    /// issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+    /// configuration, but does not prove they issued these notes. The invite can
+    /// contain an API secret; protect it like the notes.
     #[uniffi::method(name = "invite_code")]
     pub fn ffi_invite_code(&self) -> Option<Arc<InviteCode>> {
         self.invite_code().map(Arc::new)

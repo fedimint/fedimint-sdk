@@ -2168,15 +2168,25 @@ export interface NotesLike {
    */
   display(): string
   /**
-   * The id of the federation that issued these notes, if the token names it.
+   * An unverified federation ID hint from the token, if present.
    *
-   * This reads the token and does not contact the federation. A mintv2 token
-   * always names it. A v1 token carries only an id prefix, so this returns
-   * `None` for one unless it also carries an invite code.
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. For v1 notes, no full ID is available without an extractable
+   * invite. For mintv2 notes, no ID is available if the mint ID field is absent.
+   * The mintv2 ID and invite ID can disagree. If they do, do not present
+   * either as the verified issuer.
    */
   federationId(): FederationId | undefined
   /**
-   * See [`Notes::invite_code`].
+   * An unverified invite hint extracted from the token, if available.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. An invite field may exist without usable peer endpoints, so an
+   * invite may not be available. The invite’s federation ID can conflict with
+   * the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+   * issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+   * configuration, but does not prove they issued these notes. The invite can
+   * contain an API secret; protect it like the notes.
    */
   inviteCode(): InviteCodeLike | undefined
   /**
@@ -2283,11 +2293,13 @@ export class Notes extends UniffiAbstractObject implements NotesLike {
   }
 
   /**
-   * The id of the federation that issued these notes, if the token names it.
+   * An unverified federation ID hint from the token, if present.
    *
-   * This reads the token and does not contact the federation. A mintv2 token
-   * always names it. A v1 token carries only an id prefix, so this returns
-   * `None` for one unless it also carries an invite code.
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. For v1 notes, no full ID is available without an extractable
+   * invite. For mintv2 notes, no ID is available if the mint ID field is absent.
+   * The mintv2 ID and invite ID can disagree. If they do, do not present
+   * either as the verified issuer.
    */
   federationId(): FederationId | undefined {
     const __rb: Uint8Array = uniffiCaller.rustCall(
@@ -2307,7 +2319,15 @@ export class Notes extends UniffiAbstractObject implements NotesLike {
   }
 
   /**
-   * See [`Notes::invite_code`].
+   * An unverified invite hint extracted from the token, if available.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. An invite field may exist without usable peer endpoints, so an
+   * invite may not be available. The invite’s federation ID can conflict with
+   * the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+   * issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+   * configuration, but does not prove they issued these notes. The invite can
+   * contain an API secret; protect it like the notes.
    */
   inviteCode(): InviteCodeLike | undefined {
     const __rb: Uint8Array = uniffiCaller.rustCall(
@@ -18536,7 +18556,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_notes_federation_id() !==
-    34225
+    41994
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_notes_federation_id',
@@ -18544,7 +18564,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().uniffi_fedimint_sdk_checksum_method_notes_invite_code() !==
-    26359
+    16194
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_notes_invite_code',
