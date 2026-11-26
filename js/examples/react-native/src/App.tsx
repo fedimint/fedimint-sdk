@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import {
   ActivityIndicator,
   BackHandler,
@@ -154,6 +154,7 @@ type MainRoutes = {
   Send: undefined
   Receive: undefined
   RecoveryPhrase: undefined
+  ReplaceWallet: undefined
 }
 const Main = createNativeStackNavigator<MainRoutes>()
 
@@ -234,6 +235,7 @@ function HomeTab() {
             }
             showRecovery={() => navigation.navigate('Recovery')}
             showRecoveryPhrase={() => main.navigate('RecoveryPhrase')}
+            showReplaceWallet={() => main.navigate('ReplaceWallet')}
             showOperation={(item) => navigation.navigate('Operation', { item })}
           />
         )}
@@ -461,6 +463,12 @@ function closeButton(close: () => void) {
       }
 }
 
+/** `closeButton`'s place left empty. */
+const noCloseButton =
+  Platform.OS === 'ios'
+    ? { unstable_headerLeftItems: () => [] }
+    : { headerLeft: () => null }
+
 /** The review, which becomes the result once the payment is sent. */
 function ReviewRoute({
   route,
@@ -550,6 +558,33 @@ function RecoveryPhraseSheet({
   )
 }
 
+/**
+ * Replace wallet, from the wallet's menu. It stays up while a replace runs, against Close, a swipe
+ * and Android's back button alike: its outcome, a failure included, shows only here.
+ */
+function ReplaceWalletSheet({
+  navigation,
+}: {
+  navigation: NativeStackNavigationProp<MainRoutes, 'ReplaceWallet'>
+}) {
+  const replacing = useDemo().replacing
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      gestureEnabled: !replacing,
+      ...(replacing ? noCloseButton : closeButton(navigation.goBack)),
+    })
+  }, [navigation, replacing])
+  useEffect(
+    () =>
+      navigation.addListener('beforeRemove', (event) => {
+        // Read live: the sheet closes itself the moment a replace ends.
+        if (model.getState().replacing) event.preventDefault()
+      }),
+    [navigation],
+  )
+  return <RestoreScreen replaced={navigation.goBack} />
+}
+
 /** The wallet once one is open: the design's three tabs, with Send and Receive as sheets. */
 function MainTabs() {
   return (
@@ -578,6 +613,14 @@ function MainTabs() {
           component={RecoveryPhraseSheet}
           options={({ navigation }) => ({
             title: '',
+            ...closeButton(navigation.goBack),
+          })}
+        />
+        <Main.Screen
+          name="ReplaceWallet"
+          component={ReplaceWalletSheet}
+          options={({ navigation }) => ({
+            title: 'Replace wallet',
             ...closeButton(navigation.goBack),
           })}
         />
@@ -611,7 +654,7 @@ function LaunchScreen({
               { color: '#FFFFFF', textAlign: 'center' },
             ]}
           >
-            Couldn't move the wallet out of Documents: {failure}
+            {failure}
           </Text>
           <Button title="Try again" kind="primaryOnDark" onPress={retry} />
         </View>
@@ -628,12 +671,14 @@ export default function App() {
   const state = useDemo()
   /** Whether an earlier launch left a wallet behind, read once at launch. */
   const [reopening, setReopening] = useState<boolean>()
-  /** Why the launch stopped before onboarding: the old wallet could not be moved. */
+  /** Why the launch stopped before onboarding: a wallet could not be moved into place. */
   const [launchFailure, setLaunchFailure] = useState<string>()
   const attaching = model.isAttaching
 
   const launch = useCallback(() => {
     setLaunchFailure(undefined)
+    // A launch's own screen, with its spinner, until it decides: never a Try again meanwhile.
+    setReopening(undefined)
     model.start().then(
       (stored) => {
         setReopening(stored)
@@ -666,6 +711,10 @@ export default function App() {
     stage = <BackupFlow done={() => model.markBackedUp()} />
   } else if (state.hasSdk) {
     stage = <MainTabs />
+  } else if (state.replaceLeftOver !== undefined) {
+    // A replace's old wallet is not back: nothing may be created over the spot it returns to.
+    stage = <LaunchScreen failure={state.replaceLeftOver} retry={launch} />
+    dark = true
   } else if (reopening !== false) {
     stage = <LaunchScreen failure={launchFailure} retry={launch} />
     dark = true

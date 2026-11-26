@@ -20,6 +20,7 @@
 		CCCC28349749879EB0B11D02 /* OwnerAuthentication.m in Sources */ = {isa = PBXBuildFile; fileRef = D0855820E976506F089F8B1C /* OwnerAuthentication.m */; };
 		D211323932E3F96511C66D9C /* GeistMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 69157669A04D7742FA6A56A3 /* GeistMono-Regular.ttf */; };
 		DACA43470A734B388BD28C38 /* Geist-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 262CE6672EB9B62185AC7FAF /* Geist-Regular.ttf */; };
+		0FA1C3E5D7B9A2468ACE1357 /* OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0FA1C3E5D7B9A2468ACE1358 /* OFL.txt */; };
 		FC61769721FC0B06F12B8023 /* Geist-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F71A90E3C8A2155C5EA91EA0 /* Geist-Bold.ttf */; };
 /* End PBXBuildFile section */
 
@@ -42,6 +43,7 @@
 		D0855820E976506F089F8B1C /* OwnerAuthentication.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = OwnerAuthentication.m; path = ReactNativeExample/OwnerAuthentication.m; sourceTree = "<group>"; };
 		E973D6B87B674CD51419B88B /* GeistMono-Medium.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "GeistMono-Medium.ttf"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		0FA1C3E5D7B9A2468ACE1358 /* OFL.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = OFL.txt; sourceTree = "<group>"; };
 		F71A90E3C8A2155C5EA91EA0 /* Geist-Bold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; path = "Geist-Bold.ttf"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -81,6 +83,7 @@
 				E973D6B87B674CD51419B88B /* GeistMono-Medium.ttf */,
 				69157669A04D7742FA6A56A3 /* GeistMono-Regular.ttf */,
 				B00F201CC0B50DB817F17821 /* GeistMono-SemiBold.ttf */,
+				0FA1C3E5D7B9A2468ACE1358 /* OFL.txt */,
 			);
 			name = Fonts;
 			path = ../assets/fonts;
@@ -204,6 +207,7 @@
 				C7FC9F9726C4151E19C7AB1D /* GeistMono-Medium.ttf in Resources */,
 				D211323932E3F96511C66D9C /* GeistMono-Regular.ttf in Resources */,
 				B5F80FC0BBEC514F83B6EFD4 /* GeistMono-SemiBold.ttf in Resources */,
+				0FA1C3E5D7B9A2468ACE1357 /* OFL.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

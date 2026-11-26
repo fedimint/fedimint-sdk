@@ -14,8 +14,10 @@ wallet holds and switch between them or reconnect one that is not running; then
 receive and send over Lightning, ecash and on-chain, with the history and each
 operation's live state. Showing the recovery phrase asks for Face ID, Touch ID or
 the device passcode. Copied ecash notes leave the clipboard after two minutes: on
-iOS they stay on this device, and on Android they are marked sensitive and, if the
-app is in the background by then, cleared when it comes back.
+iOS they stay on this device. On Android they are marked sensitive and clearing
+them is best effort: if the app is in the background by then, they are cleared
+when it comes back, and if the system kills the app first, they stay on the
+clipboard.
 
 The code is laid out like the iOS demo's: `src/model/DemoModel.ts` holds every SDK
 call and the rules around them, and `src/screens/` has one file per screen.

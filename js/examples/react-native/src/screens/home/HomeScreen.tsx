@@ -18,7 +18,12 @@ import {
 } from '@fedimint/react-native'
 import { model, useDemo } from '../../model/DemoModel'
 import { Button } from '../../components/Buttons'
-import { AmountView, Caption, toneColors } from '../../components/Labels'
+import {
+  AmountView,
+  Caption,
+  FailureText,
+  toneColors,
+} from '../../components/Labels'
 import { Card, CardList, Screen } from '../../components/Surfaces'
 import { ListRow } from '../../components/Rows'
 import { ActivityRow, useHistoryFailure } from '../../components/Activity'
@@ -38,6 +43,7 @@ export function HomeScreen({
   showFederationDetails,
   showRecovery,
   showRecoveryPhrase,
+  showReplaceWallet,
   showOperation,
 }: {
   receive: () => void
@@ -47,6 +53,7 @@ export function HomeScreen({
   showFederationDetails: () => void
   showRecovery: () => void
   showRecoveryPhrase: () => void
+  showReplaceWallet: () => void
   showOperation: (item: ActivityItem) => void
 }) {
   const state = useDemo()
@@ -109,9 +116,16 @@ export function HomeScreen({
                   // transparent. Black is the menu's label colour.
                   imageColor: '#000000',
                 },
+                {
+                  id: 'replace',
+                  title: 'Replace wallet',
+                  image: 'arrow.triangle.2.circlepath',
+                  imageColor: '#000000',
+                },
               ]}
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === 'phrase') showRecoveryPhrase()
+                if (nativeEvent.event === 'replace') showReplaceWallet()
               }}
             >
               <View accessible accessibilityLabel="More" hitSlop={10}>
@@ -293,6 +307,15 @@ export function HomeScreen({
                   ))}
                 </CardList>
               )}
+              {/* A reload that failed under rows loaded before it, which may be out of date. Not
+                  Load more's: Home shows none of the older pages. */}
+              {state.activityItems.length > 0 &&
+                historyFailure !== undefined &&
+                !state.olderActivityFailed && (
+                  <FailureText
+                    text={`Couldn't load the history: ${historyFailure}. Pull down to try again.`}
+                  />
+                )}
             </View>
           </>
         ) : (
@@ -339,6 +362,18 @@ export function HomeScreen({
                 Recovery phrase
               </Text>
               <Icon name="key" color={Palette.ink} />
+            </Pressable>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                setMenuOpen(false)
+                showReplaceWallet()
+              }}
+            >
+              <Text style={[Typeface.body, { color: Palette.ink }]}>
+                Replace wallet
+              </Text>
+              <Icon name="arrow.triangle.2.circlepath" color={Palette.ink} />
             </Pressable>
           </View>
         </Pressable>
