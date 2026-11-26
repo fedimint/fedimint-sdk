@@ -62,6 +62,12 @@ export function closeButton(close: () => void) {
       }
 }
 
+/** `closeButton`'s place left empty. */
+export const noCloseButton =
+  Platform.OS === 'ios'
+    ? { unstable_headerLeftItems: () => [] }
+    : { headerLeft: () => null }
+
 /** The "+" that opens Join, in the Federations bar. */
 export function joinButton(join: () => void) {
   return Platform.OS === 'ios'

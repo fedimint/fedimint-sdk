@@ -26,6 +26,14 @@ export default function MainLayout() {
         name="recovery-phrase"
         options={{ presentation: 'modal', title: '', ...closeButton(close) }}
       />
+      <Stack.Screen
+        name="replace-wallet"
+        options={{
+          presentation: 'modal',
+          title: 'Replace wallet',
+          ...closeButton(close),
+        }}
+      />
     </Stack>
   )
 }

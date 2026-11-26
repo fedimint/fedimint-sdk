@@ -8,10 +8,13 @@ export const unstable_settings = { initialRouteName: 'index' }
 
 export default function HomeLayout() {
   return (
-    // Home has no title for the back button to be labelled with, so it read "index".
-    <Stack screenOptions={{ ...tabStackOptions, headerBackTitle: 'Back' }}>
-      {/* Home's header row stands in for a navigation bar. */}
-      <Stack.Screen name="index" options={{ headerShown: false }} />
+    <Stack screenOptions={tabStackOptions}>
+      {/* Home's header row stands in for a navigation bar. Its title is only what a back button
+          to it is called, which would otherwise read "index". */}
+      <Stack.Screen
+        name="index"
+        options={{ headerShown: false, title: 'Back' }}
+      />
       <Stack.Screen name="operation" options={operationTitle} />
       <Stack.Screen name="recovery" options={{ title: 'Recovery' }} />
       <Stack.Screen

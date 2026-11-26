@@ -17,6 +17,7 @@ import {
   Link,
   Lock,
   Plus,
+  RefreshCw,
   RotateCw,
   Share,
   ShieldCheck,
@@ -54,6 +55,7 @@ const fallback = {
   plus: Plus,
   'exclamationmark.triangle': TriangleAlert,
   'arrow.uturn.backward': Undo2,
+  'arrow.triangle.2.circlepath': RefreshCw,
   xmark: X,
 } satisfies Record<string, LucideIcon>
 

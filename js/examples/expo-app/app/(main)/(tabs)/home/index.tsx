@@ -18,6 +18,7 @@ export default function Home() {
       showFederationDetails={() => push('/home/federation-detail')}
       showRecovery={() => push('/home/recovery')}
       showRecoveryPhrase={() => push('/recovery-phrase')}
+      showReplaceWallet={() => push('/replace-wallet')}
       showOperation={(item) => openOperation(push, 'home', item)}
     />
   )

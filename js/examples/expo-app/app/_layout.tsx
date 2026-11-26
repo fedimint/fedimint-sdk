@@ -40,7 +40,7 @@ function LaunchScreen({
               { color: '#FFFFFF', textAlign: 'center' },
             ]}
           >
-            Couldn't move the wallet out of Documents: {failure}
+            {failure}
           </Text>
           <Button title="Try again" kind="primaryOnDark" onPress={retry} />
         </View>
@@ -57,12 +57,14 @@ export default function RootLayout() {
   const state = useDemo()
   /** Whether an earlier launch left a wallet behind, read once at launch. */
   const [reopening, setReopening] = useState<boolean>()
-  /** Why the launch stopped before onboarding: the old wallet could not be moved. */
+  /** Why the launch stopped before onboarding: a wallet could not be moved into place. */
   const [launchFailure, setLaunchFailure] = useState<string>()
   const attaching = model.isAttaching
 
   const launch = useCallback(() => {
     setLaunchFailure(undefined)
+    // A launch's own screen, with its spinner, until it decides: never a Try again meanwhile.
+    setReopening(undefined)
     model.start().then(
       (stored) => {
         setReopening(stored)
@@ -90,13 +92,18 @@ export default function RootLayout() {
 
   const backingUp =
     state.hasSdk && state.walletOrigin === 'created' && !state.backedUp
-  const onboarding = !state.hasSdk && reopening === false
+  // A replace's old wallet is not back: nothing may be created over the spot it returns to.
+  const leftOver = !state.hasSdk && state.replaceLeftOver !== undefined
+  const onboarding = !state.hasSdk && reopening === false && !leftOver
 
   return (
     <ThemeProvider value={theme}>
       <StatusBar barStyle={state.hasSdk ? 'dark-content' : 'light-content'} />
-      {!state.hasSdk && reopening !== false ? (
-        <LaunchScreen failure={launchFailure} retry={launch} />
+      {leftOver || (!state.hasSdk && reopening !== false) ? (
+        <LaunchScreen
+          failure={state.replaceLeftOver ?? launchFailure}
+          retry={launch}
+        />
       ) : (
         <Stack screenOptions={{ headerShown: false, animation: 'none' }}>
           <Stack.Protected guard={onboarding}>

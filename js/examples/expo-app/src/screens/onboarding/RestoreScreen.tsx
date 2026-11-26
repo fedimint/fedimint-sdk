@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  Alert,
   Platform,
   Pressable,
   StatusBar,
@@ -22,9 +23,20 @@ import { Metrics, Palette, Typeface } from '../../theme/tokens'
  */
 const validWordCounts = new Set([12, 15, 18, 21, 24])
 
-/** 11 Restore: takes a recovery phrase and opens the wallet it belongs to. */
-export function RestoreScreen() {
+/**
+ * 11 Restore: takes a recovery phrase and opens the wallet it belongs to. With `replaced`, the
+ * same screen from the wallet's menu: it replaces the open wallet instead, after a confirmation,
+ * and calls `replaced` once the new one is open.
+ */
+export function RestoreScreen({ replaced }: { replaced?: () => void }) {
   const state = useDemo()
+  const replacing = replaced !== undefined
+  // A failure is about one visit, as onboarding clears Restore's on the way out.
+  useEffect(() => {
+    if (!replacing) return
+    model.clearFailure('replace')
+    return () => model.clearFailure('replace')
+  }, [replacing])
   const attaching = model.isAttaching
   const [words, setWords] = useState<string[]>(() => Array(12).fill(''))
   const [focused, setFocused] = useState<number>()
@@ -33,7 +45,8 @@ export function RestoreScreen() {
 
   const update = (next: string[]) => {
     setWords(next)
-    model.setRestoreWords(next.join(' '))
+    // Replacing hands its words over on the press: the open wallet's model keeps no copy.
+    if (!replacing) model.setRestoreWords(next.join(' '))
   }
 
   /** Keeps the words already typed, dropping only those past the new length. */
@@ -48,7 +61,7 @@ export function RestoreScreen() {
     const parts = typed.toLowerCase().split(/\s+/).filter(Boolean)
     if (parts.length <= 1 && !/\s$/.test(typed)) {
       const next = [...words]
-      next[index] = typed.toLowerCase()
+      next[index] = typed.trim().toLowerCase()
       update(next)
       return
     }
@@ -75,29 +88,53 @@ export function RestoreScreen() {
       gap={Metrics.gap}
       footer={
         <Button
-          title="Restore wallet"
-          busy={attaching}
-          disabled={!complete || attaching}
+          title={replacing ? 'Replace wallet' : 'Restore wallet'}
+          busy={replacing ? state.replacing : attaching}
+          disabled={!complete || attaching || state.replacing}
           onPress={() => {
             inputs.current.forEach((input) => input?.blur())
-            model.openWallet()
+            if (!replacing) {
+              model.openWallet()
+              return
+            }
+            Alert.alert(
+              'Replace this wallet?',
+              'This deletes the wallet open now from this device. Getting back to it takes ' +
+                'its recovery phrase, so if it holds funds, make sure you have its phrase ' +
+                'written down first.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Replace',
+                  style: 'destructive',
+                  onPress: () => {
+                    model.replaceWallet(words).then((done) => {
+                      if (done) replaced()
+                    })
+                  },
+                },
+              ],
+            )
           }}
         />
       }
     >
       {/* Restore is cream over a navy Welcome: dark status-bar text while it is up. Unmounting
           restores the one beneath. */}
-      <StatusBar barStyle="dark-content" />
-      <Caption text="Restore" />
+      {!replacing && <StatusBar barStyle="dark-content" />}
+      <Caption text={replacing ? 'Replace' : 'Restore'} />
       <Text
         lineBreakStrategyIOS="standard"
         style={[Typeface.title, { color: Palette.ink }]}
       >
-        Enter your recovery phrase
+        {replacing
+          ? 'Enter the phrase to restore instead'
+          : 'Enter your recovery phrase'}
       </Text>
       <Text style={[Typeface.callout, { color: Palette.muted }]}>
-        Type the {words.length} words in order. Restoring starts recovery for
-        every federation you join.
+        {replacing
+          ? `Type the ${words.length} words in order. The wallet open now is deleted from this device and this one opens in its place. Join its federations again to recover their funds.`
+          : `Type the ${words.length} words in order. Restoring starts recovery for every federation you join.`}
       </Text>
       <View style={styles.picker}>
         {[12, 24].map((count) => {
@@ -168,7 +205,11 @@ export function RestoreScreen() {
       />
       {/* Wrong checksum, unknown word, or storage that already holds a different seed: the
           SDK's reason, shown where it can be fixed. */}
-      {!attaching && <FailureText text={state.failures.wallet} />}
+      {!attaching && (
+        <FailureText
+          text={replacing ? state.failures.replace : state.failures.wallet}
+        />
+      )}
     </Screen>
   )
 }

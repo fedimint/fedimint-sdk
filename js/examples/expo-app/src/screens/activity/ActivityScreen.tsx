@@ -161,10 +161,19 @@ export function ActivityScreen({
                 </View>
               ))}
 
-      {/* A refresh or a further page that failed, under the rows already loaded. */}
-      {state.hasFederation && state.activityItems.length > 0 && (
-        <FailureText text={loadFailure} />
-      )}
+      {/* A refresh or a further page that failed, under the rows already loaded, which may
+          then be out of date. */}
+      {state.hasFederation &&
+        state.activityItems.length > 0 &&
+        loadFailure !== undefined && (
+          <FailureText
+            text={
+              state.olderActivityFailed
+                ? `Couldn't load older activity: ${loadFailure}. Tap Load more to try again.`
+                : `Couldn't load the history: ${loadFailure}. Pull down to try again.`
+            }
+          />
+        )}
 
       {state.activityNext !== undefined && (
         <Button

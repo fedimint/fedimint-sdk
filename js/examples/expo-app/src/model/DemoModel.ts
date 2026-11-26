@@ -24,6 +24,7 @@ import {
   OnchainQuoteLike,
   OnchainReceiveState,
   OnchainSendState,
+  OperationKind,
   RecoveryState,
   RecoveryState_Tags,
   SdkLike,
@@ -33,11 +34,14 @@ import {
 } from '@fedimint/react-native'
 import { describe, isAbort, reason, sdkError } from './errors'
 import {
+  beginReplace,
+  finishReplace,
   hasStoredWallet,
   moveLegacyWallet,
   prepareDataDir,
   readLastFederationId,
   recoversOnJoin,
+  undoReplace,
   writeLastFederationId,
   type WalletOrigin,
 } from './storage'
@@ -65,6 +69,8 @@ export type Section =
   | 'recovery'
   /** Attaching another federation this storage already holds. */
   | 'switching'
+  /** Replacing the open wallet, apart from `wallet`, which a balance refresh also runs under. */
+  | 'replace'
 
 /**
  * Sections whose failure is a passing note under a form or a list, so it clears itself after
@@ -143,6 +149,11 @@ interface DemoState {
   activityItems: ActivityItem[]
   /** Where the next page of history starts, or `undefined` at its end. */
   activityNext?: Cursor
+  /**
+   * Whether the history's failure is Load more's: the rows loaded stay current, and only the
+   * next page is missing, which Load more fetches and a pull does not.
+   */
+  olderActivityFailed: boolean
 
   // Inputs.
   restoreWords: string
@@ -196,6 +207,16 @@ interface DemoState {
    * outlives the activity: a relaunch after the back button remounts the root alone.
    */
   backedUp: boolean
+  /**
+   * Whether a replace is running. Cleared as it ends, before its sheet is told to close: the
+   * sheet stays up for exactly this long, unlike for other attaches.
+   */
+  replacing: boolean
+  /**
+   * Why a replace's old wallet could not be put back. While set, no wallet may be created or
+   * restored: the next undo would delete it to put the old one back. Cleared as a launch starts.
+   */
+  replaceLeftOver?: string
 }
 
 const initialState: DemoState = {
@@ -206,6 +227,7 @@ const initialState: DemoState = {
   seedWords: [],
   storedFederations: [],
   activityItems: [],
+  olderActivityFailed: false,
   restoreWords: '',
   invite: testnetFederationCode,
   lnReceiveAmount: '5000',
@@ -225,6 +247,7 @@ const initialState: DemoState = {
   hasFederation: false,
   recoversOnJoin: true,
   backedUp: false,
+  replacing: false,
 }
 
 /** The pull cursor every generated `…Updates` object has. */
@@ -232,12 +255,61 @@ interface Updates<T> {
   next(asyncOpts_?: { signal: AbortSignal }): Promise<T | undefined>
 }
 
-/**
- * Frees a cursor once done with, as the SDK's `useUpdates` does: it holds the federation and its
- * storage claim, which the garbage collector would keep for as long as it takes to run.
- */
+/** Frees a cursor once done with, as the SDK's `useUpdates` does, not whenever the collector runs. */
 export function free(cursor: object | undefined) {
   ;(cursor as { uniffiDestroy?(): void } | undefined)?.uniffiDestroy?.()
+}
+
+/**
+ * The kinds of operation not ended yet in any open federation: a payment on its way, an
+ * invoice or deposit being received, or sent ecash its receiver has not redeemed, which can still
+ * be reclaimed. Deleting the wallet would drop what settles them, as the SDK's own
+ * `forgetFederation` refuses to for one federation. `isFinal`, not the status: a row this SDK
+ * cannot interpret is `Unknown` whether or not it has finished. A recovery does not count, as it
+ * does not for `forgetFederation`: the phrase redoes it. A federation that is not open cannot be
+ * read.
+ */
+async function operationsInFlight(sdk: SdkLike): Promise<Set<OperationKind>> {
+  const kinds = new Set<OperationKind>()
+  for (const federation of sdk.federations()) {
+    let cursor: Cursor | undefined
+    do {
+      const page = await federation.activity(cursor, 100)
+      for (const item of page.items) {
+        if (!item.isFinal && item.kind !== OperationKind.Recovery)
+          kinds.add(item.kind)
+      }
+      cursor = page.next
+    } while (cursor !== undefined)
+  }
+  return kinds
+}
+
+/** What each kind of unfinished operation is, and what ends it, for the refusal. */
+const inFlightKinds: Record<OperationKind, string> = {
+  [OperationKind.EcashSend]:
+    'ecash you sent that has not been redeemed (reclaim it from its Activity entry)',
+  [OperationKind.EcashReceive]: 'ecash still being redeemed',
+  [OperationKind.LnSend]: 'a Lightning payment still on its way',
+  [OperationKind.LnReceive]:
+    'a Lightning invoice not paid yet (it ends when it expires)',
+  [OperationKind.OnchainSend]: 'an on-chain withdrawal not confirmed yet',
+  [OperationKind.OnchainReceive]: 'an on-chain deposit still being claimed',
+  [OperationKind.Recovery]: 'a recovery',
+  [OperationKind.Unknown]: 'an operation this version of the app cannot read',
+}
+
+/** Why the wallet may not be deleted yet, naming what is unfinished, or `undefined` if nothing is. */
+async function inFlightRefusal(sdk: SdkLike): Promise<string | undefined> {
+  const kinds = await operationsInFlight(sdk)
+  if (kinds.size === 0) return undefined
+  const list = [...kinds].map((kind) => inFlightKinds[kind]).join('; ')
+  return `Not yet: deleting this wallet now could lose ${list}. Replace it once that is done.`
+}
+
+/** Why a replace's old wallet is not back in place, for the launch screen. */
+function leftOverText(error: unknown): string {
+  return `Couldn't put back the wallet a replace left behind: ${reason(error)}`
 }
 
 /** Joining the federation that is already attached and running. */
@@ -361,10 +433,34 @@ export class DemoModel {
   /**
    * Whether a wallet from an earlier launch is waiting to be reopened. Rejects when a wallet the
    * old example left in Documents could not be moved: going on would offer a new wallet, whose
-   * directory then stops the move for good and leaves the old seed in iCloud backups.
+   * directory then stops the move for good and leaves the old seed in iCloud backups. A replace
+   * the last run was killed in the middle of is undone first, so the wallet it moved out is the
+   * one found here, not a Welcome screen over an empty directory. One at a time: a second call
+   * shares the first, since two undos interleaved could each see the other's move half done.
    */
-  async start(): Promise<boolean> {
-    await moveLegacyWallet()
+  start(): Promise<boolean> {
+    this.starting ??= this.launch().finally(() => {
+      this.starting = undefined
+    })
+    return this.starting
+  }
+  private starting?: Promise<boolean>
+
+  private async launch(): Promise<boolean> {
+    // This launch decides now; an earlier one's failure to put a wallet back is not current.
+    this.set({ replaceLeftOver: undefined })
+    try {
+      await undoReplace()
+    } catch (error) {
+      throw new Error(leftOverText(error))
+    }
+    try {
+      await moveLegacyWallet()
+    } catch (error) {
+      throw new Error(
+        `Couldn't move the wallet out of Documents: ${reason(error)}`,
+      )
+    }
     return hasStoredWallet()
   }
 
@@ -387,36 +483,7 @@ export class DemoModel {
           mnemonic: words.length ? words : undefined,
         })
         if (signal.aborted) return 'superseded by a newer open'
-        this.session = session
-        this.lastFederationId = await readLastFederationId()
-        this.set({
-          hasSdk: true,
-          walletOrigin: origin,
-          recoversOnJoin: await recoversOnJoin(origin),
-          // The words are the seed. Once the SDK holds it there is no reason for a copy to
-          // stay in an input field.
-          restoreWords: '',
-        })
-        this.followFederationStatuses(session.sdk)
-        // Reattach to the federation used last. While that one is stored but not open, such
-        // as quarantined, another stands in without being remembered in its place, and
-        // Federations offers to reconnect it. Otherwise the stand-in takes over.
-        const open = session.sdk.federations()
-        const last = open.find((f) => f.id() === this.lastFederationId)
-        const existing = last ?? open[0]
-        if (existing) {
-          const lastStored = this.state.storedFederations.some(
-            (f) => f.id === this.lastFederationId,
-          )
-          this.attach(existing, last !== undefined || !lastStored)
-          // A recovery interrupted by the last quit carries on in the SDK; follow it.
-          if (
-            this.state.federationStatus?.tag ===
-            FederationStatus_Tags.Recovering
-          ) {
-            this.followRecovery()
-          }
-        }
+        await this.adopt(session, origin)
         return words.length
           ? `wallet restored from ${words.length} words`
           : 'wallet opened'
@@ -424,6 +491,216 @@ export class DemoModel {
         this.attachEnded()
       }
     })
+  }
+
+  /** Makes an opened session the wallet: its origin, its statuses, and the federation used last. */
+  private async adopt(session: SdkSession, origin: WalletOrigin) {
+    this.session = session
+    this.lastFederationId = await readLastFederationId()
+    this.set({
+      hasSdk: true,
+      walletOrigin: origin,
+      recoversOnJoin: await recoversOnJoin(origin),
+      // The words are the seed. Once the SDK holds it there is no reason for a copy to stay in
+      // an input field.
+      restoreWords: '',
+    })
+    this.followFederationStatuses(session.sdk)
+    // Reattach to the federation used last. While that one is stored but not open, such as
+    // quarantined, another stands in without being remembered in its place, and Federations
+    // offers to reconnect it. Otherwise the stand-in takes over.
+    const open = session.sdk.federations()
+    const last = open.find((f) => f.id() === this.lastFederationId)
+    const existing = last ?? open[0]
+    if (existing) {
+      const lastStored = this.state.storedFederations.some(
+        (f) => f.id === this.lastFederationId,
+      )
+      this.attach(existing, last !== undefined || !lastStored)
+      // A recovery interrupted by the last quit carries on in the SDK; follow it.
+      if (
+        this.state.federationStatus?.tag === FederationStatus_Tags.Recovering
+      ) {
+        this.followRecovery()
+      }
+    }
+  }
+
+  /**
+   * Replaces the open wallet with the one `words` belong to: for a phrase restored by
+   * mistake, or a wallet created when an older one was meant. Nothing changes until the phrase
+   * parses, differs from this wallet's own, and the device owner confirms, failing closed as the
+   * recovery phrase does. The open wallet is then deleted, as in the earlier example, but only once
+   * the restored one is open: a restore that fails puts it back and reopens it. Resolves whether
+   * the new wallet is open.
+   */
+  async replaceWallet(words: string[]): Promise<boolean> {
+    const session = this.session
+    if (
+      !session ||
+      this.isSending ||
+      this.isAttaching ||
+      this.state.replacing
+    ) {
+      this.fail('replace', 'Something else is running. Try again once it ends.')
+      return false
+    }
+    this.clearFailure('replace')
+    // Locked from here, through the checks and the prompt as well as the swap: the sheet cannot be
+    // closed on a replace that is still going to happen.
+    this.set({ replacing: true })
+    const refusal = await this.replaceRefusal(session, words)
+    if (refusal !== undefined) {
+      this.fail('replace', refusal)
+      this.set({ replacing: false })
+      return false
+    }
+
+    return new Promise<boolean>((resolve) => {
+      this.attachStarted()
+      this.run('replace', async () => {
+        try {
+          await this.closeWallet(session)
+          let restored: SdkSession | undefined
+          try {
+            await beginReplace()
+            restored = await openSdk({
+              dataDir: await prepareDataDir(),
+              mnemonic: words,
+            })
+            await finishReplace()
+          } catch (error) {
+            // Any step: the old wallet comes back as it was, and the reason shows on the Replace
+            // screen.
+            await restored?.close().catch(() => {})
+            await this.reopenAfterFailedReplace()
+            throw error
+          }
+          try {
+            await this.adopt(restored, 'restored')
+          } catch (error) {
+            // Done: the old wallet is gone, and only opening the new one failed. Onboarding
+            // shows why and can reopen it, once this session lets go of its directory.
+            await this.closeWallet(restored)
+            this.fail('wallet', describe(error))
+            this.set({ hasSdk: false, replacing: false })
+            resolve(false)
+            return 'wallet replaced, but the new one did not open'
+          }
+          resolve(true)
+          return `wallet replaced from ${words.length} words`
+        } catch (error) {
+          resolve(false)
+          throw error
+        } finally {
+          this.attachEnded()
+          this.set({ replacing: false })
+        }
+      })
+    })
+  }
+
+  /** Why `words` may not replace the open wallet, or `undefined` once the owner has confirmed. */
+  private async replaceRefusal(
+    session: SdkSession,
+    words: string[],
+  ): Promise<string | undefined> {
+    try {
+      session.Mnemonic.fromWords(words)
+      if (session.sdk.exportMnemonic().words().join(' ') === words.join(' '))
+        return "That's this wallet's own recovery phrase."
+      const inFlight = await inFlightRefusal(session.sdk)
+      if (inFlight) return inFlight
+    } catch (error) {
+      return describe(error)
+    }
+    const outcome = await authenticateOwner('Replace this wallet')
+    if (outcome !== 'ok')
+      return outcome === 'unavailable'
+        ? 'Set a device passcode to replace the wallet.'
+        : `The wallet stays as it is: ${outcome.declined}`
+    // The prompt was up for a while: something may have started in the meantime, a deposit a
+    // watcher found included.
+    if (this.session !== session || this.isSending || this.isAttaching)
+      return 'Something else started while you confirmed. Try again once it ends.'
+    try {
+      return await inFlightRefusal(session.sdk)
+    } catch (error) {
+      return describe(error)
+    }
+  }
+
+  /**
+   * Puts the old wallet back and reopens it. If it cannot be put back, the launch screen holds
+   * the app with Try again (`replaceLeftOver`): onboarding would let a wallet be created that the
+   * next undo deletes. If it is back but will not open, onboarding shows why and can reopen it.
+   * Either way `hasSdk` drops, rather than staying on a wallet that is not there, and `replacing`
+   * with it: the Replace sheet must not hold the closed wallet's screens up as they go.
+   */
+  private async reopenAfterFailedReplace() {
+    try {
+      await undoReplace()
+    } catch (error) {
+      this.set({
+        hasSdk: false,
+        replacing: false,
+        replaceLeftOver: leftOverText(error),
+      })
+      return
+    }
+    try {
+      await this.adopt(
+        await openSdk({ dataDir: await prepareDataDir() }),
+        'reopened',
+      )
+    } catch (error) {
+      // Welcome shows the wallet's failure, not the Replace sheet's.
+      this.fail('wallet', describe(error))
+      this.set({ hasSdk: false, replacing: false })
+    }
+  }
+
+  /**
+   * Stops everything that reads the open wallet, forgets its federation and the state shown for
+   * it, and shuts the SDK down. `hasSdk` stays set, so the wallet's screens stay up behind the
+   * Replace sheet rather than falling back to onboarding while the next wallet opens.
+   */
+  private async closeWallet(session: SdkSession) {
+    for (const section of federationScoped) this.stopRun(section)
+    for (const controller of this.watchers.values()) controller.abort()
+    this.watchers.clear()
+    this.balanceWatch?.abort()
+    this.statusWatch?.abort()
+    this.activityRefresh?.abort()
+    this.session = undefined
+    this.federation = undefined
+    this.lastEcashSend = undefined
+    const { results, failures, working, attachesInFlight, attachments } =
+      this.state
+    // `set` merges, and `initialState` leaves the optional fields out: each is cleared by name, or
+    // the old wallet's federation, its invite code among them, would outlive it.
+    const cleared = Object.fromEntries(
+      Object.keys(this.state).map((key) => [key, undefined]),
+    ) as Partial<DemoState>
+    // Only the replace's own lines carry over: the rest were about the wallet being closed.
+    const own = <T>(lines: Partial<Record<Section, T>>) =>
+      lines.replace === undefined ? {} : { replace: lines.replace }
+    this.set({
+      ...cleared,
+      ...initialState,
+      results: own(results),
+      failures: own(failures),
+      working,
+      attachesInFlight,
+      // Screens about the federation that was attached see it is gone.
+      attachments: attachments + 1,
+      hasSdk: true,
+      backedUp: true,
+      replacing: true,
+    })
+    // Shutting down is what gives the directory back. One that fails still leaves the instance
+    // closed (see `SdkSession.close`), and the directory is moved out next either way.
+    await session.close().catch(() => {})
   }
 
   /**
@@ -665,7 +942,6 @@ export class DemoModel {
       if (!ecash) return 'this federation has no mint module'
       const text = this.state.ecashNotes.trim()
       if (!text) return 'paste ecash notes first'
-      const attachment = this.state.attachments
       const notes = Notes.parse(text)
       const operation = await ecash.receive(notes)
       const state = await operation.awaitFinal()
@@ -673,13 +949,10 @@ export class DemoModel {
       switch (state.tag) {
         case EcashReceiveState_Tags.Done:
           // Spent now, so cleared, but only if the field still holds them: it stays editable while
-          // they redeem, and newer notes, or another federation's, were not spent.
-          if (
-            this.state.ecashNotes.trim() === text &&
-            this.state.attachments === attachment
-          ) {
+          // they redeem, and newer notes were not spent. The same text is the same notes, spent
+          // even if another federation was attached since.
+          if (this.state.ecashNotes.trim() === text)
             this.set({ ecashNotes: '' })
-          }
           outcome = `Redeemed ${formatMsats(notes.value())}`
           break
         case EcashReceiveState_Tags.Failed:
@@ -969,15 +1242,27 @@ export class DemoModel {
     return this.federation?.operation(id)
   }
 
+  // `olderActivityFailed` changes only as a load ends: the failure stays on screen while the next
+  // load runs (`useHistoryFailure`), and its text must keep saying which load it was.
   activity() {
     this.run('activity', async (signal) => {
       const federation = this.federation
       if (!federation) return 'join a federation first'
-      const page = await federation.activity(undefined, activityPageSize, {
-        signal,
-      })
+      let page: Awaited<ReturnType<typeof federation.activity>>
+      try {
+        page = await federation.activity(undefined, activityPageSize, {
+          signal,
+        })
+      } catch (error) {
+        if (!signal.aborted) this.set({ olderActivityFailed: false })
+        throw error
+      }
       if (signal.aborted) return 'superseded by a newer load'
-      this.set({ activityItems: page.items, activityNext: page.next })
+      this.set({
+        activityItems: page.items,
+        activityNext: page.next,
+        olderActivityFailed: false,
+      })
       return page.items.length
         ? `loaded ${page.items.length}`
         : 'no activity yet'
@@ -990,14 +1275,19 @@ export class DemoModel {
     this.run('activity', async (signal) => {
       const federation = this.federation
       if (!federation) return 'join a federation first'
-      const page = await federation.activity(cursor, activityPageSize, {
-        signal,
-      })
+      let page: Awaited<ReturnType<typeof federation.activity>>
+      try {
+        page = await federation.activity(cursor, activityPageSize, { signal })
+      } catch (error) {
+        if (!signal.aborted) this.set({ olderActivityFailed: true })
+        throw error
+      }
       if (signal.aborted || cursor !== this.state.activityNext)
         return 'superseded by a newer load'
       this.set({
         activityItems: [...this.state.activityItems, ...page.items],
         activityNext: page.next,
+        olderActivityFailed: false,
       })
       return `loaded ${page.items.length} more`
     })
@@ -1005,7 +1295,10 @@ export class DemoModel {
 
   /**
    * Reloads the newest page when the balance moves, since the SDK has no activity stream. Merged
-   * where it joins the rows already loaded; otherwise it replaces them with its own cursor.
+   * where it joins the rows already loaded; otherwise it replaces them with its own cursor. A
+   * reload that fails is the history's failure, so the rows kept are not taken as current; one
+   * that works clears it, unless it is Load more's and the rows were only merged, which leaves
+   * that page still missing. Both only for the federation still attached: `attach` clears it.
    */
   private refreshRecentActivity() {
     const federation = this.federation
@@ -1019,9 +1312,20 @@ export class DemoModel {
         if (controller.signal.aborted || this.federation !== federation) return
         const fresh = new Set(page.items.map((item) => item.operationId))
         const items = this.state.activityItems
+        const merged =
+          page.next !== undefined &&
+          items.some((item) => fresh.has(item.operationId))
+        // A load the user started reports its own outcome.
+        if (
+          !this.state.working.has('activity') &&
+          !(merged && this.state.olderActivityFailed)
+        ) {
+          this.clearFailure('activity')
+          this.set({ olderActivityFailed: false })
+        }
         if (page.next === undefined) {
           this.set({ activityItems: page.items, activityNext: undefined })
-        } else if (items.some((item) => fresh.has(item.operationId))) {
+        } else if (merged) {
           this.set({
             activityItems: [
               ...page.items,
@@ -1032,7 +1336,17 @@ export class DemoModel {
           this.set({ activityItems: page.items, activityNext: page.next })
         }
       })
-      .catch(() => {})
+      .catch((error) => {
+        if (
+          controller.signal.aborted ||
+          isAbort(error) ||
+          this.federation !== federation ||
+          this.state.working.has('activity')
+        )
+          return
+        this.set({ olderActivityFailed: false })
+        this.fail('activity', describe(error))
+      })
   }
 
   // MARK: Attaching
@@ -1088,6 +1402,7 @@ export class DemoModel {
         : undefined,
       activityItems: [],
       activityNext: undefined,
+      olderActivityFailed: false,
       // All of this names values from the federation being replaced. `lastNotes` matters most:
       // ecash is a bearer token, and those notes are drawn on a different mint.
       lastInvoice: undefined,

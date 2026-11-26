@@ -27,6 +27,7 @@
       "expo-router",
       "./plugins/with-scene-lifecycle",
       "./plugins/with-android-theme",
+      "./plugins/with-font-licence",
       [
         "expo-font",
         {
