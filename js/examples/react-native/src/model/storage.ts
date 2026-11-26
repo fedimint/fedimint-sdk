@@ -65,7 +65,8 @@ export async function beginReplace(): Promise<void> {
   // Left by an earlier replace whose delete failed: the move needs the name free.
   if (await RNFS.exists(replacedDir)) await RNFS.unlink(replacedDir)
   await RNFS.writeFile(replacingNote, JSON.stringify(note))
-  await RNFS.unlink(createdMarker).catch(() => {})
+  // A marker that will not go fails the replace, which the note then undoes.
+  if (note.created) await RNFS.unlink(createdMarker)
   await RNFS.moveFile(dataDir, replacedDir)
 }
 

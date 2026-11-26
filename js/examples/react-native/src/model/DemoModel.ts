@@ -583,7 +583,7 @@ export class DemoModel {
             // shows why and can reopen it, once this session lets go of its directory.
             await this.closeWallet(restored)
             this.fail('wallet', describe(error))
-            this.set({ hasSdk: false })
+            this.set({ hasSdk: false, replacing: false })
             resolve(false)
             return 'wallet replaced, but the new one did not open'
           }
@@ -634,13 +634,18 @@ export class DemoModel {
    * Puts the old wallet back and reopens it. If it cannot be put back, the launch screen holds
    * the app with Try again (`replaceLeftOver`): onboarding would let a wallet be created that the
    * next undo deletes. If it is back but will not open, onboarding shows why and can reopen it.
-   * Either way `hasSdk` drops, rather than staying on a wallet that is not there.
+   * Either way `hasSdk` drops, rather than staying on a wallet that is not there, and `replacing`
+   * with it: the Replace sheet must not hold the closed wallet's screens up as they go.
    */
   private async reopenAfterFailedReplace() {
     try {
       await undoReplace()
     } catch (error) {
-      this.set({ hasSdk: false, replaceLeftOver: leftOverText(error) })
+      this.set({
+        hasSdk: false,
+        replacing: false,
+        replaceLeftOver: leftOverText(error),
+      })
       return
     }
     try {
@@ -651,7 +656,7 @@ export class DemoModel {
     } catch (error) {
       // Welcome shows the wallet's failure, not the Replace sheet's.
       this.fail('wallet', describe(error))
-      this.set({ hasSdk: false })
+      this.set({ hasSdk: false, replacing: false })
     }
   }
 
@@ -677,11 +682,14 @@ export class DemoModel {
     const cleared = Object.fromEntries(
       Object.keys(this.state).map((key) => [key, undefined]),
     ) as Partial<DemoState>
+    // Only the replace's own lines carry over: the rest were about the wallet being closed.
+    const own = <T>(lines: Partial<Record<Section, T>>) =>
+      lines.replace === undefined ? {} : { replace: lines.replace }
     this.set({
       ...cleared,
       ...initialState,
-      results,
-      failures,
+      results: own(results),
+      failures: own(failures),
       working,
       attachesInFlight,
       // Screens about the federation that was attached see it is gone.
