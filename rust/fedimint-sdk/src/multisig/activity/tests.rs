@@ -64,9 +64,7 @@ fn multisig_details_yield_what_moved_this_balance_and_which_way() {
     // A payout moves value between two accounts, neither of them this balance.
     let btc = MultisigTransferDetails {
         account_id,
-        amount: MultisigAmount::Btc {
-            amount: Amount::from_msats(4_000),
-        },
+        amount: Amount::from_msats(4_000),
         created_at,
     };
     assert_eq!(
@@ -77,14 +75,6 @@ fn multisig_details_yield_what_moved_this_balance_and_which_way() {
             direction: None,
         }
     );
-    let fiat = MultisigTransferDetails {
-        amount: MultisigAmount::Fiat {
-            minor_units: 100,
-            currency: "USD".to_owned(),
-        },
-        ..btc
-    };
-    assert_eq!(fiat.figures(), Figures::NONE);
 
     let sweep = MultisigSweepDetails {
         amount: Some(Amount::from_msats(4_000)),

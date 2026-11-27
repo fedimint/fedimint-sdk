@@ -87,11 +87,6 @@ clones share (`ClaimedStore` in `src/storage.rs`), so it can be closed while clo
   and the executor holds the store until it exits. A reopen in the meantime is refused.
 - The SDK's own background work holds the instance weakly, or stops with the client's task group,
   which `Sdk::shutdown` shuts down. It never keeps a location claimed on its own.
-- So does the work an extension returns from `Extension::client_started`, which may hold the
-  client. The SDK runs it on a task of its own, not on the client's task group, and drops it when
-  the client's task group is told to stop or the instance shuts down or is dropped. Dropping the
-  client's last handle joins that group's tasks, so a task of the group holding it would wait on
-  itself.
 - Opening survives cancellation. The claim is taken and the store opened in one blocking task,
   which runs to completion even when `build` is dropped. A dropped `build` leaves a store that
   closes before its claim is released, never a free claim over a store still being opened.

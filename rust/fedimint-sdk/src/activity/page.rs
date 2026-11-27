@@ -160,11 +160,8 @@ async fn row(
         ErasedDriver::OnchainSend(driver) => typed(inner, driver, kind).await,
         ErasedDriver::OnchainReceive(driver) => typed(inner, driver, kind).await,
         ErasedDriver::Recovery(driver) => typed(inner, driver, kind).await,
-        #[cfg(feature = "multisig")]
         ErasedDriver::MultisigDeposit(driver) => typed(inner, driver, kind).await,
-        #[cfg(feature = "multisig")]
         ErasedDriver::MultisigTransfer(driver) => typed(inner, driver, kind).await,
-        #[cfg(feature = "multisig")]
         ErasedDriver::MultisigSweep(driver) => typed(inner, driver, kind).await,
     }
 }
@@ -738,8 +735,8 @@ mod tests {
         assert!(finished.is_final);
     }
 
-    /// What a build with the multisig facade records for a deposit, a payout and a sweep, each
-    /// ended, spelled out rather than encoded by the facade, which a build without it lacks.
+    /// What the multisig facade records for a deposit, a payout and a sweep, each ended, spelled
+    /// out rather than encoded by the facade, so that a change to what it records shows here.
     fn multisig_records() -> [(u8, OperationRecord); 4] {
         let account = "aa".repeat(32);
         let module = "multi_sig_stability_pool";
@@ -767,9 +764,7 @@ mod tests {
                     2,
                     serde_json::json!({
                         "account_id": account,
-                        "denomination": 0,
-                        "value": 200_000,
-                        "currency": "",
+                        "amount_msats": 200_000,
                         "created_at_epoch_ms": 2,
                     })
                     .to_string(),
@@ -801,37 +796,6 @@ mod tests {
         ]
     }
 
-    #[cfg(not(feature = "multisig"))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn multisig_records_are_unknown_and_kept_without_the_feature() {
-        let db = federation_namespace(&in_memory_root(), [1u8; 32]);
-        let federation = FederationInner::detached(db.clone(), true);
-        for (n, record) in multisig_records() {
-            write(&db, id_bytes(n), record).await;
-        }
-
-        let activity = page(&federation, None, 10).await.expect("a page");
-        for (n, record) in multisig_records() {
-            let row = activity
-                .items
-                .iter()
-                .find(|item| item.operation_id == opid(n))
-                .expect("listed");
-            assert_eq!(row.kind, OperationKind::Unknown);
-            assert_eq!(row.status, ActivityStatus::Unknown);
-            assert!(row.is_final);
-            assert_eq!((row.amount, row.fee, row.direction), (None, None, None));
-            // Left as it was, for a build with the facade to read again.
-            let stored = db
-                .begin_transaction_nc()
-                .await
-                .get_value(&OperationRecordKey(UpstreamOperationId(id_bytes(n))))
-                .await;
-            assert_eq!(stored, Some(record));
-        }
-    }
-
-    #[cfg(feature = "multisig")]
     #[tokio::test(flavor = "multi_thread")]
     async fn multisig_records_read_back_as_their_kinds() {
         let db = federation_namespace(&in_memory_root(), [1u8; 32]);

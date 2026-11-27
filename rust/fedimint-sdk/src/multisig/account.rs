@@ -1,10 +1,11 @@
-//! Who a group is and what it holds: member keys, policies, accounts and amounts.
+//! Who a group is: member keys, policies and accounts.
 
 use fedimint_core::bitcoin::hashes::{Hash, sha256};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::secp256k1::PublicKey;
+use stability_pool_common::{Account, AccountType, AccountUnchecked};
 
-use crate::{Amount, Error, ErrorCode, Result};
+use crate::{Error, ErrorCode, Result};
 
 /// One member's public key in a multisig group.
 ///
@@ -32,22 +33,6 @@ impl MemberKey {
     }
 }
 
-#[cfg(feature = "extension-api")]
-#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
-impl MemberKey {
-    /// The member key for `key`, for a [`MultisigBackend`](crate::MultisigBackend) handing one
-    /// out.
-    pub fn from_public_key(key: PublicKey) -> MemberKey {
-        MemberKey::from_upstream(key)
-    }
-
-    /// The key itself, for a [`MultisigBackend`](crate::MultisigBackend) building the module's
-    /// own account from a policy.
-    pub fn public_key(&self) -> PublicKey {
-        self.key
-    }
-}
-
 impl core::fmt::Display for MemberKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Always the compressed spelling, 66 lowercase hex characters
@@ -71,80 +56,6 @@ impl core::str::FromStr for MemberKey {
     }
 }
 
-/// What a multisig account holds its value in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[non_exhaustive]
-pub enum MultisigDenomination {
-    /// Bitcoin, counted in millisatoshi.
-    Btc,
-    /// A fiat currency, held at a stable value: the account's bitcoin is converted at the
-    /// federation's exchange rate whenever it moves.
-    Fiat,
-}
-
-impl MultisigDenomination {
-    /// The tag this denomination is encoded and hashed as.
-    pub(crate) fn tag(self) -> u8 {
-        match self {
-            MultisigDenomination::Btc => 0,
-            MultisigDenomination::Fiat => 1,
-        }
-    }
-
-    /// The denomination a tag names, if any.
-    pub(crate) fn from_tag(tag: u8) -> Option<MultisigDenomination> {
-        match tag {
-            0 => Some(MultisigDenomination::Btc),
-            1 => Some(MultisigDenomination::Fiat),
-            _ => None,
-        }
-    }
-}
-
-/// An amount in a multisig account's own denomination.
-///
-/// What [`Multisig::balance`](crate::Multisig::balance) reports and what
-/// [`Multisig::propose`](crate::Multisig::propose) pays out. Money going *into* an account is
-/// always taken from the ecash balance, so a deposit is a plain [`Amount`] whatever the account
-/// holds its value in.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[non_exhaustive]
-pub enum MultisigAmount {
-    /// An amount of bitcoin.
-    Btc {
-        /// The amount.
-        amount: Amount,
-    },
-    /// An amount of a fiat currency.
-    Fiat {
-        /// The amount in the currency's smallest unit: cents for the US dollar, whole yen for
-        /// the Japanese yen.
-        minor_units: u64,
-        /// The currency's ISO 4217 code, `"USD"` for instance.
-        currency: String,
-    },
-}
-
-impl MultisigAmount {
-    /// The denomination this amount is in.
-    pub fn denomination(&self) -> MultisigDenomination {
-        match self {
-            MultisigAmount::Btc { .. } => MultisigDenomination::Btc,
-            MultisigAmount::Fiat { .. } => MultisigDenomination::Fiat,
-        }
-    }
-
-    /// Whether this amount is zero.
-    pub(crate) fn is_zero(&self) -> bool {
-        match self {
-            MultisigAmount::Btc { amount } => amount.msats() == 0,
-            MultisigAmount::Fiat { minor_units, .. } => *minor_units == 0,
-        }
-    }
-}
-
 /// Who a multisig group's members are, and how many of them it takes to move its money.
 ///
 /// The members agree on a policy among themselves, out of band: each adds its own key from
@@ -164,24 +75,14 @@ pub struct Policy {
     /// How many members have to approve a payment out of the account: at least one, and no more
     /// than there are members.
     pub threshold: u32,
-    /// What the account holds its value in.
-    pub denomination: MultisigDenomination,
 }
 
 impl Policy {
     /// A policy over `members`, `threshold` of whom have to approve a payment.
     ///
     /// Nothing is checked here; [`Multisig::account`](crate::Multisig::account) does that.
-    pub fn new(
-        members: Vec<MemberKey>,
-        threshold: u32,
-        denomination: MultisigDenomination,
-    ) -> Policy {
-        Policy {
-            members,
-            threshold,
-            denomination,
-        }
+    pub fn new(members: Vec<MemberKey>, threshold: u32) -> Policy {
+        Policy { members, threshold }
     }
 
     /// This policy with its members sorted, or the refusal that says why it is no policy at all.
@@ -213,7 +114,6 @@ impl Policy {
         Ok(Policy {
             members,
             threshold: self.threshold,
-            denomination: self.denomination,
         })
     }
 }
@@ -298,101 +198,40 @@ impl MultisigAccount {
         self.policy.threshold
     }
 
-    /// What the account holds its value in.
-    pub(crate) fn denomination(&self) -> MultisigDenomination {
-        self.policy.denomination
+    /// The stability pool's account for this one: a bitcoin account whose keys are the policy's
+    /// members and whose threshold is the policy's.
+    pub(crate) fn module_account(&self) -> Result<Account> {
+        Account::try_from(AccountUnchecked {
+            acc_type: AccountType::BtcDepositor,
+            pub_keys: self.members().iter().map(MemberKey::upstream).collect(),
+            threshold: u64::from(self.threshold()),
+        })
+        // Only a policy that `derive` accepted gets here, so this is a policy the module does not
+        // accept although the facade does.
+        .map_err(|err| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("the stability pool refuses the policy: {err}"),
+            )
+        })
     }
 }
 
-/// A policy as it is hashed into an account id and encoded into a proposal.
+/// A policy as it is hashed into an account id.
 ///
 /// Storage format, in the sense that an id computed from it is shown to people and kept by
 /// applications: change a field and every account id changes.
 #[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
-pub(crate) struct PolicyWire {
-    pub(crate) denomination: u8,
-    pub(crate) threshold: u32,
-    pub(crate) members: Vec<PublicKey>,
+struct PolicyWire {
+    threshold: u32,
+    members: Vec<PublicKey>,
 }
 
 impl From<&Policy> for PolicyWire {
     fn from(policy: &Policy) -> PolicyWire {
         PolicyWire {
-            denomination: policy.denomination.tag(),
             threshold: policy.threshold,
             members: policy.members.iter().map(MemberKey::upstream).collect(),
-        }
-    }
-}
-
-impl TryFrom<PolicyWire> for Policy {
-    type Error = Error;
-
-    fn try_from(wire: PolicyWire) -> Result<Policy> {
-        let denomination = MultisigDenomination::from_tag(wire.denomination).ok_or_else(|| {
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!("unknown denomination {}", wire.denomination),
-            )
-        })?;
-        Ok(Policy {
-            members: wire
-                .members
-                .into_iter()
-                .map(MemberKey::from_upstream)
-                .collect(),
-            threshold: wire.threshold,
-            denomination,
-        })
-    }
-}
-
-/// An amount as it is encoded into a proposal.
-#[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
-pub(crate) struct AmountWire {
-    pub(crate) denomination: u8,
-    /// Millisatoshi for bitcoin, the currency's smallest unit for fiat.
-    pub(crate) value: u64,
-    /// Empty for bitcoin.
-    pub(crate) currency: String,
-}
-
-impl From<&MultisigAmount> for AmountWire {
-    fn from(amount: &MultisigAmount) -> AmountWire {
-        match amount {
-            MultisigAmount::Btc { amount } => AmountWire {
-                denomination: MultisigDenomination::Btc.tag(),
-                value: amount.msats(),
-                currency: String::new(),
-            },
-            MultisigAmount::Fiat {
-                minor_units,
-                currency,
-            } => AmountWire {
-                denomination: MultisigDenomination::Fiat.tag(),
-                value: *minor_units,
-                currency: currency.clone(),
-            },
-        }
-    }
-}
-
-impl TryFrom<AmountWire> for MultisigAmount {
-    type Error = Error;
-
-    fn try_from(wire: AmountWire) -> Result<MultisigAmount> {
-        match MultisigDenomination::from_tag(wire.denomination) {
-            Some(MultisigDenomination::Btc) => Ok(MultisigAmount::Btc {
-                amount: Amount::from_msats(wire.value),
-            }),
-            Some(MultisigDenomination::Fiat) => Ok(MultisigAmount::Fiat {
-                minor_units: wire.value,
-                currency: wire.currency,
-            }),
-            None => Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("unknown denomination {}", wire.denomination),
-            )),
         }
     }
 }
@@ -439,42 +278,32 @@ mod tests {
     #[test]
     fn the_order_of_members_does_not_change_the_account() {
         let [a, b, c] = keys();
-        let one =
-            MultisigAccount::derive(&Policy::new(vec![c, a, b], 2, MultisigDenomination::Btc))
-                .expect("a valid policy");
+        let one = MultisigAccount::derive(&Policy::new(vec![c, a, b], 2)).expect("a valid policy");
         let other =
-            MultisigAccount::derive(&Policy::new(vec![a, b, c], 2, MultisigDenomination::Btc))
-                .expect("a valid policy");
+            MultisigAccount::derive(&Policy::new(vec![a, b, c], 2)).expect("a valid policy");
         assert_eq!(one.id(), other.id());
         assert_eq!(one.policy().members, vec![a, b, c]);
     }
 
     #[test]
-    fn threshold_and_denomination_are_part_of_the_account() {
+    fn the_threshold_is_part_of_the_account() {
         let [a, b, c] = keys();
-        let id = |threshold, denomination| {
-            MultisigAccount::derive(&Policy::new(vec![a, b, c], threshold, denomination))
+        let id = |threshold| {
+            MultisigAccount::derive(&Policy::new(vec![a, b, c], threshold))
                 .expect("a valid policy")
                 .id()
         };
-        assert_ne!(
-            id(2, MultisigDenomination::Btc),
-            id(3, MultisigDenomination::Btc)
-        );
-        assert_ne!(
-            id(2, MultisigDenomination::Btc),
-            id(2, MultisigDenomination::Fiat)
-        );
+        assert_ne!(id(2), id(3));
     }
 
     #[test]
     fn a_policy_that_describes_no_account_is_refused() {
         let [a, b, _] = keys();
         for policy in [
-            Policy::new(vec![], 1, MultisigDenomination::Btc),
-            Policy::new(vec![a, b], 0, MultisigDenomination::Btc),
-            Policy::new(vec![a, b], 3, MultisigDenomination::Btc),
-            Policy::new(vec![a, b, a], 2, MultisigDenomination::Btc),
+            Policy::new(vec![], 1),
+            Policy::new(vec![a, b], 0),
+            Policy::new(vec![a, b], 3),
+            Policy::new(vec![a, b, a], 2),
         ] {
             let err = MultisigAccount::derive(&policy).expect_err("refused");
             assert_eq!(err.code, ErrorCode::InvalidInput, "{policy:?}");
@@ -485,8 +314,7 @@ mod tests {
     fn an_account_id_round_trips() {
         let [a, b, c] = keys();
         let account =
-            MultisigAccount::derive(&Policy::new(vec![a, b, c], 2, MultisigDenomination::Btc))
-                .expect("a valid policy");
+            MultisigAccount::derive(&Policy::new(vec![a, b, c], 2)).expect("a valid policy");
         let printed = account.id().to_string();
         assert_eq!(printed.len(), 64);
         assert_eq!(
@@ -494,21 +322,5 @@ mod tests {
             account.id()
         );
         assert!("not hex".parse::<MultisigAccountId>().is_err());
-    }
-
-    #[test]
-    fn an_amount_round_trips_through_its_wire_form() {
-        for amount in [
-            MultisigAmount::Btc {
-                amount: Amount::from_msats(1_234),
-            },
-            MultisigAmount::Fiat {
-                minor_units: 500,
-                currency: "USD".to_owned(),
-            },
-        ] {
-            let back = MultisigAmount::try_from(AmountWire::from(&amount)).expect("decodes");
-            assert_eq!(back, amount);
-        }
     }
 }

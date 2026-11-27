@@ -7,12 +7,14 @@ use fedimint_core::bitcoin::hashes::{Hash, HashEngine, sha256};
 use fedimint_core::config;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fedimint_core::secp256k1::{Message, PublicKey, SECP256K1, schnorr};
+use fedimint_core::secp256k1::{Keypair, Message, PublicKey, SECP256K1, schnorr};
+use stability_pool_common::{
+    AccountType, BtcTransferRequest, SignedBtcTransferRequest, TransferRequestId,
+};
 
-use super::account::{AmountWire, PolicyWire};
 use crate::{
-    Error, ErrorCode, FederationId, MemberKey, MultisigAccount, MultisigAccountId, MultisigAmount,
-    Policy, Result,
+    Amount, Error, ErrorCode, FederationId, MemberKey, MultisigAccount, MultisigAccountId, Policy,
+    Result,
 };
 
 /// What a printed proposal starts with.
@@ -21,13 +23,14 @@ const PROPOSAL_PREFIX: &str = "msproposal";
 const APPROVAL_PREFIX: &str = "msapproval";
 /// What a proposal's digest starts with, so that the signature over it is good for nothing else.
 const PROPOSAL_DOMAIN: &[u8] = b"fedimint-sdk multisig proposal";
-/// The encoding version this build writes, and the newest it reads.
+/// The encoding version this build writes, and the only one it reads.
 ///
 /// The first byte of every encoded proposal and approval. Proposals and approvals travel between
 /// members whose applications may run different versions of this crate, so a version this build
-/// does not know is refused with a message that says so, rather than misread.
-const VERSION: u8 = 1;
-
+/// does not know is refused with a message that says so, rather than misread. Version 1 carried
+/// a module kind and opaque payloads in their place, and an amount and a policy that the payout
+/// request now says itself.
+const VERSION: u8 = 2;
 /// A payment out of a multisig account, waiting for its members' approvals.
 ///
 /// Made by [`Multisig::propose`](crate::Multisig::propose), which pays the proposing member, and
@@ -59,13 +62,12 @@ pub struct Proposal {
     digest: sha256::Hash,
     /// The federation it pays out on.
     federation: config::FederationId,
-    /// The module kind of the backend that made it, which is the only one that can execute it.
-    module: String,
+    /// The account the request pays out of, as the facade names it.
     account: MultisigAccount,
-    amount: MultisigAmount,
     proposer: MemberKey,
-    /// What the backend needs signed, opaque to this crate.
-    payload: Vec<u8>,
+    /// The stability pool's request to pay out of the account to the proposer's payout account:
+    /// what every approving member signs, and what the federation executes.
+    request: BtcTransferRequest,
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
@@ -75,8 +77,8 @@ impl Proposal {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, for one that is not
-    /// signed by a member of its account, and for one written by a newer version of this SDK than
-    /// this one reads.
+    /// signed by a member of its account, and for one written by another version of this SDK's
+    /// encoding than the one this one reads.
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn parse(proposal: String) -> Result<Proposal> {
         proposal.parse()
@@ -100,9 +102,9 @@ impl Proposal {
         self.account.policy()
     }
 
-    /// How much the payment is for, in the account's denomination.
-    pub fn amount(&self) -> MultisigAmount {
-        self.amount.clone()
+    /// How much the payment is for.
+    pub fn amount(&self) -> Amount {
+        Amount::from_msats(self.request.amount().msats)
     }
 
     /// The member who made the proposal, and who the payment goes to.
@@ -126,69 +128,69 @@ impl Proposal {
         self.account.clone()
     }
 
-    /// What `proposer` signs to propose paying `amount` out of `account` on `federation` through
-    /// `module`, with `payload`.
+    /// What `proposer` signs to propose `request` on `federation`.
     pub(crate) fn digest_of(
         federation: config::FederationId,
-        module: &str,
-        account: &MultisigAccount,
-        amount: &MultisigAmount,
         proposer: MemberKey,
-        payload: &[u8],
+        request: &BtcTransferRequest,
     ) -> sha256::Hash {
-        ProposalBody::new(federation, module, account, amount, proposer, payload).digest()
+        ProposalBody::new(federation, proposer, request).digest()
     }
 
     /// The proposal `proposer` signed with `signature`, encoded once here.
     ///
     /// # Errors
     ///
-    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when `proposer` is not a member of
-    /// `account`, or `signature` is not theirs over the proposal.
+    /// [`InvalidInput`](crate::ErrorCode::InvalidInput) when `request` does not pay out of a
+    /// multisig account, `proposer` is not a member of that account, or `signature` is not
+    /// theirs over the proposal.
     pub(crate) fn signed(
         federation: config::FederationId,
-        module: String,
-        account: MultisigAccount,
-        amount: MultisigAmount,
         proposer: MemberKey,
-        payload: Vec<u8>,
+        request: BtcTransferRequest,
         signature: schnorr::Signature,
     ) -> Result<Proposal> {
-        let body = ProposalBody::new(federation, &module, &account, &amount, proposer, &payload);
-        let digest = body.digest();
-        check_proposer(&account, proposer, digest, &signature)?;
+        let body = ProposalBody::new(federation, proposer, &request);
         let mut encoded = vec![VERSION];
-        encoded.extend(ProposalWire { body, signature }.consensus_encode_to_vec());
+        encoded.extend(
+            ProposalWire {
+                body: body.clone(),
+                signature,
+            }
+            .consensus_encode_to_vec(),
+        );
+        Proposal::checked(encoded, body, &signature)
+    }
+
+    /// The proposal `encoded` is, once `body` passes every check and `signature` is its
+    /// proposer's.
+    fn checked(
+        encoded: Vec<u8>,
+        body: ProposalBody,
+        signature: &schnorr::Signature,
+    ) -> Result<Proposal> {
+        let digest = body.digest();
+        let account = account_paid_out_of(&body.request)?;
+        let proposer = MemberKey::from_upstream(body.proposer);
+        check_proposer(&account, proposer, digest, signature)?;
         Ok(Proposal {
             encoded,
             digest,
-            federation,
-            module,
+            federation: body.federation,
             account,
-            amount,
             proposer,
-            payload,
+            request: body.request,
         })
     }
 
-    /// The module kind of the backend that made this proposal.
-    pub(crate) fn module(&self) -> &str {
-        &self.module
+    /// The stability pool's request this proposal pays out with.
+    pub(crate) fn request(&self) -> &BtcTransferRequest {
+        &self.request
     }
 
     /// What an approval names this proposal by.
     pub(crate) fn digest(&self) -> sha256::Hash {
         self.digest
-    }
-}
-
-#[cfg(feature = "extension-api")]
-#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
-impl Proposal {
-    /// What the [`MultisigBackend`](crate::MultisigBackend) that made this proposal put in it,
-    /// from [`MultisigBackend::propose`](crate::MultisigBackend::propose).
-    pub fn payload(&self) -> Vec<u8> {
-        self.payload.clone()
     }
 }
 
@@ -206,27 +208,12 @@ impl core::str::FromStr for Proposal {
 
     /// Parses a proposal from its printed form. Returns
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, for one
-    /// that is not signed by a member of its account, and for one written by a newer version of
-    /// this SDK.
+    /// that is not signed by a member of its account, and for one written in another version of
+    /// the encoding.
     fn from_str(s: &str) -> Result<Proposal> {
         let encoded = decode("proposal", PROPOSAL_PREFIX, s)?;
         let ProposalWire { body, signature } = decode_wire("proposal", &encoded)?;
-        let digest = body.digest();
-        let account = MultisigAccount::derive(&Policy::try_from(body.policy)?)?;
-        let amount = MultisigAmount::try_from(body.amount)?;
-        check_amount(&account, &amount)?;
-        let proposer = MemberKey::from_upstream(body.proposer);
-        check_proposer(&account, proposer, digest, &signature)?;
-        Ok(Proposal {
-            encoded,
-            digest,
-            federation: body.federation,
-            module: body.module,
-            account,
-            amount,
-            proposer,
-            payload: body.payload,
-        })
+        Proposal::checked(encoded, body, &signature)
     }
 }
 
@@ -234,11 +221,12 @@ impl core::str::FromStr for Proposal {
 ///
 /// Made by [`Multisig::approve`](crate::Multisig::approve) and handed back to whoever collects
 /// approvals for [`Multisig::execute`](crate::Multisig::execute). It approves exactly one
-/// proposal, and carries the member's signature over it.
+/// proposal, and carries the member's signature over its payout request.
 ///
 /// It round-trips through [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr), as
 /// `msapproval` followed by lowercase base32. The parse checks the structure, not the signature:
-/// that is the federation's job.
+/// [`Multisig::execute`](crate::Multisig::execute) checks it against the proposal, and the
+/// federation after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct Approval {
@@ -247,8 +235,9 @@ pub struct Approval {
     /// The digest of the proposal this approves.
     proposal: sha256::Hash,
     member: MemberKey,
-    /// The backend's signature, opaque to this crate.
-    payload: Vec<u8>,
+    /// The member's BIP-340 signature over the proposal's payout request, as the stability pool
+    /// checks it.
+    signature: schnorr::Signature,
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
@@ -258,7 +247,7 @@ impl Approval {
     /// # Errors
     ///
     /// [`InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, and for one
-    /// written by a newer version of this SDK than this one reads.
+    /// written in another version of this SDK's encoding than the one this one reads.
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn parse(approval: String) -> Result<Approval> {
         approval.parse()
@@ -282,11 +271,15 @@ impl Approval {
 
 impl Approval {
     /// `member`'s approval of the proposal `proposal` is the digest of, encoded once here.
-    pub(crate) fn new(proposal: sha256::Hash, member: MemberKey, payload: Vec<u8>) -> Approval {
+    pub(crate) fn new(
+        proposal: sha256::Hash,
+        member: MemberKey,
+        signature: schnorr::Signature,
+    ) -> Approval {
         let wire = ApprovalWire {
             proposal,
             member: member.upstream(),
-            payload: payload.clone(),
+            signature,
         };
         let mut encoded = vec![VERSION];
         encoded.extend(wire.consensus_encode_to_vec());
@@ -294,28 +287,13 @@ impl Approval {
             encoded,
             proposal,
             member,
-            payload,
+            signature,
         }
     }
-}
 
-#[cfg(feature = "extension-api")]
-#[cfg_attr(docsrs, doc(cfg(feature = "extension-api")))]
-impl Approval {
-    /// `member`'s approval of `proposal`, carrying `payload`.
-    ///
-    /// For a backend that receives approvals some other way than through this crate, and has to
-    /// hand them to [`Multisig::execute`](crate::Multisig::execute). What
-    /// [`Multisig::approve`](crate::Multisig::approve) makes is built the same way, with what
-    /// [`MultisigBackend::approve`](crate::MultisigBackend::approve) returns as the payload.
-    pub fn from_parts(proposal: &Proposal, member: MemberKey, payload: Vec<u8>) -> Approval {
-        Approval::new(proposal.digest(), member, payload)
-    }
-
-    /// What the [`MultisigBackend`](crate::MultisigBackend) put in this approval, from
-    /// [`MultisigBackend::approve`](crate::MultisigBackend::approve).
-    pub fn payload(&self) -> Vec<u8> {
-        self.payload.clone()
+    /// The member's signature over the proposal's payout request.
+    pub(crate) fn signature(&self) -> schnorr::Signature {
+        self.signature
     }
 }
 
@@ -333,7 +311,7 @@ impl core::str::FromStr for Approval {
 
     /// Parses an approval from its printed form. Returns
     /// [`ErrorCode::InvalidInput`](crate::ErrorCode::InvalidInput) for a malformed value, and for
-    /// one written by a newer version of this SDK.
+    /// one written in another version of the encoding.
     fn from_str(s: &str) -> Result<Approval> {
         let encoded = decode("approval", APPROVAL_PREFIX, s)?;
         let wire: ApprovalWire = decode_wire("approval", &encoded)?;
@@ -341,26 +319,50 @@ impl core::str::FromStr for Approval {
             encoded,
             proposal: wire.proposal,
             member: MemberKey::from_upstream(wire.member),
-            payload: wire.payload,
+            signature: wire.signature,
         })
     }
 }
 
-/// Refuses paying out nothing, or an amount in a different denomination from the account's.
-pub(crate) fn check_amount(account: &MultisigAccount, amount: &MultisigAmount) -> Result<()> {
-    if amount.denomination() != account.denomination() {
+/// The multisig account `request` pays out of, or the refusal that says why it pays out of none.
+///
+/// Decoding a request checks the accounts' own invariants but not what the module's constructor
+/// checks of a payout, so those are checked here: both accounts hold bitcoin, the payment leaves
+/// the account, and it is for something.
+fn account_paid_out_of(request: &BtcTransferRequest) -> Result<MultisigAccount> {
+    let from = request.from();
+    if from.acc_type() != AccountType::BtcDepositor
+        || request.to().acc_type() != AccountType::BtcDepositor
+    {
         return Err(Error::new(
             ErrorCode::InvalidInput,
-            "the amount is not in the account's denomination",
+            "the proposal's payout request is not between bitcoin accounts",
         ));
     }
-    if amount.is_zero() {
+    if *request.to() == from.id() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the proposal's payout request pays the account back into itself",
+        ));
+    }
+    if request.amount() == fedimint_core::Amount::ZERO {
         return Err(Error::new(
             ErrorCode::InvalidInput,
             "cannot pay out nothing",
         ));
     }
-    Ok(())
+    let threshold = u32::try_from(from.threshold()).map_err(|_| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            "the proposal's account has an impossible threshold",
+        )
+    })?;
+    let members = from
+        .pub_keys()
+        .copied()
+        .map(MemberKey::from_upstream)
+        .collect();
+    MultisigAccount::derive(&Policy::new(members, threshold))
 }
 
 /// Refuses a proposal whose proposer is not a member of `account`, or did not sign `digest` with
@@ -395,11 +397,11 @@ fn check_proposer(
 /// The approvals that let `proposal` be executed, one per member, or the refusal that says why
 /// they do not.
 ///
-/// Checked here, once, for every backend: each approval is for this proposal and from a member of
+/// Checked here, before anything is signed or sent: each approval is for this proposal and from a member of
 /// its account, and there are as many distinct members as the threshold asks for. A member's
 /// second approval is dropped rather than refused, since collecting the same one twice is an
-/// ordinary thing for a relay to do. The signatures are the backend's to check, and the
-/// federation's after it.
+/// ordinary thing for a relay to do. The signatures are checked when the payout is signed, and by the
+/// federation after that.
 pub(crate) fn approvals_for(proposal: &Proposal, approvals: &[Approval]) -> Result<Vec<Approval>> {
     let mut by_member = BTreeMap::new();
     for approval in approvals {
@@ -433,6 +435,41 @@ pub(crate) fn approvals_for(proposal: &Proposal, approvals: &[Approval]) -> Resu
     Ok(by_member.into_values().collect())
 }
 
+/// `key`'s signature over `request`, as the stability pool checks a member's approval.
+pub(crate) fn sign_request(key: &Keypair, request: &BtcTransferRequest) -> schnorr::Signature {
+    key.sign_schnorr(Message::from(&TransferRequestId::from(request)))
+}
+
+/// `proposal`'s request signed with `approvals`, each filed under the index of its member's key
+/// in the stability pool's account.
+pub(crate) fn signed_request(
+    proposal: &Proposal,
+    approvals: &[Approval],
+) -> Result<SignedBtcTransferRequest> {
+    let request = proposal.request();
+    let mut signatures = BTreeMap::new();
+    for approval in approvals {
+        let key = approval.member().upstream();
+        let index = request
+            .from()
+            .pub_keys()
+            .position(|member| *member == key)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    "an approval is not from one of the account's members",
+                )
+            })?;
+        signatures.insert(index as u64, approval.signature());
+    }
+    SignedBtcTransferRequest::new(request.clone(), signatures).map_err(|err| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("the approvals do not sign the payout: {err}"),
+        )
+    })
+}
+
 /// A proposal as it is encoded, after the version byte.
 #[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
 struct ProposalWire {
@@ -445,29 +482,20 @@ struct ProposalWire {
 #[derive(Debug, Clone, PartialEq, Eq, Encodable, Decodable)]
 struct ProposalBody {
     federation: config::FederationId,
-    module: String,
-    policy: PolicyWire,
-    amount: AmountWire,
     proposer: PublicKey,
-    payload: Vec<u8>,
+    request: BtcTransferRequest,
 }
 
 impl ProposalBody {
     fn new(
         federation: config::FederationId,
-        module: &str,
-        account: &MultisigAccount,
-        amount: &MultisigAmount,
         proposer: MemberKey,
-        payload: &[u8],
+        request: &BtcTransferRequest,
     ) -> ProposalBody {
         ProposalBody {
             federation,
-            module: module.to_owned(),
-            policy: PolicyWire::from(&account.policy()),
-            amount: AmountWire::from(amount),
             proposer: proposer.upstream(),
-            payload: payload.to_vec(),
+            request: request.clone(),
         }
     }
 
@@ -487,7 +515,7 @@ impl ProposalBody {
 struct ApprovalWire {
     proposal: sha256::Hash,
     member: PublicKey,
-    payload: Vec<u8>,
+    signature: schnorr::Signature,
 }
 
 /// The bytes a printed `what` carries, version byte first, once the prefix is checked.
@@ -504,7 +532,7 @@ fn decode(what: &str, prefix: &str, s: &str) -> Result<Vec<u8>> {
             ErrorCode::InvalidInput,
             format!(
                 "this multisig {what} is in version {version} of its encoding, and this SDK reads \
-                 up to {VERSION}"
+                 version {VERSION}"
             ),
         )),
         None => Err(Error::new(
@@ -531,15 +559,50 @@ where
     })
 }
 
+/// The first test member's proposal to pay `msats` out of the test members' 2-of-3 account to an
+/// account of its own, made on `federation`.
+#[cfg(test)]
+pub(crate) fn test_proposal_on(federation: config::FederationId, msats: u64) -> Proposal {
+    let [pair, ..] = super::account::test_keypairs();
+    let proposer = MemberKey::from_upstream(pair.public_key());
+    let request = test_request(msats);
+    let digest = Proposal::digest_of(federation, proposer, &request);
+    let signature = pair.sign_schnorr(Message::from_digest(digest.to_byte_array()));
+    Proposal::signed(federation, proposer, request, signature).expect("a member's own proposal")
+}
+
+/// [`test_proposal_on`] the dummy federation, which the tests' facade runs on.
+#[cfg(test)]
+pub(crate) fn test_proposal(msats: u64) -> Proposal {
+    test_proposal_on(config::FederationId::dummy(), msats)
+}
+
+/// A request to pay `msats` out of the test members' 2-of-3 account to the first member's own
+/// account.
+#[cfg(test)]
+fn test_request(msats: u64) -> BtcTransferRequest {
+    let [a, b, c] = super::account::test_keys();
+    let account = MultisigAccount::derive(&Policy::new(vec![a, b, c], 2)).expect("a valid policy");
+    let from = account.module_account().expect("a valid account");
+    let to = stability_pool_common::Account::single(a.upstream(), AccountType::BtcDepositor);
+    BtcTransferRequest::new(
+        7,
+        from,
+        fedimint_core::Amount::from_msats(msats),
+        to.id(),
+        vec![],
+        100,
+    )
+    .expect("a valid request")
+}
+
 #[cfg(test)]
 mod tests {
     use fedimint_core::secp256k1::Keypair;
+    use stability_pool_common::Account;
 
     use super::*;
     use crate::multisig::account::{test_keypairs, test_keys};
-    use crate::{Amount, MultisigDenomination};
-
-    const MODULE: &str = "multi_sig_stability_pool";
 
     fn federation() -> config::FederationId {
         config::FederationId::dummy()
@@ -547,124 +610,100 @@ mod tests {
 
     fn account() -> MultisigAccount {
         let [a, b, c] = test_keys();
-        MultisigAccount::derive(&Policy::new(vec![a, b, c], 2, MultisigDenomination::Btc))
-            .expect("a valid policy")
+        MultisigAccount::derive(&Policy::new(vec![a, b, c], 2)).expect("a valid policy")
     }
 
-    fn btc(msats: u64) -> MultisigAmount {
-        MultisigAmount::Btc {
-            amount: Amount::from_msats(msats),
-        }
-    }
-
-    /// `signer`'s signature over the proposal by `proposer` of `msats` out of [`account`].
-    fn signature(signer: &Keypair, proposer: MemberKey, msats: u64) -> schnorr::Signature {
-        let digest = Proposal::digest_of(
-            federation(),
-            MODULE,
-            &account(),
-            &btc(msats),
-            proposer,
-            &[1, 2, 3],
-        );
+    /// `signer`'s signature over the proposal of `request` by `proposer`, on `federation`.
+    fn signature_on(
+        federation: config::FederationId,
+        signer: &Keypair,
+        proposer: MemberKey,
+        request: &BtcTransferRequest,
+    ) -> schnorr::Signature {
+        let digest = Proposal::digest_of(federation, proposer, request);
         signer.sign_schnorr(Message::from_digest(digest.to_byte_array()))
     }
 
-    /// The proposal `pair`'s member makes of `msats` out of [`account`].
-    fn proposal_by(pair: &Keypair, msats: u64) -> Proposal {
-        let proposer = MemberKey::from_upstream(pair.public_key());
-        Proposal::signed(
-            federation(),
-            MODULE.to_owned(),
-            account(),
-            btc(msats),
-            proposer,
-            vec![1, 2, 3],
-            signature(pair, proposer, msats),
-        )
-        .expect("a member's own proposal")
-    }
-
-    fn proposal() -> Proposal {
-        let [a, ..] = test_keypairs();
-        proposal_by(&a, 5_000)
+    /// The printed form of a proposal with `body`, signed with `signature`, whatever they are.
+    fn printed(body: ProposalBody, signature: schnorr::Signature) -> String {
+        let mut encoded = vec![VERSION];
+        encoded.extend(ProposalWire { body, signature }.consensus_encode_to_vec());
+        fedimint_core::base32::encode_prefixed_bytes(PROPOSAL_PREFIX, &encoded)
     }
 
     #[test]
     fn a_proposal_round_trips_through_its_printed_form() {
-        let proposal = proposal();
+        let proposal = test_proposal(5_000);
         let printed = proposal.to_string();
         assert!(printed.starts_with("msproposal"), "{printed}");
 
         let parsed: Proposal = printed.parse().expect("parses");
         assert_eq!(parsed, proposal);
         assert_eq!(parsed.account_id(), account().id());
+        assert_eq!(parsed.policy(), account().policy());
+        assert_eq!(parsed.amount(), Amount::from_msats(5_000));
         assert_eq!(parsed.federation().inner(), federation());
-        assert_eq!(parsed.module(), MODULE);
         assert_eq!(parsed.proposer(), test_keys()[0]);
+        assert_eq!(parsed.request(), &test_request(5_000));
         // Case does not matter, which is what lets a QR code carry it in alphanumeric mode.
         let shouted: Proposal = printed.to_uppercase().parse().expect("parses");
         assert_eq!(shouted, proposal);
     }
 
     #[test]
+    fn the_account_is_the_one_the_request_pays_out_of() {
+        // The same members in another order, and the threshold the module's account has: the
+        // account read off the request is the one the policy describes.
+        let [a, b, c] = test_keys();
+        let listed = MultisigAccount::derive(&Policy::new(vec![c, a, b], 2)).expect("valid");
+        assert_eq!(test_proposal(5_000).account(), listed);
+        let other = MultisigAccount::derive(&Policy::new(vec![a, b, c], 3)).expect("valid");
+        assert_ne!(test_proposal(5_000).account_id(), other.id());
+    }
+
+    #[test]
     fn a_proposal_is_only_made_by_the_member_who_signs_it() {
         let [a, b, _] = test_keypairs();
         let [key_a, ..] = test_keys();
+        let request = test_request(5_000);
 
         // Signed by b in a's name.
         let err = Proposal::signed(
             federation(),
-            MODULE.to_owned(),
-            account(),
-            btc(5_000),
             key_a,
-            vec![1, 2, 3],
-            signature(&b, key_a, 5_000),
+            request.clone(),
+            signature_on(federation(), &b, key_a, &request),
         )
         .expect_err("not a's signature");
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
         // Signed by a, then altered.
-        let altered = Proposal::signed(
+        let err = Proposal::signed(
             federation(),
-            MODULE.to_owned(),
-            account(),
-            btc(6_000),
             key_a,
-            vec![1, 2, 3],
-            signature(&a, key_a, 5_000),
+            test_request(6_000),
+            signature_on(federation(), &a, key_a, &request),
         )
         .expect_err("a signed another amount");
-        assert_eq!(altered.code, ErrorCode::InvalidInput);
+        assert_eq!(err.code, ErrorCode::InvalidInput);
 
         // Signed by a, then moved to another federation.
-        let moved = Proposal::signed(
-            config::FederationId(sha256::Hash::hash(b"another federation")),
-            MODULE.to_owned(),
-            account(),
-            btc(5_000),
+        let elsewhere = config::FederationId(sha256::Hash::hash(b"another federation"));
+        let err = Proposal::signed(
+            elsewhere,
             key_a,
-            vec![1, 2, 3],
-            signature(&a, key_a, 5_000),
+            request.clone(),
+            signature_on(federation(), &a, key_a, &request),
         )
         .expect_err("a signed for another federation");
-        assert_eq!(moved.code, ErrorCode::InvalidInput);
+        assert_eq!(err.code, ErrorCode::InvalidInput);
 
         // The parse checks the same, on whatever arrives over the channel.
-        let mut encoded = proposal().encoded;
-        let ProposalWire { body, .. } =
-            decode_wire::<ProposalWire>("proposal", &encoded).expect("its own encoding decodes");
-        encoded.truncate(1);
-        encoded.extend(
-            ProposalWire {
-                body,
-                signature: signature(&b, key_a, 5_000),
-            }
-            .consensus_encode_to_vec(),
+        let forged = printed(
+            ProposalBody::new(federation(), key_a, &request),
+            signature_on(federation(), &b, key_a, &request),
         );
-        let printed = fedimint_core::base32::encode_prefixed_bytes(PROPOSAL_PREFIX, &encoded);
-        let err = printed.parse::<Proposal>().expect_err("not a's signature");
+        let err = forged.parse::<Proposal>().expect_err("not a's signature");
         assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 
@@ -672,40 +711,69 @@ mod tests {
     fn a_proposal_is_only_made_by_a_member_of_the_account() {
         let outsider = Keypair::from_seckey_slice(SECP256K1, &[7; 32]).expect("a valid key");
         let key = MemberKey::from_upstream(outsider.public_key());
+        let request = test_request(5_000);
         let err = Proposal::signed(
             federation(),
-            MODULE.to_owned(),
-            account(),
-            btc(5_000),
             key,
-            vec![1, 2, 3],
-            signature(&outsider, key, 5_000),
+            request.clone(),
+            signature_on(federation(), &outsider, key, &request),
         )
         .expect_err("not a member");
         assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 
     #[test]
-    fn approvals_carry_over_to_the_same_proposal_signed_again() {
+    fn a_request_that_is_no_payout_out_of_a_multisig_account_is_refused() {
         let [a, ..] = test_keypairs();
+        let [key_a, ..] = test_keys();
+        let from = account().module_account().expect("valid");
+        let own = Account::single(key_a.upstream(), AccountType::BtcDepositor);
+        let seeker = Account::single(key_a.upstream(), AccountType::Seeker);
+        // Built as decoding builds them, without the constructor's checks.
+        let raw = |from: &Account, to: &Account, msats: u64| {
+            let mut bytes = Vec::new();
+            7u64.consensus_encode(&mut bytes).expect("encodes");
+            from.consensus_encode(&mut bytes).expect("encodes");
+            fedimint_core::Amount::from_msats(msats)
+                .consensus_encode(&mut bytes)
+                .expect("encodes");
+            to.id().consensus_encode(&mut bytes).expect("encodes");
+            Vec::<u8>::new()
+                .consensus_encode(&mut bytes)
+                .expect("encodes");
+            100u64.consensus_encode(&mut bytes).expect("encodes");
+            BtcTransferRequest::consensus_decode_whole(&bytes, &ModuleDecoderRegistry::default())
+                .expect("decodes")
+        };
+        // The encoding above is the request's own.
+        assert_eq!(raw(&from, &own, 5_000), test_request(5_000));
+
+        for request in [
+            raw(&from, &from, 5_000),
+            raw(&from, &own, 0),
+            raw(&from, &seeker, 5_000),
+        ] {
+            let body = ProposalBody::new(federation(), key_a, &request);
+            let signature = signature_on(federation(), &a, key_a, &request);
+            let err = printed(body, signature)
+                .parse::<Proposal>()
+                .expect_err("refused");
+            assert_eq!(err.code, ErrorCode::InvalidInput, "{request:?}");
+        }
+    }
+
+    #[test]
+    fn approvals_carry_over_to_the_same_proposal_signed_again() {
+        let [a, b, _] = test_keypairs();
         let [key_a, key_b, _] = test_keys();
-        let digest = Proposal::digest_of(
-            federation(),
-            MODULE,
-            &account(),
-            &btc(5_000),
-            key_a,
-            &[1, 2, 3],
-        );
+        let request = test_request(5_000);
+        let digest = Proposal::digest_of(federation(), key_a, &request);
         let message = Message::from_digest(digest.to_byte_array());
         let signed_with = |aux| {
             Proposal::signed(
                 federation(),
-                MODULE.to_owned(),
-                account(),
-                btc(5_000),
                 key_a,
-                vec![1, 2, 3],
+                request.clone(),
                 SECP256K1.sign_schnorr_with_aux_rand(&message, &a, &aux),
             )
             .expect("a's own proposal")
@@ -714,7 +782,7 @@ mod tests {
         let again = signed_with([2; 32]);
         assert_ne!(first.to_string(), again.to_string());
 
-        let approval = Approval::new(first.digest(), key_b, vec![9]);
+        let approval = Approval::new(first.digest(), key_b, sign_request(&b, first.request()));
         assert!(approval.approves(&again));
     }
 
@@ -722,18 +790,23 @@ mod tests {
     fn an_approval_round_trips_and_knows_its_proposal() {
         let [a, ..] = test_keypairs();
         let [key_a, ..] = test_keys();
-        let proposal = proposal();
-        let approval = Approval::new(proposal.digest(), key_a, vec![9; 64]);
+        let proposal = test_proposal(5_000);
+        let approval = Approval::new(
+            proposal.digest(),
+            key_a,
+            sign_request(&a, proposal.request()),
+        );
         let parsed: Approval = approval.to_string().parse().expect("parses");
         assert_eq!(parsed, approval);
         assert_eq!(parsed.member(), key_a);
+        assert_eq!(parsed.signature(), approval.signature());
         assert!(parsed.approves(&proposal));
-        assert!(!parsed.approves(&proposal_by(&a, 6_000)));
+        assert!(!parsed.approves(&test_proposal(6_000)));
     }
 
     #[test]
     fn what_is_not_a_proposal_is_refused() {
-        let printed = proposal().to_string();
+        let printed = test_proposal(5_000).to_string();
         let padded = format!("{printed}00");
         for bad in [
             "",
@@ -748,38 +821,43 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_encoding_is_refused_by_name() {
-        let mut encoded = proposal().encoded;
-        encoded[0] = VERSION + 1;
-        let printed = fedimint_core::base32::encode_prefixed_bytes(PROPOSAL_PREFIX, &encoded);
-        let err = printed.parse::<Proposal>().expect_err("refused");
-        assert_eq!(err.code, ErrorCode::InvalidInput);
-        assert!(err.message.contains("version 2"), "{}", err.message);
-    }
-
-    #[cfg(feature = "extension-api")]
-    #[test]
-    fn an_extension_builds_the_same_approvals_the_facade_does() {
-        let [a, ..] = test_keys();
-        let proposal = proposal();
-        assert_eq!(
-            Approval::from_parts(&proposal, a, vec![9]),
-            Approval::new(proposal.digest(), a, vec![9])
-        );
+    fn another_version_of_the_encoding_is_refused_by_name() {
+        for version in [1, VERSION + 1] {
+            let mut encoded = test_proposal(5_000).encoded;
+            encoded[0] = version;
+            let printed = fedimint_core::base32::encode_prefixed_bytes(PROPOSAL_PREFIX, &encoded);
+            let err = printed.parse::<Proposal>().expect_err("refused");
+            assert_eq!(err.code, ErrorCode::InvalidInput);
+            assert!(
+                err.message.contains(&format!("version {version}")),
+                "{}",
+                err.message
+            );
+        }
     }
 
     #[test]
     fn execution_needs_threshold_many_distinct_members_of_the_account() {
+        let [pair_a, pair_b, _] = test_keypairs();
         let [a, b, _] = test_keys();
-        let proposal = proposal();
-        let approval = |member| Approval::new(proposal.digest(), member, vec![]);
+        let proposal = test_proposal(5_000);
+        let approval = |pair: &Keypair| {
+            Approval::new(
+                proposal.digest(),
+                MemberKey::from_upstream(pair.public_key()),
+                sign_request(pair, proposal.request()),
+            )
+        };
 
-        let err = approvals_for(&proposal, &[approval(a), approval(a)])
+        let err = approvals_for(&proposal, &[approval(&pair_a), approval(&pair_a)])
             .expect_err("one member twice is one approval");
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
-        let kept = approvals_for(&proposal, &[approval(b), approval(a), approval(a)])
-            .expect("two members meet a threshold of two");
+        let kept = approvals_for(
+            &proposal,
+            &[approval(&pair_b), approval(&pair_a), approval(&pair_a)],
+        )
+        .expect("two members meet a threshold of two");
         assert_eq!(
             kept.iter().map(Approval::member).collect::<Vec<_>>(),
             vec![a, b]
@@ -788,29 +866,64 @@ mod tests {
 
     #[test]
     fn execution_refuses_approvals_that_are_not_for_it() {
+        let [pair_a, pair_b, _] = test_keypairs();
         let [a, b, _] = test_keys();
-        let proposal = proposal();
+        let proposal = test_proposal(5_000);
+        let signature = |pair: &Keypair| sign_request(pair, proposal.request());
 
-        let elsewhere = Approval::new(sha256::Hash::hash(b"another proposal"), a, vec![]);
-        let err = approvals_for(
-            &proposal,
-            &[elsewhere, Approval::new(proposal.digest(), b, vec![])],
-        )
-        .expect_err("refused");
-        assert_eq!(err.code, ErrorCode::InvalidInput);
-
-        let outsider: MemberKey =
-            "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
-                .parse()
-                .expect("a valid key");
+        let elsewhere = Approval::new(
+            sha256::Hash::hash(b"another proposal"),
+            a,
+            signature(&pair_a),
+        );
         let err = approvals_for(
             &proposal,
             &[
-                Approval::new(proposal.digest(), outsider, vec![]),
-                Approval::new(proposal.digest(), a, vec![]),
+                elsewhere,
+                Approval::new(proposal.digest(), b, signature(&pair_b)),
             ],
         )
         .expect_err("refused");
         assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let outsider = Keypair::from_seckey_slice(SECP256K1, &[7; 32]).expect("a valid key");
+        let err = approvals_for(
+            &proposal,
+            &[
+                Approval::new(
+                    proposal.digest(),
+                    MemberKey::from_upstream(outsider.public_key()),
+                    signature(&outsider),
+                ),
+                Approval::new(proposal.digest(), a, signature(&pair_a)),
+            ],
+        )
+        .expect_err("refused");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn approvals_are_filed_under_the_modules_key_order() {
+        // The members as a policy lists them need not be the module's order; each signature has
+        // to land under its key's index there, or the federation would refuse the payout.
+        let [pair_a, pair_b, pair_c] = test_keypairs();
+        let proposal = test_proposal(5_000);
+        let approval = |pair: &Keypair| {
+            Approval::new(
+                proposal.digest(),
+                MemberKey::from_upstream(pair.public_key()),
+                sign_request(pair, proposal.request()),
+            )
+        };
+        for approvals in [
+            vec![approval(&pair_c), approval(&pair_b)],
+            vec![approval(&pair_a), approval(&pair_c)],
+        ] {
+            let signed = signed_request(&proposal, &approvals).expect("the approvals verify");
+            signed
+                .validate_signatures()
+                .expect("as the module checks them");
+            assert_eq!(signed.signatures().len(), 2);
+        }
     }
 }

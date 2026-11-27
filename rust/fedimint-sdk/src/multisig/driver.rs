@@ -1,7 +1,8 @@
 //! How the three multisig operation kinds are observed, and how their details are persisted.
 //!
-//! One driver for all three: the backend owns each kind's stream of states, and everything else,
-//! from the persisted final state to the details record, has the same shape for every kind.
+//! One driver for all three: the stability pool module owns each kind's stream of states, and
+//! everything else, from the persisted final state to the details record, has the same shape for
+//! every kind.
 
 use std::any::Any;
 use std::marker::PhantomData;
@@ -10,18 +11,22 @@ use fedimint_client::Client;
 use fedimint_core::core::OperationId as UpstreamOperationId;
 use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::{BoxFuture, BoxStream};
+use futures::StreamExt as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use stability_pool_client::{
+    StabilityPoolDepositOperationState, StabilityPoolTransferOperationState,
+    StabilityPoolWithdrawalOperationState,
+};
 
 use super::{
-    MultisigBackend, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
-    MultisigSweepState, MultisigTransferDetails, MultisigTransferState,
+    MODULE_KIND, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, chain, internal, module,
 };
 use crate::db::OperationRecord;
 use crate::federation::FederationInner;
-use crate::multisig::account::AmountWire;
 use crate::operation::{Driver, OperationState, first_state, settled, until_final};
-use crate::{Amount, Error, ErrorCode, MultisigAmount, Result, Timestamp};
+use crate::{Amount, Error, ErrorCode, Result, Timestamp};
 
 /// Observes [`MultisigDepositState`].
 pub(crate) type MultisigDepositDriver = MultisigDriver<MultisigDepositState>;
@@ -50,12 +55,12 @@ pub(crate) trait MultisigKind: OperationState + PartialEq {
     /// The details record, as it is persisted.
     type Wire: Serialize + DeserializeOwned + TryInto<Self::Details, Error = Error>;
 
-    /// The backend's stream of this kind's states.
-    fn updates<'a>(
-        backend: &'a dyn MultisigBackend,
-        client: &'a Client,
+    /// The module's stream of this kind's states: the current one first, and then every change,
+    /// ending after the first final one. It holds no clone of `client`.
+    fn updates(
+        client: &Client,
         id: UpstreamOperationId,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<Self>>>>;
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>>;
 
     /// The state as it is persisted once final.
     fn encode(&self) -> String;
@@ -104,30 +109,22 @@ where
                 return Ok(Box::pin(futures::stream::iter(vec![Ok(state)]))
                     as BoxStream<'static, Result<S>>);
             }
-            let backend = federation.multisig_backend().ok_or_else(|| {
-                Error::new(
-                    ErrorCode::NotSupported,
-                    "this build cannot follow multisig operations on this federation",
-                )
-            })?;
-            // An operation made through a backend on another kind of module, by a build that
-            // carried that one, means nothing to the backend in place.
-            let module = backend.module_kind();
-            if record.module != module {
+            // An operation made by a build whose multisig ran on another module, as a build with
+            // the extension API could have, means nothing to the stability pool.
+            if record.module != MODULE_KIND {
                 return Err(Error::new(
                     ErrorCode::NotSupported,
                     format!(
                         "this operation was made with the {} module, and this build's multisig \
-                         runs on {module}",
-                        record.module
+                         runs on {}",
+                        record.module, MODULE_KIND
                     ),
                 ));
             }
             let client = federation.client(false).await?;
-            // The backend's stream holds no client (see `MultisigBackend`), so the guard goes
-            // with this call.
-            let stream = S::updates(backend.as_ref(), &client, id).await?;
-            // The one place this build gets a live state from the backend, `current` included,
+            // The module's stream holds no client, so the guard goes with this call.
+            let stream = S::updates(&client, id).await?;
+            // The one place this build gets a live state from the module, `current` included,
             // so every state it persists as final has completed the details first. Keep it so.
             Ok(settled(until_final(completing_details(
                 stream,
@@ -236,12 +233,26 @@ impl MultisigKind for MultisigDepositState {
     type Details = MultisigDepositDetails;
     type Wire = DepositDetailsWire;
 
-    fn updates<'a>(
-        backend: &'a dyn MultisigBackend,
-        client: &'a Client,
+    fn updates(
+        client: &Client,
         id: UpstreamOperationId,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<Self>>>> {
-        backend.deposit_updates(client, id)
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
+        Box::pin(async move {
+            let updates = module(client)?
+                .subscribe_deposit_operation(id)
+                .await
+                .map_err(|err| {
+                    internal(format!(
+                        "cannot follow the deposit: {}",
+                        chain(err.as_ref())
+                    ))
+                })?;
+            // `Box::pin` rather than `boxed`: a stream is not `Send` on wasm.
+            Ok(
+                Box::pin(updates.into_stream().map(|state| Ok(deposit_state(state))))
+                    as BoxStream<'static, Result<Self>>,
+            )
+        })
     }
 
     fn encode(&self) -> String {
@@ -272,12 +283,22 @@ impl MultisigKind for MultisigTransferState {
     type Details = MultisigTransferDetails;
     type Wire = TransferDetailsWire;
 
-    fn updates<'a>(
-        backend: &'a dyn MultisigBackend,
-        client: &'a Client,
+    fn updates(
+        client: &Client,
         id: UpstreamOperationId,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<Self>>>> {
-        backend.transfer_updates(client, id)
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
+        Box::pin(async move {
+            let updates = module(client)?
+                .subscribe_transfer_operation(id)
+                .await
+                .map_err(|err| {
+                    internal(format!("cannot follow the payout: {}", chain(err.as_ref())))
+                })?;
+            Ok(
+                Box::pin(updates.into_stream().map(|state| Ok(transfer_state(state))))
+                    as BoxStream<'static, Result<Self>>,
+            )
+        })
     }
 
     fn encode(&self) -> String {
@@ -306,12 +327,15 @@ impl MultisigKind for MultisigSweepState {
     type Details = MultisigSweepDetails;
     type Wire = SweepDetailsWire;
 
-    fn updates<'a>(
-        backend: &'a dyn MultisigBackend,
-        client: &'a Client,
+    fn updates(
+        client: &Client,
         id: UpstreamOperationId,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<Self>>>> {
-        backend.sweep_updates(client, id)
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<Self>>>> {
+        Box::pin(async move {
+            let updates = withdrawal_updates(client, id).await?;
+            Ok(Box::pin(updates.map(|state| Ok(sweep_state(state))))
+                as BoxStream<'static, Result<Self>>)
+        })
     }
 
     fn encode(&self) -> String {
@@ -364,6 +388,83 @@ impl MultisigKind for MultisigSweepState {
     }
 }
 
+/// The states of the sweep `id`: a withdrawal that unlocks first, or one of idle balance only.
+async fn withdrawal_updates(
+    client: &Client,
+    id: UpstreamOperationId,
+) -> Result<BoxStream<'static, StabilityPoolWithdrawalOperationState>> {
+    let module = module(client)?;
+    let updates = match module.subscribe_withdraw(id).await {
+        Ok(updates) => updates,
+        Err(_) => module
+            .subscribe_withdraw_idle_balance(id)
+            .await
+            .map_err(|err| internal(format!("cannot follow the sweep: {}", chain(err.as_ref()))))?,
+    };
+    Ok(updates.into_stream())
+}
+
+/// Waits for the sweep `id` to end, however it ends, or the refusal that says why that cannot be
+/// known.
+pub(super) async fn sweep_finished(client: &Client, id: UpstreamOperationId) -> Result<()> {
+    let mut updates = withdrawal_updates(client, id).await?;
+    while let Some(state) = updates.next().await {
+        if matches!(
+            sweep_state(state),
+            MultisigSweepState::Done { .. } | MultisigSweepState::Failed { .. }
+        ) {
+            return Ok(());
+        }
+    }
+    Err(internal(
+        "the previous sweep on this federation stopped reporting before it ended",
+    ))
+}
+
+fn deposit_state(state: StabilityPoolDepositOperationState) -> MultisigDepositState {
+    match state {
+        StabilityPoolDepositOperationState::Initiated => MultisigDepositState::Created,
+        StabilityPoolDepositOperationState::TxAccepted => MultisigDepositState::Accepted,
+        StabilityPoolDepositOperationState::Success => MultisigDepositState::Done,
+        StabilityPoolDepositOperationState::TxRejected(reason)
+        | StabilityPoolDepositOperationState::PrimaryOutputError(reason) => {
+            MultisigDepositState::Failed { reason }
+        }
+    }
+}
+
+fn transfer_state(state: StabilityPoolTransferOperationState) -> MultisigTransferState {
+    match state {
+        StabilityPoolTransferOperationState::Initiated => MultisigTransferState::Created,
+        StabilityPoolTransferOperationState::Success => MultisigTransferState::Done,
+        StabilityPoolTransferOperationState::TxRejected(reason) => {
+            MultisigTransferState::Failed { reason }
+        }
+    }
+}
+
+fn sweep_state(state: StabilityPoolWithdrawalOperationState) -> MultisigSweepState {
+    match state {
+        StabilityPoolWithdrawalOperationState::Initiated
+        | StabilityPoolWithdrawalOperationState::UnlockTxAccepted
+        | StabilityPoolWithdrawalOperationState::WithdrawalInitiated(_) => {
+            MultisigSweepState::Created
+        }
+        StabilityPoolWithdrawalOperationState::WithdrawalTxAccepted(_) => {
+            MultisigSweepState::Accepted
+        }
+        StabilityPoolWithdrawalOperationState::Success(amount) => MultisigSweepState::Done {
+            amount: Amount::from_msats(amount.msats),
+        },
+        StabilityPoolWithdrawalOperationState::UnlockTxRejected(reason)
+        | StabilityPoolWithdrawalOperationState::UnlockProcessingError(reason)
+        | StabilityPoolWithdrawalOperationState::WithdrawalTxRejected(reason)
+        | StabilityPoolWithdrawalOperationState::PrimaryOutputError(reason) => {
+            MultisigSweepState::Failed { reason }
+        }
+    }
+}
+
 /// [`MultisigDepositDetails`] as it is persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DepositDetailsWire {
@@ -398,22 +499,15 @@ impl TryFrom<DepositDetailsWire> for MultisigDepositDetails {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TransferDetailsWire {
     account_id: String,
-    denomination: u8,
-    /// Millisatoshi for bitcoin, the currency's smallest unit for fiat.
-    value: u64,
-    /// Empty for bitcoin.
-    currency: String,
+    amount_msats: u64,
     created_at_epoch_ms: u64,
 }
 
 impl From<&MultisigTransferDetails> for TransferDetailsWire {
     fn from(details: &MultisigTransferDetails) -> Self {
-        let amount = AmountWire::from(&details.amount);
         TransferDetailsWire {
             account_id: details.account_id.to_string(),
-            denomination: amount.denomination,
-            value: amount.value,
-            currency: amount.currency,
+            amount_msats: details.amount.msats(),
             created_at_epoch_ms: details.created_at.epoch_millis(),
         }
     }
@@ -425,11 +519,7 @@ impl TryFrom<TransferDetailsWire> for MultisigTransferDetails {
     fn try_from(wire: TransferDetailsWire) -> Result<Self> {
         Ok(MultisigTransferDetails {
             account_id: wire.account_id.parse()?,
-            amount: MultisigAmount::try_from(AmountWire {
-                denomination: wire.denomination,
-                value: wire.value,
-                currency: wire.currency,
-            })?,
+            amount: Amount::from_msats(wire.amount_msats),
             created_at: Timestamp::from_epoch_millis(wire.created_at_epoch_ms),
         })
     }
@@ -584,11 +674,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_persisted_final_state_needs_no_backend() {
+    async fn a_persisted_final_state_needs_no_client() {
         use crate::db::{federation_namespace, in_memory_root};
 
-        // A build without the backend, or a federation that is closed, still reports how an
-        // operation ended once that is on its record.
+        // A federation that is closed still reports how an operation ended once that is on its
+        // record.
         let federation =
             FederationInner::detached(federation_namespace(&in_memory_root(), [1u8; 32]), false);
         let record = OperationRecord {
@@ -626,37 +716,15 @@ mod tests {
             .current(&federation, UpstreamOperationId([1u8; 32]), &pending)
             .await
             .expect_err("nothing can follow it");
-        assert_eq!(err.code, ErrorCode::NotSupported);
+        assert_eq!(err.code, ErrorCode::FederationClosed);
     }
 
-    #[cfg(feature = "extension-api")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_operation_another_kind_of_backend_made_is_not_followed() {
-        use std::sync::Arc;
-
+    async fn an_operation_made_on_another_module_is_not_followed() {
         use crate::db::{federation_namespace, in_memory_root};
-        use crate::multisig::UnreachableBackend;
 
-        struct Backing;
-
-        impl crate::Extension for Backing {
-            fn multisig(&self) -> Option<Arc<dyn MultisigBackend>> {
-                Some(Arc::new(UnreachableBackend))
-            }
-        }
-
-        let sdk = crate::Sdk::builder()
-            .storage(crate::Storage::in_memory())
-            .extension(Arc::new(Backing))
-            .build()
-            .await
-            .expect("an instance opens");
-        let federation = FederationInner::detached_in(
-            Arc::downgrade(sdk.inner()),
-            federation_namespace(&in_memory_root(), [1u8; 32]),
-            true,
-        );
-        federation.set_module_kinds(&[UnreachableBackend::MODULE.to_owned()]);
+        let federation =
+            FederationInner::detached(federation_namespace(&in_memory_root(), [1u8; 32]), true);
         let pending = |module: &str| OperationRecord {
             schema_version: crate::operation::READABLE_STATE_SCHEMA,
             kind: crate::operation::kinds::MULTISIG_SWEEP.to_owned(),
@@ -676,17 +744,17 @@ mod tests {
                 &pending("another_multisig"),
             )
             .await
-            .expect_err("not this backend's operation");
+            .expect_err("not the stability pool's operation");
         assert_eq!(err.code, ErrorCode::NotSupported);
         assert!(err.message.contains("another_multisig"), "{}", err.message);
 
-        // An operation of the backend's own module gets past that, to the client this federation
-        // does not have.
+        // An operation of the stability pool gets past that, to the client this federation does
+        // not have.
         let err = driver
             .current(
                 &federation,
                 UpstreamOperationId([1u8; 32]),
-                &pending(UnreachableBackend::MODULE),
+                &pending(MODULE_KIND),
             )
             .await
             .expect_err("no client to follow it with");
@@ -698,10 +766,7 @@ mod tests {
         let account_id = "aa".repeat(32).parse().expect("a valid id");
         let transfer = MultisigTransferDetails {
             account_id,
-            amount: MultisigAmount::Fiat {
-                minor_units: 1_250,
-                currency: "EUR".to_owned(),
-            },
+            amount: Amount::from_msats(1_250_000),
             created_at: Timestamp::from_epoch_millis(1_700_000_000_000),
         };
         let json = serde_json::to_string(&TransferDetailsWire::from(&transfer)).expect("json");

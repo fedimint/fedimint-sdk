@@ -5,9 +5,8 @@
 use crate::activity::{Accounted, Bucket, Figures, Row, detailed};
 use crate::operation::Driver;
 use crate::{
-    ActivityStatus, Direction, MultisigAmount, MultisigDepositDetails, MultisigDepositState,
-    MultisigSweepDetails, MultisigSweepState, MultisigTransferDetails, MultisigTransferState,
-    Result,
+    ActivityStatus, Direction, MultisigDepositDetails, MultisigDepositState, MultisigSweepDetails,
+    MultisigSweepState, MultisigTransferDetails, MultisigTransferState, Result,
 };
 
 impl Bucket for MultisigDepositState {
@@ -56,14 +55,10 @@ impl Accounted for MultisigDepositDetails {
 
 impl Accounted for MultisigTransferDetails {
     /// No direction and no fee: the payment moves value between two accounts of the federation,
-    /// neither of them this wallet's balance. A fiat amount has no [`Amount`](crate::Amount) to
-    /// report.
+    /// neither of them this wallet's balance.
     fn figures(&self) -> Figures {
         Figures {
-            amount: match &self.amount {
-                MultisigAmount::Btc { amount } => Some(*amount),
-                MultisigAmount::Fiat { .. } => None,
-            },
+            amount: Some(self.amount),
             fee: None,
             direction: None,
         }
