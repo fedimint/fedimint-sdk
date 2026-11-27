@@ -12,8 +12,7 @@ use crate::{
 /// of an origin-scoped store (1 to 64 characters of letters, digits, `-`, `_` or `.`).
 ///
 /// Pass a `mnemonic` ([`Mnemonic::from_words`] / [`Mnemonic::generate`]) to establish that seed.
-/// Pass `None` to use the seed the storage already holds, or, over storage proven empty, to
-/// generate and persist a fresh one. The failure modes are exactly those of
+/// Pass `None` to use the stored seed or open a seedless session over empty storage. The failure modes are exactly those of
 /// [`SdkBuilder::build`](crate::SdkBuilder::build).
 ///
 /// The flattened form of [`SdkBuilder`](crate::SdkBuilder), which cannot itself cross the FFI: a

@@ -19,6 +19,11 @@
           "slug": "installation",
           "title": "Installation",
           "description": "Install the two npm packages, link them on iOS and Android, and see the SDK answer on a device."
+        },
+        {
+          "slug": "migration",
+          "title": "Migration: explicit wallet setup",
+          "description": "Opening storage no longer creates a wallet seed automatically."
         }
       ]
     },

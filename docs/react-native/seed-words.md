@@ -27,6 +27,11 @@ openSdk({ dataDir })                    one session, one seed
   session.close()                       when the app is done
 ```
 
+::: info API version
+This guide's default flow targets released `0.1.0`. Before exporting words with the unreleased API, offer Create or Restore and save the chosen mnemonic on the open session. Export before setup throws `MnemonicRequired`; do not show an empty backup screen.
+See [explicit wallet setup](./migration.md) for the version boundary and setup flow.
+:::
+
 ### 01 · Open the wallet once <Badge type="info" text="JavaScript" /> {#step-01}
 
 A wallet folder can be open once at a time. The SDK holds the folder, and a second `openSdk` on it, from the same app or another one, fails at once with `StorageInUse`. So open it in one place, keep the promise, and hand the same session to every screen.

@@ -25,19 +25,19 @@ export const useWallet = () => {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      const exists = await walletExists()
-      if (cancelled) return
-      if (!exists) {
-        setState({ exists: false, joined: false })
-        return
-      }
       try {
+        const exists = await walletExists()
+        if (cancelled) return
+        if (!exists) {
+          setState({ exists: false, joined: false })
+          return
+        }
         await open()
         if (!cancelled) {
           setState({ exists: true, joined: federation() !== undefined })
         }
       } catch {
-        if (!cancelled) setState({ exists: true, joined: false })
+        if (!cancelled) setState({ exists: current()?.sdk.hasMnemonic() ?? false, joined: federation() !== undefined })
       }
     }
     load()
@@ -49,7 +49,7 @@ export const useWallet = () => {
   useEffect(
     () =>
       onChange(() => {
-        setState({ exists: current() !== undefined, joined: federation() !== undefined })
+        setState({ exists: current()?.sdk.hasMnemonic() ?? false, joined: federation() !== undefined })
         setVersion((v) => v + 1)
       }),
     [],

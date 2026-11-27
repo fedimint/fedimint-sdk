@@ -97,7 +97,7 @@ final class FedimintSdkTests: XCTestCase {
         var sdk: Sdk? = try await withTimeout {
             try await createFedimintSdk(dataDir: dataDir.path, mnemonic: mnemonic)
         }
-        XCTAssertEqual(sdk?.exportMnemonic().words(), expected)
+        XCTAssertEqual(try sdk?.exportMnemonic().words(), expected)
         XCTAssertEqual(sdk?.federations().count, 0, "nothing has been joined yet")
 
         try await sdk?.shutdown()
@@ -122,7 +122,9 @@ final class FedimintSdkTests: XCTestCase {
         var first: Sdk? = try await withTimeout {
             try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
         }
-        let seed = first?.exportMnemonic().words()
+        XCTAssertEqual(first?.hasMnemonic(), false)
+        try await first?.setMnemonic(mnemonic: Mnemonic.generate())
+        let seed = try first?.exportMnemonic().words()
         XCTAssertEqual(seed?.count, 12)
         try await first?.shutdown()
         first = nil
@@ -130,7 +132,7 @@ final class FedimintSdkTests: XCTestCase {
         var second: Sdk? = try await withTimeout {
             try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
         }
-        XCTAssertEqual(second?.exportMnemonic().words(), seed)
+        XCTAssertEqual(try second?.exportMnemonic().words(), seed)
         try await second?.shutdown()
         second = nil
     }

@@ -21,7 +21,7 @@ Joins a `federation` again and restores its funds from the seed.
 
 **Returns.** `RecoveryHandle`. An object with the `federation` handle and an operation that reports the progress of the recovery.
 
-**Throws.** [`AlreadyJoined`](./errors.md#code-alreadyjoined), [`FederationUnreachable`](./errors.md#code-federationunreachable), [`Timeout`](./errors.md#code-timeout), [`UnsupportedFederation`](./errors.md#code-unsupportedfederation), [`Storage`](./errors.md#code-storage), [`FederationClosed`](./errors.md#code-federationclosed). Each code has the caveat that the wallet may already have joined.
+**Throws.** In the unreleased API, [`MnemonicRequired`](./errors.md#code-mnemonicrequired) before setup; see [migration](./migration.md). Other errors: [`AlreadyJoined`](./errors.md#code-alreadyjoined), [`FederationUnreachable`](./errors.md#code-federationunreachable), [`Timeout`](./errors.md#code-timeout), [`UnsupportedFederation`](./errors.md#code-unsupportedfederation), [`Storage`](./errors.md#code-storage), [`FederationClosed`](./errors.md#code-federationclosed). Each code has the caveat that the wallet may already have joined.
 
 **Example**
 {#example}

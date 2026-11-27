@@ -74,12 +74,13 @@ die() {
   exit 1
 }
 
+# These scripted regtest runs explicitly choose Create; interactive runs ask the user.
 # Runs <name>'s cargo binary to completion in the foreground with the remaining arguments,
 # its combined output tee'd to <log> and to the terminal.
 run_example() {
   local name="$1" log="$2"
   shift 2
-  cargo run --locked --example "$name" -- "$@" 2>&1 | tee "$log" || die "$name"
+  FM_SDK_EXAMPLE_SETUP=create cargo run --locked --example "$name" -- "$@" 2>&1 | tee "$log" || die "$name"
 }
 
 # Runs <name>'s cargo binary in the background with the remaining arguments, its combined
@@ -92,7 +93,7 @@ run_example() {
 start_example() {
   local name="$1" log="$2"
   shift 2
-  cargo run --locked --example "$name" -- "$@" >"$log" 2>&1 &
+  FM_SDK_EXAMPLE_SETUP=create cargo run --locked --example "$name" -- "$@" >"$log" 2>&1 &
   pid=$!
 }
 

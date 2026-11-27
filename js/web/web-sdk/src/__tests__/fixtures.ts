@@ -116,6 +116,7 @@ export const sdkTest = base.extend<Fixtures>({
   session: async ({ storage }, use) => {
     const session = await openSdk({ storage })
     try {
+      await session.sdk.setMnemonic(await session.Mnemonic.generate())
       await use(session)
     } finally {
       await session.close()
@@ -142,6 +143,9 @@ export async function withSession<T>(
   const storage = options.storage ?? uniqueStorage(label)
   const session = await openSdk({ storage, mnemonic: options.mnemonic })
   try {
+    if (!(await session.sdk.hasMnemonic())) {
+      await session.sdk.setMnemonic(await session.Mnemonic.generate())
+    }
     return await run(session, storage)
   } finally {
     await session.close()

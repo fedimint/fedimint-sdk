@@ -176,6 +176,10 @@ async fn joins_previews_and_reads_zero_balance() {
         "a preview joins nothing"
     );
 
+    assert!(!sdk.has_mnemonic());
+    sdk.set_mnemonic(&fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
+        .await
+        .expect("the wallet initializes");
     let federation = sdk.join(&invite).await.expect("the federation joins");
     assert_eq!(federation.id(), preview.id);
     assert_eq!(federation.network(), preview.network);
@@ -215,12 +219,13 @@ async fn stored_federation_survives_restart() {
     let (id, words) = {
         let sdk = Sdk::builder()
             .storage(Storage::at(&path).expect("a valid path"))
+            .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
             .build()
             .await
             .expect("an instance opens");
         let federation = sdk.join(&invite).await.expect("the federation joins");
         let id = federation.id();
-        let words = sdk.export_mnemonic().words();
+        let words = sdk.export_mnemonic().unwrap().words();
         sdk.shutdown().await.expect("the instance shuts down");
         // Dropped before the second build: a location stays claimed until the store on it is
         // closed, and the store is closed by the last handle over it going, not by `shutdown`.
@@ -235,7 +240,7 @@ async fn stored_federation_survives_restart() {
         .await
         .expect("the instance reopens");
     assert_eq!(
-        reopened.export_mnemonic().words(),
+        reopened.export_mnemonic().unwrap().words(),
         words,
         "the seed is the same one"
     );
@@ -275,6 +280,7 @@ async fn reopening_replaces_the_handle_and_leaves_the_old_one_closed() {
     let path = storage.path().to_str().expect("a utf-8 path");
     let sdk = Sdk::builder()
         .storage(Storage::at(path).expect("a valid path"))
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an instance opens");
@@ -320,6 +326,7 @@ async fn mixed_generation_federation_is_rejected() {
 
     let sdk = Sdk::builder()
         .storage(Storage::in_memory())
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an in-memory instance opens");
@@ -369,6 +376,7 @@ async fn joined(devimint: &Devimint) -> (tempfile::TempDir, String, Sdk, fedimin
     let path = storage.path().to_str().expect("a utf-8 path").to_owned();
     let sdk = Sdk::builder()
         .storage(Storage::at(&path).expect("a valid path"))
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an instance opens on a fresh directory");
@@ -998,6 +1006,7 @@ async fn recovery_restores_a_wallet_with_history() {
     let path_a = storage_a.path().to_str().expect("a utf-8 path");
     let sdk_a = Sdk::builder()
         .storage(Storage::at(path_a).expect("a valid path"))
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an instance opens on a fresh directory");
@@ -1007,7 +1016,7 @@ async fn recovery_restores_a_wallet_with_history() {
         .lightning()
         .expect("devimint runs a lightning module");
     let funded = fund(&lightning_a, 200_000).await;
-    let mnemonic = sdk_a.export_mnemonic();
+    let mnemonic = sdk_a.export_mnemonic().unwrap();
 
     assert_eq!(
         sdk_a.recovery_status(&id).await.expect("readable"),
@@ -1463,6 +1472,7 @@ async fn extensions_follow_the_client_through_a_recovery() {
             backend: std::sync::Arc::new(MintBackend::of(&devimint.shape)),
             offered: offered_a.clone(),
         }))
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an instance opens on a fresh directory");
@@ -1477,7 +1487,7 @@ async fn extensions_follow_the_client_through_a_recovery() {
         vec![true],
         "multisig is offered by the time the joined client is announced"
     );
-    let mnemonic = sdk_a.export_mnemonic();
+    let mnemonic = sdk_a.export_mnemonic().unwrap();
 
     // The application lets go of every handle without shutting down. The work still holds the
     // client, yet it ends, and the location opens again.
@@ -1582,6 +1592,7 @@ async fn recovery_locks_the_federation_while_it_runs() {
     let path_a = storage_a.path().to_str().expect("a utf-8 path");
     let sdk_a = Sdk::builder()
         .storage(Storage::at(path_a).expect("a valid path"))
+        .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
         .build()
         .await
         .expect("an instance opens on a fresh directory");
@@ -1591,7 +1602,7 @@ async fn recovery_locks_the_federation_while_it_runs() {
         .lightning()
         .expect("devimint runs a lightning module");
     let funded = fund(&lightning_a, 200_000).await;
-    let mnemonic = sdk_a.export_mnemonic();
+    let mnemonic = sdk_a.export_mnemonic().unwrap();
     sdk_a.shutdown().await.expect("the instance shuts down");
     drop(lightning_a);
     drop(federation_a);
@@ -1710,6 +1721,7 @@ async fn federation_metadata_persists_across_restart() {
     let (id, config_meta, consensus_meta, merged) = {
         let sdk = Sdk::builder()
             .storage(Storage::at(&path).expect("a valid path"))
+            .mnemonic(fedimint_sdk::Mnemonic::generate().expect("a test mnemonic"))
             .build()
             .await
             .expect("an instance opens");

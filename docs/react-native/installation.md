@@ -20,6 +20,12 @@ Use a development build instead. Step 03 shows the Expo path: a config plugin, `
 Everything else in Expo still works. The router, the asset pipeline, the config plugins and over the air updates are all unaffected. You give up one client app, not the framework.
 :::
 
+::: info API version
+This guide targets the released `0.1.0` package pair, which creates a seed on first open.
+The source-build API is changing; see [explicit wallet setup](./migration.md) before using
+`hasMnemonic` or `setMnemonic`. Those methods are not in the published `0.1.0` pair.
+:::
+
 ## Two packages, and why {#two-packages}
 
 `@fedimint/react-native` is the package you import. It adds `openSdk`, which opens the SDK over a folder, and two React hooks, `useBalance` and `useOperation`. It also re-exports everything from the bindings, so every import in this guide comes from this one package.

@@ -1,5 +1,10 @@
 # @fedimint/web-sdk
 
+> The explicit setup methods below are unreleased. Use matching source-built packages;
+> published `0.1.0` does not provide `hasMnemonic` or `setMnemonic`.
+
+Opening empty storage no longer creates a seed. See the [explicit setup migration note](../../../docs/react-native/migration.md).
+
 The Fedimint SDK for browsers: [`rust/fedimint-sdk`](https://github.com/fedimint/fedimint-sdk/tree/main/rust/fedimint-sdk)
 compiled to WebAssembly and hosted in a dedicated worker, so every call from the main thread is
 asynchronous, including the ones that are synchronous in Rust. The API is generated from the
@@ -18,6 +23,10 @@ import { openSdk, LnReceiveState_Tags } from '@fedimint/web-sdk'
 
 const session = await openSdk({ storage: 'my-wallet' })
 const invite = await session.InviteCode.parse(code)
+// After the user chooses to create a wallet:
+if (!(await session.sdk.hasMnemonic())) {
+  await session.sdk.setMnemonic(await session.Mnemonic.generate())
+}
 const federation = await session.sdk.join(invite)
 const { invoice, operation } = await (await federation.lightning())!.receive(
   100_000n,

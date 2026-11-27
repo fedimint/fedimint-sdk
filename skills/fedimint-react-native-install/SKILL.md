@@ -60,8 +60,12 @@ the shell). If `rbenv install` says `definition not found`, run `brew upgrade ru
   `--repo-update` the first time: one pod comes from the CocoaPods trunk by version.
 - **Session.** Open the SDK once, in one module the app owns (Session page). Mount the first
   test screen inside the app's existing navigator, behind a debug or developer menu.
-- **Restore.** Offer restore before the first open. The first open of an empty folder creates
-  a seed, and the folder then refuses other words (`SeedMismatch`).
+- **Released 0.1.0 setup.** Offer Create or Restore before the first open: this release
+  creates a seed when opening empty storage. Pass restore words to `openSdk({ dataDir, mnemonic: words })`.
+  Do not call `hasMnemonic` or `setMnemonic` on the published 0.1.0 packages.
+- **Unreleased source builds.** Only matching source-built packages support seedless opening,
+  `hasMnemonic` and `setMnemonic`. See the migration page. No released pair ships these methods
+  yet; label instructions with the first shipping pair only after it is published.
 - **Saved invites.** Do not save the invite for launch. On launch, reopen the federation from
   `sdk.storedFederations()` and `sdk.reopenFederation(id)` (`federationOnLaunch`). This also
   finds a federation that `recover` restored. The invite is only needed to join.
@@ -84,8 +88,8 @@ the shell). If `rbenv install` says `definition not found`, run `brew upgrade ru
 | `TurboModuleRegistry ... 'PlatformConstants' could not be found` on Android                       | the app loaded another app's Metro bundle (port 8081 in use) | run Metro on a free port and point the debug app at it |
 | `Invalid hook call`                                                                               | two copies of React                                          | `npm ls react`; dedupe                                 |
 | `StorageInUse` after a Metro reload                                                               | the old JS still holds the folder                            | stop the app and start it again                        |
-| `StorageInUse` when opening again in the same run                                                 | objects from the first session are still alive               | open once per run; offer restore before the first open |
-| `SeedMismatch` on restore                                                                         | the folder already has a different seed                      | restore into an empty folder                           |
+| `StorageInUse` when opening again in the same run                                                 | objects from the first session are still alive               | reuse session; await close before opening again        |
+| `SeedMismatch` on restore                                                                         | the folder already has a different seed                      | use a separate location; never delete existing storage |
 | `AlreadyJoined` on `recover`                                                                      | that federation is already in the folder                     | use `resumeRecovery(id)` (Restore page, step 04)       |
 | Android build asks for `armeabi-v7a` or `x86`                                                     | `reactNativeArchitectures` not set                           | set it to `arm64-v8a,x86_64`                           |
 | `npm install` is slow                                                                             | the bindings are several hundred MB                          | wait                                                   |

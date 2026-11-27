@@ -18,7 +18,7 @@ report their status, run recovery and shut the SDK down.
 
 | Kotlin                                                              | What it does                                 |
 | ------------------------------------------------------------------- | -------------------------------------------- |
-| `createFedimintSdk(dataDir, mnemonic?)`                             | Opens storage; establishes the seed          |
+| `createFedimintSdk(dataDir, mnemonic?)`                             | Opens storage; loads a seed if present       |
 | `sdk.exportMnemonic()`                                              | The instance's `Mnemonic` handle, to back up |
 | `sdk.preview(invite)`                                               | Reads a federation's config without joining  |
 | `sdk.join(invite)`                                                  | Joins it, returns a `Federation` handle      |
@@ -34,7 +34,7 @@ before any real work runs.
 
 The seed is established by `createFedimintSdk`: pass a `Mnemonic` to restore, or
 `null` to load the seed the directory already holds — or, over an empty
-directory, generate and persist a fresh one. `sdk.exportMnemonic()` reads it back.
+directory, open a seedless session. Call `sdk.setMnemonic(Mnemonic.generate())` after the user chooses Create. `sdk.exportMnemonic()` reads the stored seed.
 
 The `Federation` that `join` returns has the per-federation calls: `balance()`,
 `capabilities()`, `activity()`, `meta()`, `operation(id)`, and the `ecash()`,
@@ -54,12 +54,12 @@ import org.fedimint.sdk.*
 import org.fedimint.sdk.Exception as SdkException   // shadows kotlin.Exception otherwise
 
 // 1. Open the SDK over an app-private directory. `null` loads the seed already
-//    there, or generates one when the directory is empty; pass a Mnemonic
-//    (Mnemonic.fromWords(userWords)) to restore.
+//    there or leaves empty storage seedless. Pass a Mnemonic to restore.
 val sdk: Sdk = createFedimintSdk(context.filesDir.path, null)
 
 // 2. Show the seed so the user can write it down — `words()` is the deliberate
 //    step that takes it out of the SDK's care as plain strings.
+if (!sdk.hasMnemonic()) sdk.setMnemonic(Mnemonic.generate())
 val words: List<String> = sdk.exportMnemonic().words()
 
 // 3. Show the user what they are about to join. FederationId is a String alias.
