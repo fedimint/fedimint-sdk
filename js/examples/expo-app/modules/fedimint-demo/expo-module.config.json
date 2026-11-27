@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["FedimintDemoModule"]
+  },
+  "android": {
+    "modules": ["org.fedimint.expoapp.demo.FedimintDemoModule"]
+  }
+}

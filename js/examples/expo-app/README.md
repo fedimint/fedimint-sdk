@@ -3,6 +3,7 @@
 This is a sample application demonstrating how to integrate and use the `@fedimint/react-native` SDK with [Expo Router](https://docs.expo.dev/router/introduction/) file-based navigation.
 
 This app serves two primary purposes:
+
 1. **Developer Sandbox:** A convenient environment for the SDK maintainers to test local changes to the native bindings and JavaScript APIs.
 2. **Usage Example:** A reference implementation for developers on how to initialize a Fedimint client, connect to a federation, and perform basic operations using the React Native SDK.
 
@@ -28,20 +29,25 @@ just build-rn-android      # nix-built Android libraries, regenerated bindings, 
 just build-rn-ios          # macOS with Xcode only
 ```
 
-Then, navigate to this example directory:
+Then, navigate to this example directory and generate the native projects:
 
 ```sh
 cd js/examples/expo-app
+pnpm exec expo prebuild --clean --no-install
 ```
+
+`ios/` and `android/` are generated from `app.json`, `plugins/` and `modules/`, not committed. Run
+this again after any of those change: `pnpm ios` and `pnpm android` reuse an existing folder.
 
 ### Running on iOS
 
-First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install *after* the `just build-rn-ios` step above.
+First, install the CocoaPods dependencies. Since this app uses local paths to reference the React Native bindings, you must run pod install _after_ the `just build-rn-ios` step above.
 
 ```sh
 cd ios
-bundle install # only needed the first time
-bundle exec pod install
+# The React Native example's Gemfile pins the CocoaPods version.
+BUNDLE_GEMFILE=../../react-native/Gemfile bundle install # only needed the first time
+BUNDLE_GEMFILE=../../react-native/Gemfile bundle exec pod install
 cd ..
 ```
 

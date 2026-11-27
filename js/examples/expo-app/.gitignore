@@ -8,5 +8,8 @@ dist/
 *.mobileprovision
 *.orig.*
 web-build/
-ios/
-android/
+# The projects prebuild generates, at the app's root only: the local module's own ios/ and
+# android/ folders are source.
+/ios/
+/android/
+modules/*/android/build/

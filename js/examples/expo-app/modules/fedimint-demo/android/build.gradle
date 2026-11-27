@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+android {
+  namespace "org.fedimint.expoapp.demo"
+  // Read by Expo's module plugin, which fails the build without them.
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // ReactContext, for the window focus the ecash copy waits on. Versioned by the app.
+  implementation "com.facebook.react:react-android"
+  // The prompt behind showing the recovery phrase (FedimintDemoModule.confirmOwner).
+  implementation "androidx.biometric:biometric:1.1.0"
+}
