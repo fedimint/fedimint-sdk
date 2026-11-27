@@ -42,16 +42,16 @@ use crate::{Error, ErrorCode, ErrorDetails, Result};
 /// Both persistent constructors only name a location and validate that name locally: no
 /// directory or origin-private store is created, nothing is read or written, and no lock is
 /// taken. [`SdkBuilder::build`](crate::SdkBuilder::build) is what actually opens the location,
-/// creates it if needed, reads or establishes the seed, and reopens the instance's
+/// creates it if needed, loads or explicitly establishes the seed, and reopens the instance's
 /// federations; see that method for the exact order and the errors each step can produce.
 ///
 /// # Seed and storage lifecycle
 ///
 /// - A seed is written only when the backend holds no state of this SDK's at all: no seed, no
 ///   federation record, no client state, no operation log, no activity history. It is written
-///   durably before any federation-derived state exists. A failure to generate one fails the
-///   open with [`ErrorCode::Entropy`](crate::ErrorCode::Entropy), leaving the storage
-///   untouched.
+///   durably before any federation-derived state exists. Opening empty storage without a
+///   supplied mnemonic leaves it seedless. Initialize it explicitly with
+///   [`Sdk::set_mnemonic`](crate::Sdk::set_mnemonic); opening never generates a seed.
 /// - Storage that holds other state but no readable seed is refused rather than silently
 ///   given a fresh one:
 ///   [`ErrorCode::StorageOrphaned`](crate::ErrorCode::StorageOrphaned), with
@@ -279,7 +279,7 @@ impl Storage {
     /// contend for the single-opener lock with each other.
     ///
     /// Infallible: there is no location to validate. Because the backend always starts empty,
-    /// an instance built on it accepts a supplied mnemonic as-is, or generates one, and never
+    /// an instance built on it accepts a supplied mnemonic as-is, or stays seedless, and never
     /// produces [`ErrorCode::SeedMismatch`](crate::ErrorCode::SeedMismatch) or the
     /// orphaned-storage refusal described on [`Storage`].
     pub fn in_memory() -> Storage {
@@ -373,6 +373,50 @@ impl StoreCloser {
     }
 }
 
+/// A per-store test hook at the real transaction commit boundary.
+#[cfg(all(test, not(target_family = "wasm")))]
+#[derive(Debug)]
+pub(crate) struct TestCommit {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    fail: bool,
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+impl TestCommit {
+    pub(crate) async fn entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.add_permits(1);
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+impl StoreCloser {
+    pub(crate) fn hold_next_commit(&self, fail: bool) -> std::sync::Arc<TestCommit> {
+        let gate = std::sync::Arc::new(TestCommit {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            fail,
+        });
+        let slot = self
+            .opened
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .expect("open store");
+        let opened = slot.try_read().expect("idle store");
+        *opened
+            .as_ref()
+            .expect("live store")
+            .next_commit
+            .lock()
+            .expect("commit hook lock") = Some(gate.clone());
+        gate
+    }
+}
+
 /// The backend a [`Storage`] names, chosen at construction and opened by `build`.
 #[derive(Debug)]
 enum StorageInner {
@@ -404,6 +448,8 @@ struct Opened {
     store: Store,
     /// Given back after the store above has been closed, and never before it.
     claim: Claim,
+    #[cfg(test)]
+    next_commit: std::sync::Mutex<Option<std::sync::Arc<TestCommit>>>,
 }
 
 /// Where an [`Opened`] store lives: `None` once a [`StoreCloser`] has closed it.
@@ -547,6 +593,22 @@ impl IDatabaseTransactionOps for ClaimedTransaction {}
 #[apply(async_trait_maybe_send!)]
 impl IRawDatabaseTransaction for ClaimedTransaction {
     async fn commit_tx(mut self) -> DatabaseResult<()> {
+        #[cfg(test)]
+        {
+            let gate = self
+                .borrow_owner()
+                .as_ref()
+                .and_then(|opened| opened.next_commit.lock().expect("commit hook lock").take());
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                let _permit = gate.release.acquire().await.expect("commit released");
+                if gate.fail {
+                    return Err(DatabaseError::DatabaseBackend(
+                        "injected commit failure".into(),
+                    ));
+                }
+            }
+        }
         // The read guard outlives the commit: it is dropped with `self`, after this returns.
         self.with_dependent_mut(|_, transaction| match transaction.take() {
             Some(transaction) => transaction.commit_tx(),
@@ -604,7 +666,12 @@ async fn open_directory(location: String) -> Result<(Database, StoreCloser)> {
                     ),
                 )
             })?;
-        Ok(Opened { store, claim })
+        Ok(Opened {
+            store,
+            claim,
+            #[cfg(test)]
+            next_commit: std::sync::Mutex::new(None),
+        })
     })
     .await
     .map_err(|err| Error::new(ErrorCode::Storage, format!("could not open storage: {err}")))??;

@@ -48,11 +48,9 @@
 //!     invite_code: &str,
 //! ) -> fedimint_sdk::Result<()> {
 //!     // One storage, one seed, as many federations as the user joins.
-//!     // Parsing the phrase validates it; leaving `.mnemonic(..)` off
-//!     // entirely would use the seed already in this storage, or, if the
-//!     // storage is empty, generate a fresh one, which `build` reports as
-//!     // `ErrorCode::Entropy` in the rare case the platform's random source
-//!     // fails.
+//!     // Parsing the phrase validates it. Omitting `.mnemonic(..)` loads
+//!     // the stored seed, or opens a seedless session if storage is empty.
+//!     // Use `Sdk::set_mnemonic` to initialize that session explicitly.
 //!     let mnemonic: Mnemonic = phrase.parse()?;
 //!     let sdk = Sdk::builder()
 //!         .storage(Storage::at(data_dir)?)

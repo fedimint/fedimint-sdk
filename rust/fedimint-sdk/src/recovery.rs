@@ -211,6 +211,7 @@ impl Sdk {
     /// # Errors
     ///
     /// The same errors as [`Sdk::join`]:
+    /// [`MnemonicRequired`](crate::ErrorCode::MnemonicRequired),
     /// [`AlreadyJoined`](crate::ErrorCode::AlreadyJoined),
     /// [`FederationUnreachable`](crate::ErrorCode::FederationUnreachable),
     /// [`Timeout`](crate::ErrorCode::Timeout),
@@ -221,6 +222,7 @@ impl Sdk {
     pub async fn recover(&self, invite: &InviteCode) -> Result<Recovery> {
         let _lifecycle = self.inner().lifecycle.lock().await;
         self.inner().alive()?;
+        self.inner().mnemonic()?;
         let id = invite.inner().federation_id();
 
         // An id already here is `AlreadyJoined`, closed and quarantined included, because
