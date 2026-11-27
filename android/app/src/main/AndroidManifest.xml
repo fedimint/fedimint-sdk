@@ -4,13 +4,21 @@
     <!-- sdk.preview and sdk.join both talk to guardians. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Scanning QR codes: invoices, addresses, invite codes, notes. Asked for
+         only when the user taps Scan; everything else works without it. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <application
+        android:name=".FedimintApp"
         android:allowBackup="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FedimintDemo">
+        android:theme="@style/Theme.FedimintWallet">
+
+        <!-- The reference wallet: one activity hosting every Compose screen. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".WalletActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

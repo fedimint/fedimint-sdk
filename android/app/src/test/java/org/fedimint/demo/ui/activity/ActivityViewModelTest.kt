@@ -1,0 +1,165 @@
+package org.fedimint.demo.ui.activity
+
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import org.fedimint.sdk.ActivityItem
+import org.fedimint.sdk.ActivityPage
+import org.fedimint.sdk.ActivityStatus
+import org.fedimint.sdk.Cursor
+import org.fedimint.sdk.Direction
+import org.fedimint.sdk.OperationKind
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+/**
+ * Refresh and paging overlap without duplicating rows or keeping a stale
+ * cursor, in either completion order.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class ActivityViewModelTest {
+    private val dispatcher = StandardTestDispatcher()
+
+    @Before fun setUp() = Dispatchers.setMain(dispatcher)
+
+    @After fun tearDown() = Dispatchers.resetMain()
+
+    /**
+     * A page loader whose calls the test completes by hand. Completions ignore
+     * cancellation, like an SDK call already in flight, so stale results really
+     * arrive and the ViewModel has to discard them itself.
+     */
+    private class Loader {
+        val calls = mutableListOf<Pair<Cursor?, CompletableDeferred<ActivityPage>>>()
+
+        suspend fun load(cursor: Cursor?): ActivityPage {
+            val result = CompletableDeferred<ActivityPage>()
+            calls += cursor to result
+            return withContext(NonCancellable) { result.await() }
+        }
+
+        fun complete(call: Int, page: ActivityPage) = calls[call].second.complete(page)
+    }
+
+    private fun item(n: Int) = ActivityItem(
+        operationId = "op-$n",
+        kind = OperationKind.LN_RECEIVE,
+        time = n.toULong(),
+        amount = 1_000uL,
+        fee = 0uL,
+        direction = Direction.INCOMING,
+        status = ActivityStatus.SUCCESS,
+        isFinal = true,
+    )
+
+    private fun page(range: IntRange, next: Cursor?) = ActivityPage(items = range.map(::item), next = next)
+
+    /**
+     * The reviewer's sequence: page-two request A, a completed refresh, page-two
+     * request B, then A and B complete in [aFirst] order.
+     */
+    private fun overlap(aFirst: Boolean) = runTest(dispatcher) {
+        val loader = Loader()
+        val vm = ActivityViewModel(loader::load)
+        advanceUntilIdle()
+        loader.complete(0, page(1..20, next = "c1"))
+        advanceUntilIdle()
+
+        vm.loadMore() // A
+        advanceUntilIdle()
+        vm.refresh()
+        advanceUntilIdle()
+        loader.complete(2, page(1..20, next = "c1"))
+        advanceUntilIdle()
+        vm.loadMore() // B
+        advanceUntilIdle()
+        assertEquals(listOf(null, "c1", null, "c1"), loader.calls.map { it.first })
+
+        // A, from before the refresh, answers with rows and a cursor of its own,
+        // so accepting it would show up in the list or the cursor.
+        val (a, b) = 1 to 3
+        val stale = page(901..920, next = "stale")
+        val current = page(21..40, next = "c2")
+        if (aFirst) {
+            loader.complete(a, stale)
+            advanceUntilIdle()
+            loader.complete(b, current)
+        } else {
+            loader.complete(b, current)
+            advanceUntilIdle()
+            loader.complete(a, stale)
+        }
+        advanceUntilIdle()
+
+        val s = vm.state.value
+        val ids = s.items.map { it.operationId }
+        assertEquals("the refreshed first page, then B's page, none of A's", (1..40).map { "op-$it" }, ids)
+        assertEquals("the current generation's cursor", "c2", s.next)
+        assertFalse(s.loadingMore)
+    }
+
+    @Test fun `stale page completing first is ignored`() = overlap(aFirst = true)
+
+    @Test fun `stale page completing last is ignored`() = overlap(aFirst = false)
+
+    @Test fun `asking for more twice requests the page once`() = runTest(dispatcher) {
+        val loader = Loader()
+        val vm = ActivityViewModel(loader::load)
+        advanceUntilIdle()
+        loader.complete(0, page(1..20, next = "c1"))
+        advanceUntilIdle()
+
+        vm.loadMore()
+        vm.loadMore()
+        advanceUntilIdle()
+
+        assertEquals(2, loader.calls.size)
+    }
+
+    @Test fun `a filter with no match on the first page keeps Load more and reaches an older match`() = runTest(dispatcher) {
+        val loader = Loader()
+        val vm = ActivityViewModel(loader::load)
+        advanceUntilIdle()
+        loader.complete(0, page(1..20, next = "c1")) // twenty Lightning receives
+        advanceUntilIdle()
+
+        val first = vm.state.value.filtered(Filter.Ecash)
+        assertTrue(first.rows.isEmpty())
+        assertTrue("Load more stays", first.loadMore)
+        assertEquals("No Ecash payments among the 20 most recent. Load more to look further back.", first.note)
+
+        vm.loadMore()
+        advanceUntilIdle()
+        val ecash = item(21).copy(operationId = "op-ecash", kind = OperationKind.ECASH_SEND, direction = Direction.OUTGOING)
+        loader.complete(1, ActivityPage(items = listOf(ecash), next = null))
+        advanceUntilIdle()
+
+        val second = vm.state.value.filtered(Filter.Ecash)
+        assertEquals(listOf("op-ecash"), second.rows.map { it.operationId })
+        assertEquals(null, second.note)
+        assertFalse(second.loadMore)
+    }
+
+    @Test fun `an empty filter at the end of history says so`() = runTest(dispatcher) {
+        val loader = Loader()
+        val vm = ActivityViewModel(loader::load)
+        advanceUntilIdle()
+        loader.complete(0, page(1..3, next = null))
+        advanceUntilIdle()
+
+        val view = vm.state.value.filtered(Filter.Ecash)
+        assertEquals("No Ecash payments yet.", view.note)
+        assertFalse(view.loadMore)
+    }
+}
