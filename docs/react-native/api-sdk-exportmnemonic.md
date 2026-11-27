@@ -17,7 +17,7 @@ Gives the seed phrase object of the wallet. Synchronous.
 
 **Returns.** `MnemonicLike`. The seed phrase object. Call `words()` on it to read the `words`.
 
-**Throws.** None. The method is infallible. After SdkSession.close() the object is destroyed, so export first.
+**Throws.** Released `0.1.0`: none while the handle is live. Unreleased API: `MnemonicRequired` if setup has not saved a seed; see [the migration note](./migration.md). After SdkSession.close() the object is destroyed, so export first.
 
 **Example**
 {#example}

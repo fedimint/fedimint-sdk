@@ -14,8 +14,8 @@ export interface OpenOptions {
   /** Directory the SDK keeps its data in; the app's documents directory is the usual choice. */
   dataDir: string
   /**
-   * Seed words to establish; omit to use the stored seed, or to generate one over an empty
-   * directory.
+   * Seed words to establish; omit to use the stored seed, or to open a seedless session over an
+   * empty directory.
    */
   mnemonic?: string[]
 }

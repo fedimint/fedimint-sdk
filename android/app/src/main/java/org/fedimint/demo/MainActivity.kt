@@ -137,8 +137,8 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Opens the SDK over the app-private directory. With no words, `null`
-     * loads the seed already there or generates and persists one over an
-     * empty directory; with words, `Mnemonic.fromWords` restores that seed
+     * loads the seed already there. This wallet action initializes an empty
+     * directory explicitly; with words, `Mnemonic.fromWords` restores that seed
      * (and fails with SEED_MISMATCH if the directory already holds another).
      *
      * Once open, it reattaches to the first federation this storage has
@@ -150,6 +150,7 @@ class MainActivity : AppCompatActivity() {
             if (sdk != null) return@section "already open"
             val mnemonic = if (words.isEmpty()) null else Mnemonic.fromWords(words)
             val opened = createFedimintSdk(filesDir.path, mnemonic)
+            if (!opened.hasMnemonic()) opened.setMnemonic(Mnemonic.generate())
             val existing = opened.federations().firstOrNull()
             withContext(Dispatchers.Main) {
                 sdk = opened

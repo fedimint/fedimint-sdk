@@ -13,6 +13,8 @@ export const dataDir = `${RNFS.DocumentDirectoryPath}/fedimint`
 
 let session: SdkSession | undefined
 let opening: Promise<SdkSession> | undefined
+let closing: Promise<void> = Promise.resolve()
+let generation = 0
 
 // Screens that render session-derived state (whether a wallet exists, whether a federation
 // is joined) subscribe here through `onChange` and re-check that state whenever the module
@@ -32,41 +34,44 @@ function notify(): void {
   for (const listener of listeners) listener()
 }
 
-/** Whether a wallet exists on this device: the SDK seeds its data directory on first open. */
-export const walletExists = (): Promise<boolean> => RNFS.exists(dataDir)
+/** A directory may exist before setup; only a stored mnemonic counts as a wallet. */
+export const walletExists = async (): Promise<boolean> => (await open()).sdk.hasMnemonic()
 
-/** Opens the SDK once and shares the session; `mnemonic` restores a seed over a fresh directory. */
-export function open(mnemonic?: string[]): Promise<SdkSession> {
-  if (session) return Promise.resolve(session)
-  if (!opening) {
-    opening = openSdk({ dataDir, mnemonic }).then(
-      (opened) => {
-        session = opened
-        notify()
-        return opened
-      },
-      (error) => {
-        opening = undefined
-        throw error
-      },
-    )
+/** Shares one session for browsing, then saves words chosen during Create or Restore. */
+export async function open(mnemonic?: string[]): Promise<SdkSession> {
+  const mine = generation
+  opening ??= closing.then(() => openSdk({ dataDir })).catch((error: unknown) => {
+    if (mine === generation) opening = undefined
+    throw error
+  })
+  const opened = await opening
+  if (mine !== generation) throw new Error('wallet open superseded by reset')
+  if (mnemonic) {
+    await opened.sdk.setMnemonic(opened.Mnemonic.fromWords(mnemonic))
   }
-  return opening
+  if (mine !== generation) throw new Error('wallet setup superseded by reset')
+  const changed = session !== opened || mnemonic !== undefined
+  session = opened
+  if (changed) notify()
+  return opened
 }
 
-/** Closes the session and deletes the wallet's data, so a restore can seed the directory anew. */
-export async function reset(): Promise<void> {
-  // The session is dropped first, so a failing close still leaves the module without one, the
-  // data still gets deleted and listeners still hear about it; the error surfaces afterwards.
-  const closing = session
+/** Waits for the old opener and closes it before deleting data or allowing a new open. */
+export function reset(): Promise<void> {
+  const pending = opening
+  const mine = ++generation
   session = undefined
   opening = undefined
-  try {
-    if (closing) await closing.close()
-  } finally {
+  const run = closing.then(async () => {
+    const old = await pending
+    if (old) await old.close()
     if (await RNFS.exists(dataDir)) await RNFS.unlink(dataDir)
-    notify()
-  }
+  })
+  // Preserve ordering without making a failed reset poison later attempts.
+  closing = run.catch(() => undefined)
+  return run.finally(() => {
+    if (mine === generation) notify()
+  })
 }
 
 export const current = (): SdkSession | undefined => session

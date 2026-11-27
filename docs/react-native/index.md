@@ -13,11 +13,50 @@ npm install --save-exact @fedimint/react-native@0.1.0 @fedimint/react-native-bin
 cd ios && pod install
 ```
 
+Released `0.1.0` package pair:
+
 ```tsx no-check [App.tsx]
 const session = await openSdk({ dataDir })
 const fed = await session.sdk.join(InviteCode.parse(code))
 const msat = useBalance(fed)
 return <Text>{`${msat / 1000n} sats`}</Text>
+```
+
+For the **unreleased source-build API**, choose Create or Restore before joining on fresh
+storage. Preview remains available first; see [the migration note](./migration.md) for version
+requirements. `chooseSetup` and `confirmBackup` below are your app's screens:
+
+```ts [source-setup.ts]
+import { openSdk, RecoveryState_Tags } from '@fedimint/react-native'
+
+declare const dataDir: string
+declare const code: string
+declare function chooseSetup(): Promise<
+  { kind: 'create' } | { kind: 'restore'; words: string[] }
+>
+declare function confirmBackup(words: string[]): Promise<void>
+
+const session = await openSdk({ dataDir })
+let restoring = false
+if (!session.sdk.hasMnemonic()) {
+  const choice = await chooseSetup()
+  restoring = choice.kind === 'restore'
+  const mnemonic =
+    choice.kind === 'restore'
+      ? session.Mnemonic.fromWords(choice.words)
+      : session.Mnemonic.generate()
+  await session.sdk.setMnemonic(mnemonic)
+  if (choice.kind === 'create')
+    await confirmBackup(session.sdk.exportMnemonic().words())
+}
+const invite = session.InviteCode.parse(code)
+if (restoring) {
+  const { progress } = await session.sdk.recover(invite)
+  if ((await progress.awaitFinal()).tag !== RecoveryState_Tags.Done)
+    throw new Error('Recovery did not complete')
+} else {
+  await session.sdk.join(invite)
+}
 ```
 
 ## What is Fedimint {#what-is-fedimint}

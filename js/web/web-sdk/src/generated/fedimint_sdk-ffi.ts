@@ -645,6 +645,11 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_sdk_has_mnemonic: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_sdk_join: {
       args: [],
       ret: FfiType.UInt16,
@@ -671,6 +676,11 @@ const DEFINITIONS = {
       hasRustCallStatus: false,
     },
     uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_checksum_method_sdk_set_mnemonic: {
       args: [],
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
@@ -1310,6 +1320,11 @@ const DEFINITIONS = {
       ret: FfiType.Handle,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_fn_method_sdk_has_mnemonic: {
+      args: [FfiType.Handle],
+      ret: FfiType.Int8,
+      hasRustCallStatus: true,
+    },
     uniffi_fedimint_sdk_fn_method_sdk_join: {
       args: [FfiType.Handle, FfiType.Handle],
       ret: FfiType.Handle,
@@ -1337,6 +1352,11 @@ const DEFINITIONS = {
     },
     uniffi_fedimint_sdk_fn_method_sdk_resume_recovery: {
       args: [FfiType.Handle, FfiType.RustBuffer],
+      ret: FfiType.Handle,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_fn_method_sdk_set_mnemonic: {
+      args: [FfiType.Handle, FfiType.Handle],
       ret: FfiType.Handle,
       hasRustCallStatus: false,
     },
@@ -2084,12 +2104,14 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_method_sdk_federation_status_updates(): number
   uniffi_fedimint_sdk_checksum_method_sdk_federations(): number
   uniffi_fedimint_sdk_checksum_method_sdk_forget_federation(): number
+  uniffi_fedimint_sdk_checksum_method_sdk_has_mnemonic(): number
   uniffi_fedimint_sdk_checksum_method_sdk_join(): number
   uniffi_fedimint_sdk_checksum_method_sdk_preview(): number
   uniffi_fedimint_sdk_checksum_method_sdk_recover(): number
   uniffi_fedimint_sdk_checksum_method_sdk_recovery_status(): number
   uniffi_fedimint_sdk_checksum_method_sdk_reopen_federation(): number
   uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery(): number
+  uniffi_fedimint_sdk_checksum_method_sdk_set_mnemonic(): number
   uniffi_fedimint_sdk_checksum_method_sdk_shutdown(): number
   uniffi_fedimint_sdk_checksum_method_sdk_stored_federations(): number
   uniffi_fedimint_sdk_fn_func_create_fedimint_sdk(
@@ -2547,6 +2569,10 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     id: Uint8Array,
   ): bigint
+  uniffi_fedimint_sdk_fn_method_sdk_has_mnemonic(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number
   uniffi_fedimint_sdk_fn_method_sdk_join(
     uniffiSelf: bigint,
     invite: bigint,
@@ -2570,6 +2596,10 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_fn_method_sdk_resume_recovery(
     uniffiSelf: bigint,
     id: Uint8Array,
+  ): bigint
+  uniffi_fedimint_sdk_fn_method_sdk_set_mnemonic(
+    uniffiSelf: bigint,
+    mnemonic: bigint,
   ): bigint
   uniffi_fedimint_sdk_fn_method_sdk_shutdown(uniffiSelf: bigint): bigint
   uniffi_fedimint_sdk_fn_method_sdk_stored_federations(

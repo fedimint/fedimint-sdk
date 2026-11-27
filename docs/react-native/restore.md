@@ -67,6 +67,11 @@ It takes two calls, and they do different jobs. `openSdk` with a `mnemonic` make
 **The words do not say which federations the wallet used.** Recovery needs an invite for each one. Your app has to ask the user, or keep that list somewhere they can get back to, such as the directory from [Join a federation](./join.md).
 :::
 
+::: info API version
+This guide's default flow targets released `0.1.0`. With the unreleased API, reuse the open session and always pass explicit Restore words to `await sdk.setMnemonic(Mnemonic.fromWords(words))`, even if it has a seed. Stop on `SeedMismatch`; never silently continue with the stored wallet.
+See [explicit wallet setup](./migration.md) for the version boundary and setup flow.
+:::
+
 ### 01 · Take the words <Badge type="info" text="JavaScript" /> {#step-01}
 
 Let the user type or paste the words with any spacing and any capitals. A quick count catches a missing word early. The real check, the checksum, happens when the wallet opens in step 02.

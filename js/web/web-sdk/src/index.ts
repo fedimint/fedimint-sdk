@@ -40,8 +40,8 @@ export interface OpenOptions {
    */
   storage: string
   /**
-   * Seed words to establish; omit to use the stored seed, or to generate one over empty
-   * storage.
+   * Seed words to establish; omit to use the stored seed, or to open a seedless
+   * session over empty storage.
    */
   mnemonic?: string[]
   /** Supplies the worker; defaults to this package's own `./worker.js` as a module worker. */

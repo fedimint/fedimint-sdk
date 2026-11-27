@@ -1,5 +1,10 @@
 # @fedimint/react-native
 
+> The explicit setup methods below are unreleased. Use matching source-built packages;
+> published `0.1.0` does not provide `hasMnemonic` or `setMnemonic`.
+
+Opening empty storage no longer creates a seed. See the [explicit setup migration note](../../../docs/react-native/migration.md).
+
 The Fedimint SDK for React Native: `rust/fedimint-sdk` through its JSI turbo-module bindings
 (`@fedimint/react-native-bindings`), the same API `@fedimint/web-sdk` exposes over a worker, but
 called directly since there is no worker boundary to cross here.
@@ -45,9 +50,11 @@ import { openSdk, Exception } from '@fedimint/react-native'
 import RNFS from 'react-native-fs'
 
 const dataDir = `${RNFS.DocumentDirectoryPath}/fedimint`
-const { sdk, InviteCode, close } = await openSdk({ dataDir })
+const { sdk, InviteCode, Mnemonic, close } = await openSdk({ dataDir })
 
 try {
+  // After the user chooses to create a wallet:
+  if (!sdk.hasMnemonic()) await sdk.setMnemonic(Mnemonic.generate())
   const federation = await sdk.join(InviteCode.parse(inviteCode))
   // ... use `federation` and the rest of the generated API.
 } catch (error) {
@@ -107,7 +114,9 @@ import { Paths } from 'expo-file-system'
 // filesystem path for Rust.
 const dataDir = Paths.document.uri.replace(/^file:\/\//, '') + 'fedimint'
 
-const { sdk, InviteCode, close } = await openSdk({ dataDir })
+const { sdk, InviteCode, Mnemonic, close } = await openSdk({ dataDir })
+// After the user chooses to create a wallet:
+if (!sdk.hasMnemonic()) await sdk.setMnemonic(Mnemonic.generate())
 const federation = await sdk.join(InviteCode.parse(inviteCode))
 ```
 

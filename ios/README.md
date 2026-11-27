@@ -48,11 +48,11 @@ runtime rocksdb and aws-lc need is linked by the package itself, so there are no
 ## Scope
 
 The whole surface of the Rust crate, unfiltered. The entry point opens storage
-and establishes the seed; `Federation` carries the rest.
+and loads the seed if present; `Federation` carries the rest.
 
 | Swift                                                                  | What it does                                 |
 | ---------------------------------------------------------------------- | -------------------------------------------- |
-| `createFedimintSdk(dataDir:mnemonic:)`                                 | Opens storage; establishes the seed          |
+| `createFedimintSdk(dataDir:mnemonic:)`                                 | Opens storage; loads a seed if present       |
 | `sdk.exportMnemonic()`                                                 | The instance's `Mnemonic` handle, to back up |
 | `sdk.preview(invite:)`                                                 | Reads a federation's config without joining  |
 | `sdk.join(invite:)`                                                    | Joins it, returns a `Federation` handle      |
@@ -69,7 +69,7 @@ handle. Each throws on invalid input, before any real work runs.
 
 The seed is established by `createFedimintSdk`: pass a `Mnemonic` to restore, or
 `nil` to load the seed the directory already holds — or, over an empty directory,
-generate and persist a fresh one. `sdk.exportMnemonic()` reads it back.
+open a seedless session. Call `try await sdk.setMnemonic(mnemonic: Mnemonic.generate())` after the user chooses Create. `sdk.exportMnemonic()` reads the stored seed.
 
 The `Federation` that `join` returns carries the rest: `balance()`,
 `balanceUpdates()`, `capabilities()`, `meta()`, `activity(cursor:limit:)`,
@@ -108,7 +108,8 @@ let sdk = try await createFedimintSdk(dataDir: dataDir.path, mnemonic: nil)
 
 // 2. Show the seed so the user can write it down — `words()` is the deliberate
 //    step that takes it out of the SDK's care as plain strings.
-let words: [String] = sdk.exportMnemonic().words()
+if !sdk.hasMnemonic() { try await sdk.setMnemonic(mnemonic: Mnemonic.generate()) }
+let words: [String] = try sdk.exportMnemonic().words()
 
 // 3. Show the user what they are about to join.
 let invite = try InviteCode.parse(code: inviteString)   // throws on a malformed code

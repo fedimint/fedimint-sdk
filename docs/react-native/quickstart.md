@@ -14,6 +14,12 @@ From an empty React Native app to a federation balance on screen.
 This page is the short path. It joins Fedi Testnet, a test federation on signet, and shows its balance. Each step links to the page with the full detail and the reasons.
 :::
 
+::: info API version
+This guide targets the released `0.1.0` package pair, which creates a seed on first open.
+The source-build API is changing; see [explicit wallet setup](./migration.md) before using
+`hasMnemonic` or `setMnemonic`. Those methods are not in the published `0.1.0` pair.
+:::
+
 ### 01 · Install the two packages <Badge type="info" text="JavaScript" /> {#step-01}
 
 Add both packages at the same exact version. Your app must list both, because autolinking links only the packages your app names. The packages ship prebuilt native libraries, so nothing compiles at install. The screen below also uses `react-native-fs` to find the documents folder.

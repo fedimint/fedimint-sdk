@@ -56,10 +56,19 @@ export default defineConfig({
         test: {
           name: 'react-native',
           environment: 'node',
-          include: ['react-native/react-native/**/*.test.ts'],
+          include: [
+            'react-native/react-native/**/*.test.ts',
+            'examples/react-native/src/__tests__/*.test.ts',
+          ],
         },
         resolve: {
           alias: {
+            '@fedimint/react-native': fileURLToPath(
+              new URL(
+                './react-native/react-native/src/index.ts',
+                import.meta.url,
+              ),
+            ),
             // The real bindings module is ubrn-generated and needs a compiled native library;
             // unit tests run against a stub instead.
             '@fedimint/react-native-bindings': fileURLToPath(

@@ -34,6 +34,7 @@ async function selfCheck() {
   const session = await openSdk({ dataDir })
   let stored
   try {
+    await session.sdk.setMnemonic(Mnemonic.generate())
     stored = session.sdk.exportMnemonic().words().length
   } finally {
     await session.close()

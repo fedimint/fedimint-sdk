@@ -67,19 +67,19 @@ const useWallet = () => {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      const exists = await walletExists()
-      if (cancelled) return
-      if (!exists) {
-        setState({ exists: false, joined: false })
-        return
-      }
       try {
+        const exists = await walletExists()
+        if (cancelled) return
+        if (!exists) {
+          setState({ exists: false, joined: false })
+          return
+        }
         await open()
         if (!cancelled) {
           setState({ exists: true, joined: federation() !== undefined })
         }
       } catch {
-        if (!cancelled) setState({ exists: true, joined: false })
+        if (!cancelled) setState({ exists: current()?.sdk.hasMnemonic() ?? false, joined: federation() !== undefined })
       }
     }
     load()
@@ -91,7 +91,7 @@ const useWallet = () => {
   useEffect(
     () =>
       onChange(() => {
-        setState({ exists: current() !== undefined, joined: federation() !== undefined })
+        setState({ exists: current()?.sdk.hasMnemonic() ?? false, joined: federation() !== undefined })
         setVersion((v) => v + 1)
       }),
     [],
@@ -390,9 +390,11 @@ const MnemonicManager = ({
 }
 
 const JoinFederation = ({
+  exists,
   joined,
   refresh,
 }: {
+  exists: boolean | undefined
   joined: boolean
   refresh: () => void
 }) => {
@@ -420,6 +422,10 @@ const JoinFederation = ({
   }
 
   const joinFederation = async () => {
+    if (!exists) {
+      setJoinError('Choose Create or Restore before joining. Preview is available without a wallet.')
+      return
+    }
     setJoining(true)
     setJoinError('')
     try {
@@ -459,7 +465,7 @@ const JoinFederation = ({
         <Btn
           title={joining ? 'Joining...' : 'Join'}
           onPress={joinFederation}
-          disabled={joined || joining}
+          disabled={!exists || joined || joining}
           primary
         />
       </Row>
@@ -1196,11 +1202,11 @@ const App = () => {
         <View style={s.stepsCard}>
           <Text style={s.stepsTitle}>Steps to get started:</Text>
           <Text style={s.stepItem}>
-            1. Join a Federation (persists across sessions)
+            1. Create or Restore a wallet and back up new words
           </Text>
-          <Text style={s.stepItem}>2. Generate an Invoice</Text>
+          <Text style={s.stepItem}>2. Preview and Join a Federation</Text>
           <Text style={s.stepItem}>
-            3. Pay the Invoice using the mutinynet faucet
+            3. Generate and pay an invoice using the mutinynet faucet
           </Text>
           <TouchableOpacity
             onPress={() => Linking.openURL('https://faucet.mutinynet.com/')}
@@ -1218,7 +1224,7 @@ const App = () => {
           refresh={refresh}
         />
         <MnemonicManager exists={exists} refresh={refresh} />
-        <JoinFederation joined={joined} refresh={refresh} />
+        <JoinFederation exists={exists} joined={joined} refresh={refresh} />
         <GenerateLightningInvoice />
         <RedeemEcash />
         <SendEcash />

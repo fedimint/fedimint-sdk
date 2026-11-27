@@ -19,6 +19,7 @@ async function check() {
     .slice(2, 8)}`
   const session = await openSdk({ storage })
   try {
+    await session.sdk.setMnemonic(await session.Mnemonic.generate())
     const words = await (await session.sdk.exportMnemonic()).words()
     if (words.length !== 12) {
       throw new Error(`the mnemonic has ${words.length} words, expected 12`)

@@ -118,6 +118,35 @@ describe('session', () => {
 
 describe('seed', () => {
   sdkTest(
+    'initializes a seedless session without reopening the worker',
+    async () => {
+      const storage = uniqueStorage('seedless')
+      const session = await openSdk({ storage })
+      let words: string[]
+      try {
+        expect(await session.sdk.hasMnemonic()).toBe(false)
+        await expect(session.sdk.exportMnemonic()).rejects.toMatchObject({
+          code: ErrorCode.MnemonicRequired,
+        })
+        const chosen = await session.Mnemonic.generate()
+        words = await chosen.words()
+        await session.sdk.setMnemonic(chosen)
+        expect(await session.sdk.hasMnemonic()).toBe(true)
+      } finally {
+        await session.close()
+      }
+      const reopened = await openSdk({ storage })
+      try {
+        expect(await (await reopened.sdk.exportMnemonic()).words()).toEqual(
+          words,
+        )
+      } finally {
+        await reopened.close()
+      }
+    },
+  )
+
+  sdkTest(
     'exports a 12 word mnemonic that a new storage can start from',
     async ({ session }) => {
       const words = await (await session.sdk.exportMnemonic()).words()

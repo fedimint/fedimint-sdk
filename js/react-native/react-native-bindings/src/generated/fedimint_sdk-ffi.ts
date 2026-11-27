@@ -156,12 +156,14 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_federation_status_updates(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_federations(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_forget_federation(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_sdk_has_mnemonic(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_join(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_preview(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_recover(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_recovery_status(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_reopen_federation(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_resume_recovery(): number
+  ubrn_uniffi_fedimint_sdk_checksum_method_sdk_set_mnemonic(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_shutdown(): number
   ubrn_uniffi_fedimint_sdk_checksum_method_sdk_stored_federations(): number
   ubrn_uniffi_fedimint_sdk_fn_func_create_fedimint_sdk(
@@ -627,6 +629,10 @@ interface NativeModuleInterface {
     uniffiSelf: bigint,
     id: Uint8Array,
   ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_sdk_has_mnemonic(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_join(
     uniffiSelf: bigint,
     invite: bigint,
@@ -650,6 +656,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_resume_recovery(
     uniffiSelf: bigint,
     id: Uint8Array,
+  ): bigint
+  ubrn_uniffi_fedimint_sdk_fn_method_sdk_set_mnemonic(
+    uniffiSelf: bigint,
+    mnemonic: bigint,
   ): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_shutdown(uniffiSelf: bigint): bigint
   ubrn_uniffi_fedimint_sdk_fn_method_sdk_stored_federations(
