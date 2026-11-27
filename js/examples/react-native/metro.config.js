@@ -1,7 +1,7 @@
-const { getDefaultConfig } = require('@react-native/metro-config');
-const path = require('path');
+const { getDefaultConfig } = require('@react-native/metro-config')
+const path = require('path')
 
-const root = path.resolve(__dirname, '../..');
+const root = path.resolve(__dirname, '../..')
 
 /**
  * Metro configuration
@@ -9,14 +9,14 @@ const root = path.resolve(__dirname, '../..');
  *
  * @type {import('metro-config').MetroConfig}
  */
-const config = getDefaultConfig(__dirname);
+const config = getDefaultConfig(__dirname)
 
-config.watchFolders = [root];
-config.resolver.unstable_enableSymlinks = true;
+config.watchFolders = [root]
+config.resolver.unstable_enableSymlinks = true
 config.resolver.nodeModulesPaths = [
   path.resolve(__dirname, 'node_modules'),
   path.resolve(root, 'node_modules'),
-];
+]
 
 // Map all workspace packages to their source directories
 config.resolver.extraNodeModules = {
@@ -28,6 +28,6 @@ config.resolver.extraNodeModules = {
     __dirname,
     '../../react-native/react-native',
   ),
-};
+}
 
-module.exports = config;
+module.exports = config
