@@ -624,7 +624,13 @@ protected:
   jsi::Value cpp_uniffi_fedimint_sdk_fn_constructor_notes_parse(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_notes_invite_code(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_fn_method_notes_display(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_fn_method_notes_federation_id(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_fn_method_notes_value(
@@ -1189,7 +1195,13 @@ protected:
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_mnemonic_words(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_notes_invite_code(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_notes_display(
+      jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
+      size_t count);
+  jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_notes_federation_id(
       jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args,
       size_t count);
   jsi::Value cpp_uniffi_fedimint_sdk_checksum_method_notes_value(

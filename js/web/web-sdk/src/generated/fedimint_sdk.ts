@@ -2168,6 +2168,28 @@ export interface NotesLike {
    */
   display(): string
   /**
+   * An unverified federation ID hint from the token, if present.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. For v1 notes, no full ID is available without an extractable
+   * invite. For mintv2 notes, no ID is available if the mint ID field is absent.
+   * The mintv2 ID and invite ID can disagree. If they do, do not present
+   * either as the verified issuer.
+   */
+  federationId(): FederationId | undefined
+  /**
+   * An unverified invite hint extracted from the token, if available.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. An invite field may exist without usable peer endpoints, so an
+   * invite may not be available. The invite’s federation ID can conflict with
+   * the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+   * issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+   * configuration, but does not prove they issued these notes. The invite can
+   * contain an API secret; protect it like the notes.
+   */
+  inviteCode(): InviteCodeLike | undefined
+  /**
    * Returns the total value carried by these notes.
    *
    * This reads the value encoded in the notes themselves and does not
@@ -2265,6 +2287,60 @@ export class Notes extends UniffiAbstractObject implements NotesLike {
     )
     try {
       return FfiConverterString.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * An unverified federation ID hint from the token, if present.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. For v1 notes, no full ID is available without an extractable
+   * invite. For mintv2 notes, no ID is available if the mint ID field is absent.
+   * The mintv2 ID and invite ID can disagree. If they do, do not present
+   * either as the verified issuer.
+   */
+  federationId(): FederationId | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_notes_federation_id(
+          uniffiTypeNotesObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeFederationId.lift(__rb)
+    } finally {
+      nativeModule().rustbuffer_free(__rb)
+    }
+  }
+
+  /**
+   * An unverified invite hint extracted from the token, if available.
+   *
+   * Reads token metadata without contacting a federation or verifying the
+   * issuer. An invite field may exist without usable peer endpoints, so an
+   * invite may not be available. The invite’s federation ID can conflict with
+   * the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+   * issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+   * configuration, but does not prove they issued these notes. The invite can
+   * contain an API secret; protect it like the notes.
+   */
+  inviteCode(): InviteCodeLike | undefined {
+    const __rb: Uint8Array = uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().uniffi_fedimint_sdk_fn_method_notes_invite_code(
+          uniffiTypeNotesObjectFactory.clonePointer(this),
+          callStatus,
+        )
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    )
+    try {
+      return FfiConverterOptionalTypeInviteCode.lift(__rb)
     } finally {
       nativeModule().rustbuffer_free(__rb)
     }
@@ -17625,6 +17701,16 @@ export type MetaMap = Map<string, string>
 // FfiConverter for MetaMap, a type alias for Map<string, string>.
 const FfiConverterTypeMetaMap = FfiConverterMapStringString
 
+// FfiConverter for FederationId | undefined
+const FfiConverterOptionalTypeFederationId = new FfiConverterOptional(
+  FfiConverterTypeFederationId,
+)
+
+// FfiConverter for InviteCodeLike | undefined
+const FfiConverterOptionalTypeInviteCode = new FfiConverterOptional(
+  FfiConverterTypeInviteCode,
+)
+
 // FfiConverter for NotesLike | undefined
 const FfiConverterOptionalTypeNotes = new FfiConverterOptional(
   FfiConverterTypeNotes,
@@ -18466,6 +18552,22 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_fedimint_sdk_checksum_method_notes_display',
+    )
+  }
+  if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_notes_federation_id() !==
+    41994
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_notes_federation_id',
+    )
+  }
+  if (
+    nativeModule().uniffi_fedimint_sdk_checksum_method_notes_invite_code() !==
+    16194
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_fedimint_sdk_checksum_method_notes_invite_code',
     )
   }
   if (

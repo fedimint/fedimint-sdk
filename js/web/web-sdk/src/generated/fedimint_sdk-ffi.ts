@@ -460,6 +460,16 @@ const DEFINITIONS = {
       ret: FfiType.UInt16,
       hasRustCallStatus: false,
     },
+    uniffi_fedimint_sdk_checksum_method_notes_federation_id: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
+    uniffi_fedimint_sdk_checksum_method_notes_invite_code: {
+      args: [],
+      ret: FfiType.UInt16,
+      hasRustCallStatus: false,
+    },
     uniffi_fedimint_sdk_checksum_method_notes_value: {
       args: [],
       ret: FfiType.UInt16,
@@ -1121,6 +1131,16 @@ const DEFINITIONS = {
       hasRustCallStatus: true,
     },
     uniffi_fedimint_sdk_fn_method_notes_display: {
+      args: [FfiType.Handle],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_method_notes_federation_id: {
+      args: [FfiType.Handle],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+    uniffi_fedimint_sdk_fn_method_notes_invite_code: {
       args: [FfiType.Handle],
       ret: FfiType.RustBuffer,
       hasRustCallStatus: true,
@@ -2047,6 +2067,8 @@ interface NativeModuleInterface {
   uniffi_fedimint_sdk_checksum_constructor_mnemonic_from_words(): number
   uniffi_fedimint_sdk_checksum_constructor_mnemonic_generate(): number
   uniffi_fedimint_sdk_checksum_method_notes_display(): number
+  uniffi_fedimint_sdk_checksum_method_notes_federation_id(): number
+  uniffi_fedimint_sdk_checksum_method_notes_invite_code(): number
   uniffi_fedimint_sdk_checksum_method_notes_value(): number
   uniffi_fedimint_sdk_checksum_constructor_notes_parse(): number
   uniffi_fedimint_sdk_checksum_method_onchain_deposits(): number
@@ -2413,6 +2435,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus,
   ): bigint
   uniffi_fedimint_sdk_fn_method_notes_display(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  uniffi_fedimint_sdk_fn_method_notes_federation_id(
+    uniffiSelf: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array
+  uniffi_fedimint_sdk_fn_method_notes_invite_code(
     uniffiSelf: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array

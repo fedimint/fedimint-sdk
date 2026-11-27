@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::ffi_operation;
 use crate::{
     Amount, Ecash, EcashQuote, EcashReceiveDetails, EcashReceiveState, EcashSend, EcashSendDetails,
-    EcashSendState, Notes, Result, Timestamp,
+    EcashSendState, InviteCode, Notes, Result, Timestamp,
 };
 
 // The UniFFI view of `Ecash::send`/`Ecash::receive`, under their real names but different Rust
@@ -29,6 +29,25 @@ impl Ecash {
     #[uniffi::method(name = "receive")]
     pub async fn ffi_receive(&self, notes: &Notes) -> Result<EcashReceiveOperation> {
         Ok(self.receive(notes).await?.into())
+    }
+}
+
+// The UniFFI view of `Notes::invite_code`, under its real name but a different Rust identifier so
+// the optional object can cross behind an `Arc`.
+#[uniffi::export]
+impl Notes {
+    /// An unverified invite hint extracted from the token, if available.
+    ///
+    /// Reads token metadata without contacting a federation or verifying the
+    /// issuer. An invite field may exist without usable peer endpoints, so an
+    /// invite may not be available. The invite’s federation ID can conflict with
+    /// the mintv2 ID from `federation_id`. If they disagree, do not present either as the verified
+    /// issuer. `Sdk::preview` contacts the invite’s guardians and checks their
+    /// configuration, but does not prove they issued these notes. The invite can
+    /// contain an API secret; protect it like the notes.
+    #[uniffi::method(name = "invite_code")]
+    pub fn ffi_invite_code(&self) -> Option<Arc<InviteCode>> {
+        self.invite_code().map(Arc::new)
     }
 }
 
