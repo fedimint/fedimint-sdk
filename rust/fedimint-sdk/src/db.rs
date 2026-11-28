@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 
 use fedimint_core::config::FederationId;
 use fedimint_core::db::{
-    Committable, Database, DatabaseKey, DatabaseKeyPrefix, DatabaseRecord, DatabaseTransaction,
-    DatabaseValue, IDatabaseTransactionOpsCore,
+    Committable, Database, DatabaseKey, DatabaseKeyPrefix, DatabaseLookup, DatabaseRecord,
+    DatabaseTransaction, DatabaseValue, IDatabaseTransactionOpsCore,
 };
 use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::invite_code::InviteCode;
@@ -383,6 +383,35 @@ where
     Cap: Send,
 {
     dbtx.raw_get_bytes(key_bytes).await.map_err(backend_error)
+}
+
+/// Reads every key matching `prefix`, reporting a backend or decode failure instead of panicking.
+pub(crate) async fn read_keys_by_prefix<P, Cap>(
+    dbtx: &mut DatabaseTransaction<'_, Cap>,
+    prefix: &P,
+) -> Result<Vec<<P::Record as DatabaseRecord>::Key>>
+where
+    P: DatabaseLookup,
+    Cap: Send,
+{
+    let prefix_bytes = DatabaseKeyPrefix::to_bytes(prefix);
+    let raw: Vec<(Vec<u8>, Vec<u8>)> = dbtx
+        .raw_find_by_prefix(&prefix_bytes)
+        .await
+        .map_err(backend_error)?
+        .collect()
+        .await;
+    let decoders = ModuleDecoderRegistry::default();
+    raw.into_iter()
+        .map(|(key_bytes, _)| {
+            <P::Record as DatabaseRecord>::Key::from_bytes(&key_bytes, &decoders).map_err(|err| {
+                Error::new(
+                    ErrorCode::Storage,
+                    format!("unreadable key: {}", err.fmt_compact()),
+                )
+            })
+        })
+        .collect()
 }
 
 /// Writes one record.
