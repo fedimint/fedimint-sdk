@@ -47,7 +47,8 @@ fedimint-sdk
 │   │   └── integration-tests
 │   ├── examples
 │   │   ├── expo-app
-│   │   └── react-native
+│   │   ├── react-native
+│   │   └── vite-app
 │   ├── react-native
 │   │   ├── react-native
 │   │   └── react-native-bindings
@@ -65,6 +66,8 @@ fedimint-sdk
 - [`ios/Demo`](../ios/Demo): the same app for iOS, in SwiftUI.
 - [`react-native`](../js/examples/react-native/README.md) and
   [`expo-app`](../js/examples/expo-app/README.md): React Native apps, without and with Expo.
+- [`vite-app`](../js/examples/vite-app/README.md): a React application built with Vite, on the
+  browser SDK.
 
 ### Contributing
 

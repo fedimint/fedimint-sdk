@@ -139,7 +139,7 @@ jobs:
                 web=true
                 react_native=true
                 ;;
-              js/web/*|scripts/*)
+              js/web/*|js/examples/vite-app/*|scripts/*)
                 web=true
                 ;;
               nix/web-bindgen.nix|nix/ffi.nix|rust/ubrn/*)
