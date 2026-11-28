@@ -802,6 +802,128 @@ impl FederationInner {
         Ok(false)
     }
 
+    /// Spendable Bitcoin ecash balance read straight from stored client tables without a live client.
+    ///
+    /// Used by the erase guard when `quiesce()` returns `None` (already closed, quarantined, or
+    /// retried after an earlier phase-2 refusal). Reads storage directly so closed or offline
+    /// empty federations can still be forgotten without contacting guardians.
+    pub(crate) async fn stored_bitcoin_balance(
+        &self,
+        module_inits: &fedimint_client::module_init::ClientModuleInitRegistry,
+    ) -> Result<Amount> {
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let Some(config) =
+            crate::db::read(&mut dbtx, &fedimint_client::db::ClientConfigKey).await?
+        else {
+            // Client storage was never initialized (for example an interrupted `Joining`
+            // record or a test fixture with no client database), so no notes can exist.
+            return Ok(Amount::from_msats(0));
+        };
+        drop(dbtx);
+
+        let decoders = crate::modules::decoders(module_inits, &config);
+        let mut total_msats: u64 = 0;
+
+        // Built-in ecash in this SDK is held solely by the v1 `"mint"` module (always Bitcoin)
+        // or v2 `"mintv2"` modules whose `amount_unit` is Bitcoin.
+        for (&module_id, module_cfg) in &config.modules {
+            let kind = module_cfg.kind().as_str();
+            if kind == "mintv2" {
+                let redecoded = module_cfg.clone().redecode_raw(&decoders).map_err(|err| {
+                    crate::Error::new(
+                        crate::ErrorCode::Storage,
+                        format!("unreadable mintv2 configuration: {}", err.fmt_compact()),
+                    )
+                })?;
+                let mint_cfg = redecoded
+                    .cast::<fedimint_mintv2_common::config::MintClientConfig>()
+                    .map_err(|err| {
+                        crate::Error::new(
+                            crate::ErrorCode::Storage,
+                            format!("unreadable mintv2 configuration: {}", err.fmt_compact()),
+                        )
+                    })?;
+                if mint_cfg.amount_unit != AmountUnit::BITCOIN {
+                    continue;
+                }
+            } else if kind != "mint" {
+                continue;
+            }
+
+            let (module_db, _) = db.with_prefix_module_id(module_id);
+            let mut module_dbtx = module_db.begin_transaction_nc().await;
+            if kind == "mint" {
+                let keys = crate::db::read_keys_by_prefix(
+                    &mut module_dbtx,
+                    &fedimint_mint_client::client_db::NoteKeyPrefix,
+                )
+                .await?;
+                sum_msats(&mut total_msats, keys.into_iter().map(|k| k.amount.msats))?;
+            } else {
+                let keys = crate::db::read_keys_by_prefix(
+                    &mut module_dbtx,
+                    &fedimint_mintv2_client::client_db::SpendableNotePrefix,
+                )
+                .await?;
+                sum_msats(
+                    &mut total_msats,
+                    keys.into_iter().map(|k| k.0.amount().msats),
+                )?;
+            }
+        }
+        Ok(Amount::from_msats(total_msats))
+    }
+
+    /// Whether stored client state machines still belong to an operation in the client's log.
+    ///
+    /// Mirrors `Client::get_active_operations` without requiring a live `Client` handle, so an
+    /// already-quiesced federation still blocks erase while operations are in flight.
+    pub(crate) async fn has_active_operations_in_db(
+        &self,
+        module_inits: &fedimint_client::module_init::ClientModuleInitRegistry,
+    ) -> Result<bool> {
+        use std::collections::HashSet;
+
+        use fedimint_client_module::transaction::TRANSACTION_SUBMISSION_MODULE_INSTANCE;
+        use fedimint_core::db::DatabaseKeyPrefix;
+
+        let db = self.db();
+        let mut dbtx = db.begin_transaction_nc().await;
+        let Some(config) =
+            crate::db::read(&mut dbtx, &fedimint_client::db::ClientConfigKey).await?
+        else {
+            return Ok(false);
+        };
+
+        let active_states = crate::db::read_keys_by_prefix(
+            &mut dbtx,
+            &fedimint_client::sm::executor::ActiveStateKeyPrefixBytes,
+        )
+        .await?;
+        let candidate_ops: HashSet<fedimint_core::core::OperationId> = active_states
+            .into_iter()
+            .filter_map(|state| {
+                let known_owner = state.module_instance_id
+                    == TRANSACTION_SUBMISSION_MODULE_INSTANCE
+                    || config
+                        .modules
+                        .get(&state.module_instance_id)
+                        .is_some_and(|module| module_inits.get(module.kind()).is_some());
+                known_owner.then_some(state.operation_id)
+            })
+            .collect();
+
+        for operation_id in candidate_ops {
+            let log_key =
+                DatabaseKeyPrefix::to_bytes(&fedimint_client::db::OperationLogKey { operation_id });
+            if crate::db::read_raw(&mut dbtx, &log_key).await?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// This federation's slice of the store, for records the SDK keeps beside the client's.
     pub(crate) fn db(&self) -> Database {
         self.db.clone()
@@ -1908,6 +2030,19 @@ pub(crate) async fn balance_of(client: &Client, status: FederationStatus) -> Res
         }
     };
     Ok(Amount::from_msats(balance.msats))
+}
+
+/// Accumulates millisatoshi amounts with overflow reporting as `ErrorCode::Storage`.
+fn sum_msats(acc: &mut u64, amounts: impl IntoIterator<Item = u64>) -> Result<()> {
+    for msats in amounts {
+        *acc = acc.checked_add(msats).ok_or_else(|| {
+            crate::Error::new(
+                crate::ErrorCode::Storage,
+                "stored ecash balance overflows u64",
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// A read guard over one federation's live client.

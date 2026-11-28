@@ -1047,12 +1047,21 @@ impl Sdk {
         // and stopping the task group flushes the workers' state before anything is judged.
         // Read before the status changes: a recovery-locked federation skips both guards below,
         // and setting the status first would erase the very fact that decides that.
-        let recovering = federation.status() == FederationStatus::Recovering;
+        let status = federation.status();
         let client = federation.quiesce().await;
         let already_committed = federation.record().status == StoredStatus::Forgetting;
         if !already_committed {
             federation.set_status(FederationStatus::Closed);
         }
+        // A federation closed or quarantined before its recovery reached `Done` still has
+        // provisional, unspendable state, and erasing it remains the sole documented exit.
+        let recovering = status == FederationStatus::Recovering
+            || (!already_committed
+                && matches!(
+                    crate::recovery::engine::attempt_on_file(&self.inner, &federation).await?,
+                    Some((_, on_file))
+                        if !matches!(on_file, crate::recovery::engine::AttemptOnFile::Done)
+                ));
 
         // Phase 2: refuse unless it is safe, deleting nothing. A recovery-locked federation
         // skips both guards: its balance is provisional and unspendable, and an erase is the
@@ -1064,45 +1073,60 @@ impl Sdk {
         // in here would be a no-op regardless, because this scope is still holding that
         // reference and `Arc::into_inner` would return `None`.
         if !already_committed && !recovering {
-            if let Some(client) = client.as_ref() {
+            // Check spendable balance: via the live client if `quiesce` just retired it, or
+            // straight from storage if the client was already absent (retry after an earlier
+            // refusal, `close_federation`, or quarantine).
+            let remaining_msats = match client.as_ref() {
                 // An `Err` here is treated as nothing to guard against. `get_balance_for_unit`
                 // fails only with `ModuleLookupError::NoPrimaryModule`, where a balance is
                 // meaningless and there is nothing spendable to protect; a second failure mode
                 // upstream would need this reconsidered.
-                if let Ok(balance) = client.get_balance_for_unit(AmountUnit::BITCOIN).await
-                    && balance.msats != 0
-                {
-                    let remaining = Amount::from_msats(balance.msats);
-                    self.persist_closed(&federation).await?;
-                    return Err(crate::Error::with_details(
-                        crate::ErrorCode::BalanceNotEmpty,
-                        "this federation still holds spendable ecash",
-                        crate::ErrorDetails::BalanceNotEmpty { remaining },
-                    ));
+                Some(client) => client
+                    .get_balance_for_unit(AmountUnit::BITCOIN)
+                    .await
+                    .map(|balance| balance.msats)
+                    .unwrap_or(0),
+                None => federation
+                    .stored_bitcoin_balance(&self.inner.module_inits)
+                    .await?
+                    .msats(),
+            };
+            if remaining_msats != 0 {
+                let remaining = Amount::from_msats(remaining_msats);
+                self.persist_closed(&federation).await?;
+                return Err(crate::Error::with_details(
+                    crate::ErrorCode::BalanceNotEmpty,
+                    "this federation still holds spendable ecash",
+                    crate::ErrorDetails::BalanceNotEmpty { remaining },
+                ));
+            }
+
+            // Active state-machine operations: read from the live client when available, or from
+            // the client's stored active-states and operation-log tables when already quiesced.
+            // On the v1 mint an unredeemed out-of-band send also appears here for as long as the
+            // refund is still available.
+            let has_active_ops = match client.as_ref() {
+                Some(client) => !client.get_active_operations().await.is_empty(),
+                None => {
+                    federation
+                        .has_active_operations_in_db(&self.inner.module_inits)
+                        .await?
                 }
-                // Out-of-band ecash a receiver has not redeemed and this instance could still
-                // reclaim shows up here on the v1 mint: upstream keeps a state machine alive for
-                // exactly as long as the refund is still available.
-                if !client.get_active_operations().await.is_empty() {
-                    self.persist_closed(&federation).await?;
-                    return Err(crate::Error::new(
-                        crate::ErrorCode::PendingOperations,
-                        "this federation still has operations that have not finished",
-                    ));
-                }
+            };
+            if has_active_ops {
+                self.persist_closed(&federation).await?;
+                return Err(crate::Error::new(
+                    crate::ErrorCode::PendingOperations,
+                    "this federation still has operations that have not finished",
+                ));
             }
 
             // Out-of-band ecash a receiver has not redeemed and this instance could still
-            // reclaim: on the v1 mint with a live client that shows up above in
-            // `get_active_operations`, but on mintv2 it does not, because a mintv2 send leaves
-            // no state machine behind. Furthermore, when a federation is already closed
-            // (either via `close_federation` or because a previous `forget_federation` refusal
-            // quiesced the client), `client` is `None` and the live-client guards above are
-            // skipped entirely.
+            // reclaim: on the v1 mint this shows up above, but on mintv2 it does not, because a
+            // mintv2 send leaves no state machine behind.
             //
-            // Checking here outside the `let Some(client)` guard ensures that an unsettled
-            // send protects its notes from deletion regardless of whether the client was
-            // running, already closed, or being repeatedly forgotten after a first refusal.
+            // Checking here from the SDK's own operation records ensures that an unsettled send
+            // protects its notes from deletion regardless of generation or client state.
             if federation.has_unsettled_ecash_send().await? {
                 self.persist_closed(&federation).await?;
                 return Err(crate::Error::new(
@@ -3758,6 +3782,329 @@ mod tests {
                 Some(FederationStatus::Closed)
             );
             assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        async fn plant_client_config(
+            sdk: &Sdk,
+            id: fedimint_core::config::FederationId,
+            modules: BTreeMap<u16, fedimint_core::config::ClientModuleConfig>,
+        ) {
+            use fedimint_core::config::{ClientConfig, GlobalClientConfig};
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+            use fedimint_core::module::CoreConsensusVersion;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let config = ClientConfig {
+                global: GlobalClientConfig {
+                    api_endpoints: BTreeMap::new(),
+                    broadcast_public_keys: None,
+                    consensus_version: CoreConsensusVersion::new(0, 0),
+                    meta: BTreeMap::new(),
+                },
+                modules,
+            };
+            let db = fed_inner.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&fedimint_client::db::ClientConfigKey, &config)
+                .await;
+            dbtx.commit_tx().await;
+        }
+
+        fn mint_v1_module_config() -> fedimint_core::config::ClientModuleConfig {
+            fedimint_core::config::ClientModuleConfig::from_typed(
+                0,
+                fedimint_mint_common::KIND,
+                fedimint_mint_common::MODULE_CONSENSUS_VERSION,
+                fedimint_mint_common::config::MintClientConfig {
+                    tbs_pks: fedimint_core::Tiered::default(),
+                    fee_consensus: fedimint_mint_common::config::FeeConsensus::zero(),
+                    peer_tbs_pks: BTreeMap::new(),
+                    max_notes_per_denomination: 0,
+                },
+            )
+        }
+
+        fn mint_v2_module_config(
+            module_instance_id: u16,
+            unit: AmountUnit,
+        ) -> fedimint_core::config::ClientModuleConfig {
+            fedimint_core::config::ClientModuleConfig::from_typed(
+                module_instance_id,
+                fedimint_mintv2_common::KIND,
+                fedimint_mintv2_common::MODULE_CONSENSUS_VERSION,
+                fedimint_mintv2_common::config::MintClientConfig {
+                    tbs_agg_pks: BTreeMap::new(),
+                    tbs_pks: BTreeMap::new(),
+                    fee_consensus: fedimint_mintv2_common::config::FeeConsensus::new(0)
+                        .expect("zero fee"),
+                    amount_unit: unit,
+                },
+            )
+        }
+
+        fn test_keypair() -> fedimint_core::secp256k1::Keypair {
+            let secp = fedimint_core::secp256k1::Secp256k1::new();
+            let sk = fedimint_core::secp256k1::SecretKey::from_slice(&[7u8; 32])
+                .expect("a valid secret key");
+            fedimint_core::secp256k1::Keypair::from_secret_key(&secp, &sk)
+        }
+
+        async fn plant_v1_note(sdk: &Sdk, id: fedimint_core::config::FederationId, msats: u64) {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let pair = test_keypair();
+            let note_key = fedimint_mint_client::client_db::NoteKey {
+                amount: fedimint_core::Amount::from_msats(msats),
+                nonce: fedimint_mint_common::Nonce(pair.public_key()),
+            };
+            let note = fedimint_mint_client::SpendableNoteUndecoded {
+                signature: [0u8; 48],
+                spend_key: pair,
+            };
+            let (module_db, _) = fed_inner.db().with_prefix_module_id(0);
+            let mut dbtx = module_db.begin_transaction().await;
+            dbtx.insert_entry(&note_key, &note).await;
+            dbtx.commit_tx().await;
+        }
+
+        fn dummy_v2_note_key_bytes(denom: u8) -> Vec<u8> {
+            use fedimint_core::db::{DatabaseKey, DatabaseRecord};
+            use fedimint_core::encoding::Encodable;
+            use fedimint_mintv2_client::client_db::SpendableNoteKey;
+
+            let mut bytes = vec![<SpendableNoteKey as DatabaseRecord>::DB_PREFIX];
+            bytes.extend(fedimint_mintv2_common::Denomination(denom).consensus_encode_to_vec());
+            bytes.extend([7u8; 32]);
+            // Compressed BLS12-381 G1 point at infinity (`0xc0` followed by 47 zero bytes).
+            bytes.push(0xc0);
+            bytes.extend([0u8; 47]);
+            let decoded = <SpendableNoteKey as DatabaseKey>::from_bytes(
+                &bytes,
+                &ModuleDecoderRegistry::default(),
+            )
+            .expect("a valid mintv2 spendable note key");
+            assert_eq!(decoded.0.denomination.0, denom);
+            bytes
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_closed_v1_federation_refuses_repeatedly_with_balance() {
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+            plant_client_config(&sdk, id, BTreeMap::from([(0, mint_v1_module_config())])).await;
+            plant_v1_note(&sdk, id, 1_000).await;
+
+            for _ in 0..2 {
+                let err = sdk
+                    .forget_federation(&public)
+                    .await
+                    .expect_err("forget with v1 balance must refuse");
+                assert_eq!(err.code, crate::ErrorCode::BalanceNotEmpty);
+                match err.detail() {
+                    Some(ErrorDetails::BalanceNotEmpty { remaining }) => {
+                        assert_eq!(*remaining, Amount::from_msats(1_000));
+                    }
+                    other => panic!("expected BalanceNotEmpty detail, got {other:?}"),
+                }
+            }
+
+            assert_eq!(
+                sdk.federation_status(&public),
+                Some(FederationStatus::Closed)
+            );
+            assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_closed_v2_federation_checks_only_bitcoin_balance() {
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+
+            // A custom-unit mintv2 module alone does not hold Bitcoin ecash, so an erase
+            // proceeds even when a note exists under its module prefix.
+            plant_client_config(
+                &sdk,
+                id,
+                BTreeMap::from([(0, mint_v2_module_config(0, AmountUnit::new_custom(99)))]),
+            )
+            .await;
+            let custom_note = dummy_v2_note_key_bytes(10); // 2^10 = 1024 msats
+            let (custom_db, _) = sdk
+                .inner()
+                .federation_inner(&id)
+                .expect("planted")
+                .db()
+                .with_prefix_module_id(0);
+            let mut dbtx = custom_db.begin_transaction().await;
+            dbtx.raw_insert_bytes(&custom_note, &[])
+                .await
+                .expect("note inserted");
+            crate::db::commit(dbtx).await.expect("committed");
+
+            sdk.forget_federation(&public)
+                .await
+                .expect("custom-unit-only closed v2 federation erases");
+            assert_eq!(sdk.federation_status(&public), None);
+            assert!(sdk.stored_federations().is_empty());
+
+            // With both a custom-unit module (0) and a BITCOIN module (1), only BITCOIN counts
+            // toward the balance guard, and both attempts must refuse with its exact amount.
+            plant_closed_federation(&sdk, id).await;
+            plant_client_config(
+                &sdk,
+                id,
+                BTreeMap::from([
+                    (0, mint_v2_module_config(0, AmountUnit::new_custom(99))),
+                    (1, mint_v2_module_config(1, AmountUnit::BITCOIN)),
+                ]),
+            )
+            .await;
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let (custom_db, _) = fed_inner.db().with_prefix_module_id(0);
+            let mut dbtx = custom_db.begin_transaction().await;
+            dbtx.raw_insert_bytes(&custom_note, &[])
+                .await
+                .expect("custom note inserted");
+            crate::db::commit(dbtx).await.expect("committed");
+
+            let btc_note = dummy_v2_note_key_bytes(9); // 2^9 = 512 msats
+            let (btc_db, _) = fed_inner.db().with_prefix_module_id(1);
+            let mut dbtx = btc_db.begin_transaction().await;
+            dbtx.raw_insert_bytes(&btc_note, &[])
+                .await
+                .expect("bitcoin note inserted");
+            crate::db::commit(dbtx).await.expect("committed");
+
+            for _ in 0..2 {
+                let err = sdk
+                    .forget_federation(&public)
+                    .await
+                    .expect_err("closed v2 federation with bitcoin balance must refuse");
+                assert_eq!(err.code, crate::ErrorCode::BalanceNotEmpty);
+                match err.detail() {
+                    Some(ErrorDetails::BalanceNotEmpty { remaining }) => {
+                        assert_eq!(*remaining, Amount::from_msats(512));
+                    }
+                    other => panic!("expected BalanceNotEmpty detail, got {other:?}"),
+                }
+            }
+
+            // Clearing the Bitcoin note allows the erase to succeed even with the custom note left.
+            let mut dbtx = btc_db.begin_transaction().await;
+            dbtx.raw_remove_entry(&btc_note)
+                .await
+                .expect("note removed");
+            crate::db::commit(dbtx).await.expect("committed");
+            sdk.forget_federation(&public)
+                .await
+                .expect("empty-bitcoin closed v2 federation erases");
+            assert_eq!(sdk.federation_status(&public), None);
+            assert!(sdk.stored_federations().is_empty());
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_closed_federation_refuses_with_active_client_operation() {
+            use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
+
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+            plant_client_config(&sdk, id, BTreeMap::from([(0, mint_v1_module_config())])).await;
+
+            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
+            let op_id = fedimint_core::core::OperationId([77u8; 32]);
+            let state_key = fedimint_client::sm::executor::ActiveStateKeyBytes {
+                operation_id: op_id,
+                module_instance_id: 0,
+                state: vec![0, 0, 1],
+            };
+            let meta = fedimint_client_module::sm::ActiveStateMeta {
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            };
+            let db = fed_inner.db();
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&state_key, &meta).await;
+            dbtx.commit_tx().await;
+
+            // An active state without an operation log entry (such as an internal background SM)
+            // does not correspond to a user operation, matching `Client::get_active_operations`.
+            assert!(
+                !fed_inner
+                    .has_active_operations_in_db(&sdk.inner().module_inits)
+                    .await
+                    .expect("db read succeeds")
+            );
+
+            let op_log_key = fedimint_client::db::OperationLogKey {
+                operation_id: op_id,
+            };
+            let op_log_entry = fedimint_client_module::oplog::OperationLogEntry::new(
+                "mint".to_owned(),
+                fedimint_client_module::oplog::JsonStringed(serde_json::json!({})),
+                None,
+            );
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_entry(&op_log_key, &op_log_entry).await;
+            dbtx.commit_tx().await;
+
+            for _ in 0..2 {
+                let err = sdk
+                    .forget_federation(&public)
+                    .await
+                    .expect_err("active operation on closed federation must refuse");
+                assert_eq!(err.code, crate::ErrorCode::PendingOperations);
+            }
+            assert_eq!(sdk.stored_federations().len(), 1);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn forget_closed_incomplete_recovery_still_skips_guards() {
+            let sdk = Sdk::builder()
+                .storage(Storage::in_memory())
+                .build()
+                .await
+                .expect("an instance opens");
+            let id = fedimint_core::config::FederationId::dummy();
+            let public = crate::FederationId::from_upstream(id);
+            plant_closed_federation(&sdk, id).await;
+            plant_client_config(&sdk, id, BTreeMap::from([(0, mint_v1_module_config())])).await;
+            plant_v1_note(&sdk, id, 5_000).await;
+
+            // An incomplete recovery record (no finished `Done` operation record) marks the
+            // stored balance as provisional and unspendable even when the federation is closed.
+            crate::db::write_recovery(
+                &sdk.inner().db,
+                &id,
+                &crate::db::RecoveryRecord {
+                    attempt: fedimint_core::core::OperationId([88u8; 32]),
+                },
+            )
+            .await
+            .expect("recovery record written");
+
+            sdk.forget_federation(&public)
+                .await
+                .expect("incomplete recovery skips guards even when closed");
+            assert_eq!(sdk.federation_status(&public), None);
+            assert!(sdk.stored_federations().is_empty());
         }
     }
 }
