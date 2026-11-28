@@ -3973,12 +3973,8 @@ mod tests {
             )
             .await;
             let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
-            let mut dbtx = fed_inner
-                .db()
-                .with_prefix_module_id(0)
-                .0
-                .begin_transaction()
-                .await;
+            let (custom_db, _) = fed_inner.db().with_prefix_module_id(0);
+            let mut dbtx = custom_db.begin_transaction().await;
             dbtx.raw_insert_bytes(&custom_note, &[])
                 .await
                 .expect("custom note inserted");
