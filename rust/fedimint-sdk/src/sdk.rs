@@ -3907,12 +3907,12 @@ mod tests {
                     .await
                     .expect_err("forget with v1 balance must refuse");
                 assert_eq!(err.code, crate::ErrorCode::BalanceNotEmpty);
-                assert_eq!(
-                    err.detail(),
-                    Some(ErrorDetails::BalanceNotEmpty {
-                        remaining: Amount::from_msats(1_000),
-                    })
-                );
+                match err.detail() {
+                    Some(ErrorDetails::BalanceNotEmpty { remaining }) => {
+                        assert_eq!(*remaining, Amount::from_msats(1_000));
+                    }
+                    other => panic!("expected BalanceNotEmpty detail, got {other:?}"),
+                }
             }
 
             assert_eq!(
@@ -3992,33 +3992,18 @@ mod tests {
                 .expect("bitcoin note inserted");
             crate::db::commit(dbtx).await.expect("committed");
 
-            let fed_inner = sdk.inner().federation_inner(&id).expect("planted");
-            let mut dbtx = fed_inner.db().with_prefix_module_id(0).0.begin_transaction().await;
-            dbtx.raw_insert_bytes(&custom_note, &[])
-                .await
-                .expect("custom note inserted");
-            crate::db::commit(dbtx).await.expect("committed");
-
-            let btc_note = dummy_v2_note_key_bytes(9); // 2^9 = 512 msats
-            let (btc_db, _) = fed_inner.db().with_prefix_module_id(1);
-            let mut dbtx = btc_db.begin_transaction().await;
-            dbtx.raw_insert_bytes(&btc_note, &[])
-                .await
-                .expect("bitcoin note inserted");
-            crate::db::commit(dbtx).await.expect("committed");
-
             for _ in 0..2 {
                 let err = sdk
                     .forget_federation(&public)
                     .await
                     .expect_err("closed v2 federation with bitcoin balance must refuse");
                 assert_eq!(err.code, crate::ErrorCode::BalanceNotEmpty);
-                assert_eq!(
-                    err.detail(),
-                    Some(ErrorDetails::BalanceNotEmpty {
-                        remaining: Amount::from_msats(512),
-                    })
-                );
+                match err.detail() {
+                    Some(ErrorDetails::BalanceNotEmpty { remaining }) => {
+                        assert_eq!(*remaining, Amount::from_msats(512));
+                    }
+                    other => panic!("expected BalanceNotEmpty detail, got {other:?}"),
+                }
             }
 
             // Clearing the Bitcoin note allows the erase to succeed even with the custom note left.
